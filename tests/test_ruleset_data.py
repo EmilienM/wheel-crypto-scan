@@ -15,30 +15,7 @@ from typing import Any
 import pytest
 
 from wheel_crypto_scan.errors import ERROR_KINDS
-
-# The matcher kinds the scanner implements. A rule naming anything else cannot run.
-KNOWN_KINDS = {
-    "dist_name",
-    "requires_dist",
-    "wheel_generator",
-    "no_source",
-    "record_mismatch",
-    "scan_error",
-    "sbom_component",
-    "bundled_library",
-    "dt_needed",
-    "dynamic_symbol",
-    "binary_string",
-    "rust_crate",
-    "linkage",
-    "opaque_binary",
-    "partial_binary",
-    "py_import",
-    "py_call",
-    "py_attr",
-    "py_constant",
-    "py_ctypes_load",
-}
+from wheel_crypto_scan.ruleset import MATCHER_KINDS
 
 SEVERITIES = {"high", "medium", "low", "info"}
 CONFIDENCES = {"high", "medium", "low"}
@@ -82,7 +59,7 @@ def test_every_rule_is_completely_specified(ruleset: dict[str, Any]) -> None:
         assert rule["confidence"] in CONFIDENCES, rule["id"]
         assert isinstance(rule["needs_human_review"], bool), rule["id"]
         assert rule["title"].strip(), rule["id"]
-        assert rule["match"]["kind"] in KNOWN_KINDS, rule["id"]
+        assert rule["match"]["kind"] in MATCHER_KINDS, rule["id"]
 
 
 def test_every_rule_explains_itself(ruleset: dict[str, Any]) -> None:
