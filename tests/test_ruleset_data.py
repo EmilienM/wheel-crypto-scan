@@ -1,0 +1,214 @@
+"""Structural checks on the shipped ruleset.
+
+These guard the file a crypto engineer edits. They deliberately assert nothing about
+which packages are flagged, only that the data is internally consistent: no dangling
+references, no unknown matcher kinds, no rule without a stated reason. Editing policy
+should never require editing this test.
+"""
+
+from __future__ import annotations
+
+import tomllib
+from importlib.resources import files
+from typing import Any
+
+import pytest
+
+from wheel_crypto_scan.errors import ERROR_KINDS
+
+# The matcher kinds the scanner implements. A rule naming anything else cannot run.
+KNOWN_KINDS = {
+    "dist_name",
+    "requires_dist",
+    "wheel_generator",
+    "no_source",
+    "record_mismatch",
+    "scan_error",
+    "sbom_component",
+    "bundled_library",
+    "dt_needed",
+    "dynamic_symbol",
+    "binary_string",
+    "rust_crate",
+    "linkage",
+    "opaque_binary",
+    "partial_binary",
+    "py_import",
+    "py_call",
+    "py_attr",
+    "py_constant",
+    "py_ctypes_load",
+}
+
+SEVERITIES = {"high", "medium", "low", "info"}
+CONFIDENCES = {"high", "medium", "low"}
+LAYERS = {"metadata", "binary", "python", "derived"}
+
+ENTRY_TABLES = (
+    "crypto_distribution",
+    "crypto_library",
+    "symbol_group",
+    "string_group",
+    "rust_crate",
+    "python_module",
+    "ctypes_library",
+)
+
+
+@pytest.fixture(scope="module")
+def ruleset() -> dict[str, Any]:
+    path = files("wheel_crypto_scan").joinpath("data/ruleset.toml")
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def rule_ids(ruleset: dict[str, Any]) -> set[str]:
+    return {rule["id"] for rule in ruleset["rule"]}
+
+
+def test_ruleset_version_is_a_string(ruleset: dict[str, Any]) -> None:
+    assert isinstance(ruleset["ruleset_version"], str)
+
+
+def test_rule_ids_are_unique(ruleset: dict[str, Any]) -> None:
+    ids = [rule["id"] for rule in ruleset["rule"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_every_rule_is_completely_specified(ruleset: dict[str, Any]) -> None:
+    for rule in ruleset["rule"]:
+        assert rule["layer"] in LAYERS, rule["id"]
+        assert rule["severity"] in SEVERITIES, rule["id"]
+        assert rule["confidence"] in CONFIDENCES, rule["id"]
+        assert isinstance(rule["needs_human_review"], bool), rule["id"]
+        assert rule["title"].strip(), rule["id"]
+        assert rule["match"]["kind"] in KNOWN_KINDS, rule["id"]
+
+
+def test_every_rule_explains_itself(ruleset: dict[str, Any]) -> None:
+    """The `why` text is the point of the file. A rule without one cannot be reviewed."""
+    for rule in ruleset["rule"]:
+        assert len(rule["why"].strip()) >= 40, rule["id"]
+
+
+def test_every_table_entry_explains_itself(ruleset: dict[str, Any]) -> None:
+    for table in ENTRY_TABLES:
+        for entry in ruleset[table]:
+            label = f"{table}:{entry.get('name', '?')}"
+            assert len(entry["why"].strip()) >= 20, label
+
+
+def test_rule_verdicts_are_known(ruleset: dict[str, Any]) -> None:
+    precedence = set(ruleset["verdict"]["precedence"])
+    for rule in ruleset["rule"]:
+        if "verdict" in rule:
+            assert rule["verdict"] in precedence, rule["id"]
+
+
+def test_table_entry_verdicts_are_known(ruleset: dict[str, Any]) -> None:
+    precedence = set(ruleset["verdict"]["precedence"])
+    for table in ENTRY_TABLES:
+        for entry in ruleset[table]:
+            if "verdict" in entry:
+                assert entry["verdict"] in precedence, f"{table}:{entry.get('name')}"
+
+
+def test_no_rule_can_emit_a_pass(ruleset: dict[str, Any]) -> None:
+    """The tool never says compliant. Nothing in the data may claim otherwise."""
+    forbidden = {"COMPLIANT", "FIPS_COMPLIANT", "APPROVED", "PASS", "CLEAN"}
+    assert not forbidden & set(ruleset["verdict"]["precedence"])
+    for rule in ruleset["rule"]:
+        assert rule.get("verdict") not in forbidden
+
+
+def test_table_entries_reference_existing_rules(
+    ruleset: dict[str, Any], rule_ids: set[str]
+) -> None:
+    for table in ENTRY_TABLES:
+        for entry in ruleset[table]:
+            if "rule" in entry:
+                assert entry["rule"] in rule_ids, f"{table}:{entry.get('name')}"
+
+
+def test_suppressed_by_references_existing_rules(
+    ruleset: dict[str, Any], rule_ids: set[str]
+) -> None:
+    for rule in ruleset["rule"]:
+        for other in rule.get("suppressed_by", []):
+            assert other in rule_ids, rule["id"]
+            assert other != rule["id"], rule["id"]
+
+
+def test_rules_reference_existing_tables(ruleset: dict[str, Any]) -> None:
+    for rule in ruleset["rule"]:
+        match = rule["match"]
+        for key in ("table", "tables"):
+            names = match.get(key)
+            if names is None:
+                continue
+            for name in [names] if isinstance(names, str) else names:
+                assert name in ENTRY_TABLES, rule["id"]
+
+
+def test_rules_reference_existing_groups(ruleset: dict[str, Any]) -> None:
+    symbol_groups = {entry["name"] for entry in ruleset["symbol_group"]}
+    string_groups = {entry["name"] for entry in ruleset["string_group"]}
+    for rule in ruleset["rule"]:
+        match = rule["match"]
+        available = symbol_groups if match["kind"] == "dynamic_symbol" else string_groups
+        if match["kind"] not in {"dynamic_symbol", "binary_string"}:
+            continue
+        names = match.get("groups", [])
+        if "group" in match:
+            names = [match["group"], *names]
+        assert names, rule["id"]
+        for name in names:
+            assert name in available, f"{rule['id']} -> {name}"
+
+
+def test_rules_reference_existing_libraries(ruleset: dict[str, Any]) -> None:
+    libraries = {entry["name"] for entry in ruleset["crypto_library"]}
+    for rule in ruleset["rule"]:
+        match = rule["match"]
+        for key in ("library", "name"):
+            if match["kind"] in {"bundled_library", "dt_needed", "linkage"} and key in match:
+                assert match[key] in libraries, rule["id"]
+        for name in match.get("exclude_libraries", []):
+            assert name in libraries, rule["id"]
+
+
+def test_scan_error_rules_use_known_error_kinds(ruleset: dict[str, Any]) -> None:
+    for rule in ruleset["rule"]:
+        if rule["match"]["kind"] != "scan_error":
+            continue
+        for kind in rule["match"]["error_kinds"]:
+            assert kind in ERROR_KINDS, f"{rule['id']} -> {kind}"
+
+
+def test_only_one_default_rule_per_table(ruleset: dict[str, Any]) -> None:
+    defaults: dict[str, list[str]] = {}
+    for rule in ruleset["rule"]:
+        match = rule["match"]
+        if match.get("default"):
+            defaults.setdefault(match["table"], []).append(rule["id"])
+    for table, ids in defaults.items():
+        assert len(ids) == 1, f"{table} has several default rules: {ids}"
+
+
+def test_dynamic_symbol_rules_declare_a_binding(ruleset: dict[str, Any]) -> None:
+    """Imported versus defined is the distinction the whole tool turns on."""
+    for rule in ruleset["rule"]:
+        if rule["match"]["kind"] == "dynamic_symbol":
+            assert rule["match"]["binding"] in {"imported", "defined", "any"}, rule["id"]
+
+
+def test_symbol_groups_are_non_empty(ruleset: dict[str, Any]) -> None:
+    for group in ruleset["symbol_group"]:
+        assert group["prefixes"] or group["exact"], group["name"]
+
+
+def test_linkage_rules_use_known_values(ruleset: dict[str, Any]) -> None:
+    known = {"system", "bundled", "static", "mixed", "none", "unknown"}
+    for rule in ruleset["rule"]:
+        if rule["match"]["kind"] == "linkage":
+            assert rule["match"]["value"] in known, rule["id"]

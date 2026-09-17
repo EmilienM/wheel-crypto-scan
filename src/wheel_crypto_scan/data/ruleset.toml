@@ -1,0 +1,1511 @@
+# wheel-crypto-scan ruleset
+# =========================
+#
+# This file is the whole domain model. You can review and edit it without reading any
+# Python. Nothing in the scanner hardcodes a package name, a symbol, a library or a
+# verdict; all of that lives here.
+#
+# How to read an entry
+# --------------------
+#   severity            How strong the evidence is (high / medium / low / info).
+#                       It is NOT a compliance judgement.
+#   verdict             Which class this evidence pushes the wheel into. The tool never
+#                       emits "compliant" and this field can never say so.
+#   confidence          How sure we are the match means what we think it means.
+#   needs_human_review  Set true whenever a crypto engineer must look at it. When in
+#                       doubt, set it true. It is never wrong to ask for review.
+#   why                 Why this is flagged, in plain language. Every rule and every
+#                       table entry has one. If you disagree with a `why`, change it:
+#                       it is the part of this file that carries the reasoning.
+#
+# Verdict classes
+# ---------------
+#   NON_APPROVED_CRYPTO  Implements or bundles a non-FIPS-approved primitive.
+#   CONDITIONAL          Approved only under a stated condition, normally "linked
+#                        against the system OpenSSL so it can pick up the system FIPS
+#                        provider". The record says which condition actually holds.
+#   FIPS_BREAKING        Will raise at runtime under FIPS-enforcing mode.
+#   CONTEXT_DEPENDENT    Non-approved primitive that may be a non-security use.
+#   OPAQUE               Stripped binary, no source, unreadable. Cannot determine.
+#   NO_CRYPTO_DETECTED   Nothing found. Absence of evidence, not evidence of absence.
+#
+# Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
+# so bumping it is what makes previously scanned wheels get re-evaluated.
+
+ruleset_version = "1"
+
+
+# ---------------------------------------------------------------------------
+# Verdict resolution
+# ---------------------------------------------------------------------------
+[verdict]
+# A wheel can produce evidence for several classes at once. The record reports every
+# class that fired in `verdict.classes`, and the first one in this list as the single
+# `verdict.class`. Reorder this list to change which concern wins.
+precedence = [
+    "NON_APPROVED_CRYPTO",
+    "FIPS_BREAKING",
+    "CONDITIONAL",
+    "CONTEXT_DEPENDENT",
+    "OPAQUE",
+    "NO_CRYPTO_DETECTED",
+]
+
+
+# ---------------------------------------------------------------------------
+# Output limits. They bound record size; they never change what is detected.
+# Lists are sorted before truncation, so truncation stays deterministic.
+# ---------------------------------------------------------------------------
+[limits]
+max_locations_per_finding = 10
+max_symbols_per_binary = 64
+max_strings_per_binary = 64
+max_rust_crates_per_binary = 128
+max_evidence_chars = 200
+min_string_length = 4
+
+
+# ---------------------------------------------------------------------------
+# Packaging conventions. These describe how build tools lay wheels out, not policy.
+# ---------------------------------------------------------------------------
+[conventions]
+# auditwheel (Linux) and delocate (macOS) copy shared libraries into these directories.
+# Anything in here is shipped by the wheel rather than borrowed from the system.
+vendor_dir_globs = ["*.libs", ".dylibs", "*.dylibs"]
+
+# auditwheel and delocate rename a vendored library by appending a content hash, e.g.
+# libcrypto-3a1f2b4c.so.3. A needed-entry or SONAME that looks like this is a vendored
+# copy even when the wheel has no vendor directory of its own.
+mangled_soname_regex = '^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$'
+
+# Rust objects embed the source path of every crate they were built from.
+cargo_path_regex = '''cargo/registry/src/[^/\x00"']+/(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)/'''
+
+# Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
+# usedforsecurity=False.
+weak_hash_algorithms = ["md4", "md5", "md5-sha1", "ripemd160", "sha1", "sm3", "whirlpool"]
+
+
+# ---------------------------------------------------------------------------
+# Distributions. Matched on the canonical (PEP 503) project name, so "PyNaCl",
+# "pynacl" and "py_nacl" are the same entry.
+# ---------------------------------------------------------------------------
+
+[[crypto_distribution]]
+name = "bcrypt"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Implements the Blowfish-based bcrypt password hash. Blowfish is not a FIPS-approved algorithm and there is no configuration that makes it one."
+
+[[crypto_distribution]]
+name = "pycryptodome"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Self-contained cryptographic library. Implements its own AES, RSA, hashes and RNG in bundled C, so it never consults the system crypto policy or FIPS provider."
+
+[[crypto_distribution]]
+name = "pycryptodomex"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Same code as pycryptodome under the Cryptodome namespace. Self-contained implementation, independent of the system FIPS provider."
+
+[[crypto_distribution]]
+name = "pycrypto"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Unmaintained predecessor of pycryptodome with known vulnerabilities. Self-contained implementation."
+
+[[crypto_distribution]]
+name = "pynacl"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Python binding for libsodium. Ships Curve25519, Ed25519, XSalsa20-Poly1305 and Argon2, none of which come from a FIPS-validated module here."
+
+[[crypto_distribution]]
+name = "libnacl"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "ctypes binding to libsodium/NaCl. Same primitive set as pynacl, loaded at runtime."
+
+[[crypto_distribution]]
+name = "pysodium"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Another libsodium binding. Same primitives as pynacl."
+
+[[crypto_distribution]]
+name = "rsa"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Pure-Python RSA implementation. RSA itself is approved, but a pure-Python implementation is not a validated module and cannot be, so it is evidence of crypto performed outside the system provider."
+
+[[crypto_distribution]]
+name = "ecdsa"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Pure-Python ECDSA implementation. Same reasoning as rsa: the algorithm may be approved, the implementation is not validated and runs outside the system provider."
+
+[[crypto_distribution]]
+name = "fastecdsa"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Own C implementation of ECDSA. Does not use the system provider."
+
+[[crypto_distribution]]
+name = "ed25519"
+rule = "DIST_NON_APPROVED_CRYPTO"
+needs_human_review = true
+why = "Own Ed25519 implementation. EdDSA status depends on the standard revision and on validation of the specific module, so the classification here needs a crypto engineer's confirmation."
+
+[[crypto_distribution]]
+name = "coincurve"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Bundles libsecp256k1. The secp256k1 curve is not in the approved curve set."
+
+[[crypto_distribution]]
+name = "argon2-cffi"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Argon2 password hashing. Not a FIPS-approved key derivation function."
+
+[[crypto_distribution]]
+name = "argon2-cffi-bindings"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Bundles the Argon2 reference implementation used by argon2-cffi."
+
+[[crypto_distribution]]
+name = "scrypt"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "scrypt key derivation, implemented in the package. Not FIPS-approved."
+
+[[crypto_distribution]]
+name = "passlib"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Password hashing framework that selects schemes such as bcrypt, Argon2 and unsalted MD5 crypt. Which scheme is reachable depends on application configuration, so review what it is configured to use."
+needs_human_review = true
+
+[[crypto_distribution]]
+name = "pyaes"
+rule = "DIST_NON_APPROVED_CRYPTO"
+why = "Pure-Python AES. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[crypto_distribution]]
+name = "cryptography"
+rule = "DIST_SYSTEM_CRYPTO_WRAPPER"
+why = "The important case. It can either link the system OpenSSL, in which case it inherits the system FIPS provider, or carry its own OpenSSL statically or in cryptography.libs/, in which case it does not. Read verdict.conditions.openssl_linkage in the record to see which build this is."
+
+[[crypto_distribution]]
+name = "pyopenssl"
+rule = "DIST_SYSTEM_CRYPTO_WRAPPER"
+why = "Thin wrapper over whatever OpenSSL the installed cryptography package provides. Its posture is inherited from that build, not from this wheel."
+
+[[crypto_distribution]]
+name = "m2crypto"
+rule = "DIST_SYSTEM_CRYPTO_WRAPPER"
+why = "SWIG binding to OpenSSL. Normally links the system libcrypto, which is the good case, but check the binary evidence rather than assuming."
+
+[[crypto_distribution]]
+name = "pycurl"
+rule = "DIST_SYSTEM_CRYPTO_WRAPPER"
+why = "Binds libcurl, which delegates TLS to whichever stack it was built against. A wheel bundling its own libcurl can also bundle a TLS stack with it."
+
+[[crypto_distribution]]
+name = "paramiko"
+rule = "DIST_SYSTEM_CRYPTO_WRAPPER"
+needs_human_review = true
+why = "SSH implementation that performs its own algorithm negotiation on top of cryptography. The primitives come from cryptography, the algorithm choice does not, so the negotiated set needs review."
+
+[[crypto_distribution]]
+name = "certifi"
+rule = "DIST_BUNDLED_TRUST_STORE"
+why = "Ships its own CA bundle. Not a crypto implementation, but code using it bypasses the system trust store and therefore the system trust policy."
+
+[[crypto_distribution]]
+name = "blake3"
+rule = "DIST_NON_CRYPTO_HASH"
+why = "BLAKE3 is a fast general-purpose hash. Not FIPS-approved, and frequently used for checksums and caching rather than security. Decide by use, not by presence."
+
+[[crypto_distribution]]
+name = "xxhash"
+rule = "DIST_NON_CRYPTO_HASH"
+why = "Non-cryptographic hash used for checksums, deduplication and hash tables. Flagged so a human can confirm it is not doing security work."
+
+[[crypto_distribution]]
+name = "murmurhash"
+rule = "DIST_NON_CRYPTO_HASH"
+why = "Non-cryptographic hash, common in NLP and ML feature hashing (spaCy pulls it in). Almost never a security use, but confirm."
+
+[[crypto_distribution]]
+name = "mmh3"
+rule = "DIST_NON_CRYPTO_HASH"
+why = "MurmurHash3 binding. Same reasoning as murmurhash."
+
+[[crypto_distribution]]
+name = "cityhash"
+rule = "DIST_NON_CRYPTO_HASH"
+why = "Non-cryptographic hash for hash tables and sharding."
+
+[[crypto_distribution]]
+name = "farmhash"
+rule = "DIST_NON_CRYPTO_HASH"
+why = "Non-cryptographic hash, successor to cityhash."
+
+[[crypto_distribution]]
+name = "crc32c"
+rule = "DIST_NON_CRYPTO_HASH"
+why = "Checksum, not a hash function in the security sense. Included so storage and networking code that uses it is visible rather than surprising."
+
+
+# ---------------------------------------------------------------------------
+# Native crypto libraries. `sonames` are base names; the scanner strips version
+# suffixes (.so.3, .3.dylib) and auditwheel/delocate content hashes before matching.
+# ---------------------------------------------------------------------------
+
+[[crypto_library]]
+name = "openssl"
+sonames = ["libcrypto", "libssl"]
+verdict = "CONDITIONAL"
+severity = "high"
+why = "OpenSSL. Linking the system copy is the good case because it can pick up the system FIPS provider. A copy shipped inside the wheel cannot, regardless of how OpenSSL itself was built."
+
+[[crypto_library]]
+name = "libsodium"
+sonames = ["libsodium"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "NaCl primitives: Curve25519, Ed25519, XSalsa20-Poly1305, BLAKE2b, Argon2. Not a FIPS-validated module and not configurable to become one."
+
+[[crypto_library]]
+name = "libgcrypt"
+sonames = ["libgcrypt"]
+verdict = "CONDITIONAL"
+severity = "high"
+needs_human_review = true
+why = "libgcrypt has a FIPS mode, but only the system copy is built and validated for it. A bundled copy will not honour the system policy."
+
+[[crypto_library]]
+name = "nettle"
+sonames = ["libnettle", "libhogweed"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Nettle and its public-key half, hogweed. Provides a full primitive set independent of the system provider."
+
+[[crypto_library]]
+name = "mbedtls"
+sonames = ["libmbedtls", "libmbedcrypto", "libmbedx509"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "mbedTLS is a self-contained TLS and crypto stack. It ignores the system crypto policy entirely."
+
+[[crypto_library]]
+name = "wolfssl"
+sonames = ["libwolfssl", "libwolfcrypt"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+needs_human_review = true
+why = "wolfSSL ships a separate FIPS-validated product. A wheel-bundled copy is almost certainly the non-FIPS build, but the specific build should be confirmed."
+
+[[crypto_library]]
+name = "gnutls"
+sonames = ["libgnutls"]
+verdict = "CONDITIONAL"
+severity = "medium"
+needs_human_review = true
+why = "GnuTLS has a FIPS mode in the system build. A bundled copy will not have it."
+
+[[crypto_library]]
+name = "nss"
+sonames = ["libnss3", "libsoftokn3", "libfreebl3", "libnssutil3"]
+verdict = "CONDITIONAL"
+severity = "medium"
+needs_human_review = true
+why = "NSS has its own FIPS mode and its own module database. Which mode applies depends on the NSS configuration the application uses, not on the wheel alone."
+
+[[crypto_library]]
+name = "cryptopp"
+sonames = ["libcryptopp", "libcrypto++"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Crypto++ is a self-contained C++ crypto library."
+
+[[crypto_library]]
+name = "tomcrypt"
+sonames = ["libtomcrypt", "libtommath"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "LibTomCrypt is a self-contained crypto library, common in embedded code."
+
+[[crypto_library]]
+name = "argon2"
+sonames = ["libargon2"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Argon2 password hashing, the reference C implementation. Not a FIPS-approved key derivation function, and a bundled copy is not reachable by system policy."
+
+[[crypto_library]]
+name = "blake2"
+sonames = ["libb2"]
+verdict = "CONTEXT_DEPENDENT"
+severity = "low"
+why = "BLAKE2 reference library. Not approved, but frequently used for checksums rather than security."
+
+[[crypto_library]]
+name = "secp256k1"
+sonames = ["libsecp256k1"]
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "The secp256k1 curve is not in the approved curve set."
+
+
+# ---------------------------------------------------------------------------
+# Dynamic symbol groups.
+#
+# `prefixes` match the start of a symbol name, `exact` matches the whole name.
+# The scanner records whether each match is imported (the symbol is undefined in
+# this object, so the code lives elsewhere) or defined (the code is in this object).
+# That distinction is what separates "links the system OpenSSL" from "carries its
+# own copy", so keep it in mind when adding a group.
+# ---------------------------------------------------------------------------
+
+[[symbol_group]]
+name = "openssl"
+prefixes = ["EVP_", "SSL_CTX_", "OSSL_PROVIDER_", "OSSL_LIB_CTX_", "X509_STORE_", "PKCS5_PBKDF2_", "RSA_", "EC_KEY_", "BN_"]
+exact = ["OPENSSL_init_ssl", "OPENSSL_init_crypto", "RAND_bytes", "RAND_priv_bytes", "ERR_get_error", "SSL_new", "SSL_connect", "HMAC_Init_ex", "HMAC_Final", "BIO_new"]
+why = "OpenSSL's public API. Imported means the wheel calls into an OpenSSL it does not ship; defined means it carries OpenSSL code inside the object itself."
+
+[[symbol_group]]
+name = "openssl_fips"
+prefixes = []
+exact = ["EVP_default_properties_is_fips_enabled", "EVP_default_properties_enable_fips", "OSSL_PROVIDER_load", "OSSL_PROVIDER_available", "FIPS_mode", "FIPS_mode_set"]
+why = "Symbols that only appear in code that is aware of FIPS mode or of OpenSSL providers. A good sign: it means someone thought about this. Recorded as information, never as a pass."
+
+[[symbol_group]]
+name = "libsodium"
+prefixes = ["crypto_box_", "crypto_secretbox_", "crypto_sign_", "crypto_aead_", "crypto_generichash_", "crypto_pwhash", "crypto_scalarmult", "crypto_kx_", "sodium_", "randombytes_"]
+exact = []
+why = "libsodium/NaCl API. Deliberately specific rather than matching every crypto_* name, because that prefix is common in unrelated code."
+
+[[symbol_group]]
+name = "boringssl"
+prefixes = ["BORINGSSL_", "CRYPTO_BUFFER_", "bssl_"]
+exact = ["SSL_CTX_set_grease_enabled", "OPENSSL_is_boringssl"]
+why = "BoringSSL is API-similar to OpenSSL but is a separate stack. Google ships a separately validated BoringCrypto build; a wheel bundling BoringSSL is very unlikely to be that build."
+
+[[symbol_group]]
+name = "aws_lc"
+prefixes = ["AWSLC_", "AWS_LC_", "awslc_"]
+exact = ["AWSLC_version_string"]
+why = "AWS-LC. A separate FIPS-validated variant exists (aws-lc-fips), so the presence of AWS-LC alone does not tell you which one this is."
+
+[[symbol_group]]
+name = "bcrypt_blowfish"
+prefixes = ["BF_", "blowfish_", "bcrypt_", "_crypt_blowfish"]
+exact = ["crypt_blowfish_rn", "bcrypt_hashpass", "bcrypt_checkpass"]
+why = "Blowfish and the bcrypt password hash built on it. Not approved under any configuration."
+
+[[symbol_group]]
+name = "blake"
+prefixes = ["blake2b_", "blake2s_", "blake2bp_", "blake3_", "BLAKE2"]
+exact = []
+why = "BLAKE2 and BLAKE3. Not approved, but very often used for checksums, content addressing and caching rather than for security."
+
+[[symbol_group]]
+name = "argon2"
+prefixes = ["argon2_", "argon2i_", "argon2d_", "argon2id_"]
+exact = []
+why = "Argon2 entry points compiled into the object. Argon2 is not an approved key derivation function."
+
+[[symbol_group]]
+name = "weak_hash_impl"
+prefixes = ["MD4_", "MD5_", "SHA1_", "RIPEMD160_"]
+exact = ["md5_init", "md5_update", "md5_final", "sha1_init", "sha1_update", "sha1_final", "MD5Init", "MD5Update", "SHA1Init"]
+why = "MD4, MD5, SHA-1 and RIPEMD-160 entry points. Only meaningful when DEFINED in the wheel's own object: that means the wheel carries its own implementation of a broken hash rather than calling one it can be denied."
+
+[[symbol_group]]
+name = "curve25519"
+prefixes = ["curve25519_", "x25519_", "ed25519_", "X25519_", "Ed25519_"]
+exact = []
+why = "Curve25519 family. Status depends on the standard revision and on validation of the specific implementation, so these always need review rather than an automatic answer."
+
+
+# ---------------------------------------------------------------------------
+# Read-only data strings. The scanner extracts printable runs from the binary's
+# non-executable allocated sections itself and matches them here. Substrings are
+# plain text; keep them distinctive enough not to match ordinary English.
+# ---------------------------------------------------------------------------
+
+[[string_group]]
+name = "openssl_banner"
+substrings = ["OpenSSL 3.", "OpenSSL 1.1.", "OpenSSL 1.0."]
+why = "OpenSSL's own version banner. The single most reliable way to tell which OpenSSL a binary carries when the symbols are hidden, which is exactly what a statically linked Rust extension does."
+
+[[string_group]]
+name = "openssl_fips_provider"
+substrings = ["fips=yes", "OSSL_PROVIDER", "fipsmodule.cnf", "FIPS_VERSION"]
+why = "Strings from OpenSSL's provider machinery. Suggests FIPS awareness; recorded as information only."
+
+[[string_group]]
+name = "boringssl"
+substrings = ["BoringSSL", "boringssl"]
+why = "BoringSSL identifies itself in read-only data."
+
+[[string_group]]
+name = "aws_lc"
+substrings = ["AWS-LC", "aws-lc"]
+why = "AWS-LC writes its own name into read-only data, which is how we spot it when its symbols are hidden by a version script."
+
+[[string_group]]
+name = "libsodium"
+substrings = ["libsodium", "sodium_init"]
+why = "libsodium version and initialisation strings, which survive stripping and catch a statically linked copy."
+
+[[string_group]]
+name = "mbedtls"
+substrings = ["mbed TLS", "mbedtls_", "Mbed TLS"]
+why = "mbedTLS banner and API strings. mbedTLS is usually statically linked, so strings are often the only evidence left."
+
+[[string_group]]
+name = "wolfssl"
+substrings = ["wolfSSL", "wolfCrypt"]
+why = "wolfSSL and wolfCrypt banner strings, present even in stripped static builds."
+
+[[string_group]]
+name = "gnutls"
+substrings = ["GnuTLS", "gnutls_global_init"]
+why = "GnuTLS banner and initialisation strings. GnuTLS is configured separately from OpenSSL, so it needs its own look."
+
+[[string_group]]
+name = "nss"
+substrings = ["NSS 3.", "softokn3", "NSS_Initialize"]
+why = "NSS version and PKCS#11 module strings. NSS keeps its own module database and its own FIPS switch."
+
+[[string_group]]
+name = "rustls"
+substrings = ["rustls", "RUSTLS_"]
+why = "rustls. Its cryptographic provider is a build-time choice (ring or aws-lc-rs), so finding rustls does not by itself say which primitives are in use."
+
+[[string_group]]
+name = "blake"
+substrings = ["BLAKE2", "BLAKE3", "blake2b", "blake3"]
+why = "BLAKE2 and BLAKE3 markers in read-only data, for the common case where the hash is compiled in rather than linked."
+
+[[string_group]]
+name = "go_boring"
+substrings = ["crypto/internal/boring", "GOEXPERIMENT=boringcrypto", "boringcrypto"]
+why = "A Go binary built with the BoringCrypto backend rather than stock Go crypto."
+
+[[string_group]]
+name = "go_stock_crypto"
+substrings = ["crypto/sha256.", "crypto/aes.", "crypto/rsa.", "crypto/ecdsa."]
+why = "Stock Go crypto package paths. Go implements its own primitives in Go; they are not the system provider and are not validated."
+
+
+# ---------------------------------------------------------------------------
+# Rust crates, inferred from cargo source paths embedded in the object.
+#
+# Confidence is medium by nature: the path appears because the crate contributed a
+# panic location or similar string, so a crate that contributed no such string can be
+# missed. A PEP 770 SBOM, when present, is the higher-confidence source.
+# ---------------------------------------------------------------------------
+
+[[rust_crate]]
+name = "ring"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "ring carries BoringSSL-derived assembly and implements its own primitives. Not a validated module, and it cannot be redirected to the system provider."
+
+[[rust_crate]]
+name = "aws-lc-sys"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+needs_human_review = true
+why = "Statically links AWS-LC into the extension. The separately validated build ships as aws-lc-fips-sys, so this crate name indicates the non-FIPS variant unless proven otherwise."
+
+[[rust_crate]]
+name = "aws-lc-rs"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+needs_human_review = true
+why = "Rust API over AWS-LC. Which underlying build it compiled against determines the answer, so confirm before concluding."
+
+[[rust_crate]]
+name = "aws-lc-fips-sys"
+verdict = "CONDITIONAL"
+severity = "medium"
+needs_human_review = true
+why = "The FIPS build of AWS-LC. Still a bundled static library rather than the system provider, so the condition to confirm is which validated version was compiled in."
+
+[[rust_crate]]
+name = "rustls"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+needs_human_review = true
+why = "A TLS stack that does not consult the system crypto policy. Its provider crate decides the primitives; look for ring or aws-lc-rs alongside it."
+
+[[rust_crate]]
+name = "openssl-sys"
+verdict = "CONDITIONAL"
+severity = "medium"
+why = "Rust bindings to OpenSSL. The crate can link the system libcrypto or vendor its own, so read the binary linkage evidence in the same record to see which happened."
+
+[[rust_crate]]
+name = "openssl"
+verdict = "CONDITIONAL"
+severity = "medium"
+why = "High-level Rust OpenSSL bindings, sitting on openssl-sys. Same question: system or vendored."
+
+[[rust_crate]]
+name = "sha1"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Pure-Rust SHA-1. A broken hash, implemented in the extension where FIPS mode cannot deny it."
+
+[[rust_crate]]
+name = "md-5"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Pure-Rust MD5, compiled into the extension where a FIPS-enforcing runtime has no way to refuse it."
+
+[[rust_crate]]
+name = "sha2"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "medium"
+needs_human_review = true
+why = "Pure-Rust SHA-2. The algorithm is approved; this implementation is not a validated module and runs outside the system provider. Whether that matters depends on the use, so review it."
+
+[[rust_crate]]
+name = "hmac"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "medium"
+needs_human_review = true
+why = "Pure-Rust HMAC. Approved construction, unvalidated implementation."
+
+[[rust_crate]]
+name = "pbkdf2"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "medium"
+needs_human_review = true
+why = "Pure-Rust PBKDF2. Approved KDF, unvalidated implementation."
+
+[[rust_crate]]
+name = "argon2"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Argon2 password hashing in Rust. Not an approved key derivation function."
+
+[[rust_crate]]
+name = "bcrypt"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "bcrypt password hashing in Rust, built on Blowfish. Not approved under any configuration."
+
+[[rust_crate]]
+name = "scrypt"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "scrypt key derivation in Rust. Not an approved key derivation function."
+
+[[rust_crate]]
+name = "curve25519-dalek"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Curve25519 field and group arithmetic, the building block under X25519 and Ed25519 in Rust extensions."
+
+[[rust_crate]]
+name = "ed25519-dalek"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+needs_human_review = true
+why = "Ed25519 signatures. Status depends on the standard revision and on validation, so review rather than assume."
+
+[[rust_crate]]
+name = "x25519-dalek"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+needs_human_review = true
+why = "X25519 key agreement. Same review note as ed25519-dalek."
+
+[[rust_crate]]
+name = "k256"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "secp256k1 elliptic curve, outside the approved curve set."
+
+[[rust_crate]]
+name = "p256"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "medium"
+needs_human_review = true
+why = "Pure-Rust NIST P-256. Approved curve, unvalidated implementation."
+
+[[rust_crate]]
+name = "rand"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "medium"
+needs_human_review = true
+why = "Rust RNG framework. Whether the generator is an approved DRBG depends on which backend was selected, so review it."
+
+[[rust_crate]]
+name = "rand_chacha"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "medium"
+why = "ChaCha20-based random generator. Not one of the approved DRBG constructions, and it does not read the system DRBG."
+
+[[rust_crate]]
+name = "blake3"
+verdict = "CONTEXT_DEPENDENT"
+severity = "low"
+why = "BLAKE3, commonly used for content addressing and caching."
+
+[[rust_crate]]
+name = "blake2"
+verdict = "CONTEXT_DEPENDENT"
+severity = "low"
+why = "BLAKE2 in Rust. Not approved, but most often used for checksums and content addressing rather than security."
+
+[[rust_crate]]
+name = "twox-hash"
+verdict = "CONTEXT_DEPENDENT"
+severity = "low"
+why = "xxHash in Rust. A non-cryptographic hash used for checksums and hash tables, with no security claim to evaluate."
+
+[[rust_crate]]
+name = "ahash"
+verdict = "CONTEXT_DEPENDENT"
+severity = "low"
+why = "Hash-table hasher. Not a security primitive, listed so it is visible rather than surprising."
+
+[[rust_crate]]
+name = "getrandom"
+verdict = "CONTEXT_DEPENDENT"
+severity = "info"
+why = "Reads the operating system RNG. That is the desirable behaviour, recorded for completeness."
+
+
+# ---------------------------------------------------------------------------
+# Python modules, matched on import. Dotted prefixes match submodules too, so
+# "nacl" also matches "nacl.secret".
+# ---------------------------------------------------------------------------
+
+[[python_module]]
+name = "hashlib"
+severity = "info"
+why = "Imports the standard hashing module. Harmless by itself; the call-site rules below decide whether anything problematic is actually called."
+
+[[python_module]]
+name = "hmac"
+severity = "info"
+why = "Standard HMAC, which uses the same backend as hashlib and therefore the system provider."
+
+[[python_module]]
+name = "ssl"
+severity = "info"
+why = "Standard TLS module. It follows the system crypto policy unless the code overrides it; the TLS rules below look for those overrides."
+
+[[python_module]]
+name = "secrets"
+severity = "info"
+why = "The right way to get random material in Python. Recorded as a positive signal."
+
+[[python_module]]
+name = "random"
+severity = "low"
+verdict = "CONTEXT_DEPENDENT"
+rule = "PY_INSECURE_RNG"
+why = "The Mersenne Twister generator. Fine for simulation and sampling, wrong for keys, tokens or nonces. Check what the values are used for."
+
+[[python_module]]
+name = "Crypto"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "pycryptodome/pycrypto namespace. Self-contained implementation outside the system provider."
+
+[[python_module]]
+name = "Cryptodome"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "pycryptodomex namespace. Same implementation as Crypto."
+
+[[python_module]]
+name = "nacl"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "The pynacl namespace, meaning libsodium primitives reached from Python: Curve25519, Ed25519 and XSalsa20-Poly1305."
+
+[[python_module]]
+name = "libnacl"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "libnacl reaches libsodium through ctypes, so the library is loaded by name at runtime and appears in no dependency graph."
+
+[[python_module]]
+name = "bcrypt"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "The bcrypt package, meaning Blowfish-based password hashing that no configuration makes approved."
+
+[[python_module]]
+name = "rsa"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "The pure-Python rsa package. RSA is approved as an algorithm; a pure-Python implementation is not a validated module and runs outside the system provider."
+
+[[python_module]]
+name = "ecdsa"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "The pure-Python ecdsa package. Same reasoning as rsa: approved algorithm, unvalidated implementation, outside the system provider."
+
+[[python_module]]
+name = "argon2"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+why = "Argon2 password hashing from Python. Not an approved key derivation function."
+
+[[python_module]]
+name = "cryptography"
+severity = "medium"
+verdict = "CONDITIONAL"
+why = "Depends on how the installed cryptography was built. Scan that wheel too; this import only says the dependency exists."
+
+[[python_module]]
+name = "OpenSSL"
+severity = "medium"
+verdict = "CONDITIONAL"
+why = "pyOpenSSL, inheriting whatever the installed cryptography provides."
+
+[[python_module]]
+name = "M2Crypto"
+severity = "medium"
+verdict = "CONDITIONAL"
+why = "OpenSSL binding; posture follows the OpenSSL it links."
+
+[[python_module]]
+name = "blake3"
+severity = "low"
+verdict = "CONTEXT_DEPENDENT"
+why = "BLAKE3, often a checksum rather than a security hash."
+
+[[python_module]]
+name = "xxhash"
+severity = "low"
+verdict = "CONTEXT_DEPENDENT"
+why = "xxHash from Python. A non-cryptographic hash used for checksums and deduplication, with no security claim to evaluate."
+
+[[python_module]]
+name = "murmurhash"
+severity = "low"
+verdict = "CONTEXT_DEPENDENT"
+why = "Non-cryptographic hash, common in ML feature hashing."
+
+[[python_module]]
+name = "mmh3"
+severity = "low"
+verdict = "CONTEXT_DEPENDENT"
+why = "MurmurHash3 from Python. Non-cryptographic, and in practice almost always feature hashing or sharding."
+
+
+# ---------------------------------------------------------------------------
+# Native libraries that Python code may load at runtime through ctypes. Loading
+# a crypto library by name sidesteps everything the packaging metadata says.
+# ---------------------------------------------------------------------------
+[[ctypes_library]]
+substrings = ["libcrypto", "libssl", "libsodium", "libgcrypt", "libnettle", "libmbedcrypto",
+              "libwolfssl", "libgnutls", "libnss3", "libsoftokn3", "libargon2", "libb2",
+              "libcryptopp", "libtomcrypt", "libsecp256k1"]
+why = "Any of these names appearing in a ctypes load means crypto is being reached at runtime by name, which no static dependency graph would show."
+
+
+# ===========================================================================
+# RULES
+#
+# Each rule turns extracted evidence into a finding. `[rule.match]` says what the
+# rule looks at; `kind` selects one of the scanner's matchers and everything else
+# on that table is data this file controls.
+#
+# Matcher kinds, and what each looks at:
+#   dist_name          the wheel's own canonical project name
+#   requires_dist      names in Requires-Dist
+#   wheel_generator    the Generator field of .dist-info/WHEEL
+#   no_source          the wheel ships .pyc files but no .py sources
+#   record_mismatch    RECORD disagrees with the archive contents
+#   scan_error         a recorded non-fatal failure of a given kind
+#   sbom_component     a component named by a PEP 770 SBOM in the wheel
+#   bundled_library    a native library shipped inside the wheel
+#   dt_needed          a DT_NEEDED / LC_LOAD_DYLIB dependency
+#   dynamic_symbol     a dynamic symbol, filtered by imported vs defined
+#   binary_string      a printable string in read-only data
+#   rust_crate         a crate inferred from embedded cargo paths
+#   linkage            the resolved linkage posture for a named library
+#   opaque_binary      a binary that yielded no usable evidence at all
+#   partial_binary     a binary in a format we can only read partially
+#   py_import          an import statement
+#   py_call            a call site, optionally conditioned on its keywords
+#   py_attr            an attribute assignment such as check_hostname = False
+#   py_constant        a named constant such as ssl.CERT_NONE
+#   py_ctypes_load     ctypes.CDLL / cdll.LoadLibrary naming a library
+#
+# `suppressed_by` drops this rule when another rule already fired, so a more
+# specific finding can replace a broader one.
+# ===========================================================================
+
+
+# --------------------------- Layer 1: metadata -----------------------------
+
+[[rule]]
+id = "DIST_NON_APPROVED_CRYPTO"
+layer = "metadata"
+category = "crypto-implementation"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Distribution implements non-approved cryptography"
+why = "The wheel is itself one of the packages known to implement or bundle primitives that are not FIPS-approved. This is a property of the package, not of how it was built, so no build of it changes the answer."
+[rule.match]
+kind = "dist_name"
+table = "crypto_distribution"
+
+[[rule]]
+id = "DIST_SYSTEM_CRYPTO_WRAPPER"
+layer = "metadata"
+category = "crypto-wrapper"
+severity = "medium"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Distribution wraps a system crypto library"
+why = "The wheel does not implement crypto itself, it delegates. Whether that is acceptable depends entirely on what it links against, which the binary evidence in the same record answers."
+[rule.match]
+kind = "dist_name"
+table = "crypto_distribution"
+
+[[rule]]
+id = "DIST_NON_CRYPTO_HASH"
+layer = "metadata"
+category = "non-crypto-hash"
+severity = "low"
+confidence = "high"
+verdict = "CONTEXT_DEPENDENT"
+needs_human_review = true
+title = "Distribution provides a non-cryptographic hash"
+why = "Fast hashes used for checksums, caching and feature hashing. Not approved, and usually not doing security work either. Someone has to look at how it is used."
+[rule.match]
+kind = "dist_name"
+table = "crypto_distribution"
+
+[[rule]]
+id = "DIST_BUNDLED_TRUST_STORE"
+layer = "metadata"
+category = "trust-policy"
+severity = "low"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Distribution ships its own CA trust store"
+why = "Not a crypto implementation, but code that uses a bundled CA bundle stops following the system trust policy and stops picking up system trust updates."
+[rule.match]
+kind = "dist_name"
+table = "crypto_distribution"
+
+[[rule]]
+id = "DIST_DEPENDS_ON_CRYPTO"
+layer = "metadata"
+category = "dependency"
+severity = "info"
+confidence = "high"
+needs_human_review = false
+title = "Depends on a crypto distribution"
+why = "Records the dependency edge so the index can be walked. The dependency carries its own risk and gets its own record; this finding deliberately contributes no verdict so that risk is not double-counted."
+[rule.match]
+kind = "requires_dist"
+table = "crypto_distribution"
+any_entry = true
+
+[[rule]]
+id = "WHEEL_GENERATOR"
+layer = "metadata"
+category = "build-provenance"
+severity = "info"
+confidence = "high"
+needs_human_review = false
+title = "Wheel build tool"
+why = "Which tool produced the wheel. maturin means Rust and therefore probable static linking; auditwheel-repaired wheels carry vendored libraries. Provenance only, never a risk by itself."
+[rule.match]
+kind = "wheel_generator"
+
+[[rule]]
+id = "WHEEL_NO_PYTHON_SOURCE"
+layer = "metadata"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Wheel ships bytecode without source"
+why = "Layer 3 cannot run without .py files, so the absence of Python findings means nothing here. Explicitly opaque rather than quietly clean."
+[rule.match]
+kind = "no_source"
+
+[[rule]]
+id = "WHEEL_METADATA_UNPARSEABLE"
+layer = "metadata"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Wheel metadata missing or unreadable"
+why = "Without METADATA or WHEEL we cannot identify the distribution, so none of the name-based rules can be trusted for this wheel."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["metadata_missing", "metadata_decode_error", "wheel_missing", "dist_info_ambiguous"]
+
+[[rule]]
+id = "WHEEL_RECORD_MISMATCH"
+layer = "metadata"
+category = "integrity"
+severity = "info"
+confidence = "medium"
+needs_human_review = true
+title = "RECORD does not match archive contents"
+why = "Files present in the archive but absent from RECORD, or the reverse. Usually a repair tool that did not update RECORD, occasionally something worth asking about."
+[rule.match]
+kind = "record_mismatch"
+
+[[rule]]
+id = "SBOM_CRYPTO_COMPONENT"
+layer = "metadata"
+category = "bundled-crypto"
+severity = "high"
+confidence = "high"
+needs_human_review = true
+title = "PEP 770 SBOM declares a bundled crypto component"
+why = "The wheel states in its own SBOM which libraries and crates it carries. This is the highest-confidence bundled-dependency evidence available, because the build tool wrote it rather than us inferring it."
+[rule.match]
+kind = "sbom_component"
+tables = ["crypto_library", "rust_crate", "crypto_distribution"]
+
+
+# ------------------------ Layer 2: native binaries -------------------------
+
+[[rule]]
+id = "BIN_BUNDLED_OPENSSL"
+layer = "binary"
+category = "bundled-crypto"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Wheel ships its own OpenSSL"
+why = "The single most valuable check in this tool. A libcrypto or libssl copied into the wheel by auditwheel or delocate cannot see the system FIPS provider, cannot see the system crypto policy, and will not be updated when the system OpenSSL is. The condition for approval does not hold for this build."
+[rule.match]
+kind = "bundled_library"
+library = "openssl"
+
+[[rule]]
+id = "BIN_BUNDLED_CRYPTO_LIB"
+layer = "binary"
+category = "bundled-crypto"
+severity = "high"
+confidence = "high"
+needs_human_review = true
+title = "Wheel ships its own crypto library"
+why = "Any crypto library carried inside the wheel runs outside the system crypto policy. The class comes from the library's own entry in the crypto_library table."
+[rule.match]
+kind = "bundled_library"
+table = "crypto_library"
+exclude_libraries = ["openssl"]
+
+[[rule]]
+id = "BIN_NEEDED_SYSTEM_OPENSSL"
+layer = "binary"
+category = "system-crypto-link"
+severity = "info"
+confidence = "high"
+needs_human_review = false
+title = "Links the system OpenSSL"
+why = "A plain, unmangled libcrypto.so.3 or libssl.so.3 dependency. This is the good case: the extension resolves to whatever OpenSSL the host provides, so a FIPS-enabled host gives it the FIPS provider. Recorded as information; the wheel is still CONDITIONAL, and the condition is what the linkage field reports."
+[rule.match]
+kind = "dt_needed"
+library = "openssl"
+mangled = false
+
+[[rule]]
+id = "BIN_NEEDED_MANGLED_CRYPTO"
+layer = "binary"
+category = "bundled-crypto"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Depends on a hash-renamed crypto library"
+why = "A dependency such as libcrypto-3a1f2b4c.so.3 is a vendored copy: auditwheel and delocate rename libraries they bundle so they cannot collide with the system ones. Seeing this name means the wheel binds to its own copy even if the vendor directory itself is not where we expected."
+[rule.match]
+kind = "dt_needed"
+table = "crypto_library"
+mangled = true
+
+[[rule]]
+id = "BIN_OPENSSL_SYMBOLS_IMPORTED"
+layer = "binary"
+category = "system-crypto-link"
+severity = "info"
+confidence = "high"
+needs_human_review = false
+title = "Imports OpenSSL symbols"
+why = "Undefined OpenSSL symbols mean the code calls an OpenSSL it does not contain. Combined with a system DT_NEEDED entry this is the posture we want."
+[rule.match]
+kind = "dynamic_symbol"
+group = "openssl"
+binding = "imported"
+
+[[rule]]
+id = "BIN_OPENSSL_SYMBOLS_DEFINED"
+layer = "binary"
+category = "bundled-crypto"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Defines OpenSSL symbols"
+why = "OpenSSL entry points defined inside the wheel's own object mean OpenSSL was compiled into it. Statically linked crypto answers to no system policy and cannot be swapped for the FIPS provider."
+[rule.match]
+kind = "dynamic_symbol"
+group = "openssl"
+binding = "defined"
+
+[[rule]]
+id = "BIN_OPENSSL_BANNER"
+layer = "binary"
+category = "bundled-crypto"
+severity = "medium"
+confidence = "medium"
+needs_human_review = true
+title = "Contains an OpenSSL version banner"
+why = "OpenSSL writes its version string into read-only data. Finding it inside a wheel's own extension is how we catch a statically linked OpenSSL whose symbols were hidden by a version script, which is exactly what a Rust extension built with vendored openssl-sys looks like."
+[rule.match]
+kind = "binary_string"
+group = "openssl_banner"
+
+[[rule]]
+id = "BIN_STATIC_OPENSSL"
+layer = "binary"
+category = "bundled-crypto"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "OpenSSL statically linked into an extension"
+why = "No OpenSSL dependency is declared and no vendor directory exists, yet the extension contains OpenSSL code. This is the case a vendor-directory check alone would miss, and it is the least visible way to end up outside the system FIPS provider."
+[rule.match]
+kind = "linkage"
+name = "openssl"
+value = "static"
+
+[[rule]]
+id = "DERIVED_SYSTEM_OPENSSL_ONLY"
+layer = "derived"
+category = "system-crypto-link"
+severity = "info"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "All OpenSSL use resolves to the system library"
+why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings."
+[rule.match]
+kind = "linkage"
+name = "openssl"
+value = "system"
+
+[[rule]]
+id = "BIN_FIPS_PROVIDER_AWARE"
+layer = "binary"
+category = "fips-aware"
+severity = "info"
+confidence = "medium"
+needs_human_review = false
+title = "Code is aware of OpenSSL providers or FIPS mode"
+why = "The binary references provider or FIPS-mode APIs, so someone wrote code that at least knows FIPS mode exists. A positive signal for a reviewer. It is not a pass and never contributes a verdict."
+[rule.match]
+kind = "dynamic_symbol"
+group = "openssl_fips"
+binding = "any"
+
+[[rule]]
+id = "BIN_LIBSODIUM"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "libsodium primitives present"
+why = "NaCl primitives compiled into or shipped with the wheel. There is no system-policy path that makes them approved."
+[rule.match]
+kind = "dynamic_symbol"
+group = "libsodium"
+binding = "any"
+
+[[rule]]
+id = "BIN_BORINGSSL"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "BoringSSL present"
+why = "BoringSSL is a separate stack from OpenSSL and ignores the system crypto policy. A separately validated BoringCrypto build exists, so a reviewer has to determine which build this is rather than assuming the worst or the best."
+[rule.match]
+kind = "binary_string"
+group = "boringssl"
+
+[[rule]]
+id = "BIN_AWS_LC"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "AWS-LC present"
+why = "AWS-LC statically linked into the wheel. A FIPS variant of AWS-LC exists and is a different build, so confirm which one before concluding."
+[rule.match]
+kind = "binary_string"
+group = "aws_lc"
+
+[[rule]]
+id = "BIN_BCRYPT_BLOWFISH"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Blowfish or bcrypt implementation present"
+why = "Blowfish-based password hashing compiled into the wheel. Not approved under any configuration."
+[rule.match]
+kind = "dynamic_symbol"
+group = "bcrypt_blowfish"
+binding = "any"
+
+[[rule]]
+id = "BIN_OWN_WEAK_HASH_IMPL"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "medium"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Ships its own MD4/MD5/SHA-1 implementation"
+why = "Defined, not imported, so the wheel carries the code itself. That matters more than it first appears: a private implementation of a broken hash cannot be refused by FIPS mode the way hashlib can, so it will keep working silently on a FIPS-enforcing host."
+[rule.match]
+kind = "dynamic_symbol"
+group = "weak_hash_impl"
+binding = "defined"
+
+[[rule]]
+id = "BIN_ALT_TLS_STACK"
+layer = "binary"
+category = "alt-tls-stack"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Alternative TLS stack present"
+why = "mbedTLS, wolfSSL or rustls compiled in. Each is a complete TLS implementation that does not consult the system crypto policy, so the host's FIPS configuration has no effect on it."
+[rule.match]
+kind = "binary_string"
+groups = ["mbedtls", "wolfssl", "rustls"]
+
+[[rule]]
+id = "BIN_NSS_OR_GNUTLS"
+layer = "binary"
+category = "alt-tls-stack"
+severity = "medium"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "NSS or GnuTLS present"
+why = "Both have FIPS modes in their system builds, and both are configured separately from OpenSSL. Whether FIPS applies depends on which copy is loaded and how it is configured."
+[rule.match]
+kind = "binary_string"
+groups = ["nss", "gnutls"]
+
+[[rule]]
+id = "BIN_NON_CRYPTO_HASH"
+layer = "binary"
+category = "non-crypto-hash"
+severity = "low"
+confidence = "medium"
+verdict = "CONTEXT_DEPENDENT"
+needs_human_review = true
+title = "BLAKE family hash present"
+why = "Not approved, but commonly used for content addressing, deduplication and caching rather than for security. Worth a glance, rarely worth a change."
+[rule.match]
+kind = "binary_string"
+group = "blake"
+
+[[rule]]
+id = "BIN_CURVE25519"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "medium"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Curve25519 family implementation present"
+why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here."
+[rule.match]
+kind = "dynamic_symbol"
+group = "curve25519"
+binding = "defined"
+
+[[rule]]
+id = "BIN_RUST_CRYPTO_CRATE"
+layer = "binary"
+category = "rust-crate"
+severity = "high"
+confidence = "medium"
+needs_human_review = true
+title = "Rust crypto crate compiled in"
+why = "Inferred from cargo source paths the compiler embedded in the object. Confidence is medium because a crate that contributed no such string can be missed; a PEP 770 SBOM, where present, is the better source. The class comes from the crate's own entry in the rust_crate table."
+[rule.match]
+kind = "rust_crate"
+table = "rust_crate"
+default = true
+
+[[rule]]
+id = "BIN_GO_BORING_CRYPTO"
+layer = "binary"
+category = "go-crypto"
+severity = "medium"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Go binary built with BoringCrypto"
+why = "Go's BoringCrypto backend replaces the stock Go implementations with a separately validated module. Which validated version was used is a property of the toolchain, not of this wheel, so a reviewer has to confirm it."
+[rule.match]
+kind = "binary_string"
+group = "go_boring"
+
+[[rule]]
+id = "BIN_GO_STOCK_CRYPTO"
+layer = "binary"
+category = "go-crypto"
+severity = "high"
+confidence = "medium"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Go binary using stock Go crypto"
+why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto is detected, because a BoringCrypto build still contains the stock package paths."
+suppressed_by = ["BIN_GO_BORING_CRYPTO"]
+[rule.match]
+kind = "binary_string"
+group = "go_stock_crypto"
+
+[[rule]]
+id = "BIN_OPAQUE"
+layer = "binary"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Binary yielded no usable evidence"
+why = "No dependencies, no dynamic symbols, no readable strings. We learned nothing from this object, which is a finding rather than a pass. Do not read the absence of crypto findings on this wheel as absence of crypto."
+[rule.match]
+kind = "opaque_binary"
+
+[[rule]]
+id = "BIN_PARTIAL_FORMAT"
+layer = "binary"
+category = "opacity"
+severity = "low"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Binary format only partially readable"
+why = "Windows PE objects are read for strings only, so dependency and symbol evidence is missing for them. Recorded so a Windows wheel can never look clean merely because we read less of it."
+[rule.match]
+kind = "partial_binary"
+
+[[rule]]
+id = "BIN_UNPARSEABLE"
+layer = "binary"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Binary could not be parsed"
+why = "Truncated, corrupt or an unrecognised format. Same reasoning as an opaque binary: we cannot see inside it, so we say so."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["elf_parse_error", "macho_parse_error", "binary_truncated", "binary_unknown_format"]
+
+[[rule]]
+id = "BIN_TOO_LARGE"
+layer = "binary"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Binary exceeded the size limit and was not analysed"
+why = "Skipped to bound memory. Raise --max-binary-bytes and rescan if this matters; until then the object is unexamined, not clean."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["binary_too_large"]
+
+
+# ------------------------- Layer 3: Python source --------------------------
+
+[[rule]]
+id = "PY_IMPORT_CRYPTO_MODULE"
+layer = "python"
+category = "python-import"
+severity = "low"
+confidence = "high"
+needs_human_review = true
+title = "Imports a crypto module"
+why = "Which crypto surface the code reaches for. An import is not proof of use, but it bounds what the package could possibly be doing. Severity and class come from the module's entry in the python_module table."
+[rule.match]
+kind = "py_import"
+table = "python_module"
+default = true
+
+[[rule]]
+id = "PY_INSECURE_RNG"
+layer = "python"
+category = "rng"
+severity = "low"
+confidence = "low"
+verdict = "CONTEXT_DEPENDENT"
+needs_human_review = true
+title = "Imports the non-cryptographic random module"
+why = "random is a Mersenne Twister, fine for sampling and wrong for keys, tokens, nonces or salts. Very common and usually benign, so it is low confidence on purpose: a reviewer decides, the tool only points."
+[rule.match]
+kind = "py_import"
+table = "python_module"
+
+[[rule]]
+id = "PY_WEAK_HASH_CALL"
+layer = "python"
+category = "fips-breaking"
+severity = "high"
+confidence = "high"
+verdict = "FIPS_BREAKING"
+needs_human_review = true
+title = "Weak hash called without usedforsecurity=False"
+why = "hashlib.md5() and hashlib.sha1() raise on a FIPS-enforcing host unless the caller passes usedforsecurity=False. This is the finding that predicts a runtime crash rather than a policy discussion, and the fix is usually one keyword argument."
+[rule.match]
+kind = "py_call"
+targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
+weak_algorithms_only = true
+usedforsecurity = "absent"
+
+[[rule]]
+id = "PY_WEAK_HASH_CALL_MARKED"
+layer = "python"
+category = "fips-annotated"
+severity = "low"
+confidence = "high"
+verdict = "CONTEXT_DEPENDENT"
+needs_human_review = true
+title = "Weak hash called with usedforsecurity=False"
+why = "The caller declared this is not a security use, so it will keep working on a FIPS-enforcing host. Degraded severity rather than cleared: the declaration is an assertion by the author, and someone should agree with it."
+[rule.match]
+kind = "py_call"
+targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
+weak_algorithms_only = true
+usedforsecurity = "false"
+
+[[rule]]
+id = "PY_WEAK_HASH_UNRESOLVED"
+layer = "python"
+category = "fips-breaking"
+severity = "medium"
+confidence = "low"
+verdict = "CONTEXT_DEPENDENT"
+needs_human_review = true
+title = "Hash algorithm chosen at runtime"
+why = "hashlib.new(name) where name is a variable, or usedforsecurity passed a non-constant. Static analysis stops here by design: we record the call site and let a human read the surrounding code rather than guessing which branch runs."
+[rule.match]
+kind = "py_call"
+targets = ["hashlib.new"]
+algorithm = "unresolved"
+
+[[rule]]
+id = "PY_TLS_POLICY_OVERRIDE"
+layer = "python"
+category = "tls-policy"
+severity = "medium"
+confidence = "medium"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Overrides TLS protocol or cipher policy"
+why = "Applications should inherit the system crypto policy rather than set their own. Pinning ciphers or protocol versions in code means a host-level policy change, including enabling FIPS, will not reach this code path."
+[rule.match]
+kind = "py_call"
+targets = ["ssl.SSLContext", "ssl.create_default_context", "ssl.wrap_socket", "*.set_ciphers"]
+
+[[rule]]
+id = "PY_TLS_VERSION_PINNED"
+layer = "python"
+category = "tls-policy"
+severity = "medium"
+confidence = "medium"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Pins a TLS version"
+why = "Assigning minimum_version or maximum_version fixes the protocol range in code, overriding the system policy in both directions."
+[rule.match]
+kind = "py_attr"
+attributes = ["minimum_version", "maximum_version", "options"]
+
+[[rule]]
+id = "PY_LEGACY_TLS_PROTOCOL"
+layer = "python"
+category = "tls-policy"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "References a legacy TLS protocol constant"
+why = "PROTOCOL_TLSv1 and PROTOCOL_SSLv23 select protocol versions the system policy normally refuses. Code naming them explicitly is trying to go around that."
+[rule.match]
+kind = "py_constant"
+constants = ["ssl.PROTOCOL_TLSv1", "ssl.PROTOCOL_TLSv1_1", "ssl.PROTOCOL_TLSv1_2", "ssl.PROTOCOL_SSLv2", "ssl.PROTOCOL_SSLv3", "ssl.PROTOCOL_SSLv23"]
+
+[[rule]]
+id = "PY_TLS_VERIFICATION_DISABLED"
+layer = "python"
+category = "tls-policy"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Disables TLS certificate or hostname verification"
+why = "check_hostname = False, CERT_NONE or _create_unverified_context. Strictly this is a transport security failure rather than a FIPS one, but it is the same mistake in the same family: the code deciding it knows better than the system policy."
+[rule.match]
+kind = "py_attr"
+attributes = ["check_hostname", "verify_mode"]
+constants = ["ssl.CERT_NONE", "ssl._create_unverified_context"]
+
+[[rule]]
+id = "PY_CTYPES_CRYPTO_LOAD"
+layer = "python"
+category = "dynamic-load"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Loads a crypto library through ctypes"
+why = "A crypto library reached by name at runtime appears in no dependency graph and in no SBOM. Which copy gets loaded depends on the loader path at execution time, so the record cannot say and a human must."
+[rule.match]
+kind = "py_ctypes_load"
+table = "ctypes_library"
+
+[[rule]]
+id = "PY_UNREADABLE"
+layer = "python"
+category = "opacity"
+severity = "low"
+confidence = "high"
+needs_human_review = false
+title = "Python file could not be parsed"
+why = "A syntax error or an undecodable file, commonly a test fixture or a file written for a different Python version. Recorded so the file count and the findings can be reconciled; it carries no verdict because one unreadable file among many says little."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["python_syntax_error", "python_decode_error", "python_too_large"]

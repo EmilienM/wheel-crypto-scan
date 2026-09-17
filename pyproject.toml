@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wheel-crypto-scan"
+version = "0.1.0"
+description = "Deterministic FIPS-risk evidence inspector for Python wheels"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Emilien Macchi", email = "emacchi@redhat.com" }]
+keywords = ["fips", "wheel", "crypto", "sbom", "supply-chain"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "pyelftools>=0.31",
+    "packaging>=23.2",
+]
+
+[project.scripts]
+wheel-crypto-scan = "wheel_crypto_scan.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wheel_crypto_scan"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "real: opt-in tests that need real wheels in WCS_CORPUS_DIR (deselected by default)",
+    "hostbin: opt-in tests that read real system binaries such as /usr/lib64/libcrypto.so.3",
+]
