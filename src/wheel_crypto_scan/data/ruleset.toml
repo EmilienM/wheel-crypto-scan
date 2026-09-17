@@ -253,6 +253,12 @@ why = "Checksum, not a hash function in the security sense. Included so storage 
 [[crypto_library]]
 name = "openssl"
 sonames = ["libcrypto", "libssl"]
+# These two let the linkage resolver recognise an OpenSSL that was compiled straight
+# into an extension, where there is no library file and no dependency to find.
+symbol_group = "openssl"
+string_group = "openssl_banner"
+# Always reported, even when nothing matched: component teams filter on this field.
+always_report = true
 verdict = "CONDITIONAL"
 severity = "high"
 why = "OpenSSL. Linking the system copy is the good case because it can pick up the system FIPS provider. A copy shipped inside the wheel cannot, regardless of how OpenSSL itself was built."
@@ -260,6 +266,8 @@ why = "OpenSSL. Linking the system copy is the good case because it can pick up 
 [[crypto_library]]
 name = "libsodium"
 sonames = ["libsodium"]
+symbol_group = "libsodium"
+string_group = "libsodium"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 why = "NaCl primitives: Curve25519, Ed25519, XSalsa20-Poly1305, BLAKE2b, Argon2. Not a FIPS-validated module and not configurable to become one."
@@ -1476,11 +1484,25 @@ severity = "high"
 confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
-title = "Disables TLS certificate or hostname verification"
-why = "check_hostname = False, CERT_NONE or _create_unverified_context. Strictly this is a transport security failure rather than a FIPS one, but it is the same mistake in the same family: the code deciding it knows better than the system policy."
+title = "Assigns away certificate or hostname verification"
+why = "check_hostname = False or verify_mode = CERT_NONE. Strictly a transport security failure rather than a FIPS one, but it is the same mistake in the same family: code deciding it knows better than the system policy. Only the disabling assignments match, so setting check_hostname = True is not flagged."
 [rule.match]
 kind = "py_attr"
 attributes = ["check_hostname", "verify_mode"]
+values = ["False", "ssl.CERT_NONE"]
+
+[[rule]]
+id = "PY_TLS_UNVERIFIED_CONTEXT"
+layer = "python"
+category = "tls-policy"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "References an unverified TLS context or CERT_NONE"
+why = "ssl._create_unverified_context is a private function whose entire purpose is to skip verification, and a bare CERT_NONE reference is usually on its way to the same place. Separate from the assignment rule above because it is a plain name reference, which is a different thing to look for."
+[rule.match]
+kind = "py_constant"
 constants = ["ssl.CERT_NONE", "ssl._create_unverified_context"]
 
 [[rule]]

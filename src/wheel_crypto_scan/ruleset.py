@@ -169,9 +169,21 @@ class Distribution:
 
 @dataclass(frozen=True, slots=True)
 class CryptoLibrary:
+    """A native crypto library, and how to recognise it in three different ways.
+
+    `sonames` finds a library file or a dependency on one. `symbol_group` and
+    `string_group` are what let the linkage resolver recognise a copy that was compiled
+    straight into an extension, where there is no file and no dependency to find.
+    """
+
     name: str
     sonames: tuple[str, ...]
     why: str
+    symbol_group: str | None = None
+    string_group: str | None = None
+    # Report this library's linkage even when nothing matched, because consumers
+    # filter on the field and a missing key is harder to handle than "none".
+    always_report: bool = False
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
@@ -494,9 +506,22 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     for entry in data["crypto_library"]:
         name = str(_require(entry, "name", "[[crypto_library]]"))
         where = f"crypto_library {name!r}"
+        symbol_group = entry.get("symbol_group")
+        if symbol_group is not None and symbol_group not in {
+            group["name"] for group in data["symbol_group"]
+        }:
+            raise RulesetError(f"{where}: unknown symbol group {symbol_group!r}")
+        string_group = entry.get("string_group")
+        if string_group is not None and string_group not in {
+            group["name"] for group in data["string_group"]
+        }:
+            raise RulesetError(f"{where}: unknown string group {string_group!r}")
         libraries[name] = CryptoLibrary(
             name=name,
             sonames=tuple(_require(entry, "sonames", where)),
+            symbol_group=None if symbol_group is None else str(symbol_group),
+            string_group=None if string_group is None else str(string_group),
+            always_report=bool(entry.get("always_report", False)),
             **_entry_overrides(entry, classes, where),
         )
 
