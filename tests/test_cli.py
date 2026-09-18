@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 
 import pytest
 from helpers.wheelbuilder import build_wheel
 
+from wheel_crypto_scan import TOOL_NAME
 from wheel_crypto_scan.cli import main
 
 WEAK_HASH_SOURCE = b"import hashlib\n\ndigest = hashlib.md5()\n"
@@ -134,6 +137,121 @@ def test_resume_discards_a_truncated_final_line(corpus: Path, tmp_path: Path) ->
     out.write_text(text[: len(text) // 2], encoding="utf-8")
     main(["scan", str(corpus), "-o", str(out), "--no-cache", "--resume", "-q"])
     assert len(read_records(out)) == 2
+
+
+# --- output targets -----------------------------------------------------------
+
+
+def test_the_null_device_still_scans_every_wheel(
+    corpus: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The half of the bug that read as a scan failure. Opening `<path>.partial`
+    before consuming the scan generator meant `-o /dev/null` did no work at all, so
+    the progress line is what proves the wheels were really read.
+    """
+    assert main(["scan", str(corpus), "-o", "/dev/null", "--no-cache"]) == 0
+    assert "2/2 wheels" in capsys.readouterr().err
+
+
+def test_writing_to_a_fifo_writes_every_record(corpus: Path, tmp_path: Path) -> None:
+    """A FIFO is readable back, unlike the null device, so it is what pins the
+    records themselves landing on a target the rename dance cannot handle.
+    """
+    fifo = tmp_path / "out.fifo"
+    os.mkfifo(fifo)
+    collected: list[str] = []
+
+    def read_fifo() -> None:
+        with fifo.open("r", encoding="utf-8") as stream:
+            collected.append(stream.read())
+
+    # Daemon, because a regression writes the `.partial` and renames it over the FIFO
+    # path, leaving this thread blocked on the old inode. A non-daemon thread would
+    # then hold the interpreter open and hang the suite instead of failing it.
+    reader = threading.Thread(target=read_fifo, daemon=True)
+    reader.start()
+    assert main(["scan", str(corpus), "-o", str(fifo), "--no-cache", "-q"]) == 0
+    reader.join(timeout=30)
+    assert not reader.is_alive()
+
+    assert len(collected[0].splitlines()) == 2
+    assert not fifo.with_name(fifo.name + ".partial").exists()
+
+
+def test_a_symlinked_output_is_written_through_rather_than_replaced(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """`/dev/stdout` is a symlink onto fd 1, so resolving it decides the strategy from
+    whatever the shell redirected to. Judge the link itself: write through it and
+    leave it a link, rather than renaming a regular file over it.
+    """
+    real = tmp_path / "records.jsonl"
+    real.touch()
+    link = tmp_path / "out.jsonl"
+    link.symlink_to(real)
+
+    assert main(["scan", str(corpus), "-o", str(link), "--no-cache", "-q"]) == 0
+    assert link.is_symlink()
+    assert len(read_records(real)) == 2
+
+
+def test_writing_to_a_regular_file_leaves_no_temporary_behind(corpus: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out.jsonl"
+    assert main(["scan", str(corpus), "-o", str(out), "--no-cache", "-q"]) == 0
+    assert len(read_records(out)) == 2
+    assert not out.with_name(out.name + ".partial").exists()
+
+
+def test_resume_does_not_read_back_a_non_regular_output(corpus: Path, tmp_path: Path) -> None:
+    """`--resume` reads the output file to find what it can skip. On a FIFO that read
+    blocks for a writer that never comes, so the whole run hangs before it starts.
+    """
+    fifo = tmp_path / "out.fifo"
+    os.mkfifo(fifo)
+    collected: list[str] = []
+
+    def read_fifo() -> None:
+        with fifo.open("r", encoding="utf-8") as stream:
+            collected.append(stream.read())
+
+    reader = threading.Thread(target=read_fifo, daemon=True)
+    reader.start()
+    assert main(["scan", str(corpus), "-o", str(fifo), "--resume", "--no-cache", "-q"]) == 0
+    reader.join(timeout=30)
+    assert not reader.is_alive()
+    assert len(collected[0].splitlines()) == 2
+
+
+def test_a_failing_write_to_a_device_is_a_clean_error(
+    corpus: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """/dev/full accepts an open and then refuses every byte. Unlike a chmod-based
+    check this holds whatever uid the suite runs as.
+    """
+    assert main(["scan", str(corpus), "-o", "/dev/full", "--no-cache", "-q"]) == 1
+    printed = capsys.readouterr().err
+    assert printed.startswith(f"{TOOL_NAME}: ")
+    assert "/dev/full" in printed
+
+
+def test_an_unwritable_output_path_is_a_clean_error(
+    corpus: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A regular target whose directory refuses the temporary file. The message has to
+    name the output path, because the failure otherwise reads as a broken scan.
+    """
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    out = locked / "out.jsonl"
+    try:
+        assert main(["scan", str(corpus), "-o", str(out), "--no-cache", "-q"]) == 1
+        printed = capsys.readouterr().err
+        assert printed.startswith(f"{TOOL_NAME}: ")
+        assert str(out) in printed
+        assert not out.with_name(out.name + ".partial").exists()
+    finally:
+        locked.chmod(0o755)
 
 
 # --- formats and subcommands ------------------------------------------------
