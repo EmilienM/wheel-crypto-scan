@@ -213,4 +213,3 @@ def build_fat(slices: list[bytes], *, cputypes: list[int] | None = None) -> byte
         arch_table.extend(struct.pack(">iiIII", cputype, 0, slice_offset, len(part), 3))
         body.extend(part)
     return bytes(header) + bytes(arch_table) + bytes(body)
-

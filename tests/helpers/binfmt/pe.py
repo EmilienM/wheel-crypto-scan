@@ -444,4 +444,3 @@ class PEBuilder:
 
 def _align(value: int, alignment: int) -> int:
     return -(-value // alignment) * alignment
-

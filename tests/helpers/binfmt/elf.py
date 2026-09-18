@@ -422,5 +422,3 @@ def patch_u16(data: bytes, offset: int, value: int, *, big_endian: bool = False)
     buf = bytearray(data)
     buf[offset : offset + 2] = struct.pack(end + "H", value)
     return bytes(buf)
-
-
