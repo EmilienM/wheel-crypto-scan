@@ -746,3 +746,23 @@ def test_a_64_bit_fat_header_uses_the_wider_arch_entry() -> None:
     ev, errors = _read(wide, path="fat.dylib")
     assert errors == ()
     assert ev.partial_analysis is False
+
+
+def test_a_byte_swapped_fat_header_is_defensive_not_supported() -> None:
+    """Both `CIGAM` magics sniff as Mach-O and then fail the same way.
+
+    Fat headers are big-endian on disk, so a byte-swapped one is not a thing a real
+    toolchain emits. The magics are carried so such an object is recognised and read
+    for strings rather than silently classified as some other format, and this pins
+    that the 64-bit spelling behaves exactly like the 32-bit one rather than being
+    mistaken for a well-formed wide table.
+    """
+    banner = b"OpenSSL 3.0.14 4 Jun 2024"
+    records = []
+    for magic in (b"\xbe\xba\xfe\xca", b"\xbf\xba\xfe\xca"):
+        ev, errors = _read(magic + b"\x00" * 64 + banner + b"\x00", path="swapped.dylib")
+        assert ev.format == evidence.FORMAT_MACHO
+        assert ev.partial_analysis is True
+        assert [m.value for m in ev.matched_strings] == [banner.decode()]
+        records.append((list(ev.partial_reasons), [e.message for e in errors]))
+    assert records[0] == records[1]

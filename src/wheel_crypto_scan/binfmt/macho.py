@@ -62,8 +62,11 @@ _FAT_MAGIC_64 = 0xCAFEBABF
 _FAT_CIGAM_64 = 0xBFBAFECA
 
 # `fat_arch` is cputype, cpusubtype, offset, size, align. `fat_arch_64` is the same with
-# 64-bit offset and size, plus a reserved word.
+# 64-bit offset and size, plus a reserved word. The entry size sits beside the format
+# rather than being derived at every use, and is asserted against it so the two cannot
+# drift.
 _FAT_ARCH = {False: (20, ">iiIII"), True: (32, ">iiQQII")}
+assert all(struct.calcsize(fmt) == size for size, fmt in _FAT_ARCH.values())
 
 _LC_SYMTAB = 0x02
 _LC_LOAD_DYLIB = 0x0C
@@ -411,6 +414,14 @@ def _list_fat_slices(
     Fat headers and their arch entries are always big-endian on disk, regardless of host
     or slice byte order, so this part never needs an endianness switch. `wide` selects
     the `fat_arch_64` layout, which is the only thing `FAT_MAGIC_64` changes.
+
+    `wide` is about the table's stride, not its byte order, and the two are independent.
+    `FAT_CIGAM_64` is grouped with `FAT_MAGIC_64` because that is where real support
+    would start if it were ever added, but the grouping changes no real object's record:
+    a genuinely byte-swapped header has a little-endian table, which this reads
+    big-endian, so `nfat_arch` comes out huge, the cap fires and every entry is garbage
+    at either stride. The only input the choice changes is a byte-swapped magic in front
+    of a big-endian table, which no toolchain emits.
 
     `nfat_arch` is a 32-bit field the object declares about itself, in the same family
     as Mach-O's `nsyms` and PE's `NumberOfNames`, and it is capped rather than believed.

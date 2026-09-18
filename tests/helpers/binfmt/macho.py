@@ -224,17 +224,8 @@ def build_fat(
         pad = (-len(body)) % 8
         body.extend(b"\x00" * pad)
         slice_offset = offset + len(body)
-        fields = (
-            (cputype, 0, slice_offset, len(part), 3, 0)
-            if wide
-            else (
-                cputype,
-                0,
-                slice_offset,
-                len(part),
-                3,
-            )
-        )
+        # Wide adds only `reserved`; everything before it is the same table.
+        fields = (cputype, 0, slice_offset, len(part), 3) + ((0,) if wide else ())
         arch_table.extend(struct.pack(entry_format, *fields))
         body.extend(part)
     return bytes(header) + bytes(arch_table) + bytes(body)

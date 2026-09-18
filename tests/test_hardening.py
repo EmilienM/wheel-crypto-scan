@@ -559,7 +559,8 @@ def test_a_fat_binary_that_declares_a_giant_arch_count_does_not_reparse_itself(
     While only the first slice was examined, an over-declared arch table cost nothing.
     Walking all of them turns it into a work multiplier: a few hundred bytes of table
     can name one symbol table tens of thousands of times, each entry a full parse of
-    it, on an object that grows by twenty bytes per entry. The count is capped and the
+    it, on an object that grows by twenty bytes per entry (thirty-two in the 64-bit
+    form, which is the cheaper of the two to defend). The count is capped and the
     excess is reported as unread rather than believed.
     """
     thin = MachOBuilder(

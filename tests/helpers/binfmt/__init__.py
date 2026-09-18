@@ -39,8 +39,6 @@ from .pe import (
 
 __all__ = [
     "DynSym",
-    "FAT_MAGIC",
-    "FAT_MAGIC_64",
     "EM_386",
     "EM_S390",
     "EM_X86_64",
@@ -48,6 +46,8 @@ __all__ = [
     "ET_EXEC",
     "E_SHNUM_OFFSET",
     "ElfBuilder",
+    "FAT_MAGIC",
+    "FAT_MAGIC_64",
     "IMAGE_FILE_MACHINE_AMD64",
     "IMAGE_FILE_MACHINE_ARM64",
     "IMAGE_FILE_MACHINE_I386",
