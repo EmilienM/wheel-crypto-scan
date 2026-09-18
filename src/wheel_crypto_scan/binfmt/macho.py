@@ -20,11 +20,12 @@ tables. `LC_SYMTAB` is normally kept beside them, but an object that carries one
 missed rather than reported as unread.
 
 `partial_analysis` survives for three cases: a `LC_SYMTAB` that could not be read in
-full, whether it is absent, unreachable or names nothing we could resolve, so the
-imported/defined split is missing or incomplete; a slice of a fat binary that could not
-be read, or that the fat header placed outside the object, so one architecture is
-unknown rather than clean; and a header or set of load commands that would not parse at
-all, which costs the structural read but not the strings already found.
+full, whether it is absent, unreachable, names nothing we could resolve, or holds
+nothing but debug records, so the imported/defined split is missing or incomplete; a
+slice of a fat binary that could not be read, or that the fat header placed outside the
+object, so one architecture is unknown rather than clean; and a header or set of load
+commands that would not parse at all, which costs the structural read but not the
+strings already found.
 
 A universal binary is read slice by slice and merged into one record, in both the
 `FAT_MAGIC` and `FAT_MAGIC_64` forms, which differ only in the width of the arch table's
@@ -654,13 +655,21 @@ def _read_symbols(
             continue
         if not name:
             continue
-        named += 1
         # A debug entry describes a source file or a line number. Its N_TYPE bits are
         # not a section index, so reading one as a symbol turns a stabs record into a
-        # claim that this object defines the code. Its name was still read, though,
-        # which is why it counts above.
+        # claim that this object defines the code.
+        #
+        # It does not count toward `named` either, which is the subtler half. That
+        # counter feeds `complete`, and `complete` means "this object declared symbols,
+        # we read all of them, and none was crypto". A stabs record's name is readable
+        # -- it is a source path -- but it is not a symbol this object declares, so a
+        # table holding nothing else has declared nothing and we have checked nothing.
+        # Counting it made one crafted debug record the difference between `OPAQUE` and
+        # a clean verdict, which is one of the cheap ways to look clean that the comment
+        # below `complete` enumerates.
         if debug:
             continue
+        named += 1
         groups = patterns.symbol_groups_for(name)
         if not groups:
             continue
@@ -671,13 +680,16 @@ def _read_symbols(
     # "We read every name and none of them was crypto" has to be earned, because it is
     # indistinguishable in the record from "this object has no crypto". An entry naming
     # a string we could not resolve, and a table whose entries name nothing readable at
-    # all, are both unread symbols: a hidden string table, indices past its end and
-    # indices all left at zero are the cheap ways to make a wheel look clean, and each
-    # of them lands here.
+    # all, are both unread symbols: a hidden string table, indices past its end, indices
+    # all left at zero, and a table of nothing but debug records are the cheap ways to
+    # make a wheel look clean, and each of them lands here.
     complete = (
         len(table) == sym_wanted
         and len(strings) == symtab.strsize
         and not unresolved
+        # `bool(strings)` is implied by `bool(named)`, which needs an entry that resolved
+        # a name out of them. Kept as the statement of what is required rather than of
+        # what happens to be sufficient.
         and (not symtab.nsyms or (bool(strings) and bool(named)))
     )
     return matches, len(table) // entry_size, complete

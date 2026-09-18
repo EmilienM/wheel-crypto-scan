@@ -577,3 +577,23 @@ def _findings_all(data: bytes) -> set[str]:
         binaries=(ev,),
     )
     return {f.rule_id for f in apply_rules(ruleset, e, resolve_linkage(ruleset, e))}
+
+
+def test_the_documented_routine_causes_are_the_ones_the_ruleset_claims() -> None:
+    """Three copies of this list exist and nothing held the prose to the rule.
+
+    `SCHEMA.md` listed `pe_delay_load` as routine after the ruleset had stopped
+    treating it as such, which is exactly the drift a reader would act on.
+    """
+    ruleset = load_ruleset()
+    routine = {
+        reason
+        for rule, match in ruleset.matches_for_kind("partial_binary")
+        if rule.id == "BIN_PARTIAL_ROUTINE"
+        for reason in match.get("reasons", ())
+    }
+    assert routine, "no rule claims any routine cause"
+    documented = Path("SCHEMA.md").read_text(encoding="utf-8").splitlines()
+    for token in sorted(evidence.PARTIAL_REASONS):
+        row = next(ln for ln in documented if ln.startswith(f"| `{token}` |"))
+        assert ("BIN_PARTIAL_ROUTINE" in row) is (token in routine), token
