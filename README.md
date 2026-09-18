@@ -103,7 +103,7 @@ so a wheel using syntax newer than the scanner's interpreter will not parse. **P
 interpreter** if you need output comparable across hosts. That difference is never
 silently favourable: unparsed files are counted in `artifacts.py_files_unparsed`, and a
 wheel whose every source file failed reports `source_available: false` and comes out
-`OPAQUE`, not clean.
+`OPAQUE`, not clean. `DECISIONS.md` records why this is documented rather than fixed.
 
 ## Performance
 

@@ -2,7 +2,8 @@
 
 Static analyser that reports crypto-relevant **evidence** inside Python wheels so consumers
 of a package index can see per-wheel FIPS risk. It gathers evidence; it does not decide FIPS
-compatibility. Read `README.md` for what it detects and `SCHEMA.md` for the output contract.
+compatibility. Read `README.md` for what it detects, `SCHEMA.md` for the output contract, and
+`DECISIONS.md` for the design calls that cost something and were made anyway.
 
 ## Invariants
 
