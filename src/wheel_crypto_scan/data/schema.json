@@ -359,7 +359,8 @@
             }
           },
           "stripped": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "No .symtab, or a Mach-O with no LC_SYMTAB entries. Never set for PE, whose own symbol table is debug information every linker drops."
           },
           "symbol_counts": {
             "type": "object",
@@ -372,7 +373,8 @@
                 "type": "integer"
               },
               "symtab": {
-                "type": "integer"
+                "type": "integer",
+                "description": ".symtab entries for ELF, LC_SYMTAB entries for Mach-O, and for PE the things the object named, one per import thunk and one per export slot, because PE has no symbol table of its own."
               }
             }
           },
@@ -484,7 +486,7 @@
           },
           "partial_analysis": {
             "type": "boolean",
-            "description": "True when part of the object was not read: a format with no structural reader (Windows PE today, strings only), a Mach-O whose LC_SYMTAB could not be read in full, or the unexamined slices of a fat Mach-O."
+            "description": "True when part of the object was not read: a format with no structural reader (strings only); a PE whose section table was truncated, whose import directory was absent or could not be walked, that names an import or an export by ordinal alone, or that carries a delay-load import directory, which is not parsed; a Mach-O whose LC_SYMTAB could not be read in full; or the unexamined slices of a fat Mach-O."
           }
         }
       }

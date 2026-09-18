@@ -31,6 +31,7 @@ SBOM_PARSE_ERROR = "sbom_parse_error"
 # Native binaries.
 ELF_PARSE_ERROR = "elf_parse_error"
 MACHO_PARSE_ERROR = "macho_parse_error"
+PE_PARSE_ERROR = "pe_parse_error"
 BINARY_TRUNCATED = "binary_truncated"
 BINARY_TOO_LARGE = "binary_too_large"
 BINARY_UNKNOWN_FORMAT = "binary_unknown_format"
@@ -58,6 +59,7 @@ ERROR_KINDS: frozenset[str] = frozenset(
         SBOM_PARSE_ERROR,
         ELF_PARSE_ERROR,
         MACHO_PARSE_ERROR,
+        PE_PARSE_ERROR,
         BINARY_TRUNCATED,
         BINARY_TOO_LARGE,
         BINARY_UNKNOWN_FORMAT,

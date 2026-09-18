@@ -38,7 +38,7 @@ from ..evidence import BinaryEvidence, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
 from .golang import build_go_info
 from .rust import find_rust_crates
-from .strings import extract_printable, match_string_groups
+from .strings import MAX_STRINGS_BYTES, extract_printable, match_string_groups
 
 _MH_MAGIC_32 = 0xFEEDFACE
 _MH_CIGAM_32 = 0xCEFAEDFE
@@ -127,7 +127,7 @@ def read_macho(
     patterns: BinaryPatterns,
     *,
     vendored: bool,
-    max_strings_bytes: int = 64 * 1024 * 1024,
+    max_strings_bytes: int = MAX_STRINGS_BYTES,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Read one Mach-O object (thin or fat) and return its evidence.
 

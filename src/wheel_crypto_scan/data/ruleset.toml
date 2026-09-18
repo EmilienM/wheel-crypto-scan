@@ -32,7 +32,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "2"
+ruleset_version = "3"
 
 
 # ---------------------------------------------------------------------------
@@ -69,13 +69,15 @@ min_string_length = 4
 # Packaging conventions. These describe how build tools lay wheels out, not policy.
 # ---------------------------------------------------------------------------
 [conventions]
-# auditwheel (Linux) and delocate (macOS) copy shared libraries into these directories.
-# Anything in here is shipped by the wheel rather than borrowed from the system.
+# auditwheel (Linux), delocate (macOS) and delvewheel (Windows) copy shared libraries
+# into these directories. Anything in here is shipped by the wheel rather than borrowed
+# from the system.
 vendor_dir_globs = ["*.libs", ".dylibs", "*.dylibs"]
 
-# auditwheel and delocate rename a vendored library by appending a content hash, e.g.
-# libcrypto-3a1f2b4c.so.3. A needed-entry or SONAME that looks like this is a vendored
-# copy even when the wheel has no vendor directory of its own.
+# auditwheel, delocate and delvewheel rename a vendored library by appending a content
+# hash, e.g. libcrypto-3a1f2b4c.so.3 or libcrypto-3-x64-a1b2c3d4.dll. A needed-entry or
+# SONAME that looks like this is a vendored copy even when the wheel has no vendor
+# directory of its own.
 mangled_soname_regex = '^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$'
 
 # Extensions stripped when reducing a library file name to its base name. Windows
@@ -83,6 +85,22 @@ mangled_soname_regex = '^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$'
 # a name that matches nothing, and the bundled-OpenSSL check would miss every Windows
 # wheel while the version banner quietly mislabelled it as statically linked.
 library_suffixes = [".so", ".dylib", ".dll", ".pyd"]
+
+# The subset of library_suffixes that names a Windows object. A name carrying one of
+# these is casefolded, because Windows file names are case-insensitive and an import
+# names its DLL in whatever case the linker wrote, and is then reduced by
+# windows_version_suffix_regex.
+windows_library_suffixes = [".dll", ".pyd"]
+
+# Windows puts a library's version, and often its architecture, inside the file name
+# where Unix puts it in a .so.N suffix: libcrypto-3-x64.dll, libgnutls-30.dll,
+# libnettle-8.dll, libgcrypt-20.dll. That is how the platform spells a name, not a fact
+# about any one library, so it is undone here rather than enumerated library by library
+# -- which would fix whichever library someone happened to think of and leave the rest
+# resolving to nothing. Applied only to names that carried a Windows suffix, because a
+# Unix libfoo-2.so really is called libfoo-2, and applied after the content hash is
+# stripped, so a vendored libcrypto-3-x64-<hash>.dll is still recognised as vendored.
+windows_version_suffix_regex = '^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<arch>x64|x86|arm64|arm64ec))?$'
 
 # Go toolchain string groups, named here rather than in the Go reader, so renaming a
 # group in this file cannot silently flip a verdict-relevant field in the record.
@@ -257,8 +275,9 @@ why = "Checksum, not a hash function in the security sense. Included so storage 
 
 
 # ---------------------------------------------------------------------------
-# Native crypto libraries. `sonames` are base names; the scanner strips version
-# suffixes (.so.3, .3.dylib) and auditwheel/delocate content hashes before matching.
+# Native crypto libraries. `sonames` are base names; before matching, the scanner
+# strips version suffixes (.so.3, .3.dylib), the Windows decoration that spells those
+# in the stem instead (-3-x64), and auditwheel/delocate/delvewheel content hashes.
 #
 # An entry's optional `rule` routes the bundled-library finding for that library, and
 # nothing else. The DT_NEEDED and linkage rules read this table too and do not consult
@@ -267,7 +286,13 @@ why = "Checksum, not a hash function in the security sense. Included so storage 
 
 [[crypto_library]]
 name = "openssl"
-sonames = ["libcrypto", "libssl"]
+# libeay32 and ssleay32 are the OpenSSL 1.0.2 era Windows names: a genuinely different
+# name for the same library, which only someone who knows OpenSSL can supply, so they
+# belong here. The Windows spellings that are the same name with the version and the
+# architecture glued on -- libcrypto-3-x64.dll and its relatives -- are a packaging
+# convention rather than a fact about OpenSSL, and [conventions] reduces them back to
+# libcrypto before this list is consulted.
+sonames = ["libcrypto", "libssl", "libeay32", "ssleay32"]
 # These two let the linkage resolver recognise an OpenSSL that was compiled straight
 # into an extension, where there is no library file and no dependency to find.
 symbol_group = "openssl"
@@ -1149,7 +1174,7 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Depends on a hash-renamed crypto library"
-why = "A dependency such as libcrypto-3a1f2b4c.so.3 is a vendored copy: auditwheel and delocate rename libraries they bundle so they cannot collide with the system ones. Seeing this name means the wheel binds to its own copy even if the vendor directory itself is not where we expected."
+why = "A dependency such as libcrypto-3a1f2b4c.so.3, or libcrypto-3-x64-a1b2c3d4.dll on Windows, is a vendored copy: auditwheel, delocate and delvewheel rename libraries they bundle so they cannot collide with the system ones. Seeing this name means the wheel binds to its own copy even if the vendor directory itself is not where we expected."
 [rule.match]
 kind = "dt_needed"
 table = "crypto_library"
@@ -1467,7 +1492,7 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "Binary format only partially readable"
-why = "Part of this object was not read, so some dependency or symbol evidence is missing for it: the format has no structural reader (Windows PE, read for strings only), or a Mach-O symbol table could not be read in full, or a fat Mach-O carries slices we never examined. Recorded so a wheel can never look clean merely because we read less of it."
+why = "Part of this object was not read, so some dependency or symbol evidence is missing for it: the format has no structural reader and was read for strings only, or a PE has a truncated section table, declares no import directory, has one that could not be walked, names an import or an export by ordinal alone, or carries a delay-load import directory that this tool does not parse, or a Mach-O symbol table could not be read in full, or a fat Mach-O carries slices we never examined. Recorded so a wheel can never look clean merely because we read less of it."
 [rule.match]
 kind = "partial_binary"
 
@@ -1483,7 +1508,7 @@ title = "Binary could not be parsed"
 why = "Truncated, corrupt or an unrecognised format. Same reasoning as an opaque binary: we cannot see inside it, so we say so."
 [rule.match]
 kind = "scan_error"
-error_kinds = ["elf_parse_error", "macho_parse_error", "binary_truncated", "binary_unknown_format"]
+error_kinds = ["elf_parse_error", "macho_parse_error", "pe_parse_error", "binary_truncated", "binary_unknown_format"]
 
 [[rule]]
 id = "BIN_TOO_LARGE"

@@ -27,7 +27,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `data/ruleset.toml` | All policy: packages, symbols, strings, crates, libraries, verdicts |
 | `engine.py`, `ruleset.py` | Rule dispatch and matchers |
 | `layers/` | Evidence gathering: wheel metadata, Python AST, binaries, archive inventory |
-| `binfmt/` | ELF, Mach-O, Go, Rust and string readers |
+| `binfmt/` | ELF, Mach-O, PE, Go, Rust and string readers |
 | `wheelfile.py` | In-memory zip reading with the bounded decompression window |
 | `record.py`, `verdict.py` | Output record shape and verdict assembly |
 

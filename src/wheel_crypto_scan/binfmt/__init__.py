@@ -4,8 +4,14 @@ This is the layer that tells a wheel linking the system OpenSSL apart from one t
 ships or statically links its own: everything else in the tool depends on the
 `needed`/`soname` and `matched_symbols` binding this package produces. `read_binary`
 is the single entry point; it sniffs the format and dispatches to the format-specific
-reader, or to a strings-only fallback for formats this tool does not parse in depth
-(PE today), so a wheel can never look clean merely because we cannot read it.
+reader, or to a strings-only fallback for anything it does not recognise, so a wheel
+can never look clean merely because we cannot read it.
+
+`max_strings_bytes` bounds how much of an object is pulled into memory. For ELF and
+Mach-O that bounds the strings pass alone, because their structural reads go through
+the stream. For PE it bounds the structural read too: that reader resolves every
+directory inside the same buffer, so a directory lying past it is unread and is
+reported as unread.
 """
 
 from __future__ import annotations
@@ -17,12 +23,14 @@ from ..evidence import BinaryEvidence, ScanError
 from ..ruleset import BinaryPatterns
 from . import elf as _elf
 from . import macho as _macho
+from . import pe as _pe
 from .detect import SNIFF_BYTES, detect_format
 from .rust import find_rust_crates
-from .strings import extract_printable, match_string_groups
+from .strings import MAX_STRINGS_BYTES, extract_printable, match_string_groups
 
 read_elf = _elf.read_elf
 read_macho = _macho.read_macho
+read_pe = _pe.read_pe
 
 
 def read_binary(
@@ -31,13 +39,13 @@ def read_binary(
     patterns: BinaryPatterns,
     *,
     vendored: bool,
-    max_strings_bytes: int = 64 * 1024 * 1024,
+    max_strings_bytes: int = MAX_STRINGS_BYTES,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Sniff `stream` and dispatch to the right reader.
 
-    ELF and Mach-O get full structural reads. Everything else, including PE and any
-    format this tool does not recognise, still gets a strings-and-rust-crates pass,
-    so absence of a deep reader never looks the same as absence of evidence.
+    ELF, Mach-O and PE get full structural reads. Any format this tool does not
+    recognise still gets a strings-and-rust-crates pass, so absence of a deep reader
+    never looks the same as absence of evidence.
     """
     stream.seek(0)
     head = stream.read(SNIFF_BYTES)
@@ -50,6 +58,10 @@ def read_binary(
         )
     if fmt == evidence.FORMAT_MACHO:
         return read_macho(
+            stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes
+        )
+    if fmt == evidence.FORMAT_PE:
+        return read_pe(
             stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes
         )
     return _read_strings_only(
@@ -98,4 +110,4 @@ def _read_strings_only(
     return result, ()
 
 
-__all__ = ["read_binary", "read_elf", "read_macho"]
+__all__ = ["read_binary", "read_elf", "read_macho", "read_pe"]

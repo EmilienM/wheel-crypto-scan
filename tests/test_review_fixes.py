@@ -106,7 +106,7 @@ def test_a_vendored_dll_is_recognised_as_bundled(context, tmp_path: Path) -> Non
     [
         ("libcrypto.dll", "libcrypto", False),
         ("libcrypto-3a1f2b4c.dll", "libcrypto", True),
-        ("libssl-1_1-x64.dll", "libssl-1_1-x64", False),
+        ("libssl-1_1-x64.dll", "libssl", False),
         ("_ext.pyd", "_ext", False),
     ],
 )

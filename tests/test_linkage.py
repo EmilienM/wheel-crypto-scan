@@ -13,6 +13,7 @@ from wheel_crypto_scan.evidence import (
     BINDING_DEFINED,
     BINDING_IMPORTED,
     FORMAT_ELF,
+    FORMAT_PE,
     STAGE_BINARY,
     ArtifactInventory,
     BinaryEvidence,
@@ -42,7 +43,8 @@ def ruleset():
 
 
 def binary(path: str, **kwargs) -> BinaryEvidence:
-    return BinaryEvidence(path=path, format=FORMAT_ELF, **kwargs)
+    kwargs.setdefault("format", FORMAT_ELF)
+    return BinaryEvidence(path=path, **kwargs)
 
 
 def wheel(*binaries: BinaryEvidence, errors: tuple[ScanError, ...] = ()) -> Evidence:
@@ -69,6 +71,77 @@ def test_a_wheel_linking_the_system_openssl_is_system(ruleset) -> None:
         )
     )
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+@pytest.mark.parametrize(
+    "dll",
+    [
+        "libcrypto-3-x64.dll",
+        "libcrypto-3.dll",
+        "libcrypto-1_1-x64.dll",
+        "libcrypto-3-arm64.dll",
+        # A version this reader has never heard of resolves too, which is the point of
+        # reducing the name rather than listing the spellings.
+        "libcrypto-4-x64.dll",
+        # Windows file names are case-insensitive and an import carries whatever case
+        # the linker wrote.
+        "LIBCRYPTO-3-X64.dll",
+        "libcrypto-3-x64.DLL",
+        # The OpenSSL 1.0.2 era name: a different name, not a decorated one, so this
+        # one is in the ruleset rather than reduced by a convention.
+        "libeay32.dll",
+    ],
+)
+def test_a_windows_extension_depending_on_openssl_is_system(ruleset, dll: str) -> None:
+    """OpenSSL's Windows file names carry the version and the architecture.
+
+    `[conventions]` reduces that decoration before the library table is consulted.
+    Without it a `.pyd` that plainly depends on OpenSSL resolves to no library at all,
+    and the wheel reads as having no crypto in it rather than as depending on the
+    host's.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.pyd",
+            format=FORMAT_PE,
+            needed=(dll, "python312.dll"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+@pytest.mark.parametrize(
+    ("dll", "library"),
+    [
+        ("libgnutls-30.dll", "gnutls"),
+        ("libgcrypt-20.dll", "libgcrypt"),
+        ("libnettle-8.dll", "nettle"),
+        ("libhogweed-6.dll", "nettle"),
+        ("libsodium-26.dll", "libsodium"),
+    ],
+)
+def test_the_other_crypto_libraries_resolve_on_windows_too(ruleset, dll: str, library: str) -> None:
+    """MSYS2 and conda spell every one of them this way, not just OpenSSL.
+
+    Reducing the name in `[conventions]` is what makes this hold for the whole table.
+    Enumerating spellings on the openssl entry would have fixed one library out of
+    thirteen and left the rest reporting a dependency the resolver cannot see.
+    """
+    evidence = wheel(binary("pkg/_ext.pyd", format=FORMAT_PE, needed=(dll, "python312.dll")))
+    assert resolve_linkage(ruleset, evidence)[library] == LINKAGE_SYSTEM
+
+
+def test_a_windows_extension_with_a_hash_renamed_dll_is_bundled(ruleset) -> None:
+    """delvewheel appends the hash after the whole name, decoration included.
+
+    It is the Windows counterpart of auditwheel and delocate; neither of those runs
+    on Windows, so neither produces this name.
+    """
+    evidence = wheel(
+        binary("pkg/_ext.pyd", format=FORMAT_PE, needed=("libcrypto-3-x64-a1b2c3d4.dll",))
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
 
 
 def test_a_wheel_shipping_its_own_openssl_is_bundled(ruleset) -> None:

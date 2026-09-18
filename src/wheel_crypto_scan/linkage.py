@@ -74,7 +74,7 @@ def _binary_posture(
         if info.base not in sonames:
             continue
         if info.mangled:
-            # auditwheel and delocate only rename libraries they vendored.
+            # auditwheel, delocate and delvewheel only rename what they vendored.
             return LINKAGE_BUNDLED
         system = True
     if system:
