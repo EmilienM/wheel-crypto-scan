@@ -9,12 +9,15 @@ description = "Deterministic FIPS-risk evidence inspector for Python wheels"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Emilien Macchi", email = "emacchi@redhat.com" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 keywords = ["fips", "wheel", "crypto", "sbom", "supply-chain"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Topic :: Security :: Cryptography",
+    "Operating System :: POSIX :: Linux",
 ]
 dependencies = [
     "pyelftools>=0.31",
