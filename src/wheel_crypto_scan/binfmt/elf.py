@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Iterator, Sequence
-from dataclasses import replace
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import Section
@@ -28,20 +27,10 @@ from ..errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
 from .golang import build_go_info
-from .rust import find_rust_crates
-from .strings import MAX_STRINGS_BYTES, extract_printable, match_string_groups
+from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
 
 _SHF_ALLOC = 0x2
 _SHF_EXECINSTR = 0x4
-
-# Printable characters only, so a corrupt string-table entry can never smuggle control
-# bytes or non-ASCII garbage into the (supposedly stable) JSON record.
-_PRINTABLE = range(0x20, 0x7F)
-
-
-def _sanitize(text: str) -> str:
-    """Drop anything outside printable ASCII, so recorded values are JSON-stable."""
-    return "".join(ch for ch in text if ord(ch) in _PRINTABLE)
 
 
 def _error(path: str, kind: str, message: str) -> ScanError:
@@ -82,7 +71,7 @@ def _iter_symbols(elf, section) -> Iterator[tuple[str, bool]]:
             continue
         stop = names.find(b"\x00", st_name)
         raw = names[st_name:stop] if stop != -1 else names[st_name:]
-        name = _sanitize(raw.decode("utf-8", "replace"))
+        name = sanitize(raw.decode("utf-8", "replace"))
         if not name:
             continue
         yield name, u16.unpack_from(data, base + shndx_offset)[0] == _SHN_UNDEF
@@ -162,12 +151,12 @@ def read_elf(
     runpath: tuple[str, ...] = ()
     if dynamic is not None:
         try:
-            needed = tuple(sorted(_sanitize(tag.needed) for tag in dynamic.iter_tags("DT_NEEDED")))
-            sonames = [_sanitize(tag.soname) for tag in dynamic.iter_tags("DT_SONAME")]
+            needed = tuple(sorted(sanitize(tag.needed) for tag in dynamic.iter_tags("DT_NEEDED")))
+            sonames = [sanitize(tag.soname) for tag in dynamic.iter_tags("DT_SONAME")]
             soname = sonames[0] if sonames else None
-            rpath = tuple(sorted(_sanitize(tag.rpath) for tag in dynamic.iter_tags("DT_RPATH")))
+            rpath = tuple(sorted(sanitize(tag.rpath) for tag in dynamic.iter_tags("DT_RPATH")))
             runpath = tuple(
-                sorted(_sanitize(tag.runpath) for tag in dynamic.iter_tags("DT_RUNPATH"))
+                sorted(sanitize(tag.runpath) for tag in dynamic.iter_tags("DT_RUNPATH"))
             )
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic section"))
@@ -208,20 +197,7 @@ def read_elf(
     matched_symbols = ordered_symbols[: patterns.limits.max_symbols_per_binary]
 
     raw_bytes, sections_truncated = _collect_string_bytes(sections, max_strings_bytes)
-    extracted = extract_printable(raw_bytes, patterns.limits.min_string_length, max_strings_bytes)
-    string_matches, string_match_truncated = match_string_groups(
-        extracted, patterns.string_groups, patterns.limits.max_strings_per_binary
-    )
-    matched_strings = tuple(
-        replace(match, value=match.value[: patterns.limits.max_evidence_chars])
-        for match in string_matches
-    )
-    rust_crates, rust_truncated = find_rust_crates(
-        extracted.text, patterns.cargo_path_regex, patterns.limits.max_rust_crates_per_binary
-    )
-    strings_truncated = (
-        sections_truncated or extracted.truncated or string_match_truncated or rust_truncated
-    )
+    strings_found = scan_strings(raw_bytes, patterns, max_strings_bytes)
 
     buildinfo_section = _find_section(sections, ".go.buildinfo")
     buildinfo_bytes: bytes | None = None
@@ -231,7 +207,7 @@ def read_elf(
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read .go.buildinfo"))
     has_buildid = _find_section(sections, ".note.go.buildid") is not None
-    go = build_go_info(buildinfo_bytes, extracted.text, patterns)
+    go = build_go_info(buildinfo_bytes, strings_found.text, patterns)
     if go is None and (buildinfo_section is not None or has_buildid):
         go = GoBuildInfo()
 
@@ -251,11 +227,11 @@ def read_elf(
         dynsym_count=dynsym_count,
         symtab_count=symtab_count,
         matched_symbols=matched_symbols,
-        matched_strings=matched_strings,
-        rust_crates=rust_crates,
+        matched_strings=strings_found.matched_strings,
+        rust_crates=strings_found.rust_crates,
         go=go,
         symbols_truncated=symbols_truncated,
-        strings_truncated=strings_truncated,
+        strings_truncated=sections_truncated or strings_found.truncated,
         partial_analysis=False,
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))

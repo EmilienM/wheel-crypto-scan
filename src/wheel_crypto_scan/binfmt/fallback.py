@@ -14,12 +14,9 @@ mislabels the record, so it is the caller's business and never defaulted.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from ..evidence import BinaryEvidence, ScanError
 from ..ruleset import BinaryPatterns
-from .rust import find_rust_crates
-from .strings import extract_printable, match_string_groups
+from .strings import scan_strings
 
 
 def read_strings_only(
@@ -43,27 +40,15 @@ def read_strings_only(
     data = stream.read(min(size, max_strings_bytes))
     truncated = size > max_strings_bytes
 
-    extracted = extract_printable(data, patterns.limits.min_string_length, max_strings_bytes)
-    string_matches, string_match_truncated = match_string_groups(
-        extracted, patterns.string_groups, patterns.limits.max_strings_per_binary
-    )
-    matched_strings = tuple(
-        replace(match, value=match.value[: patterns.limits.max_evidence_chars])
-        for match in string_matches
-    )
-    rust_crates, rust_truncated = find_rust_crates(
-        extracted.text, patterns.cargo_path_regex, patterns.limits.max_rust_crates_per_binary
-    )
+    strings_found = scan_strings(data, patterns, max_strings_bytes)
 
     result = BinaryEvidence(
         path=path,
         format=fmt,
         vendored_path=vendored,
-        matched_strings=matched_strings,
-        rust_crates=rust_crates,
-        strings_truncated=(
-            truncated or extracted.truncated or string_match_truncated or rust_truncated
-        ),
+        matched_strings=strings_found.matched_strings,
+        rust_crates=strings_found.rust_crates,
+        strings_truncated=truncated or strings_found.truncated,
         partial_analysis=True,
     )
     return result, ()

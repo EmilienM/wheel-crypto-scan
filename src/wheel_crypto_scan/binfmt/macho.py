@@ -30,15 +30,14 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from .. import evidence
 from ..errors import MACHO_PARSE_ERROR
 from ..evidence import BinaryEvidence, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
 from .golang import build_go_info
-from .rust import find_rust_crates
-from .strings import MAX_STRINGS_BYTES, extract_printable, match_string_groups
+from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
 
 _MH_MAGIC_32 = 0xFEEDFACE
 _MH_CIGAM_32 = 0xCEFAEDFE
@@ -75,8 +74,6 @@ _CPU_TYPE_NAMES = {
     0x01000012: "CPU_TYPE_POWERPC64",
 }
 
-_PRINTABLE = range(0x20, 0x7F)
-
 
 @dataclass(frozen=True, slots=True)
 class _Symtab:
@@ -88,10 +85,6 @@ class _Symtab:
     strsize: int
 
 
-def _sanitize(text: str) -> str:
-    return "".join(ch for ch in text if ord(ch) in _PRINTABLE)
-
-
 def _strip_abi_prefix(name: str) -> str:
     """Strip Darwin's leading underscore, so a symbol reads as it does in ELF.
 
@@ -101,7 +94,7 @@ def _strip_abi_prefix(name: str) -> str:
     that prefixing and nothing else: a C++ symbol `__Z3foov` becomes the `_Z3foov` its ELF
     counterpart carries, still mangled. This is not demangling.
 
-    It runs on the raw name, before `_sanitize`, because the ABI prefix is a property of
+    It runs on the raw name, before `sanitize`, because the ABI prefix is a property of
     the bytes the linker wrote: a `\\x01`-escaped name means "no ABI prefix was added",
     and sanitising first would drop the escape and invite this to strip an underscore
     that belongs to the symbol.
@@ -185,18 +178,8 @@ def read_macho(
     stream.seek(0)
     raw = stream.read(min(size, max_strings_bytes))
     truncated_read = size > max_strings_bytes
-    extracted = extract_printable(raw, patterns.limits.min_string_length, max_strings_bytes)
-    string_matches, string_match_truncated = match_string_groups(
-        extracted, patterns.string_groups, patterns.limits.max_strings_per_binary
-    )
-    matched_strings = tuple(
-        replace(match, value=match.value[: patterns.limits.max_evidence_chars])
-        for match in string_matches
-    )
-    rust_crates, rust_truncated = find_rust_crates(
-        extracted.text, patterns.cargo_path_regex, patterns.limits.max_rust_crates_per_binary
-    )
-    go = build_go_info(None, extracted.text, patterns)
+    strings_found = scan_strings(raw, patterns, max_strings_bytes)
+    go = build_go_info(None, strings_found.text, patterns)
 
     errors: list[ScanError] = []
     matched_symbols: tuple[SymbolMatch, ...] = ()
@@ -245,14 +228,11 @@ def read_macho(
         # has a `.symtab` but no `.dynsym`, which is not this reader's call to make.
         symtab_count=symtab_count,
         matched_symbols=matched_symbols,
-        matched_strings=matched_strings,
-        rust_crates=rust_crates,
+        matched_strings=strings_found.matched_strings,
+        rust_crates=strings_found.rust_crates,
         go=go,
         symbols_truncated=symbols_truncated,
-        strings_truncated=truncated_read
-        or extracted.truncated
-        or string_match_truncated
-        or rust_truncated,
+        strings_truncated=truncated_read or strings_found.truncated,
         partial_analysis=not symbols_complete or is_fat,
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
@@ -472,7 +452,7 @@ def _iter_symbols(
             continue
         stop = strings.find(b"\x00", n_strx)
         text = strings[n_strx:stop] if stop != -1 else strings[n_strx:]
-        name = _sanitize(_strip_abi_prefix(text.decode("utf-8", "replace")))
+        name = sanitize(_strip_abi_prefix(text.decode("utf-8", "replace")))
         yield name, undefined, True, debug
 
 
@@ -483,6 +463,6 @@ def _read_cstring(body: bytes, offset: int) -> str | None:
     if end == -1:
         end = len(body)
     try:
-        return _sanitize(body[offset:end].decode("ascii"))
+        return sanitize(body[offset:end].decode("ascii"))
     except UnicodeDecodeError:
         return None

@@ -85,8 +85,11 @@ disable = [
     "too-many-return-statements",
     "too-many-statements",
     "too-few-public-methods",
-    # The binary readers share a deliberate shape; collapsing them would couple the
-    # ELF and Mach-O paths to each other.
+    # What the binary readers still share is their symbol loops, and that shape is
+    # deliberate: ELF keys on `st_shndx`, Mach-O carries per-entry N_STAB and
+    # resolution bookkeeping, PE derives binding from which table a name came out of.
+    # Collapsing them would couple the paths to each other. The strings pass, which had
+    # no such variation, is shared in `binfmt.strings`.
     "duplicate-code",
     # Worker process state, set exactly once in the pool initializer.
     "global-statement",

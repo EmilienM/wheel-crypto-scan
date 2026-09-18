@@ -562,3 +562,15 @@ def test_an_empty_input_does_not_raise() -> None:
     assert [error.kind for error in errors] == [PE_PARSE_ERROR]
     assert ev.matched_strings == ()
     assert ev.partial_analysis is True
+
+
+def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
+    """The reader's own read bound is a truncation source the shared pass cannot see.
+
+    `scan_strings` is handed a buffer that was already cut to size, so it reports
+    nothing; only the reader knows the object was longer than what it read.
+    """
+    data = PEBuilder(dll_name="_ext.pyd", trailing=b"OpenSSL 3.0.14 4 Jun 2024\x00").build()
+    stream = io.BytesIO(data)
+    ev, _ = read_pe(stream, "demo/_ext.pyd", PATTERNS, vendored=False, max_strings_bytes=8)
+    assert ev.strings_truncated is True
