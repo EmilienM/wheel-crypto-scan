@@ -1,6 +1,6 @@
 """Deterministic FIPS-risk evidence inspector for Python wheels.
 
-The tool gathers crypto-relevant evidence statically and never decides compliance.
+The tool gathers crypto-relevant evidence statically and never decides FIPS compatibility.
 See SCHEMA.md for the output contract and data/ruleset.toml for the rules.
 """
 

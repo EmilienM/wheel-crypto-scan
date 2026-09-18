@@ -50,3 +50,4 @@ def test_markdown_handles_an_empty_run() -> None:
 def test_markdown_never_claims_compliance() -> None:
     table = render_markdown([record("a", "NO_CRYPTO_DETECTED", "none", review=False)])
     assert "compliant" not in table.lower()
+    assert "compatible" not in table.lower()

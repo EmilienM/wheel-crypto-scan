@@ -3,7 +3,7 @@
 Reports crypto-relevant **evidence** found inside Python wheels, so the teams consuming a
 package index can see per-wheel FIPS risk before they ship it.
 
-It gathers evidence. It does not decide compliance.
+It gathers evidence. It does not decide FIPS compatibility.
 
 ## What it answers
 
@@ -34,8 +34,8 @@ directory is empty, nothing is declared, and the symbols are hidden by a version
 
 ## What it explicitly does not do
 
-- **It never says "FIPS compliant."** The verdict taxonomy has no passing class and cannot
-  acquire one. A human makes that call.
+- **It never says a wheel passes.** The taxonomy has no passing class, not "FIPS compliant"
+  and not "FIPS compatible", and cannot acquire one. A human makes that call.
 - **No LLM at runtime.** Pure static analysis. The JSON is what gets fed to a model later,
   as a separate step.
 - **No dataflow or reachability analysis.** It records the call site; it does not try to

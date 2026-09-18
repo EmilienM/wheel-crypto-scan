@@ -313,4 +313,15 @@ def test_the_schema_has_no_passing_class(capsys: pytest.CaptureFixture[str]) -> 
     listed = described.split("Current values:", 1)[1].split(".", 1)[0]
     classes = {name.strip() for name in listed.split(",")}
     assert "NO_CRYPTO_DETECTED" in classes
-    assert not {"COMPLIANT", "FIPS_COMPLIANT", "APPROVED", "PASS", "CLEAN"} & classes
+    assert (
+        not {
+            "COMPLIANT",
+            "FIPS_COMPLIANT",
+            "COMPATIBLE",
+            "FIPS_COMPATIBLE",
+            "APPROVED",
+            "PASS",
+            "CLEAN",
+        }
+        & classes
+    )

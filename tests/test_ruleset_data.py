@@ -104,7 +104,15 @@ def test_table_entry_verdicts_are_known(ruleset: dict[str, Any]) -> None:
 
 def test_no_rule_can_emit_a_pass(ruleset: dict[str, Any]) -> None:
     """The tool never says compliant. Nothing in the data may claim otherwise."""
-    forbidden = {"COMPLIANT", "FIPS_COMPLIANT", "APPROVED", "PASS", "CLEAN"}
+    forbidden = {
+        "COMPLIANT",
+        "FIPS_COMPLIANT",
+        "COMPATIBLE",
+        "FIPS_COMPATIBLE",
+        "APPROVED",
+        "PASS",
+        "CLEAN",
+    }
     assert not forbidden & set(ruleset["verdict"]["precedence"])
     for rule in ruleset["rule"]:
         assert rule.get("verdict") not in forbidden

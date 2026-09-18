@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/EmilienM/wheel-crypto-scan/main/src/wheel_crypto_scan/data/schema.json",
   "title": "wheel-crypto-scan record",
-  "description": "One record per wheel. Evidence only: no field of this document asserts FIPS compliance, and the verdict taxonomy has no passing class. Consumers must ignore unknown keys; added optional keys and added rule ids do not bump schema_version, while removing or retyping a field does.",
+  "description": "One record per wheel. Evidence only: no field of this document asserts FIPS compatibility, and the verdict taxonomy has no passing class. Consumers must ignore unknown keys; added optional keys and added rule ids do not bump schema_version, while removing or retyping a field does.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -530,7 +530,7 @@
               "low",
               "info"
             ],
-            "description": "Strength of the evidence, not a compliance judgement."
+            "description": "Strength of the evidence, not a compatibility judgement."
           },
           "category": {
             "type": "string"
@@ -698,7 +698,7 @@
     },
     "verdictClass": {
       "type": "string",
-      "description": "There is deliberately no passing class. The tool never emits a compliance verdict. Current values: NON_APPROVED_CRYPTO, FIPS_BREAKING, CONDITIONAL, CONTEXT_DEPENDENT, OPAQUE, NO_CRYPTO_DETECTED. New classes may be added without a schema_version bump; the authoritative list is the ruleset's [verdict] precedence. There is deliberately no passing class."
+      "description": "There is deliberately no passing class. The tool never emits a passing verdict, under any name. Current values: NON_APPROVED_CRYPTO, FIPS_BREAKING, CONDITIONAL, CONTEXT_DEPENDENT, OPAQUE, NO_CRYPTO_DETECTED. New classes may be added without a schema_version bump; the authoritative list is the ruleset's [verdict] precedence. There is deliberately no passing class."
     }
   }
 }

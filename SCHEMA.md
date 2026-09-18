@@ -4,7 +4,7 @@
 input order. `wheel-crypto-scan schema` prints the machine-readable JSON Schema
 (`src/wheel_crypto_scan/data/schema.json`).
 
-**Nothing in this document asserts FIPS compliance.** The verdict taxonomy has no passing
+**Nothing in this document asserts FIPS compatibility.** The verdict taxonomy has no passing
 class and will not acquire one. The tool reports evidence; a human decides.
 
 ## Versioning contract
@@ -103,7 +103,7 @@ One entry per **rule and subject**, not per occurrence.
 | `rule_id` | Stable id from the ruleset. New ids may appear without a version bump. |
 | `subject` | The table entry that matched, or `null`. |
 | `subject_kind` | What `subject` names: `distribution`, `library`, `crate`, `module`, `symbol_group`, `string_group`, `constant`, `attribute`, `component`, `generator`, `format`. `null` when there is no subject. |
-| `severity` | `high` / `medium` / `low` / `info`. **Strength of the evidence, not a compliance judgement.** |
+| `severity` | `high` / `medium` / `low` / `info`. **Strength of the evidence, not a compatibility judgement.** |
 | `category`, `layer`, `confidence` | Classification, source layer, and how sure we are the match means what we think. |
 | `verdict` | The class this finding pushes the wheel into, or `null` for informational findings. |
 | `occurrences` | Number of **distinct locations**. Two calls on one line count once. |

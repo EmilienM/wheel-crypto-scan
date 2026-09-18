@@ -57,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog=TOOL_NAME,
         description=(
             "Report crypto-relevant evidence found inside Python wheels. "
-            "This tool gathers evidence; it does not decide FIPS compliance."
+            "This tool gathers evidence; it does not decide FIPS compatibility."
         ),
     )
     parser.add_argument("--version", action="version", version=f"{TOOL_NAME} {__version__}")
