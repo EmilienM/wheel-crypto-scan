@@ -1,21 +1,30 @@
-"""The reader for objects this package has no structural reader for.
+"""Reading an object for strings alone, when nothing better is available.
 
 It exists so that "we could not parse this" and "there was nothing to find" never
-produce the same record. An object in a format with no reader, or in no format at all,
-still gets the strings-and-rust-crates pass and still comes back marked
-`partial_analysis`, which is what keeps a wheel from looking clean merely because the
-tool could not read it.
+produce the same record. Whatever the strings pass finds is real evidence and does not
+depend on any structure being readable: `cryptography` 42 and later compiles OpenSSL
+straight into the extension, with no library file and no dependency to name, so on some
+builds the only evidence of it is an `OpenSSL 3.2.1` banner in read-only data.
 
-Unlike the three structural readers, this one cannot name its own format: it serves
-whatever `binfmt.detect_format` returned, including a format that is recognised but
-has no reader registered yet. `fmt` is therefore required, and passing the wrong one
-mislabels the record, so it is the caller's business and never defaulted.
+Two callers. `binfmt.read_binary` dispatches here for a format with no registered
+reader. `binfmt.elf` and `binfmt.macho` call it when their own parse fails, which is the
+reader contract stated in `binfmt`: a header that did not parse costs the header, never
+the strings already in hand. `binfmt.pe` keeps that contract without coming through
+here, writing its own failure records field by field for the reason its module says.
+Either way the record comes back marked `partial_analysis`, so a wheel never looks clean
+merely because the tool could not read it.
+
+`fmt` is required and never defaulted. This reader cannot name its own format: it
+serves whatever `binfmt.detect_format` returned, including a format that is recognised
+but has no reader yet, and a structural reader passes its own. Passing the wrong one
+mislabels the record.
 """
 
 from __future__ import annotations
 
 from ..evidence import BinaryEvidence, ScanError
 from ..ruleset import BinaryPatterns
+from .golang import build_go_info
 from .strings import scan_strings
 
 
@@ -30,10 +39,18 @@ def read_strings_only(
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Read `stream` for printable strings and cargo paths, and nothing else.
 
-    Returns no errors. Not being able to parse a format this tool never claimed to
-    parse is not a failure worth recording; `partial_analysis` already says the object
-    was not read in full.
+    Contributes no errors of its own. On the dispatch path there is nothing to
+    record: not parsing a format this tool never claimed to parse is not a failure, and
+    `partial_analysis` already says the object was not read in full. A structural reader
+    calling in from its own failure path records that failure at the call site.
     """
+    # Deriving the size here rather than taking it from the caller costs a pass over
+    # the object, and every caller already holds it. It stays anyway: through a
+    # `wheelfile.SeekableZipMember` the seek to the end is what forces the reopen that
+    # clears the retained window, and without it the following `seek(0)` is served from
+    # a warm window whose short read returns a few dozen bytes. That failure is silent
+    # -- an object scanned for no strings at all, with nothing raised -- so an optional
+    # `size` has to come with a read loop or a `BufferedReader`, not on its own.
     stream.seek(0, 2)
     size = stream.tell()
     stream.seek(0)
@@ -41,6 +58,11 @@ def read_strings_only(
     truncated = size > max_strings_bytes
 
     strings_found = scan_strings(data, patterns, max_strings_bytes)
+    # `binfmt.pe` has always kept its Go markers across a header that would not parse.
+    # Building them here is what makes that true of every format rather than one: the
+    # markers are in the strings, and this reader never has `.go.buildinfo` bytes to
+    # pass, so `None` is not a loss of anything.
+    go = build_go_info(None, strings_found.text, patterns)
 
     result = BinaryEvidence(
         path=path,
@@ -48,6 +70,7 @@ def read_strings_only(
         vendored_path=vendored,
         matched_strings=strings_found.matched_strings,
         rust_crates=strings_found.rust_crates,
+        go=go,
         strings_truncated=truncated or strings_found.truncated,
         partial_analysis=True,
     )

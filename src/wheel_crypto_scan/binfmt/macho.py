@@ -19,11 +19,12 @@ tables. `LC_SYMTAB` is normally kept beside them, but an object that carries one
 `nsyms == 0` is read here as a complete read of an empty table, so its imports are
 missed rather than reported as unread.
 
-`partial_analysis` survives for two cases: a `LC_SYMTAB` that could not be read in
+`partial_analysis` survives for three cases: a `LC_SYMTAB` that could not be read in
 full, whether it is absent, unreachable or names nothing we could resolve, so the
-imported/defined split is missing or incomplete; and a fat binary, where only the
-first slice is examined and the other slices are left unread pending the follow-up
-work to walk all of them.
+imported/defined split is missing or incomplete; a fat binary, where only the first
+slice is examined and the other slices are left unread pending the follow-up work to
+walk all of them; and a header or set of load commands that would not parse at all,
+which costs the structural read but not the strings already found.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from .. import evidence
 from ..errors import MACHO_PARSE_ERROR
 from ..evidence import BinaryEvidence, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
+from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
 
@@ -108,10 +110,34 @@ def _error(path: str, message: str) -> ScanError:
     )
 
 
-def _empty(path: str, *, vendored: bool) -> BinaryEvidence:
-    return BinaryEvidence(
-        path=path, format=evidence.FORMAT_MACHO, vendored_path=vendored, partial_analysis=True
+def _unparsed(
+    stream,
+    path: str,
+    patterns: BinaryPatterns,
+    *,
+    vendored: bool,
+    max_strings_bytes: int,
+    message: str,
+) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
+    """Evidence for a Mach-O whose structure we could not read, plus the error saying so.
+
+    A fat header that will not parse, or load commands that run off the end, cost the
+    header fields and the symbol table. They do not cost the banner a statically linked
+    OpenSSL left in the object, which is sometimes the only evidence there is.
+
+    This re-reads from the start, which the happy path is careful never to do. That is
+    affordable precisely here: this object is being abandoned, so nothing later pays for
+    the reopen this forces.
+    """
+    result, _ = read_strings_only(
+        stream,
+        path,
+        patterns,
+        vendored=vendored,
+        fmt=evidence.FORMAT_MACHO,
+        max_strings_bytes=max_strings_bytes,
     )
+    return result, (_error(path, message),)
 
 
 def read_macho(
@@ -135,7 +161,14 @@ def read_macho(
     stream.seek(0)
     head = stream.read(4)
     if len(head) < 4:
-        return _empty(path, vendored=vendored), (_error(path, "object is too short to sniff"),)
+        return _unparsed(
+            stream,
+            path,
+            patterns,
+            vendored=vendored,
+            max_strings_bytes=max_strings_bytes,
+            message="object is too short to sniff",
+        )
     magic = int.from_bytes(head, "big")
 
     is_fat = magic in (_FAT_MAGIC, _FAT_CIGAM)
@@ -146,10 +179,22 @@ def read_macho(
             stream.seek(0)
             found = _find_fat_slice(stream, size)
         except Exception:
-            return _empty(path, vendored=vendored), (_error(path, "failed to read the fat header"),)
+            return _unparsed(
+                stream,
+                path,
+                patterns,
+                vendored=vendored,
+                max_strings_bytes=max_strings_bytes,
+                message="failed to read the fat header",
+            )
         if found is None:
-            return _empty(path, vendored=vendored), (
-                _error(path, "no readable slice in fat binary"),
+            return _unparsed(
+                stream,
+                path,
+                patterns,
+                vendored=vendored,
+                max_strings_bytes=max_strings_bytes,
+                message="no readable slice in fat binary",
             )
         slice_offset, slice_size = found
         stream.seek(slice_offset)
@@ -161,16 +206,35 @@ def read_macho(
     elif magic in (_MH_MAGIC_64, _MH_CIGAM_64):
         is64, big_endian = True, magic == _MH_MAGIC_64
     else:
-        return _empty(path, vendored=vendored), (_error(path, "not a recognisable Mach-O object"),)
+        return _unparsed(
+            stream,
+            path,
+            patterns,
+            vendored=vendored,
+            max_strings_bytes=max_strings_bytes,
+            message="not a recognisable Mach-O object",
+        )
 
     try:
         stream.seek(slice_offset)
         header_evidence = _read_thin(stream, slice_offset, slice_size, is64, big_endian)
     except struct.error:
-        return _empty(path, vendored=vendored), (_error(path, "mach-o header is truncated"),)
+        return _unparsed(
+            stream,
+            path,
+            patterns,
+            vendored=vendored,
+            max_strings_bytes=max_strings_bytes,
+            message="mach-o header is truncated",
+        )
     except Exception:
-        return _empty(path, vendored=vendored), (
-            _error(path, "failed to parse mach-o load commands"),
+        return _unparsed(
+            stream,
+            path,
+            patterns,
+            vendored=vendored,
+            max_strings_bytes=max_strings_bytes,
+            message="failed to parse mach-o load commands",
         )
 
     cputype, soname, needed, rpath, symtab = header_evidence

@@ -498,3 +498,100 @@ def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
     stream = io.BytesIO(ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build())
     ev, _ = read_elf(stream, "mod.so", PATTERNS, vendored=False, max_strings_bytes=8)
     assert ev.strings_truncated is True
+
+
+# --- a header that does not parse costs the header, not the strings ----------
+
+BANNER = b"OpenSSL 3.0.14 4 Jun 2024"
+CARGO = b"/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ring-0.17.8/src/lib.rs"
+
+
+def test_unparseable_header_keeps_the_strings_it_already_found() -> None:
+    """The headline case: `cryptography` 42+ compiles OpenSSL into the extension.
+
+    There is no library file and no `DT_NEEDED` to find, so on some builds the banner
+    in read-only data is the only evidence the object carries. Throwing it away because
+    `ELFFile()` raised is how a wheel ends up looking clean.
+    """
+    data = b"\x7fELF" + b"\x00" * 12 + BANNER + b"\x00" + CARGO + b"\x00"
+    ev, errors = _read(data, path="broken.so")
+    assert [e.kind for e in errors] == [BINARY_UNKNOWN_FORMAT]
+    assert ev.format == evidence.FORMAT_ELF
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+    assert [(c.name, c.version) for c in ev.rust_crates] == [("ring", "0.17.8")]
+
+
+def test_unparseable_header_marks_the_object_partial() -> None:
+    """An object we could not read at all has to say so.
+
+    This was the more serious half: `partial_analysis` stayed `False`, so nothing
+    raised `BIN_PARTIAL_FORMAT` and the record never flagged itself incomplete.
+    """
+    ev, _ = _read(b"\x7fELF" + b"\x00" * 12 + BANNER, path="broken.so")
+    assert ev.partial_analysis is True
+
+
+def test_truncated_section_header_table_keeps_strings_and_marks_partial() -> None:
+    full = ElfBuilder(rodata=BANNER + b"\x00").build()
+    corrupt = patch_u16(full, E_SHNUM_OFFSET[64], 0xFFFF, big_endian=False)
+    ev, errors = _read(corrupt, path="trunc.so")
+    assert [e.kind for e in errors] == [BINARY_TRUNCATED]
+    assert ev.partial_analysis is True
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_unparseable_header_still_reports_no_structural_evidence() -> None:
+    """Strings survive; nothing else is invented to go with them."""
+    ev, _ = _read(b"\x7fELF" + b"\x00" * 12 + BANNER, path="broken.so")
+    assert ev.needed == ()
+    assert ev.soname is None
+    assert ev.matched_symbols == ()
+    assert ev.machine is None
+    assert ev.dynsym_count == 0
+
+
+def test_a_truncated_section_table_keeps_the_header_fields_it_did_parse() -> None:
+    """The ELF header parsed; only what it pointed at did not, so those four survive.
+
+    Same contract as the strings: a structure that does not parse costs that structure,
+    never what was already read. A truncated object still saying it is 64-bit x86-64
+    has told us something.
+    """
+    full = ElfBuilder(rodata=BANNER + b"\x00").build()
+    corrupt = patch_u16(full, E_SHNUM_OFFSET[64], 0xFFFF, big_endian=False)
+    ev, errors = _read(corrupt, path="trunc.so")
+    assert [e.kind for e in errors] == [BINARY_TRUNCATED]
+    assert (ev.machine, ev.bits, ev.endian, ev.elf_type) == ("EM_X86_64", 64, "little", "ET_DYN")
+    # Nothing the section headers would have supplied is invented to go with them.
+    assert ev.needed == ()
+    assert ev.matched_symbols == ()
+
+
+def test_an_unparseable_elf_header_leaves_the_header_fields_empty() -> None:
+    """Nothing parsed, so nothing is claimed."""
+    ev, _ = _read(b"\x7fELF" + b"\x00" * 12 + BANNER, path="broken.so")
+    assert (ev.machine, ev.bits, ev.endian, ev.elf_type) == (None, None, None, None)
+
+
+def test_go_markers_survive_a_header_that_would_not_parse() -> None:
+    """`binfmt.pe` always kept these; the contract says every format does."""
+    marker = b"GOEXPERIMENT=boringcrypto\x00_Cfunc__goboringcrypto_DLEAY_version\x00"
+    ev, _ = _read(b"\x7fELF" + b"\x00" * 12 + marker, path="broken.so")
+    assert ev.go is not None
+    assert ev.go.boring_crypto is True
+
+
+def test_the_fallback_reports_a_string_not_a_section_it_cannot_know() -> None:
+    """The whole-file fallback can match a name out of `.dynstr`, not just a banner.
+
+    An object that merely *imports* mbedTLS matches the `mbedtls` string group this way.
+    The record is honest about it because `engine` labels the evidence `string=` rather
+    than naming a section the reader never identified, and the object stays partial.
+    """
+    full = ElfBuilder(
+        needed=("libmbedtls.so.14",), dynsyms=(DynSym("mbedtls_ssl_init", defined=False),)
+    ).build()
+    corrupt = patch_u16(full, E_SHNUM_OFFSET[64], 0xFFFF, big_endian=False)
+    ev, _ = _read(corrupt, path="trunc.so")
+    assert [m.group for m in ev.matched_strings] == ["mbedtls"]
+    assert ev.partial_analysis is True

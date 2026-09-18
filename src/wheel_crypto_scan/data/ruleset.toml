@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "3"
+ruleset_version = "4"
 
 
 # ---------------------------------------------------------------------------
@@ -467,9 +467,11 @@ why = "Curve25519 family. Status depends on the standard revision and on validat
 
 
 # ---------------------------------------------------------------------------
-# Read-only data strings. The scanner extracts printable runs from the binary's
-# non-executable allocated sections itself and matches them here. Substrings are
-# plain text; keep them distinctive enough not to match ordinary English.
+# Embedded strings. The scanner extracts printable runs from the binary itself and
+# matches them here. Which bytes those runs come from is per format: `binfmt.elf` reads
+# the non-executable allocated sections, while Mach-O, PE and the strings-only fallback
+# read the whole object, so a match can be a symbol name rather than a banner. Substrings
+# are plain text; keep them distinctive enough not to match ordinary English.
 # ---------------------------------------------------------------------------
 
 [[string_group]]
@@ -1493,7 +1495,7 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "Binary format only partially readable"
-why = "Part of this object was not read, so some dependency or symbol evidence is missing for it: the format has no structural reader and was read for strings only, or a PE has a truncated section table, declares no import directory, has one that could not be walked, names an import or an export by ordinal alone, or carries a delay-load import directory that this tool does not parse, or a Mach-O symbol table could not be read in full, or a fat Mach-O carries slices we never examined. Recorded so a wheel can never look clean merely because we read less of it."
+why = "Part of this object was not read, so some dependency or symbol evidence is missing for it: the format has no structural reader and was read for strings only, or the object's own header would not parse and only its strings survive, or a PE has a truncated section table, declares no import directory, has one that could not be walked, names an import or an export by ordinal alone, or carries a delay-load import directory that this tool does not parse, or a Mach-O symbol table could not be read in full, or a fat Mach-O carries slices we never examined. Recorded so a wheel can never look clean merely because we read less of it."
 [rule.match]
 kind = "partial_binary"
 

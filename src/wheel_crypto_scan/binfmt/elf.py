@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, replace
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import Section
@@ -26,6 +27,7 @@ from .. import evidence
 from ..errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
+from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
 
@@ -37,8 +39,61 @@ def _error(path: str, kind: str, message: str) -> ScanError:
     return ScanError(stage=evidence.STAGE_BINARY, kind=kind, message=message, path=path)
 
 
-def _empty(path: str, *, vendored: bool) -> BinaryEvidence:
-    return BinaryEvidence(path=path, format=evidence.FORMAT_ELF, vendored_path=vendored)
+@dataclass(frozen=True, slots=True)
+class _ElfHeader:
+    """The four fields the ELF header alone yields, before any section is reached."""
+
+    machine: str
+    bits: int
+    endian: str
+    elf_type: str
+
+
+def _unparsed(
+    stream,
+    path: str,
+    patterns: BinaryPatterns,
+    *,
+    vendored: bool,
+    max_strings_bytes: int,
+    kind: str,
+    message: str,
+    header: _ElfHeader | None = None,
+) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
+    """Evidence for an ELF whose structure we could not read, plus the error saying so.
+
+    The structural read is gone, but the strings are not: a statically linked OpenSSL
+    leaves its banner in read-only data whether or not `ELFFile` can make sense of the
+    section headers, and that banner is sometimes the only evidence the object carries.
+    This also marks the object `partial_analysis`, which the old empty record did not:
+    an object we could not read has to say so, or nothing flags the record incomplete.
+
+    `header` is passed when the ELF header itself parsed and only what it pointed at did
+    not. Those four fields were read, so by the same contract they survive: a truncated
+    object that still says it is 64-bit x86-64 has told us something.
+
+    Note the strings here come from the whole file, not from the allocated non-executable
+    sections the happy path filters to, because there is no section list to filter by.
+    A match can therefore be a name out of `.dynstr` rather than a banner, which is why
+    `engine` labels this evidence `string=` rather than naming a section.
+    """
+    result, _ = read_strings_only(
+        stream,
+        path,
+        patterns,
+        vendored=vendored,
+        fmt=evidence.FORMAT_ELF,
+        max_strings_bytes=max_strings_bytes,
+    )
+    if header is not None:
+        result = replace(
+            result,
+            machine=header.machine,
+            bits=header.bits,
+            endian=header.endian,
+            elf_type=header.elf_type,
+        )
+    return result, (_error(path, kind, message),)
 
 
 # ELF symbol table entry layout: offsets of the two fields we need, by class.
@@ -111,8 +166,14 @@ def read_elf(
         endian = "little" if elf.little_endian else "big"
         elf_type = str(elf.header["e_type"])
     except Exception:
-        return _empty(path, vendored=vendored), (
-            _error(path, BINARY_UNKNOWN_FORMAT, "not a recognisable ELF object"),
+        return _unparsed(
+            stream,
+            path,
+            patterns,
+            vendored=vendored,
+            max_strings_bytes=max_strings_bytes,
+            kind=BINARY_UNKNOWN_FORMAT,
+            message="not a recognisable ELF object",
         )
 
     errors: list[ScanError] = []
@@ -128,8 +189,15 @@ def read_elf(
     except Exception:
         shoff = shnum = shentsize = 0
     if shnum and size < shoff + shnum * shentsize:
-        return _empty(path, vendored=vendored), (
-            _error(path, BINARY_TRUNCATED, "elf section header table is truncated"),
+        return _unparsed(
+            stream,
+            path,
+            patterns,
+            vendored=vendored,
+            max_strings_bytes=max_strings_bytes,
+            kind=BINARY_TRUNCATED,
+            message="elf section header table is truncated",
+            header=_ElfHeader(machine=machine, bits=bits, endian=endian, elf_type=elf_type),
         )
 
     sections: list[Section] = []
