@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .. import evidence
 from ..errors import MACHO_PARSE_ERROR
@@ -118,6 +118,7 @@ def _unparsed(
     vendored: bool,
     max_strings_bytes: int,
     message: str,
+    reason: str = "macho_structure_incomplete",
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Evidence for a Mach-O whose structure we could not read, plus the error saying so.
 
@@ -137,6 +138,7 @@ def _unparsed(
         fmt=evidence.FORMAT_MACHO,
         max_strings_bytes=max_strings_bytes,
     )
+    result = replace(result, partial_reasons=(reason,))
     return result, (_error(path, message),)
 
 
@@ -246,6 +248,9 @@ def read_macho(
     go = build_go_info(None, strings_found.text, patterns)
 
     errors: list[ScanError] = []
+    partial_reasons: set[str] = set()
+    if is_fat:
+        partial_reasons.add("macho_fat_slices_unread")
     matched_symbols: tuple[SymbolMatch, ...] = ()
     symbols_truncated = False
     symtab_count = 0
@@ -269,6 +274,8 @@ def read_macho(
         else:
             if not symbols_complete:
                 errors.append(_error(path, "mach-o symbol table could not be read in full"))
+    if not symbols_complete:
+        partial_reasons.add("macho_symtab_incomplete")
 
     machine = _CPU_TYPE_NAMES.get(cputype, f"0x{cputype & 0xFFFFFFFF:08x}")
     # The Mach-O spelling of `binfmt.elf`'s "no `.symtab`": no `LC_SYMTAB` at all, or one
@@ -297,7 +304,8 @@ def read_macho(
         go=go,
         symbols_truncated=symbols_truncated,
         strings_truncated=truncated_read or strings_found.truncated,
-        partial_analysis=not symbols_complete or is_fat,
+        partial_analysis=bool(partial_reasons),
+        partial_reasons=tuple(sorted(partial_reasons)),
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 

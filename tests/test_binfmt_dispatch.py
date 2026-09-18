@@ -66,6 +66,7 @@ def test_unknown_format_gets_a_populated_strings_only_evidence() -> None:
     assert errors == ()
     assert ev.format == evidence.FORMAT_UNKNOWN
     assert ev.partial_analysis is True
+    assert ev.partial_reasons == ("strings_only",)
 
 
 def test_a_pe_that_will_not_parse_still_extracts_rust_crates() -> None:

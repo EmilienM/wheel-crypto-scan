@@ -266,6 +266,7 @@ def read_pe(
     go = build_go_info(None, strings_found.text, patterns)
 
     errors: list[ScanError] = []
+    partial_reasons: set[str] = set()
     try:
         headers = _read_headers(raw)
     except _Malformed as bad:
@@ -282,6 +283,7 @@ def read_pe(
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
+            partial_reasons=("pe_structure_incomplete",),
         ), (_error(path, str(bad)),)
     except Exception:
         return BinaryEvidence(
@@ -293,11 +295,13 @@ def read_pe(
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
+            partial_reasons=("pe_structure_incomplete",),
         ), (_error(path, "failed to parse the pe headers"),)
 
     image = _Image(raw=raw, sections=headers.sections)
     if not headers.sections_complete:
         errors.append(_error(path, "pe section table is truncated"))
+        partial_reasons.add("pe_sections_incomplete")
 
     entry_size = 8 if headers.is64 else 4
     import_rva, _import_size = headers.directory(_IMPORT_DIRECTORY)
@@ -316,9 +320,17 @@ def read_pe(
             imports = _read_imports(image, import_rva, entry_size)
         except Exception:
             errors.append(_error(path, "failed to read the pe import directory"))
+            partial_reasons.add("pe_import_incomplete")
         else:
             if not imports.complete:
                 errors.append(_error(path, "pe import directory could not be read in full"))
+                partial_reasons.add("pe_import_incomplete")
+            if imports.entries >= _MAX_THUNKS and not imports.complete:
+                partial_reasons.add("pe_import_budget")
+            if imports.unnamed:
+                partial_reasons.add("pe_ordinal_import")
+    else:
+        partial_reasons.add("pe_no_import_directory")
 
     exports: _Exports | None = None
     if export_rva:
@@ -326,9 +338,15 @@ def read_pe(
             exports = _read_exports(image, export_rva, export_size)
         except Exception:
             errors.append(_error(path, "failed to read the pe export directory"))
+            partial_reasons.add("pe_export_incomplete")
         else:
             if not exports.complete:
                 errors.append(_error(path, "pe export directory could not be read in full"))
+                partial_reasons.add("pe_export_incomplete")
+            if exports.unnamed:
+                partial_reasons.add("pe_ordinal_export")
+    if delay_rva:
+        partial_reasons.add("pe_delay_load")
 
     matches: set[SymbolMatch] = set()
     if imports is not None:
@@ -380,7 +398,8 @@ def read_pe(
         symtab_count=entries,
         matched_symbols=ordered[:limit],
         symbols_truncated=len(ordered) > limit,
-        partial_analysis=not complete,
+        partial_analysis=bool(partial_reasons),
+        partial_reasons=tuple(sorted(partial_reasons)),
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 

@@ -175,6 +175,7 @@ def test_the_minimal_level_drops_the_bulky_evidence_but_keeps_the_shape(ruleset)
     assert binary["matched_symbols"] == []
     assert binary["soname"] == "libcrypto-3a1f2b4c.so.3"
     assert binary["needed"] == ["libc.so.6"]
+    assert binary["partial_reasons"] == []
 
 
 def test_findings_are_unaffected_by_the_evidence_level(ruleset) -> None:

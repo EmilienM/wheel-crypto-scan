@@ -59,6 +59,7 @@ def _unparsed(
     kind: str,
     message: str,
     header: _ElfHeader | None = None,
+    reason: str = "elf_structure_incomplete",
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Evidence for an ELF whose structure we could not read, plus the error saying so.
 
@@ -92,7 +93,10 @@ def _unparsed(
             bits=header.bits,
             endian=header.endian,
             elf_type=header.elf_type,
+            partial_reasons=(reason,),
         )
+    else:
+        result = replace(result, partial_reasons=(reason,))
     return result, (_error(path, kind, message),)
 
 

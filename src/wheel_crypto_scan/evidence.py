@@ -123,6 +123,7 @@ class BinaryEvidence:
     # in full; or the slices of a fat binary that were never examined. A wheel can never
     # look clean merely because we read less of it than usual.
     partial_analysis: bool = False
+    partial_reasons: tuple[str, ...] = ()
 
     @property
     def is_opaque(self) -> bool:

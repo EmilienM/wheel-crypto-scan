@@ -73,5 +73,6 @@ def read_strings_only(
         go=go,
         strings_truncated=truncated or strings_found.truncated,
         partial_analysis=True,
+        partial_reasons=("strings_only",),
     )
     return result, ()

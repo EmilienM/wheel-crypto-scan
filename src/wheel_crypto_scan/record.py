@@ -159,6 +159,7 @@ def _binary_block(binary: BinaryEvidence, level: str) -> dict[str, Any]:
             "strings": binary.strings_truncated,
         },
         "partial_analysis": binary.partial_analysis,
+        "partial_reasons": list(binary.partial_reasons),
     }
 
 

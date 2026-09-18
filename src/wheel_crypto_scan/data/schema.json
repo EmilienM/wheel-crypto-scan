@@ -297,7 +297,8 @@
           "rust_crates",
           "go",
           "truncated",
-          "partial_analysis"
+          "partial_analysis",
+          "partial_reasons"
         ],
         "properties": {
           "path": {
@@ -487,6 +488,13 @@
           "partial_analysis": {
             "type": "boolean",
             "description": "True when part of the object was not read: a format with no structural reader (strings only); a PE whose section table was truncated, whose import directory was absent or could not be walked, that names an import or an export by ordinal alone, or that carries a delay-load import directory, which is not parsed; a Mach-O whose LC_SYMTAB could not be read in full; or the unexamined slices of a fat Mach-O."
+          },
+          "partial_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Stable, sorted tokens identifying why partial_analysis is true. Consumers must treat the values as open-ended."
           }
         }
       }

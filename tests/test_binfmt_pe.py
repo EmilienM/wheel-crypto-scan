@@ -57,6 +57,7 @@ def test_the_import_directory_names_every_dll_the_object_depends_on() -> None:
     assert ev.needed == (OPENSSL_DLL, "python312.dll")
     assert ev.format == evidence.FORMAT_PE
     assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()
 
 
 def test_the_export_directory_names_the_object_itself() -> None:
@@ -250,6 +251,7 @@ def test_an_object_with_no_import_directory_stays_partial() -> None:
     assert ev.needed == ()
     assert ev.soname == "_ext.pyd"
     assert ev.partial_analysis is True
+    assert ev.partial_reasons == ("pe_no_import_directory",)
 
 
 def test_an_import_array_with_no_terminator_is_an_error() -> None:
@@ -386,6 +388,7 @@ def test_an_ordinal_only_import_is_counted_and_leaves_the_object_partial() -> No
     assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
     assert ev.symtab_count == 4  # one named import, two ordinals, one export
     assert ev.partial_analysis is True
+    assert ev.partial_reasons == ("pe_ordinal_import",)
 
 
 @pytest.mark.parametrize("size", [32, 0], ids=["sized", "size-zero"])
@@ -402,6 +405,7 @@ def test_a_delay_load_import_directory_leaves_the_object_partial(size: int) -> N
     assert errors == ()
     assert ev.needed == (OPENSSL_DLL, "python312.dll")
     assert ev.partial_analysis is True
+    assert ev.partial_reasons == ("pe_delay_load",)
 
 
 # --- exports that cannot be believed -----------------------------------------
@@ -532,6 +536,7 @@ def test_a_missing_pe_signature_is_an_error() -> None:
     assert [error.kind for error in errors] == [PE_PARSE_ERROR]
     assert errors[0].message == "pe signature is missing"
     assert ev.partial_analysis is True
+    assert ev.partial_reasons == ("pe_structure_incomplete",)
 
 
 def test_an_unrecognised_optional_header_magic_is_an_error() -> None:
