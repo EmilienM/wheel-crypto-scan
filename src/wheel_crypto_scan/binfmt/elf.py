@@ -16,7 +16,8 @@ of `.rodata`.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import struct
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 
 from elftools.elf.elffile import ELFFile
@@ -49,6 +50,42 @@ def _error(path: str, kind: str, message: str) -> ScanError:
 
 def _empty(path: str, *, vendored: bool) -> BinaryEvidence:
     return BinaryEvidence(path=path, format=evidence.FORMAT_ELF, vendored_path=vendored)
+
+
+# ELF symbol table entry layout: offsets of the two fields we need, by class.
+# 64-bit: st_name(4) st_info(1) st_other(1) st_shndx(2) st_value(8) st_size(8)
+# 32-bit: st_name(4) st_value(4) st_size(4) st_info(1) st_other(1) st_shndx(2)
+_SYM_LAYOUT = {64: (24, 0, 6), 32: (16, 0, 14)}
+_SHN_UNDEF = 0
+
+
+def _iter_symbols(elf, section) -> Iterator[tuple[str, bool]]:
+    """Yield (name, is_undefined) for a symbol table, reading it in two passes total.
+
+    pyelftools' `get_symbol()` seeks per symbol, alternating between the table and its
+    string table. On a member too large to hold in memory those seeks run backwards
+    through a zip stream, and a backwards seek costs a fresh decompression. A real
+    example: pandoc ships a 400 MiB object with 497,040 dynamic symbols, which never
+    finished. Reading both sections once turns that into two forward reads.
+    """
+    entry_size, name_offset, shndx_offset = _SYM_LAYOUT[elf.elfclass]
+    data = section.data()
+    strtab = elf.get_section(section["sh_link"])
+    names = strtab.data() if strtab is not None else b""
+    end = "<" if elf.little_endian else ">"
+    u32 = struct.Struct(end + "I")
+    u16 = struct.Struct(end + "H")
+
+    for base in range(0, len(data) - entry_size + 1, entry_size):
+        st_name = u32.unpack_from(data, base + name_offset)[0]
+        if st_name == 0 or st_name >= len(names):
+            continue
+        stop = names.find(b"\x00", st_name)
+        raw = names[st_name:stop] if stop != -1 else names[st_name:]
+        name = _sanitize(raw.decode("utf-8", "replace"))
+        if not name:
+            continue
+        yield name, u16.unpack_from(data, base + shndx_offset)[0] == _SHN_UNDEF
 
 
 def _find_section(sections: Sequence[Section], name: str) -> Section | None:
@@ -145,26 +182,16 @@ def read_elf(
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic symbol table"))
             dynsym_count = 0
-        for index in range(dynsym_count):
-            try:
-                symbol = dynsym.get_symbol(index)
-                name = _sanitize(symbol.name)
-                if not name:
-                    continue
+        try:
+            for name, undefined in _iter_symbols(elf, dynsym):
                 groups = patterns.symbol_groups_for(name)
                 if not groups:
                     continue
-                binding = (
-                    evidence.BINDING_IMPORTED
-                    if symbol["st_shndx"] == "SHN_UNDEF"
-                    else evidence.BINDING_DEFINED
-                )
+                binding = evidence.BINDING_IMPORTED if undefined else evidence.BINDING_DEFINED
                 for group in groups:
                     symbol_matches.add(SymbolMatch(name=name, group=group, binding=binding))
-            except Exception:
-                errors.append(
-                    _error(path, ELF_PARSE_ERROR, "failed to read a dynamic symbol table entry")
-                )
+        except Exception:
+            errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic symbol table"))
 
     symtab = _find_section(sections, ".symtab")
     symtab_count = 0

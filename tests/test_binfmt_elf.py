@@ -398,3 +398,73 @@ def test_hostbin_libcrypto_soname_and_evp_digestinit_ex_defined() -> None:
     digest = [m for m in ev.matched_symbols if m.name == "EVP_DigestInit_ex"]
     assert len(digest) == 1
     assert digest[0].binding == evidence.BINDING_DEFINED
+
+
+# --- reading symbol tables without seeking per symbol ------------------------
+
+
+def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
+    """The hand-rolled parser must produce exactly what pyelftools would.
+
+    It exists because pyelftools seeks per symbol, which is catastrophic on a
+    streamed member, but it is only safe if it reads the same bytes the same way.
+    """
+    import io
+
+    from elftools.elf.elffile import ELFFile
+
+    from wheel_crypto_scan.binfmt.elf import _iter_symbols
+
+    for elfclass, big_endian in ((64, False), (32, False), (64, True), (32, True)):
+        symbols = tuple(DynSym(f"sym_{i:03d}", defined=(i % 3 == 0)) for i in range(60)) + (
+            DynSym("EVP_DigestInit_ex", defined=False),
+            DynSym("sodium_init", defined=True),
+        )
+        blob = ElfBuilder(
+            elfclass=elfclass, big_endian=big_endian, dynsyms=symbols, needed=("libc.so.6",)
+        ).build()
+
+        elf = ELFFile(io.BytesIO(blob))
+        section = elf.get_section_by_name(".dynsym")
+        expected = [
+            (s.name, s["st_shndx"] == "SHN_UNDEF") for s in section.iter_symbols() if s.name
+        ]
+        actual = list(_iter_symbols(elf, section))
+        assert actual == expected, f"mismatch for elfclass={elfclass} big_endian={big_endian}"
+
+
+def test_a_large_symbol_table_does_not_thrash_a_streamed_member(tmp_path) -> None:
+    """One wheel must not be able to hang an index scan.
+
+    pandoc ships a 400 MiB object with ~497,000 dynamic symbols. Read through a
+    streamed zip member with a per-symbol seek, that never finished.
+    """
+    import io
+    import zipfile
+
+    from wheel_crypto_scan.binfmt.elf import read_elf
+    from wheel_crypto_scan.ruleset import load_ruleset
+    from wheel_crypto_scan.wheelfile import SeekableZipMember
+
+    symbols = tuple(DynSym(f"filler_symbol_{i:06d}", defined=True) for i in range(20000))
+    symbols += (DynSym("EVP_DigestInit_ex", defined=False),)
+    blob = ElfBuilder(dynsyms=symbols, needed=("libcrypto.so.3",), rodata=b"x" * 400000).build()
+
+    archive_path = tmp_path / "big.zip"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(zipfile.ZipInfo("lib/big.so", date_time=(1980, 1, 1, 0, 0, 0)), blob)
+
+    patterns = load_ruleset().compile_patterns()
+    with zipfile.ZipFile(archive_path) as archive:
+        # window_bytes=0 is the worst case: no read-back at all.
+        member = SeekableZipMember(archive, "lib/big.so", len(blob), 0)
+        stream = io.BufferedReader(member)
+        found, errors = read_elf(stream, "lib/big.so", patterns, vendored=False)
+        stream.close()
+
+    assert errors == ()
+    assert found.dynsym_count == len(symbols) + 1
+    assert any(s.name == "EVP_DigestInit_ex" for s in found.matched_symbols)
+    # The cost must scale with the number of sections, not the number of symbols.
+    # Before the fix this was one full decompression per symbol.
+    assert member.reopens < 50, f"re-decompressed {member.reopens} times"
