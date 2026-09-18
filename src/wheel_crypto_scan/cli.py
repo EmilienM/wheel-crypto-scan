@@ -112,14 +112,24 @@ def _run_scan(args: argparse.Namespace) -> int:
     existing: dict[str, str] = {}
     if args.resume and args.output is not None:
         existing = _existing_records(args.output)
-        wheels = [wheel for wheel in wheels if wheel.name not in existing]
 
-    lines = _scan_all(wheels, args, ruleset)
+    pending = [wheel for wheel in wheels if wheel.name not in existing]
+    scanned = _scan_all(pending, args, ruleset)
     if not args.quiet:
-        lines = _with_progress(lines, len(wheels))
+        scanned = _with_progress(scanned, len(pending))
 
-    output_lines = list(existing.values()) + list(lines)
-    return _write(output_lines, args)
+    # Reuse kept records in discovery order rather than prepending them. Resuming an
+    # interrupted run has to produce the same bytes as scanning from scratch, for the
+    # same reason parallelism does.
+    return _write(_merge(wheels, existing, scanned), args)
+
+
+def _merge(
+    wheels: Sequence[Path], existing: dict[str, str], scanned: Iterator[str]
+) -> Iterator[str]:
+    for wheel in wheels:
+        kept = existing.get(wheel.name)
+        yield kept if kept is not None else next(scanned)
 
 
 def _scan_all(wheels: Sequence[Path], args: argparse.Namespace, ruleset: Ruleset) -> Iterator[str]:
@@ -206,7 +216,9 @@ def _existing_records(output: Path) -> dict[str, str]:
     return records
 
 
-def _write(lines: Sequence[str], args: argparse.Namespace) -> int:
+def _write(lines: Iterable[str], args: argparse.Namespace) -> int:
+    """Stream records out. Only the Markdown summary needs them all in memory at once."""
+
     def emit(stream: TextIO) -> None:
         if args.format == "md":
             stream.write(render_markdown([json.loads(line) for line in lines]))

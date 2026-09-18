@@ -29,10 +29,6 @@ _HEADER_SIZE = 32
 # ("go1.22.3", "go1.23rc1") without being permissive enough to accept arbitrary junk.
 _VERSION_RE = re.compile(r"^go[0-9]+\.[0-9]+(?:\.[0-9]+)?[A-Za-z0-9.-]*$")
 
-# String groups that identify a Go binary's crypto backend even when the buildinfo
-# section is absent or unparseable (e.g. an older Go version, or a stripped section).
-_MARKER_GROUPS = ("go_boring", "go_stock_crypto")
-
 
 def _read_uvarint(data: bytes, offset: int) -> tuple[int, int] | None:
     """Decode a Go `encoding/binary` uvarint starting at `offset`.
@@ -94,9 +90,10 @@ def build_go_info(buildinfo: bytes | None, text: str, patterns: ScanPatterns) ->
     record that fact even when this returns None.
     """
     go_version = parse_go_buildinfo(buildinfo) if buildinfo is not None else None
-    marker_groups = {
-        group.name: group for group in patterns.string_groups if group.name in _MARKER_GROUPS
-    }
+    # The group names come from the ruleset, so renaming a group there cannot silently
+    # flip `boring_crypto` while the matching rule still fires.
+    wanted = {patterns.go_boring_group, patterns.go_stock_group}
+    marker_groups = {group.name: group for group in patterns.string_groups if group.name in wanted}
     markers = tuple(
         sorted(name for name, group in marker_groups.items() if group.pattern.search(text))
     )
@@ -104,6 +101,6 @@ def build_go_info(buildinfo: bytes | None, text: str, patterns: ScanPatterns) ->
         return None
     return GoBuildInfo(
         go_version=go_version,
-        boring_crypto="go_boring" in markers,
+        boring_crypto=patterns.go_boring_group in markers,
         markers=markers,
     )

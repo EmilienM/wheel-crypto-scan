@@ -8,6 +8,11 @@ scans stays legible.
 `subject` is the table entry that matched, where there was one: the crate, library,
 module or distribution. Without it a rule like BIN_RUST_CRYPTO_CRATE would have to
 collapse `ring` and `blake3` into a single finding and lose their different verdicts.
+`subject_kind` says which of those it is, so a consumer can interpret `subject` without
+keeping its own table of what each rule id means.
+
+`occurrences` counts distinct locations, not raw matches: two `hashlib.md5()` calls on
+one line are one location and count once.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ class Finding:
     truncated: bool = False
     verdict: str | None = None
     subject: str | None = None
+    subject_kind: str | None = None
 
     def sort_key(self) -> tuple[str, str]:
         return (self.rule_id, self.subject or "")

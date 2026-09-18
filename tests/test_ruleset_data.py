@@ -187,8 +187,15 @@ def test_symbol_groups_are_non_empty(ruleset: dict[str, Any]) -> None:
 def test_linkage_rules_use_known_values(ruleset: dict[str, Any]) -> None:
     known = {"system", "bundled", "static", "mixed", "none", "unknown"}
     for rule in ruleset["rule"]:
-        if rule["match"]["kind"] == "linkage":
-            assert rule["match"]["value"] in known, rule["id"]
+        match = rule["match"]
+        if match["kind"] != "linkage":
+            continue
+        values = match.get("values", [])
+        if "value" in match:
+            values = [match["value"], *values]
+        assert values, rule["id"]
+        for value in values:
+            assert value in known, rule["id"]
 
 
 def test_every_error_kind_is_covered_by_a_rule(ruleset: dict[str, Any]) -> None:

@@ -1,71 +1,265 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://packages.redhat.com/schemas/wheel-crypto-scan/1.json",
+  "$id": "https://raw.githubusercontent.com/EmilienM/wheel-crypto-scan/wheel-crypto-scan/src/wheel_crypto_scan/data/schema.json",
   "title": "wheel-crypto-scan record",
   "description": "One record per wheel. Evidence only: no field of this document asserts FIPS compliance, and the verdict taxonomy has no passing class. Consumers must ignore unknown keys; added optional keys and added rule ids do not bump schema_version, while removing or retyping a field does.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["schema_version", "tool", "wheel", "artifacts", "binaries", "findings", "verdict", "errors"],
+  "required": [
+    "schema_version",
+    "tool",
+    "wheel",
+    "artifacts",
+    "binaries",
+    "findings",
+    "verdict",
+    "errors"
+  ],
   "properties": {
-    "schema_version": {"type": "integer", "const": 1},
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
     "tool": {
       "type": "object",
-      "required": ["name", "version", "ruleset_version", "analyzer_version"],
+      "required": [
+        "name",
+        "version",
+        "ruleset_version",
+        "analyzer_version",
+        "evidence_level"
+      ],
       "properties": {
-        "name": {"type": "string"},
-        "version": {"type": "string"},
-        "ruleset_version": {"type": "string", "description": "Bumped on any policy change; part of the scan cache key."},
-        "analyzer_version": {"type": "integer", "description": "Bumped when extraction behaviour changes for an unchanged wheel."}
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "ruleset_version": {
+          "type": "string",
+          "description": "Bumped on any policy change; part of the scan cache key."
+        },
+        "analyzer_version": {
+          "type": "integer",
+          "description": "Bumped when extraction behaviour changes for an unchanged wheel."
+        },
+        "evidence_level": {
+          "type": "string",
+          "description": "Which evidence level produced this record. At 'minimal' the matched_symbols, matched_strings and rust_crates arrays are not recorded, so an empty array means 'not recorded' rather than 'none found'."
+        }
       }
     },
     "wheel": {
       "type": "object",
-      "required": ["filename", "name", "canonical_name", "version", "sha256", "size_bytes", "tags", "platform_tags", "generator", "requires_python", "requires_dist", "root_is_purelib"],
+      "required": [
+        "filename",
+        "name",
+        "canonical_name",
+        "version",
+        "sha256",
+        "size_bytes",
+        "tags",
+        "platform_tags",
+        "generator",
+        "requires_python",
+        "requires_dist",
+        "root_is_purelib"
+      ],
       "properties": {
-        "filename": {"type": "string", "description": "Basename only. No host path ever appears in a record."},
-        "name": {"type": ["string", "null"], "description": "Null when the wheel's metadata could not be read."},
-        "canonical_name": {"type": ["string", "null"], "description": "PEP 503 normalised name."},
-        "version": {"type": ["string", "null"]},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "size_bytes": {"type": "integer", "minimum": 0},
-        "tags": {"type": "array", "items": {"type": "string"}},
-        "platform_tags": {"type": "array", "items": {"type": "string"}},
-        "generator": {
-          "type": ["object", "null"],
-          "required": ["name", "version", "raw"],
-          "properties": {
-            "name": {"type": ["string", "null"]},
-            "version": {"type": ["string", "null"]},
-            "raw": {"type": "string"}
+        "filename": {
+          "type": "string",
+          "description": "Basename only. No host path ever appears in a record."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Null when the wheel's metadata could not be read."
+        },
+        "canonical_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "PEP 503 normalised name."
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
           }
         },
-        "requires_python": {"type": ["string", "null"]},
-        "requires_dist": {"type": "array", "items": {"type": "string"}},
-        "root_is_purelib": {"type": ["boolean", "null"]}
+        "platform_tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "generator": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "name",
+            "version",
+            "raw"
+          ],
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "raw": {
+              "type": "string"
+            }
+          }
+        },
+        "requires_python": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requires_dist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "root_is_purelib": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
       }
     },
     "artifacts": {
       "type": "object",
-      "required": ["py_files", "pyc_files", "source_available", "record_entries", "total_uncompressed_bytes", "extensions", "bundled_libs", "sboms", "symlinks", "skipped"],
+      "required": [
+        "py_files",
+        "pyc_files",
+        "source_available",
+        "record_entries",
+        "total_uncompressed_bytes",
+        "extensions",
+        "bundled_libs",
+        "sboms",
+        "symlinks",
+        "skipped"
+      ],
       "properties": {
-        "py_files": {"type": "integer", "minimum": 0},
-        "pyc_files": {"type": "integer", "minimum": 0},
-        "source_available": {"type": "boolean", "description": "False means Layer 3 could not run, so the absence of Python findings means nothing."},
-        "record_entries": {"type": "integer", "minimum": 0},
-        "total_uncompressed_bytes": {"type": "integer", "minimum": 0},
+        "py_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pyc_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_available": {
+          "type": "boolean",
+          "description": "False means Layer 3 could not run, so the absence of Python findings means nothing."
+        },
+        "record_entries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_uncompressed_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
         "extensions": {
           "type": "array",
-          "items": {"type": "object", "required": ["path", "format"], "properties": {"path": {"type": "string"}, "format": {"$ref": "#/$defs/binaryFormat"}}}
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "format"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "format": {
+                "$ref": "#/$defs/binaryFormat"
+              }
+            }
+          }
         },
-        "bundled_libs": {"type": "array", "items": {"type": "string"}, "description": "Native libraries shipped inside the wheel by auditwheel or delocate."},
-        "sboms": {"type": "array", "items": {"type": "string"}},
+        "bundled_libs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Native libraries shipped inside the wheel by auditwheel or delocate."
+        },
+        "sboms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "symlinks": {
           "type": "array",
-          "items": {"type": "object", "required": ["path", "target"], "properties": {"path": {"type": "string"}, "target": {"type": "string"}}}
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "target"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              }
+            }
+          }
         },
         "skipped": {
           "type": "array",
-          "items": {"type": "object", "required": ["path", "reason"], "properties": {"path": {"type": "string"}, "reason": {"type": "string"}}}
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "reason"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     },
@@ -73,41 +267,214 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path", "format", "vendored_path", "machine", "bits", "endian", "elf_type", "soname", "needed", "rpath", "runpath", "stripped", "symbol_counts", "matched_symbols", "matched_strings", "rust_crates", "go", "truncated", "partial_analysis"],
+        "required": [
+          "path",
+          "format",
+          "vendored_path",
+          "machine",
+          "bits",
+          "endian",
+          "elf_type",
+          "soname",
+          "needed",
+          "rpath",
+          "runpath",
+          "stripped",
+          "symbol_counts",
+          "matched_symbols",
+          "matched_strings",
+          "rust_crates",
+          "go",
+          "truncated",
+          "partial_analysis"
+        ],
         "properties": {
-          "path": {"type": "string"},
-          "format": {"$ref": "#/$defs/binaryFormat"},
-          "vendored_path": {"type": "boolean", "description": "True when the object lives in an auditwheel or delocate vendor directory."},
-          "machine": {"type": ["string", "null"]},
-          "bits": {"type": ["integer", "null"]},
-          "endian": {"type": ["string", "null"], "enum": ["little", "big", null]},
-          "elf_type": {"type": ["string", "null"]},
-          "soname": {"type": ["string", "null"]},
-          "needed": {"type": "array", "items": {"type": "string"}},
-          "rpath": {"type": "array", "items": {"type": "string"}},
-          "runpath": {"type": "array", "items": {"type": "string"}},
-          "stripped": {"type": "boolean"},
-          "symbol_counts": {"type": "object", "required": ["dynsym", "symtab"], "properties": {"dynsym": {"type": "integer"}, "symtab": {"type": "integer"}}},
+          "path": {
+            "type": "string"
+          },
+          "format": {
+            "$ref": "#/$defs/binaryFormat"
+          },
+          "vendored_path": {
+            "type": "boolean",
+            "description": "True when the object lives in an auditwheel or delocate vendor directory."
+          },
+          "machine": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bits": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "endian": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "elf_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "soname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "needed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rpath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "runpath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "stripped": {
+            "type": "boolean"
+          },
+          "symbol_counts": {
+            "type": "object",
+            "required": [
+              "dynsym",
+              "symtab"
+            ],
+            "properties": {
+              "dynsym": {
+                "type": "integer"
+              },
+              "symtab": {
+                "type": "integer"
+              }
+            }
+          },
           "matched_symbols": {
             "type": "array",
             "description": "Empty at --evidence-level minimal. binding is the key field: imported means the code lives elsewhere, defined means this object carries it.",
-            "items": {"type": "object", "required": ["name", "group", "binding"], "properties": {"name": {"type": "string"}, "group": {"type": "string"}, "binding": {"type": "string", "enum": ["imported", "defined"]}}}
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "group",
+                "binding"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "group": {
+                  "type": "string"
+                },
+                "binding": {
+                  "type": "string",
+                  "enum": [
+                    "imported",
+                    "defined"
+                  ]
+                }
+              }
+            }
           },
           "matched_strings": {
             "type": "array",
-            "items": {"type": "object", "required": ["group", "value"], "properties": {"group": {"type": "string"}, "value": {"type": "string"}}}
+            "items": {
+              "type": "object",
+              "required": [
+                "group",
+                "value"
+              ],
+              "properties": {
+                "group": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "rust_crates": {
             "type": "array",
-            "items": {"type": "object", "required": ["name", "version"], "properties": {"name": {"type": "string"}, "version": {"type": "string"}}}
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "version"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "go": {
-            "type": ["object", "null"],
-            "required": ["go_version", "boring_crypto", "markers"],
-            "properties": {"go_version": {"type": ["string", "null"]}, "boring_crypto": {"type": "boolean"}, "markers": {"type": "array", "items": {"type": "string"}}}
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "go_version",
+              "boring_crypto",
+              "markers"
+            ],
+            "properties": {
+              "go_version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "boring_crypto": {
+                "type": "boolean"
+              },
+              "markers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
           },
-          "truncated": {"type": "object", "required": ["symbols", "strings"], "properties": {"symbols": {"type": "boolean"}, "strings": {"type": "boolean"}}},
-          "partial_analysis": {"type": "boolean", "description": "True when the format is only partially readable, currently Windows PE."}
+          "truncated": {
+            "type": "object",
+            "required": [
+              "symbols",
+              "strings"
+            ],
+            "properties": {
+              "symbols": {
+                "type": "boolean"
+              },
+              "strings": {
+                "type": "boolean"
+              }
+            }
+          },
+          "partial_analysis": {
+            "type": "boolean",
+            "description": "True when the format is only partially readable, currently Windows PE."
+          }
         }
       }
     },
@@ -116,39 +483,167 @@
       "description": "One entry per rule and subject, not per occurrence.",
       "items": {
         "type": "object",
-        "required": ["rule_id", "subject", "severity", "category", "layer", "confidence", "verdict", "needs_human_review", "occurrences", "truncated", "locations"],
+        "required": [
+          "rule_id",
+          "subject",
+          "subject_kind",
+          "severity",
+          "category",
+          "layer",
+          "confidence",
+          "verdict",
+          "needs_human_review",
+          "occurrences",
+          "truncated",
+          "locations"
+        ],
         "properties": {
-          "rule_id": {"type": "string", "description": "Stable identifier from the ruleset. New ids may appear without a schema_version bump."},
-          "subject": {"type": ["string", "null"], "description": "The matched table entry: a crate, library, module or distribution."},
-          "severity": {"type": "string", "enum": ["high", "medium", "low", "info"], "description": "Strength of the evidence, not a compliance judgement."},
-          "category": {"type": "string"},
-          "layer": {"type": "string", "enum": ["metadata", "binary", "python", "derived"]},
-          "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-          "verdict": {"anyOf": [{"$ref": "#/$defs/verdictClass"}, {"type": "null"}]},
-          "needs_human_review": {"type": "boolean"},
-          "occurrences": {"type": "integer", "minimum": 1},
-          "truncated": {"type": "boolean", "description": "True when locations was capped; occurrences still holds the real count."},
+          "rule_id": {
+            "type": "string",
+            "description": "Stable identifier from the ruleset. New ids may appear without a schema_version bump."
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The matched table entry: a crate, library, module or distribution."
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "info"
+            ],
+            "description": "Strength of the evidence, not a compliance judgement."
+          },
+          "category": {
+            "type": "string"
+          },
+          "layer": {
+            "type": "string",
+            "description": "Current values: metadata, binary, python, derived. New layers may be added without a schema_version bump."
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/verdictClass"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_human_review": {
+            "type": "boolean"
+          },
+          "occurrences": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of distinct locations, not raw matches: two calls on one line count once."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the locations list was capped; occurrences still holds the full count of distinct locations."
+          },
           "locations": {
             "type": "array",
-            "items": {"type": "object", "required": ["path", "line", "evidence"], "properties": {"path": {"type": "string"}, "line": {"type": ["integer", "null"]}, "evidence": {"type": "string", "description": "The literal matched evidence, printable ASCII, capped."}}}
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "line",
+                "evidence"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "description": "The literal matched evidence, printable ASCII, capped."
+                }
+              }
+            }
+          },
+          "subject_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What kind of thing `subject` names: distribution, library, crate, module, symbol_group, string_group, constant, attribute, component, generator or format. Null when the finding has no subject. New values may appear without a schema_version bump."
           }
         }
       }
     },
     "verdict": {
       "type": "object",
-      "required": ["class", "classes", "rule_ids", "reasons", "conditions", "needs_human_review"],
+      "required": [
+        "class",
+        "classes",
+        "rule_ids",
+        "reasons",
+        "conditions",
+        "needs_human_review"
+      ],
       "properties": {
-        "class": {"$ref": "#/$defs/verdictClass", "description": "The highest-precedence class that fired. Always equals classes[0]."},
-        "classes": {"type": "array", "items": {"$ref": "#/$defs/verdictClass"}, "description": "Every class that fired, in precedence order."},
-        "rule_ids": {"type": "array", "items": {"type": "string"}},
-        "reasons": {"type": "array", "items": {"type": "string"}},
+        "class": {
+          "$ref": "#/$defs/verdictClass",
+          "description": "The highest-precedence class that fired. Always equals classes[0]."
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/verdictClass"
+          },
+          "description": "Every class that fired, in precedence order."
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "conditions": {
           "type": "object",
           "description": "Resolved conditions, keyed <library>_linkage. openssl_linkage is always present and is the field that distinguishes a wheel linking the system OpenSSL from one carrying its own.",
-          "additionalProperties": {"type": "string", "enum": ["system", "bundled", "static", "mixed", "none", "unknown"]}
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "system",
+              "bundled",
+              "static",
+              "mixed",
+              "none",
+              "unknown"
+            ]
+          }
         },
-        "needs_human_review": {"type": "boolean"}
+        "needs_human_review": {
+          "type": "boolean"
+        }
       }
     },
     "errors": {
@@ -156,22 +651,41 @@
       "description": "Non-fatal failures. A populated errors array means part of the wheel was not examined.",
       "items": {
         "type": "object",
-        "required": ["stage", "kind", "path", "message"],
+        "required": [
+          "stage",
+          "kind",
+          "path",
+          "message"
+        ],
         "properties": {
-          "stage": {"type": "string", "enum": ["archive", "metadata", "binary", "python"]},
-          "kind": {"type": "string"},
-          "path": {"type": ["string", "null"]},
-          "message": {"type": "string"}
+          "stage": {
+            "type": "string",
+            "description": "Current values: archive, metadata, binary, python. New stages may be added without a schema_version bump."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
         }
       }
     }
   },
   "$defs": {
-    "binaryFormat": {"type": "string", "enum": ["elf", "macho", "pe", "unknown"]},
+    "binaryFormat": {
+      "type": "string",
+      "description": "Current values: elf, macho, pe, unknown. New formats may be added without a schema_version bump."
+    },
     "verdictClass": {
       "type": "string",
-      "enum": ["NON_APPROVED_CRYPTO", "FIPS_BREAKING", "CONDITIONAL", "CONTEXT_DEPENDENT", "OPAQUE", "NO_CRYPTO_DETECTED"],
-      "description": "There is deliberately no passing class. The tool never emits a compliance verdict."
+      "description": "There is deliberately no passing class. The tool never emits a compliance verdict. Current values: NON_APPROVED_CRYPTO, FIPS_BREAKING, CONDITIONAL, CONTEXT_DEPENDENT, OPAQUE, NO_CRYPTO_DETECTED. New classes may be added without a schema_version bump; the authoritative list is the ruleset's [verdict] precedence. There is deliberately no passing class."
     }
   }
 }

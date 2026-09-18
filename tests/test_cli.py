@@ -189,6 +189,10 @@ def test_the_schema_matches_what_the_scanner_actually_emits(
 
 
 def test_the_schema_has_no_passing_class(capsys: pytest.CaptureFixture[str]) -> None:
+    """The enum is deliberately open, so assert on the documented values instead."""
     main(["schema"])
-    classes = json.loads(capsys.readouterr().out)["$defs"]["verdictClass"]["enum"]
-    assert not {"COMPLIANT", "FIPS_COMPLIANT", "APPROVED", "PASS"} & set(classes)
+    described = json.loads(capsys.readouterr().out)["$defs"]["verdictClass"]["description"]
+    listed = described.split("Current values:", 1)[1].split(".", 1)[0]
+    classes = {name.strip() for name in listed.split(",")}
+    assert "NO_CRYPTO_DETECTED" in classes
+    assert not {"COMPLIANT", "FIPS_COMPLIANT", "APPROVED", "PASS", "CLEAN"} & classes

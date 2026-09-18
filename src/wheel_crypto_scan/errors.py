@@ -13,7 +13,6 @@ from __future__ import annotations
 # Archive level.
 BAD_ZIP = "bad_zip"
 DUPLICATE_MEMBER = "duplicate_member"
-SYMLINK_MEMBER = "symlink_member"
 SIZE_LIMIT_EXCEEDED = "size_limit_exceeded"
 COMPRESSION_RATIO_EXCEEDED = "compression_ratio_exceeded"
 MEMBER_READ_ERROR = "member_read_error"
@@ -45,7 +44,6 @@ ERROR_KINDS: frozenset[str] = frozenset(
     {
         BAD_ZIP,
         DUPLICATE_MEMBER,
-        SYMLINK_MEMBER,
         SIZE_LIMIT_EXCEEDED,
         COMPRESSION_RATIO_EXCEEDED,
         MEMBER_READ_ERROR,

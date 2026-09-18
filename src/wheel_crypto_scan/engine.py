@@ -29,6 +29,9 @@ class _Hit:
 
     subject: str | None
     location: Location
+    # What kind of thing `subject` names. Without it a consumer would need a private
+    # rule-id lookup table to interpret the field at all.
+    subject_kind: str | None = None
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
@@ -74,6 +77,7 @@ def _build_finding(rule: Rule, hits: Sequence[_Hit], limits: Limits) -> Finding:
         ),
         verdict=first.verdict if first.verdict is not None else rule.verdict,
         subject=first.subject,
+        subject_kind=first.subject_kind,
         occurrences=len(locations),
         locations=tuple(locations[: limits.max_locations_per_finding]),
         truncated=len(locations) > limits.max_locations_per_finding,
@@ -133,6 +137,7 @@ def _match_dist_name(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
     if entry is None or entry.rule != rule.id:
         return
     yield _Hit(
+        subject_kind="distribution",
         subject=entry.name,
         location=Location(
             path=meta.dist_info_dir or evidence.filename,
@@ -156,6 +161,7 @@ def _match_requires_dist(rule, ruleset, evidence, linkage, index) -> Iterator[_H
         # An `any_entry` rule is a dependency edge, not the dependency's own risk, so
         # it deliberately does not inherit the entry's severity or verdict.
         yield _Hit(
+            subject_kind="distribution",
             subject=name,
             location=Location(
                 path=f"{meta.dist_info_dir}/METADATA" if meta.dist_info_dir else evidence.filename,
@@ -171,6 +177,7 @@ def _match_wheel_generator(rule, ruleset, evidence, linkage, index) -> Iterator[
     if meta is None or not meta.generator_raw:
         return
     yield _Hit(
+        subject_kind="generator",
         subject=meta.generator_name,
         location=Location(
             path=f"{meta.dist_info_dir}/WHEEL" if meta.dist_info_dir else evidence.filename,
@@ -230,6 +237,7 @@ def _match_sbom_component(rule, ruleset, evidence, linkage, index) -> Iterator[_
             continue
         version = f" {component.version}" if component.version else ""
         yield _Hit(
+            subject_kind="component",
             subject=component.name,
             location=Location(
                 path=component.source,
@@ -276,6 +284,7 @@ def _match_bundled_library(rule, ruleset, evidence, linkage, index) -> Iterator[
         if banners:
             detail = f"{detail}; rodata={banners[0]!r}"
         yield _Hit(
+            subject_kind="library",
             subject=library.name,
             location=Location(
                 path=binary.path, evidence=_clean(detail, ruleset.limits.max_evidence_chars)
@@ -300,6 +309,7 @@ def _match_dt_needed(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
             if want_mangled is not None and info.mangled is not want_mangled:
                 continue
             yield _Hit(
+                subject_kind="library",
                 subject=library.name,
                 location=Location(
                     path=binary.path,
@@ -320,6 +330,7 @@ def _match_dynamic_symbol(rule, ruleset, evidence, linkage, index) -> Iterator[_
             if binding != "any" and symbol.binding != binding:
                 continue
             yield _Hit(
+                subject_kind="symbol_group",
                 subject=symbol.group,
                 location=Location(
                     path=binary.path,
@@ -338,6 +349,7 @@ def _match_binary_string(rule, ruleset, evidence, linkage, index) -> Iterator[_H
             if match.group not in groups:
                 continue
             yield _Hit(
+                subject_kind="string_group",
                 subject=match.group,
                 location=Location(
                     path=binary.path,
@@ -353,6 +365,7 @@ def _match_rust_crate(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]
             if entry is None:
                 continue
             yield _Hit(
+                subject_kind="crate",
                 subject=crate.name,
                 location=Location(
                     path=binary.path,
@@ -368,15 +381,36 @@ def _match_rust_crate(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]
 
 
 def _match_linkage(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    name = rule.match["name"]
-    if linkage.get(name) != rule.match["value"]:
-        return
-    yield _Hit(
-        subject=name,
-        location=Location(
-            path=evidence.filename, evidence=f"{name} linkage resolved to {rule.match['value']}"
-        ),
-    )
+    """Match a resolved linkage posture, for one named library or a whole table.
+
+    The table form exists so that every crypto library with a verdict is reachable.
+    Without it a resolved linkage could sit in `verdict.conditions` while the verdict
+    class said nothing was found, which is the one thing the headline field must not do.
+    """
+    match = rule.match
+    values = frozenset(match.get("values", ())) or frozenset({match["value"]})
+    inherit = "table" in match
+    if "name" in match:
+        names: list[str] = [str(match["name"])]
+    else:
+        excluded = frozenset(match.get("exclude_libraries", ()))
+        names = [name for name in sorted(linkage) if name not in excluded]
+
+    for name in names:
+        value = linkage.get(name)
+        if value not in values:
+            continue
+        library = ruleset.libraries.get(name)
+        yield _Hit(
+            subject=name,
+            subject_kind="library",
+            location=Location(
+                path=evidence.filename, evidence=f"{name} linkage resolved to {value}"
+            ),
+            severity=library.severity if inherit and library else None,
+            verdict=library.verdict if inherit and library else None,
+            needs_human_review=library.needs_human_review if inherit and library else None,
+        )
 
 
 def _match_opaque_binary(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
@@ -397,6 +431,7 @@ def _match_partial_binary(rule, ruleset, evidence, linkage, index) -> Iterator[_
         if not binary.partial_analysis:
             continue
         yield _Hit(
+            subject_kind="format",
             subject=binary.format,
             location=Location(
                 path=binary.path, evidence=f"{binary.format} objects are read for strings only"
@@ -416,6 +451,7 @@ def _match_py_import(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
         if owner != rule.id:
             continue
         yield _Hit(
+            subject_kind="module",
             subject=entry.name,
             location=_site_location(site, ruleset.limits),
             severity=entry.severity,
@@ -452,20 +488,32 @@ def _match_py_attr(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
             continue
         if values is not None and _attrs(site).get("value") not in values:
             continue
-        yield _Hit(subject=site.target, location=_site_location(site, ruleset.limits))
+        yield _Hit(
+            subject_kind="attribute",
+            subject=site.target,
+            location=_site_location(site, ruleset.limits),
+        )
 
 
 def _match_py_constant(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
     constants = frozenset(rule.match.get("constants", ()))
     for site in evidence.py_sites:
         if site.kind == "py_constant" and site.target in constants:
-            yield _Hit(subject=site.target, location=_site_location(site, ruleset.limits))
+            yield _Hit(
+                subject_kind="constant",
+                subject=site.target,
+                location=_site_location(site, ruleset.limits),
+            )
 
 
 def _match_py_ctypes_load(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
     for site in evidence.py_sites:
         if site.kind == "py_ctypes_load":
-            yield _Hit(subject=site.target, location=_site_location(site, ruleset.limits))
+            yield _Hit(
+                subject_kind="library",
+                subject=site.target,
+                location=_site_location(site, ruleset.limits),
+            )
 
 
 def _target_matches(target: str, targets: frozenset[str]) -> bool:

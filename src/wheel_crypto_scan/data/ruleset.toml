@@ -78,6 +78,17 @@ vendor_dir_globs = ["*.libs", ".dylibs", "*.dylibs"]
 # copy even when the wheel has no vendor directory of its own.
 mangled_soname_regex = '^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$'
 
+# Extensions stripped when reducing a library file name to its base name. Windows
+# entries matter: without them a vendored libcrypto-<hash>.dll would be normalised to
+# a name that matches nothing, and the bundled-OpenSSL check would miss every Windows
+# wheel while the version banner quietly mislabelled it as statically linked.
+library_suffixes = [".so", ".dylib", ".dll", ".pyd"]
+
+# Go toolchain string groups, named here rather than in the Go reader, so renaming a
+# group in this file cannot silently flip a verdict-relevant field in the record.
+go_boring_group = "go_boring"
+go_stock_group = "go_stock_crypto"
+
 # Rust objects embed the source path of every crate they were built from.
 cargo_path_regex = '''cargo/registry/src/[^/\x00"']+/(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)/'''
 
@@ -1000,10 +1011,10 @@ severity = "info"
 confidence = "high"
 needs_human_review = true
 title = "Archive structure is unusual"
-why = "A duplicated member name, a symlink member, or a filename that is not a valid wheel name. Usually a repair tool being sloppy, occasionally worth asking about, never on its own a crypto finding."
+why = "A duplicated member name, or a filename that is not a valid wheel name. Usually a repair tool being sloppy, occasionally worth asking about, never on its own a crypto finding."
 [rule.match]
 kind = "scan_error"
-error_kinds = ["duplicate_member", "symlink_member", "wheel_filename_invalid"]
+error_kinds = ["duplicate_member", "wheel_filename_invalid"]
 
 [[rule]]
 id = "WHEEL_RECORD_UNREADABLE"
@@ -1188,6 +1199,22 @@ why = "Every piece of OpenSSL evidence in this wheel points at the system librar
 kind = "linkage"
 name = "openssl"
 value = "system"
+
+[[rule]]
+id = "BIN_LINKED_CRYPTO_LIBRARY"
+layer = "binary"
+category = "crypto-linkage"
+severity = "high"
+confidence = "high"
+needs_human_review = true
+title = "Uses a crypto library other than OpenSSL"
+why = "A crypto library was resolved to a system, bundled or statically linked copy. Without this rule the linkage would be reported in verdict.conditions while the verdict class said nothing was found, which is the one thing a headline field must never do. The class comes from the library's own entry in the crypto_library table."
+[rule.match]
+kind = "linkage"
+table = "crypto_library"
+# OpenSSL has its own rules above, which carry more specific wording per posture.
+exclude_libraries = ["openssl"]
+values = ["system", "bundled", "static", "mixed"]
 
 [[rule]]
 id = "BIN_FIPS_PROVIDER_AWARE"

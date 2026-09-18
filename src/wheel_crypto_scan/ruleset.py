@@ -65,8 +65,6 @@ ENTRY_TABLES = (
     "ctypes_library",
 )
 
-# Suffixes stripped when reducing a library file name to its base name.
-_LIBRARY_SUFFIXES = (".so", ".dylib")
 _VERSION_SUFFIX = re.compile(r"\.\d+$")
 
 
@@ -116,6 +114,9 @@ class Conventions:
     mangled_soname_regex: re.Pattern[str]
     cargo_path_regex: re.Pattern[str]
     weak_hash_algorithms: frozenset[str]
+    library_suffixes: tuple[str, ...] = (".so", ".dylib", ".dll", ".pyd")
+    go_boring_group: str = "go_boring"
+    go_stock_group: str = "go_stock_crypto"
 
     def is_vendor_path(self, path: str) -> bool:
         """True when any directory component is an auditwheel or delocate vendor dir."""
@@ -127,7 +128,7 @@ class Conventions:
         stem = name.split("/")[-1]
         while True:
             stripped = _VERSION_SUFFIX.sub("", stem)
-            for suffix in _LIBRARY_SUFFIXES:
+            for suffix in self.library_suffixes:
                 if stripped.endswith(suffix):
                     stripped = stripped[: -len(suffix)]
                     break
@@ -246,6 +247,8 @@ class ScanPatterns:
     py_constants: tuple[str, ...]
     ctypes_substrings: tuple[str, ...]
     weak_hash_algorithms: frozenset[str]
+    go_boring_group: str
+    go_stock_group: str
     limits: Limits
     _exact_index: Mapping[str, tuple[str, ...]] = field(repr=False, default_factory=dict)
     _prefix_probe: re.Pattern[str] | None = field(repr=False, default=None)
@@ -330,6 +333,8 @@ class Ruleset:
             py_constants=tuple(sorted(constants)),
             ctypes_substrings=self.ctypes_substrings,
             weak_hash_algorithms=self.conventions.weak_hash_algorithms,
+            go_boring_group=self.conventions.go_boring_group,
+            go_stock_group=self.conventions.go_stock_group,
             limits=self.limits,
             _exact_index=MappingProxyType(
                 {name: tuple(sorted(groups)) for name, groups in exact_index.items()}
@@ -354,6 +359,9 @@ def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
         mangled_soname_regex=mangled,
         cargo_path_regex=cargo,
         weak_hash_algorithms=frozenset(_require(data, "weak_hash_algorithms", where)),
+        library_suffixes=tuple(_require(data, "library_suffixes", where)),
+        go_boring_group=str(_require(data, "go_boring_group", where)),
+        go_stock_group=str(_require(data, "go_stock_group", where)),
     )
 
 
@@ -416,7 +424,12 @@ def _validate_rule_references(
             if error_kind not in ERROR_KINDS:
                 raise RulesetError(f"{where}: unknown error kind {error_kind!r}")
     elif kind == "linkage":
-        _check(match.get("value"), LINKAGE_VALUES, "linkage value", where)
+        values = match.get("values")
+        if values is None:
+            _check(match.get("value"), LINKAGE_VALUES, "linkage value", where)
+        else:
+            for value in values:
+                _check(value, LINKAGE_VALUES, "linkage value", where)
 
     libraries = {entry["name"] for entry in ruleset_data["crypto_library"]}
     for key in ("library", "name"):

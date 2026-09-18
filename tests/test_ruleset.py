@@ -29,6 +29,9 @@ def minimal(**overrides: Any) -> dict[str, Any]:
             "mangled_soname_regex": r"^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$",
             "cargo_path_regex": r"cargo/registry/src/[^/]+/(?P<name>[a-z-]+)-(?P<version>[0-9.]+)/",
             "weak_hash_algorithms": ["md5", "sha1"],
+            "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
+            "go_boring_group": "go_boring",
+            "go_stock_group": "go_stock_crypto",
         },
         "crypto_distribution": [
             {"name": "PyNaCl", "rule": "DIST_NON_APPROVED_CRYPTO", "why": "libsodium primitives"}
@@ -88,7 +91,11 @@ def test_shipped_ruleset_knows_the_bundled_openssl_rule() -> None:
 def test_rules_can_be_selected_by_matcher_kind() -> None:
     ruleset = load_ruleset()
     ids = {rule.id for rule in ruleset.rules_for_kind("linkage")}
-    assert ids == {"BIN_STATIC_OPENSSL", "DERIVED_SYSTEM_OPENSSL_ONLY"}
+    assert ids == {
+        "BIN_STATIC_OPENSSL",
+        "DERIVED_SYSTEM_OPENSSL_ONLY",
+        "BIN_LINKED_CRYPTO_LIBRARY",
+    }
 
 
 def test_unknown_rule_id_raises_key_error() -> None:

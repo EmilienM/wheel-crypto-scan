@@ -44,6 +44,10 @@ def build_record(
             "version": tool_version,
             "ruleset_version": ruleset.version,
             "analyzer_version": ANALYZER_VERSION,
+            # Recorded because `binaries[].matched_symbols` being empty means "none
+            # found" at standard and "not recorded" at minimal, and nothing else in
+            # the record distinguishes those two.
+            "evidence_level": evidence_level,
         },
         "wheel": _wheel_block(evidence),
         "artifacts": _artifacts_block(evidence.artifacts),
@@ -170,6 +174,7 @@ def _finding_block(finding: Finding) -> dict[str, Any]:
     return {
         "rule_id": finding.rule_id,
         "subject": finding.subject,
+        "subject_kind": finding.subject_kind,
         "severity": finding.severity,
         "category": finding.category,
         "layer": finding.layer,
