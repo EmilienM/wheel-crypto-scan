@@ -1,0 +1,268 @@
+"""`partial_reasons`: the tokens that say *why* an object was not read in full.
+
+`partial_analysis` is one boolean with a dozen causes behind it, and five of them record
+no `ScanError` at all, so a record could read `partial_analysis: true, errors: []` with
+no way to tell which applied. Two of the five are the common case rather than an exotic
+one: a stripped Mach-O, which is every release macOS wheel, and an ordinal-only PE
+import, because `WS2_32` is normally bound by ordinal. Both read identically to "we
+could parse nothing at all".
+
+These tests hold the two fields to agreeing with each other, and hold every token the
+readers can emit to being one the vocabulary declares.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+from pathlib import Path
+
+from helpers.binfmt import (
+    E_SHNUM_OFFSET,
+    DynSym,
+    ElfBuilder,
+    MachOBuilder,
+    MachOSym,
+    PEBuilder,
+    PEExport,
+    PEImport,
+    build_fat,
+    patch_u16,
+)
+from wheel_crypto_scan import evidence
+from wheel_crypto_scan.binfmt import read_binary
+from wheel_crypto_scan.ruleset import load_ruleset
+
+PATTERNS = load_ruleset().compile_patterns().binary
+
+
+def _read(data: bytes, path: str = "obj"):
+    return read_binary(io.BytesIO(data), path, PATTERNS, vendored=False)
+
+
+def _reasons(data: bytes) -> list[str]:
+    ev, _ = _read(data)
+    return list(ev.partial_reasons)
+
+
+# --- the two fields can never disagree ---------------------------------------
+
+_CASES: dict[str, bytes] = {
+    "clean elf": ElfBuilder(dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),)).build(),
+    "elf header unread": b"\x7fELF" + b"\x00" * 12 + b"OpenSSL 3.0.14 4 Jun 2024",
+    "elf section table truncated": patch_u16(
+        ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build(),
+        E_SHNUM_OFFSET[64],
+        0xFFFF,
+        big_endian=False,
+    ),
+    "clean macho": MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),)
+    ).build(),
+    "macho stripped": MachOBuilder(id_dylib="libfoo.dylib").build(),
+    "macho header unread": b"\xca\xfe\xba\xbe" + b"OpenSSL 3.0.14 4 Jun 2024",
+    "pe header unread": b"MZ" + b"\x00" * 8,
+    "pe with imports": PEBuilder(
+        imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+        dll_name="_ext.pyd",
+        exports=(PEExport("PyInit__ext"),),
+    ).build(),
+    "pe ordinal import": PEBuilder(
+        imports=(PEImport("WS2_32.dll", ordinals=(115,)),), dll_name="_ext.pyd"
+    ).build(),
+    "unknown format": b"\x00\x01\x02\x03 OpenSSL 3.0.14 4 Jun 2024 ",
+}
+
+
+# One object per cause, so `test_every_reason_is_reachable_from_some_object` proves the
+# vocabulary is live rather than merely declared.
+_REACHABILITY: dict[str, bytes] = {
+    "pe section table truncated": PEBuilder(
+        imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+        dll_name="_ext.pyd",
+        truncate_to=0x150,
+    ).build(),
+    "pe import directory unwalkable": PEBuilder(
+        imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+        dll_name="_ext.pyd",
+        declared_import_rva=0x7F000000,
+    ).build(),
+    "pe export directory unreadable": PEBuilder(
+        dll_name="_ext.pyd",
+        exports=(PEExport("PyInit__ext"),),
+        declared_export_rva=0x7F000000,
+    ).build(),
+    "pe ordinal export": PEBuilder(
+        imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+        dll_name="_ext.pyd",
+        exports=(PEExport("PyInit__ext"),),
+        unnamed_exports=1,
+    ).build(),
+    "pe delay load": PEBuilder(
+        imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+        dll_name="_ext.pyd",
+        delay_import_directory=True,
+    ).build(),
+    "macho fat slice unread": build_fat(
+        [
+            MachOBuilder(
+                id_dylib="libfoo.dylib", symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),)
+            ).build(),
+            b"\x00" * 64,
+        ]
+    ),
+}
+
+
+def test_the_boolean_and_the_reasons_never_disagree() -> None:
+    """`partial_reasons` is non-empty exactly when `partial_analysis` is true.
+
+    Consumers filter on the boolean, so a reader that set one without the other would
+    either hide a cause or invent one.
+    """
+    for name, data in {**_CASES, **_REACHABILITY}.items():
+        ev, _ = _read(data)
+        assert bool(ev.partial_reasons) is ev.partial_analysis, name
+
+
+def test_every_reason_a_reader_emits_is_one_the_vocabulary_declares() -> None:
+    """A typo'd token is a record nothing downstream can key on."""
+    for name, data in {**_CASES, **_REACHABILITY}.items():
+        ev, _ = _read(data)
+        assert set(ev.partial_reasons) <= evidence.PARTIAL_REASONS, name
+
+
+def test_reasons_are_sorted_and_deduplicated() -> None:
+    """The record is byte-identical run to run, so this cannot come back in set order."""
+    for name, data in {**_CASES, **_REACHABILITY}.items():
+        ev, _ = _read(data)
+        assert list(ev.partial_reasons) == sorted(set(ev.partial_reasons)), name
+
+
+# --- the causes each name themselves -----------------------------------------
+
+
+def test_a_format_with_no_structural_reader_names_that_cause() -> None:
+    """The token names the cause, not the coping.
+
+    Every object whose header would not parse is read for strings alone too, so a token
+    called `strings_only` would not tell those records apart from this one.
+    """
+    assert _reasons(_CASES["unknown format"]) == [evidence.PARTIAL_NO_STRUCTURAL_READER]
+
+
+def test_an_elf_header_that_would_not_parse_says_so() -> None:
+    assert _reasons(_CASES["elf header unread"]) == [evidence.PARTIAL_ELF_HEADER_UNREAD]
+
+
+def test_a_truncated_elf_section_table_is_its_own_cause() -> None:
+    """The header parsed. Only what it pointed at did not, which is a different fact.
+
+    The record carries `machine`, `bits`, `endian` and `elf_type` read from that header,
+    so a token saying the header was unread would contradict the record beside it. PE
+    has always given this shape its own name.
+    """
+    ev, _ = _read(_CASES["elf section table truncated"])
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SECTION_TABLE_TRUNCATED]
+    assert ev.machine == "EM_X86_64"
+
+
+def test_a_macho_header_that_would_not_parse_says_so() -> None:
+    assert _reasons(_CASES["macho header unread"]) == [evidence.PARTIAL_MACHO_HEADER_UNREAD]
+
+
+def test_a_stripped_macho_says_its_symbol_table_was_not_read() -> None:
+    """No `LC_SYMTAB` is the Mach-O spelling of an unread imported/defined split."""
+    assert _reasons(_CASES["macho stripped"]) == [evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE]
+
+
+def test_an_unreadable_fat_slice_says_so() -> None:
+    thin = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),)
+    ).build()
+    assert _reasons(build_fat([thin, b"\x00" * 64])) == [evidence.PARTIAL_MACHO_FAT_SLICE_UNREAD]
+
+
+def test_a_pe_header_that_would_not_parse_says_so() -> None:
+    assert _reasons(_CASES["pe header unread"]) == [evidence.PARTIAL_PE_HEADER_UNREAD]
+
+
+def test_an_ordinal_only_pe_import_is_named_rather_than_left_to_the_boolean() -> None:
+    """The case the issue was filed for: routine on Windows, and it recorded no error.
+
+    `WS2_32` is normally bound by ordinal, so this is the typical `.pyd` record. It has
+    always been `partial_analysis: true` with `errors: []`, indistinguishable from an
+    object nothing could be read from.
+    """
+    ev, errors = _read(_CASES["pe ordinal import"])
+    assert ev.partial_analysis is True
+    assert errors == ()  # still no error: an ordinal import is routine, not a failure
+    assert evidence.PARTIAL_PE_ORDINAL_IMPORT in ev.partial_reasons
+
+
+def test_a_readable_object_names_no_reasons() -> None:
+    for name in ("clean elf", "clean macho", "pe with imports"):
+        ev, _ = _read(_CASES[name])
+        assert ev.partial_analysis is False, name
+        assert ev.partial_reasons == (), name
+
+
+def test_several_causes_are_all_reported() -> None:
+    """The point of an array: the boolean collapsed a seven-clause conjunction."""
+    data = PEBuilder(
+        imports=(PEImport("WS2_32.dll", ordinals=(115,)),),
+        dll_name="_ext.pyd",
+        delay_import_directory=True,
+    ).build()
+    ev, _ = _read(data)
+    assert evidence.PARTIAL_PE_ORDINAL_IMPORT in ev.partial_reasons
+    assert evidence.PARTIAL_PE_DELAY_LOAD in ev.partial_reasons
+    assert len(ev.partial_reasons) >= 2
+
+
+# --- the vocabulary must be live, and must be the same in all three places ----
+
+
+def test_every_declared_reason_is_actually_emitted_somewhere() -> None:
+    """A token nothing produces is a value consumers would filter on and never match.
+
+    The same shape as `test_every_error_kind_is_actually_emitted_somewhere`: every
+    constant has to appear at its definition and at least once more.
+    """
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in Path("src/wheel_crypto_scan").rglob("*.py")
+    )
+    names = {
+        name: value
+        for name, value in vars(evidence).items()
+        if name.startswith("PARTIAL_") and isinstance(value, str)
+    }
+    assert set(names.values()) == evidence.PARTIAL_REASONS
+    dead = {value for name, value in names.items() if source.count(name) < 2}
+    assert dead == set()
+
+
+def test_every_reason_is_reachable_from_some_object() -> None:
+    """Coverage of the constant is not coverage of the cause: build one of each."""
+    produced: set[str] = set()
+    for data in _CASES.values():
+        ev, _ = _read(data)
+        produced |= set(ev.partial_reasons)
+    for data in _REACHABILITY.values():
+        ev, _ = _read(data)
+        produced |= set(ev.partial_reasons)
+    assert produced == evidence.PARTIAL_REASONS
+
+
+def test_the_schema_documents_every_reason_it_can_emit() -> None:
+    """Three copies of this list exist. Nothing else holds them together."""
+    schema = json.loads(Path("src/wheel_crypto_scan/data/schema.json").read_text(encoding="utf-8"))
+    described = schema["properties"]["binaries"]["items"]["properties"]["partial_reasons"]["items"][
+        "description"
+    ]
+    for token in sorted(evidence.PARTIAL_REASONS):
+        assert token in described, token
+
+    documented = Path("SCHEMA.md").read_text(encoding="utf-8")
+    for token in sorted(evidence.PARTIAL_REASONS):
+        assert f"`{token}`" in documented, token

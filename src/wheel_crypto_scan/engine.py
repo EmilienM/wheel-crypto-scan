@@ -464,12 +464,18 @@ def _match_partial_binary(rule, match, ruleset, evidence, linkage, index) -> Ite
     for binary in evidence.binaries:
         if not binary.partial_analysis:
             continue
+        # Name the causes here too. A triager reads `findings` and `verdict.reasons`;
+        # without this the tokens would only reach someone opening the raw record. The
+        # suffix is conditional rather than defaulted: every reader that sets the flag
+        # also names a reason, so an empty tuple means someone built the evidence by
+        # hand, and inventing text for it would be worse than saying less.
+        detail = f"{binary.format} object was only partially read"
+        if binary.partial_reasons:
+            detail = f"{detail}: {', '.join(binary.partial_reasons)}"
         yield Hit(
             subject_kind="format",
             subject=binary.format,
-            location=Location(
-                path=binary.path, evidence=f"{binary.format} object was only partially read"
-            ),
+            location=Location(path=binary.path, evidence=detail),
         )
 
 

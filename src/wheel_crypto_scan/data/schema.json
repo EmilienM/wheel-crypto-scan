@@ -486,7 +486,15 @@
           },
           "partial_analysis": {
             "type": "boolean",
-            "description": "True when part of the object was not read: a format with no structural reader (strings only); a PE whose section table was truncated, whose import directory was absent or could not be walked, that names an import or an export by ordinal alone, or that carries a delay-load import directory, which is not parsed; a Mach-O whose LC_SYMTAB could not be read in full; or a fat Mach-O with a slice that could not be read or that its header named but did not describe. A fat Mach-O whose every slice read cleanly is not partial: the slices merge into one record, with needed, rpath and matched_symbols as sorted unions and symbol_counts.symtab as a sum."
+            "description": "True when part of the object was not read. This is the field to filter on; partial_reasons says which causes applied, and the two always agree. A fat Mach-O whose every slice read cleanly is not partial: the slices merge into one record."
+          },
+          "partial_reasons": {
+            "type": "array",
+            "description": "Sorted, deduplicated reasons the object was not read in full. Present whenever this tool produced the record, and empty exactly when partial_analysis is false. Not every reason records a matching entry in errors: several are routine rather than failures. New values may appear without a schema_version bump.",
+            "items": {
+              "type": "string",
+              "description": "no_structural_reader: this tool has no reader for the format, so the object was scanned for strings alone; elf_header_unread: the ELF header itself would not parse; elf_section_table_truncated: the ELF header parsed but the section header table it points at does not fit the object; macho_header_unread: the Mach-O header, or a fat header, would not parse; macho_symtab_incomplete: LC_SYMTAB was absent, unreachable or named nothing resolvable, so the imported-versus-defined split is missing; routine, and records no error; macho_fat_slice_unread: a slice of a universal binary could not be read, or its header named one it did not describe; pe_header_unread: the PE header chain would not parse; pe_section_table_truncated: the section table was cut short, so an address may resolve to the wrong bytes; pe_no_import_directory: no import directory, or one naming no DLL, so the object declared no dependency; records no error; pe_import_incomplete: an import directory that was there and could not be walked in full; pe_export_incomplete: an export directory that was there and could not be read in full; pe_ordinal_import: an import named by ordinal alone, so its function has no name to match; routine on Windows, and records no error; pe_ordinal_export: an export the name table never points at: a definition with no name; records no error; pe_delay_load: a delay-load import directory, which this reader does not parse, so the libraries it names are undeclared dependencies; records no error"
+            }
           }
         }
       }

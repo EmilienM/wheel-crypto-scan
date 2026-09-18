@@ -58,6 +58,7 @@ def _unparsed(
     max_strings_bytes: int,
     kind: str,
     message: str,
+    reason: str,
     header: _ElfHeader | None = None,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Evidence for an ELF whose structure we could not read, plus the error saying so.
@@ -84,6 +85,7 @@ def _unparsed(
         vendored=vendored,
         fmt=evidence.FORMAT_ELF,
         max_strings_bytes=max_strings_bytes,
+        reason=reason,
     )
     if header is not None:
         result = replace(
@@ -174,6 +176,7 @@ def read_elf(
             max_strings_bytes=max_strings_bytes,
             kind=BINARY_UNKNOWN_FORMAT,
             message="not a recognisable ELF object",
+            reason=evidence.PARTIAL_ELF_HEADER_UNREAD,
         )
 
     errors: list[ScanError] = []
@@ -197,6 +200,10 @@ def read_elf(
             max_strings_bytes=max_strings_bytes,
             kind=BINARY_TRUNCATED,
             message="elf section header table is truncated",
+            # Not `elf_header_unread`: the header parsed, and its four fields are in the
+            # record below. Only what it pointed at is missing, which is the same fact
+            # `pe_section_table_truncated` names for PE.
+            reason=evidence.PARTIAL_ELF_SECTION_TABLE_TRUNCATED,
             header=_ElfHeader(machine=machine, bits=bits, endian=endian, elf_type=elf_type),
         )
 
@@ -301,6 +308,7 @@ def read_elf(
         symbols_truncated=symbols_truncated,
         strings_truncated=sections_truncated or strings_found.truncated,
         partial_analysis=False,
+        partial_reasons=(),
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 

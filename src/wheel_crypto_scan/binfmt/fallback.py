@@ -36,13 +36,20 @@ def read_strings_only(
     vendored: bool,
     fmt: str,
     max_strings_bytes: int,
+    reason: str,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Read `stream` for printable strings and cargo paths, and nothing else.
 
-    Contributes no errors of its own. On the dispatch path there is nothing to
-    record: not parsing a format this tool never claimed to parse is not a failure, and
-    `partial_analysis` already says the object was not read in full. A structural reader
-    calling in from its own failure path records that failure at the call site.
+        Contributes no errors of its own. On the dispatch path there is nothing to
+        record: not parsing a format this tool never claimed to parse is not a failure, and
+        `partial_analysis` already says the object was not read in full. A structural reader
+        calling in from its own failure path records that failure at the call site.
+
+    `reason` is required for the same cause as `fmt`, and is the same kind of thing: a
+        label this reader cannot derive. An ELF whose header would not parse is a different
+        fact from a format nobody claimed to read, and only the record can tell a consumer
+        which it was looking at. Defaulting it would be the quiet way to mislabel a record,
+        which is what requiring `fmt` already refuses. Neither changes what is read.
     """
     # Deriving the size here rather than taking it from the caller costs a pass over
     # the object, and every caller already holds it. It stays anyway: through a
@@ -73,5 +80,6 @@ def read_strings_only(
         go=go,
         strings_truncated=truncated or strings_found.truncated,
         partial_analysis=True,
+        partial_reasons=(reason,),
     )
     return result, ()
