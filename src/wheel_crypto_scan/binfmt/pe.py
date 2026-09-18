@@ -362,15 +362,6 @@ def read_pe(
     # anything named by ordinal alone each mean some of this object's dependencies or
     # symbols are unknown, and a record that dropped them would be indistinguishable
     # from one for an object that genuinely has none.
-    complete = (
-        headers.sections_complete
-        and imports is not None
-        and imports.complete
-        and bool(imports.dlls)
-        and not imports.unnamed
-        and (exports is None or (exports.complete and not exports.unnamed))
-        and not delay_rva
-    )
     entries = (imports.entries if imports else 0) + (exports.entries if exports else 0)
     result = BinaryEvidence(
         path=path,

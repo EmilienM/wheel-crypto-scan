@@ -315,7 +315,9 @@ def read_macho(
     if header_reasons:
         partial_reasons.add("macho_fat_slices_unread")
     if unread:
-        partial_reasons.add("macho_fat_slices_unread" if len(slices) > 1 else "macho_structure_incomplete")
+        partial_reasons.add(
+            "macho_fat_slices_unread" if len(slices) > 1 else "macho_structure_incomplete"
+        )
     # One per distinct reason. `ScanError` is deduplicated and sorted on the way out, so
     # two slices failing the same way is one message rather than two identical ones.
     errors.extend(_error(path, why) for why in unread)
