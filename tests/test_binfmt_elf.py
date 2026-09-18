@@ -595,3 +595,39 @@ def test_the_fallback_reports_a_string_not_a_section_it_cannot_know() -> None:
     ev, _ = _read(corrupt, path="trunc.so")
     assert [m.group for m in ev.matched_strings] == ["mbedtls"]
     assert ev.partial_analysis is True
+
+
+# --- an error means the object was not read in full --------------------------
+
+
+def test_an_unresolvable_dynamic_section_no_longer_reads_as_a_complete_read() -> None:
+    """The dangerous one: `needed` empties, and the record used to call that complete.
+
+    A consumer filtering on `partial_analysis` would have taken this for an object that
+    genuinely declares no dependencies, which is the "looks clean because we could not
+    read it" failure the whole tool is built to avoid.
+    """
+    data = ElfBuilder(
+        needed=("libcrypto.so.3",),
+        dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
+        rodata=b"hello",
+        dynamic_strtab_broken=True,
+    ).build()
+    ev, errors = _read(data)
+    assert [e.kind for e in errors] == [ELF_PARSE_ERROR]
+    assert ev.needed == ()
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["elf_sections_unread"]
+
+
+def test_a_readable_object_is_still_not_partial() -> None:
+    ev, errors = _read(
+        ElfBuilder(
+            needed=("libcrypto.so.3",),
+            dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
+            with_symtab=True,
+        ).build()
+    )
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()

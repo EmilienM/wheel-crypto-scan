@@ -17,8 +17,11 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 from helpers.binfmt import (
     E_SHNUM_OFFSET,
+    SHF_COMPRESSED,
     DynSym,
     ElfBuilder,
     MachOBuilder,
@@ -27,10 +30,14 @@ from helpers.binfmt import (
     PEExport,
     PEImport,
     build_fat,
+    patch_header_field,
+    patch_section_header,
     patch_u16,
 )
 from wheel_crypto_scan import evidence
+from wheel_crypto_scan.binfmt import elf as elf_module
 from wheel_crypto_scan.binfmt import read_binary
+from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.ruleset import load_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
@@ -102,6 +109,47 @@ _REACHABILITY: dict[str, bytes] = {
         imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
         dll_name="_ext.pyd",
         delay_import_directory=True,
+    ).build(),
+    # `.dynamic` whose bytes lie outside the object: the handler the motivating case
+    # for this field was described by, reached without a monkeypatch.
+    "elf dynamic section unreadable": patch_section_header(
+        ElfBuilder(
+            needed=("libcrypto.so.3",),
+            dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
+        ).build(),
+        ".dynamic",
+        "sh_offset",
+        1 << 30,
+    ),
+    # `e_shnum == 0` skips the proactive truncation check, so the section count is read
+    # from a header table that is not there.
+    "elf section count unreadable": patch_header_field(
+        patch_header_field(
+            ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build(), "e_shnum", 0
+        ),
+        "e_shoff",
+        1 << 30,
+    ),
+    # A section flagged compressed over bytes that are not: the read raises, and this
+    # used to be the one failure in the reader that recorded nothing at all.
+    "elf section data unreadable": patch_section_header(
+        ElfBuilder(
+            rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00",
+            dynsyms=(DynSym("memcpy", defined=False),),
+        ).build(),
+        ".rodata",
+        "sh_flags",
+        SHF_COMPRESSED,
+        bitwise_or=True,
+    ),
+    # `pyelftools` raises here, which is where its failures actually surface: a
+    # `.dynamic` naming a string table that does not exist takes the section header
+    # with it, and `needed` comes back empty from a read that failed rather than from
+    # an object with no dependencies.
+    "elf section header unreadable": ElfBuilder(
+        needed=("libcrypto.so.3",),
+        dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
+        dynamic_strtab_broken=True,
     ).build(),
     "macho fat slice unread": build_fat(
         [
@@ -251,6 +299,13 @@ def test_every_reason_is_reachable_from_some_object() -> None:
     for data in _REACHABILITY.values():
         ev, _ = _read(data)
         produced |= set(ev.partial_reasons)
+    # The handlers bytes cannot reach, run for real rather than named as literals: a
+    # token asserted into this set could not fail the guard it exists for.
+    with pytest.MonkeyPatch.context() as patch:
+        for section in _UNREADABLE_SECTION:
+            _explode(patch, section)
+            ev, _ = read_elf(io.BytesIO(_readable_elf()), "m.so", PATTERNS, vendored=False)
+            produced |= set(ev.partial_reasons)
     assert produced == evidence.PARTIAL_REASONS
 
 
@@ -266,3 +321,129 @@ def test_the_schema_documents_every_reason_it_can_emit() -> None:
     documented = Path("SCHEMA.md").read_text(encoding="utf-8")
     for token in sorted(evidence.PARTIAL_REASONS):
         assert f"`{token}`" in documented, token
+
+
+# --- sections whose read fails, which bytes alone cannot express --------------
+#
+# `pyelftools` tolerates every corruption these synthesised fixtures can express, so
+# `binfmt.elf`'s defensive handlers cannot be reached with bytes. They exist for the
+# objects that do make it raise, and this stands in for one.
+
+
+class _Exploding:
+    """A section that parsed, wrapped so the named reads of it raise.
+
+    Which reads matters: `.dynsym` is read twice, once for its symbol count and once
+    for its entries, and a wrapper that raised from both would let either handler
+    satisfy a test meant for the other.
+    """
+
+    def __init__(
+        self, inner, methods: frozenset[str] = frozenset({"data", "num_symbols", "iter_tags"})
+    ) -> None:
+        self._inner = inner
+        self._methods = methods
+
+    def __getitem__(self, key):
+        return self._inner[key]
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    def _fail(self, method: str):
+        if method in self._methods:
+            raise ValueError("unreadable section")
+
+    def data(self):
+        self._fail("data")
+        return self._inner.data()
+
+    def num_symbols(self):
+        self._fail("num_symbols")
+        return self._inner.num_symbols()
+
+    def iter_tags(self, *args, **kwargs):
+        self._fail("iter_tags")
+        return self._inner.iter_tags(*args, **kwargs)
+
+
+GO_BUILDINFO = b"\xff Go buildinf:" + bytes([8, 2]) + b"\x00" * 16 + b"\x08go1.22.3"
+
+_UNREADABLE_SECTION = {
+    ".dynamic": evidence.PARTIAL_ELF_DYNAMIC_UNREAD,
+    ".dynsym": evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    ".symtab": evidence.PARTIAL_ELF_SYMTAB_UNREAD,
+    ".go.buildinfo": evidence.PARTIAL_ELF_GO_BUILDINFO_UNREAD,
+}
+
+
+def _readable_elf() -> bytes:
+    return ElfBuilder(
+        needed=("libcrypto.so.3",),
+        dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
+        with_symtab=True,
+        go_buildinfo=GO_BUILDINFO,
+    ).build()
+
+
+def _explode(monkeypatch, section_name: str, methods: frozenset[str] | None = None) -> None:
+    real = elf_module._find_section
+    which = methods or frozenset({"data", "num_symbols", "iter_tags"})
+
+    def patched(sections, name):
+        found = real(sections, name)
+        if name == section_name and found is not None:
+            return _Exploding(found, which)
+        return found
+
+    monkeypatch.setattr(elf_module, "_find_section", patched)
+
+
+@pytest.mark.parametrize("method", ["num_symbols", "data"])
+def test_both_dynsym_reads_name_the_same_cause(monkeypatch, method) -> None:
+    """`.dynsym` is read twice, and each read has its own handler."""
+    _explode(monkeypatch, ".dynsym", frozenset({method}))
+    ev, errors = read_elf(io.BytesIO(_readable_elf()), "m.so", PATTERNS, vendored=False)
+    assert errors != ()
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
+
+
+@pytest.mark.parametrize(("section", "reason"), sorted(_UNREADABLE_SECTION.items()))
+def test_each_unread_elf_section_names_the_evidence_it_cost(monkeypatch, section, reason) -> None:
+    """Which area failed is what a consumer needs: they invalidate different fields."""
+    _explode(monkeypatch, section)
+    ev, errors = read_elf(io.BytesIO(_readable_elf()), "m.so", PATTERNS, vendored=False)
+    assert errors != ()
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [reason]
+    assert bool(ev.partial_reasons) is ev.partial_analysis
+
+
+# --- each byte-reachable cause names exactly its own token --------------------
+#
+# The reachability guard only asks that every token is produced by *something*, so two
+# causes sharing a token hide each other from it. This pins the mapping per cause.
+
+_BYTE_REACHABLE = {
+    "elf header unread": [evidence.PARTIAL_ELF_HEADER_UNREAD],
+    "elf section table truncated": [evidence.PARTIAL_ELF_SECTION_TABLE_TRUNCATED],
+    "elf section header unreadable": [evidence.PARTIAL_ELF_SECTIONS_UNREAD],
+    "elf section count unreadable": [evidence.PARTIAL_ELF_SECTIONS_UNREAD],
+    "elf dynamic section unreadable": [evidence.PARTIAL_ELF_DYNAMIC_UNREAD],
+    "elf section data unreadable": [evidence.PARTIAL_ELF_SECTION_DATA_UNREAD],
+    "macho header unread": [evidence.PARTIAL_MACHO_HEADER_UNREAD],
+    "macho stripped": [evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE],
+    "macho fat slice unread": [evidence.PARTIAL_MACHO_FAT_SLICE_UNREAD],
+    "pe header unread": [evidence.PARTIAL_PE_HEADER_UNREAD],
+    "pe ordinal import": [evidence.PARTIAL_PE_ORDINAL_IMPORT],
+    "unknown format": [evidence.PARTIAL_NO_STRUCTURAL_READER],
+}
+
+
+@pytest.mark.parametrize(("case", "expected"), sorted(_BYTE_REACHABLE.items()))
+def test_each_cause_names_exactly_its_own_token(case, expected) -> None:
+    data = {**_CASES, **_REACHABILITY}[case]
+    ev, _ = _read(data)
+    assert list(ev.partial_reasons) == expected
+    assert ev.partial_analysis is True
