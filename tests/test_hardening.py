@@ -8,6 +8,7 @@ cache that served the wrong record.
 from __future__ import annotations
 
 import json
+import struct
 import time
 import tracemalloc
 import zipfile
@@ -548,3 +549,43 @@ def test_a_wheel_with_invalid_escapes_still_scans_normally(context, tmp_path: Pa
     )
     record = scan_wheel(wheel, context)
     assert record["verdict"]["class"] == "FIPS_BREAKING"
+
+
+def test_a_fat_binary_that_declares_a_giant_arch_count_does_not_reparse_itself(
+    context, tmp_path: Path
+) -> None:
+    """`nfat_arch` is the third self-declared count, and reading every slice armed it.
+
+    While only the first slice was examined, an over-declared arch table cost nothing.
+    Walking all of them turns it into a work multiplier: a few hundred bytes of table
+    can name one symbol table tens of thousands of times, each entry a full parse of
+    it, on an object that grows by twenty bytes per entry. The count is capped and the
+    excess is reported as unread rather than believed.
+    """
+    thin = MachOBuilder(
+        id_dylib="@rpath/_ext.cpython-312-darwin.so",
+        symbols=tuple(MachOSym(f"_EVP_Digest{i:05d}", defined=True) for i in range(2000)),
+    ).build()
+    declared = 60000
+    body_at = 8 + declared * 20
+    payload = (
+        struct.pack(">II", 0xCAFEBABE, declared)
+        # Every entry names the same slice, so believing the count is 60000 passes
+        # over one symbol table.
+        + struct.pack(">iiIII", 7, 0, body_at, len(thin), 0) * declared
+        + thin
+    )
+    wheel = build_wheel(
+        tmp_path / f"fatcount-1.0-{MACOS}.whl",
+        name="fatcount",
+        version="1.0",
+        tags=(MACOS,),
+        files={"fatcount/_ext.cpython-312-darwin.so": payload},
+    )
+    started = time.perf_counter()
+    record = scan_wheel(wheel, context)  # must return promptly
+    assert time.perf_counter() - started < 10
+    binary = record["binaries"][0]
+    assert binary["partial_analysis"] is True
+    # Counted once, for bytes that exist once, rather than once per entry naming them.
+    assert binary["symbol_counts"]["symtab"] == 2000

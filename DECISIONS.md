@@ -47,3 +47,42 @@ Revisit if a version-independent parser lands in the standard library, or if a w
 the real corpus is found whose headline verdict flips on interpreter version alone.
 
 Tracked in [#4](https://github.com/EmilienM/wheel-crypto-scan/issues/4).
+
+## A universal binary is one record, and its slices are merged
+
+**Accepted, knowing what it costs.**
+
+A fat Mach-O is read slice by slice and reduced to a single `BinaryEvidence`. `needed`,
+`rpath` and `matched_symbols` become sorted unions, `symtab_count` a sum, `stripped` true
+only when every slice is. `machine`, `bits` and `endian` describe the first slice that
+parsed, because they describe one architecture and cannot describe several.
+
+**Why one record.** The thing being described is the member of the wheel. `path` is what
+`conventions.own_base` and the vendored-path matching key on, so a record per slice would
+carry the same `path` two or four times and every consumer counting binaries would
+double-count. No field of the schema is per-architecture today, and adding a `slices`
+array would be a schema change buying resolution nothing currently consumes.
+
+**What it buys.** Before, only the first parseable slice was read, so every fat object
+was `partial_analysis: true` for ever. Most macOS wheels are universal2, so a crypto-free
+universal2 wheel came out `OPAQUE` rather than `NO_CRYPTO_DETECTED`, and the README's
+`select(.verdict.class == "OPAQUE")` triage recipe listed all of them.
+
+**What it costs.** A union hides an intra-object disagreement. A universal2 dylib whose
+x86_64 slice links the host OpenSSL and whose arm64 slice has it compiled in merges to
+`needed: [libcrypto...]` plus both an `imported` and a `defined` `EVP_DigestInit_ex`.
+`linkage._binary_posture` tests `needed` first, so the object resolves to `system`, where
+reading the slices separately would give `system` and `static` and `_aggregate` would call
+that `mixed`. Previously the record was equally wrong about the posture but carried
+`partial_analysis: true`, which fired `BIN_PARTIAL_FORMAT` and forced
+`needs_human_review`. That net is now gone for this case.
+
+The trade is right because the losing case needs two independently built thin dylibs
+`lipo`-ed together, which `delocate` does not produce, while the winning case is most of
+the macOS wheels in the index. It is recorded here because nothing in the output says a
+record was merged, so a reader of `matched_symbols` carrying one name as both `imported`
+and `defined` should know why that is representable at all.
+
+Revisit if a real wheel is found whose architectures disagree about linkage.
+
+Tracked in [#10](https://github.com/EmilienM/wheel-crypto-scan/issues/10).

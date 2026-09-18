@@ -3,7 +3,7 @@
 Mach-O is read for its load commands and its `LC_SYMTAB`, which is what gives a Mach-O
 object the same imported-versus-defined split ELF gets. These tests hold it to that,
 and to the two cases where `partial_analysis` has to survive: a symbol table that could
-not be read in full, and a fat binary, where only one slice is examined.
+not be read in full, and a slice of a fat binary that could not be read.
 """
 
 from __future__ import annotations
@@ -90,7 +90,8 @@ def test_32_bit_big_endian() -> None:
     assert ev.soname == "libbar.dylib"
 
 
-def test_fat_binary_reads_first_parseable_slice() -> None:
+def test_fat_binary_takes_its_architecture_fields_from_the_first_slice() -> None:
+    """`machine`, `bits` and `endian` describe one architecture and cannot describe two."""
     slice_a = MachOBuilder(id_dylib="libfoo.dylib").build()
     slice_b = MachOBuilder(is64=False, big_endian=True, id_dylib="libbar.dylib").build()
     fat = build_fat([slice_a, slice_b])
@@ -98,6 +99,8 @@ def test_fat_binary_reads_first_parseable_slice() -> None:
     assert errors == ()
     assert ev.soname == "libfoo.dylib"
     assert ev.bits == 64
+    assert ev.endian == "little"
+    assert ev.machine == "CPU_TYPE_X86_64"
 
 
 def test_always_extracts_strings() -> None:
@@ -275,14 +278,70 @@ def test_fat_symbol_offsets_are_relative_to_the_slice() -> None:
     assert from_fat.symtab_count == 2
 
 
-def test_a_fat_binary_stays_partial_because_only_one_slice_is_read() -> None:
-    """The other architectures were never looked at, so they are unknown, not clean."""
-    thin = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
-    fat = build_fat([thin, MachOBuilder(is64=False, big_endian=True, id_dylib="b.dylib").build()])
-    ev, errors = _read(fat, path="fat.dylib")
+def test_a_fat_binary_whose_every_slice_read_cleanly_is_not_partial() -> None:
+    """Most macOS wheels are universal2, so this is the common case, not the exotic one.
+
+    While only the first slice was read, every fat object stayed partial, and a
+    universal2 wheel with no crypto in it came out `OPAQUE` rather than
+    `NO_CRYPTO_DETECTED`. That put every crypto-free universal2 wheel in the index on
+    the README's `OPAQUE` triage list.
+    """
+    slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    slice_b = MachOBuilder(
+        is64=False, big_endian=True, id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)
+    ).build()
+    ev, errors = _read(build_fat([slice_a, slice_b]), path="fat.dylib")
     assert errors == ()
-    assert ev.matched_symbols != ()
+    assert ev.partial_analysis is False
+
+
+def test_a_symbol_defined_only_in_the_second_slice_is_still_found() -> None:
+    """The whole point of walking every slice: arm64 evidence an x86_64 read misses."""
+    slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    slice_b = MachOBuilder(
+        is64=False,
+        big_endian=True,
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_EVP_EncryptInit_ex", defined=True),),
+    ).build()
+    ev, errors = _read(build_fat([slice_a, slice_b]), path="fat.dylib")
+    assert errors == ()
+    assert [(m.name, m.binding) for m in ev.matched_symbols] == [
+        ("EVP_DigestInit_ex", "imported"),
+        ("EVP_EncryptInit_ex", "defined"),
+    ]
+    # Summed over the slices, not taken from whichever one was read first.
+    assert ev.symtab_count == 2
+
+
+def test_an_unparseable_slice_keeps_the_object_partial() -> None:
+    """An architecture we could not read is unknown, not absent."""
+    slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    ev, errors = _read(build_fat([slice_a, b"\x00" * 64]), path="fat.dylib")
+    # The reason survives per slice rather than collapsing into one generic message.
+    assert [e.message for e in errors] == ["not a recognisable Mach-O object"]
     assert ev.partial_analysis is True
+    # What the readable slice said still survives.
+    assert [m.name for m in ev.matched_symbols] == ["EVP_DigestInit_ex"]
+
+
+def test_load_dylibs_merge_across_slices() -> None:
+    """A dependency named by one architecture is a dependency of the object."""
+    slice_a = MachOBuilder(
+        id_dylib="libfoo.dylib", load_dylibs=("libcrypto.3.dylib",), symbols=(IMPORTED_OPENSSL,)
+    ).build()
+    slice_b = MachOBuilder(
+        is64=False,
+        big_endian=True,
+        id_dylib="libfoo.dylib",
+        load_dylibs=("libssl.3.dylib",),
+        rpaths=("@loader_path/../lib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ev, errors = _read(build_fat([slice_a, slice_b]), path="fat.dylib")
+    assert errors == ()
+    assert ev.needed == ("libcrypto.3.dylib", "libssl.3.dylib")
+    assert ev.rpath == ("@loader_path/../lib",)
 
 
 # --- when the symbol table is missing or lying --------------------------------
@@ -576,3 +635,65 @@ def test_unparsed_macho_reports_no_structural_evidence() -> None:
     assert ev.matched_symbols == ()
     assert ev.machine is None
     assert ev.symtab_count == 0
+
+
+def test_one_slice_keeping_its_symbols_makes_the_object_not_stripped() -> None:
+    """`stripped` is `all(slices)`: an architecture with symbols is symbols the object has."""
+    bare = MachOBuilder(is64=False, big_endian=True, id_dylib="libfoo.dylib").build()
+    with_syms = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    ev, _ = _read(build_fat([with_syms, bare]), path="fat.dylib")
+    assert ev.stripped is False
+    ev, _ = _read(build_fat([bare, bare]), path="fat.dylib")
+    assert ev.stripped is True
+
+
+def test_the_symbol_cap_is_applied_after_the_slices_merge() -> None:
+    """Capping per slice would let which symbols survive depend on which slice they were in."""
+    limit = PATTERNS.limits.max_symbols_per_binary
+    first = tuple(MachOSym(f"_EVP_Digest{i:04d}", defined=False) for i in range(limit))
+    second = tuple(MachOSym(f"_EVP_Encrypt{i:04d}", defined=False) for i in range(limit))
+    a = MachOBuilder(id_dylib="libfoo.dylib", symbols=first).build()
+    b = MachOBuilder(is64=False, big_endian=True, id_dylib="libfoo.dylib", symbols=second).build()
+
+    forward, _ = _read(build_fat([a, b]), path="fat.dylib")
+    reverse, _ = _read(build_fat([b, a]), path="fat.dylib")
+    assert len(forward.matched_symbols) == limit
+    assert forward.symbols_truncated is True
+    # Which ones survive is a property of the merged set, not of slice order.
+    assert [m.name for m in forward.matched_symbols] == [m.name for m in reverse.matched_symbols]
+
+
+def test_two_entries_naming_one_slice_describe_one_slice() -> None:
+    """A duplicated offset must not count the same symbol table twice."""
+    thin = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    body_at = 8 + 2 * 20
+    entry = struct.pack(">iiIII", 7, 0, body_at, len(thin), 0)
+    data = struct.pack(">II", 0xCAFEBABE, 2) + entry + entry + thin
+    ev, errors = _read(data, path="fat.dylib")
+    assert errors == ()
+    single, _ = _read(thin, path="thin.dylib")
+    assert ev.symtab_count == single.symtab_count
+    assert ev.partial_analysis is False
+
+
+def test_an_over_declared_arch_count_is_reported_rather_than_believed() -> None:
+    thin = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    body_at = 8 + 40 * 20
+    entries = b"".join(struct.pack(">iiIII", 7, i, body_at, len(thin), 0) for i in range(40))
+    data = struct.pack(">II", 0xCAFEBABE, 40) + entries + thin
+    ev, errors = _read(data, path="fat.dylib")
+    assert [e.message for e in errors] == [
+        "fat header declares more architectures than this reader walks"
+    ]
+    assert ev.partial_analysis is True
+
+
+def test_every_unreadable_slice_says_why_it_was_unreadable() -> None:
+    """When nothing parses, no reason is dropped for being second."""
+    truncated = MachOBuilder(id_dylib="libfoo.dylib").build()[:32]
+    ev, errors = _read(build_fat([b"\x00" * 64, truncated]), path="fat.dylib")
+    assert [e.message for e in errors] == [
+        "mach-o header is truncated",
+        "not a recognisable Mach-O object",
+    ]
+    assert ev.partial_analysis is True
