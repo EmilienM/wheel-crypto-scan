@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from helpers.elfbuilder import (
+from helpers.binfmt import (
     DynSym,
     ElfBuilder,
     MachOBuilder,
@@ -270,7 +270,7 @@ def test_metadata_with_no_parseable_headers_is_recorded(context, tmp_path: Path)
 
 def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> None:
     """sh_size is attacker controlled and SHT_NOBITS materialises it as zero bytes."""
-    from helpers.elfbuilder import patch_u16  # noqa: F401  (kept for symmetry)
+    from helpers.binfmt import patch_u16  # noqa: F401  (kept for symmetry)
 
     payload = bytearray(ElfBuilder(comment=b"GCC: (GNU) 14.0\x00", needed=("libc.so.6",)).build())
     # Find the .comment section header and rewrite its type to SHT_NOBITS with a 3 GiB size.

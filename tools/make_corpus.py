@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-from helpers.elfbuilder import DynSym, ElfBuilder  # noqa: E402
+from helpers.binfmt import DynSym, ElfBuilder  # noqa: E402
 from helpers.wheelbuilder import build_wheel  # noqa: E402
 
 MANYLINUX = "cp39-abi3-manylinux_2_28_x86_64"
