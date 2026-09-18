@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from .. import evidence
 
-# Four bytes is enough to tell ELF, Mach-O (thin or fat, either byte order) and PE
-# apart; nothing here needs to look past the magic number.
+# Four bytes is enough to tell ELF, Mach-O (thin or fat, 32- or 64-bit offsets, either
+# byte order) and PE apart; nothing here needs to look past the magic number.
 SNIFF_BYTES = 4
 
 _ELF_MAGIC = b"\x7fELF"
@@ -26,6 +26,8 @@ _MACHO_MAGICS = frozenset(
         b"\xcf\xfa\xed\xfe",  # MH_CIGAM_64 (64-bit, little-endian header fields)
         b"\xca\xfe\xba\xbe",  # FAT_MAGIC (universal binary; fat header is big-endian)
         b"\xbe\xba\xfe\xca",  # FAT_CIGAM (defensive: the byte-swapped form)
+        b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64 (universal binary with 64-bit offsets)
+        b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64 (defensive: the byte-swapped form)
     }
 )
 

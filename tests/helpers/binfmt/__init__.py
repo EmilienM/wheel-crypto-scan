@@ -27,7 +27,7 @@ from .elf import (
     ElfBuilder,
     patch_u16,
 )
-from .macho import MachOBuilder, MachOSym, build_fat
+from .macho import FAT_MAGIC, FAT_MAGIC_64, MachOBuilder, MachOSym, build_fat
 from .pe import (
     IMAGE_FILE_MACHINE_AMD64,
     IMAGE_FILE_MACHINE_ARM64,
@@ -39,6 +39,8 @@ from .pe import (
 
 __all__ = [
     "DynSym",
+    "FAT_MAGIC",
+    "FAT_MAGIC_64",
     "EM_386",
     "EM_S390",
     "EM_X86_64",
