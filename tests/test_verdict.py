@@ -131,3 +131,4 @@ def test_the_verdict_can_never_be_a_pass(ruleset) -> None:
     verdict = classify(ruleset, (finding("BIN_FIPS_PROVIDER_AWARE", None, review=False),), {})
     assert verdict.headline in ruleset.precedence
     assert "COMPLIANT" not in verdict.headline
+    assert "COMPATIBLE" not in verdict.headline

@@ -8,9 +8,10 @@
 # How to read an entry
 # --------------------
 #   severity            How strong the evidence is (high / medium / low / info).
-#                       It is NOT a compliance judgement.
+#                       It is NOT a compatibility judgement.
 #   verdict             Which class this evidence pushes the wheel into. The tool never
-#                       emits "compliant" and this field can never say so.
+#                       emits a passing class, not "compliant" and not "compatible", and
+#                       this field can never say so.
 #   confidence          How sure we are the match means what we think it means.
 #   needs_human_review  Set true whenever a crypto engineer must look at it. When in
 #                       doubt, set it true. It is never wrong to ask for review.

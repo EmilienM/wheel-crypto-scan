@@ -140,6 +140,7 @@ def test_the_verdict_keeps_every_class_that_fired(ruleset) -> None:
 def test_the_verdict_can_never_say_compliant(ruleset) -> None:
     serialised = to_json_line(record_for(ruleset, bundled_cryptography()))
     assert "COMPLIANT" not in serialised
+    assert "COMPATIBLE" not in serialised
 
 
 # --- findings ---------------------------------------------------------------

@@ -225,3 +225,4 @@ def test_the_schema_does_not_close_the_verdict_class_list() -> None:
 def test_the_schema_still_forbids_a_passing_class() -> None:
     text = files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
     assert "COMPLIANT" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
+    assert "COMPATIBLE" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()

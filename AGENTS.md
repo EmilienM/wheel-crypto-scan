@@ -1,15 +1,15 @@
 # wheel-crypto-scan
 
 Static analyser that reports crypto-relevant **evidence** inside Python wheels so consumers
-of a package index can see per-wheel FIPS risk. It gathers evidence; it does not decide
-compliance. Read `README.md` for what it detects and `SCHEMA.md` for the output contract.
+of a package index can see per-wheel FIPS risk. It gathers evidence; it does not decide FIPS
+compatibility. Read `README.md` for what it detects and `SCHEMA.md` for the output contract.
 
 ## Invariants
 
 These are design decisions, not accidents. Do not change one without saying so explicitly.
 
-- **No passing verdict class.** The taxonomy has no "compliant" and must never acquire one.
-  A human makes that call.
+- **No passing verdict class.** The taxonomy has no passing class, no "compliant" and no
+  "compatible", and must never acquire one. A human makes that call.
 - **Deterministic output.** Same wheel in, byte-identical JSONL out, across `--jobs`, cache
   state, and interpreter version. Output is sorted, ASCII-only, float-free, and carries no
   host paths, timestamps or hostnames.
