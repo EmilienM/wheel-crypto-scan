@@ -42,6 +42,12 @@ class ArchiveLimits:
     max_compression_ratio: int = 1000
     # Below this size a dense member is uninteresting, however good its ratio is.
     ratio_check_floor_bytes: int = 1024**2
+    # A symlink target is a path. Anything larger is not a symlink, it is an attempt
+    # to make us decompress an arbitrary amount of data outside the member limits.
+    max_symlink_target_bytes: int = 4096
+    # How much recently-read data a streamed member keeps so that a backward seek can
+    # be served without re-decompressing from the start. See SeekableZipMember.
+    read_back_window_bytes: int = 16 * 1024**2
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,13 +69,27 @@ class SeekableZipMember(io.RawIOBase):
     multi-gigabyte extension without holding it in memory. Forward seeks are cheap.
     """
 
-    def __init__(self, archive: zipfile.ZipFile, name: str, size: int) -> None:
+    def __init__(
+        self,
+        archive: zipfile.ZipFile,
+        name: str,
+        size: int,
+        window_bytes: int = 16 * 1024**2,
+    ) -> None:
         super().__init__()
         self._archive = archive
         self._name = name
         self._size = size
+        self._window_bytes = max(window_bytes, 0)
         self._stream: IO[bytes] | None = None
         self._position = 0
+        # Everything decompressed within the trailing window, so that a short backward
+        # seek costs a memory copy instead of a full re-decompression. ELF readers walk
+        # .dynsym and .dynstr alternately, which without this turns every symbol lookup
+        # into another pass over the whole member.
+        self._window = bytearray()
+        self._window_start = 0
+        self.reopens = 0
         self._reopen()
 
     def _reopen(self) -> None:
@@ -77,6 +97,9 @@ class SeekableZipMember(io.RawIOBase):
             self._stream.close()
         self._stream = self._archive.open(self._name)
         self._position = 0
+        self._window.clear()
+        self._window_start = 0
+        self.reopens += 1
 
     def readable(self) -> bool:
         return True
@@ -85,11 +108,36 @@ class SeekableZipMember(io.RawIOBase):
         return True
 
     def readinto(self, buffer) -> int:  # type: ignore[no-untyped-def]
+        wanted = len(buffer)
+        cached = self._read_from_window(wanted)
+        if cached:
+            buffer[: len(cached)] = cached
+            return len(cached)
         assert self._stream is not None
-        data = self._stream.read(len(buffer))
+        data = self._stream.read(wanted)
         buffer[: len(data)] = data
+        self._remember(data)
         self._position += len(data)
         return len(data)
+
+    def _read_from_window(self, wanted: int) -> bytes:
+        """Serve a read that falls inside the retained window, if it does."""
+        end = self._window_start + len(self._window)
+        if self._position < self._window_start or self._position >= end:
+            return b""
+        offset = self._position - self._window_start
+        data = bytes(self._window[offset : offset + wanted])
+        self._position += len(data)
+        return data
+
+    def _remember(self, data: bytes) -> None:
+        if not self._window_bytes or not data:
+            return
+        self._window += data
+        excess = len(self._window) - self._window_bytes
+        if excess > 0:
+            del self._window[:excess]
+            self._window_start += excess
 
     def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
         if whence == io.SEEK_SET:
@@ -103,6 +151,12 @@ class SeekableZipMember(io.RawIOBase):
         if target < 0:
             raise OSError("negative seek position")
         if target < self._position:
+            if self._window_start <= target < self._window_start + len(self._window):
+                # Inside the retained window: no re-decompression needed. The upper
+                # bound matters: without it an empty window would satisfy the test for
+                # any target and silently desynchronise us from the real stream.
+                self._position = target
+                return self._position
             self._reopen()
         self._skip_forward(target - self._position)
         return self._position
@@ -110,9 +164,14 @@ class SeekableZipMember(io.RawIOBase):
     def _skip_forward(self, count: int) -> None:
         assert self._stream is not None
         while count > 0:
+            cached = self._read_from_window(min(count, _SKIP_CHUNK))
+            if cached:
+                count -= len(cached)
+                continue
             chunk = self._stream.read(min(count, _SKIP_CHUNK))
             if not chunk:
                 return
+            self._remember(chunk)
             self._position += len(chunk)
             count -= len(chunk)
 
@@ -248,18 +307,36 @@ class WheelArchive:
         member = self._members[name]
         if member.size <= self.limits.max_in_memory_bytes:
             return io.BytesIO(self.read(name))
-        member_stream = SeekableZipMember(self._zip, name, member.size)
+        member_stream = SeekableZipMember(
+            self._zip, name, member.size, self.limits.read_back_window_bytes
+        )
         return io.BufferedReader(member_stream)  # type: ignore[return-value]
 
     def symlink_target(self, name: str) -> str | None:
-        """The path a symlink member points at. Recorded, never followed."""
+        """The path a symlink member points at. Recorded, never followed.
+
+        A symlink target is a path, so anything larger than a few kilobytes is not a
+        symlink. Reading it anyway would decompress an arbitrary amount of data outside
+        every other limit in this class, which is a cheap way to exhaust memory from a
+        two megabyte archive.
+        """
         member = self._members[name]
         if not member.is_symlink:
             return None
-        try:
-            return self._zip.read(name).decode("utf-8", errors="replace")
-        except (zipfile.BadZipFile, OSError, EOFError, ValueError):
+        if member.size > self.limits.max_symlink_target_bytes:
+            self._record(
+                errors.SIZE_LIMIT_EXCEEDED,
+                name,
+                f"symlink target is {member.size} bytes, refusing to read it",
+            )
             return None
+        try:
+            with self._zip.open(name) as stream:
+                raw = stream.read(self.limits.max_symlink_target_bytes)
+        except (zipfile.BadZipFile, OSError, EOFError, ValueError, MemoryError):
+            self._record(errors.MEMBER_READ_ERROR, name, "unreadable symlink target")
+            return None
+        return raw.decode("utf-8", errors="replace")
 
     # --- lifecycle ----------------------------------------------------------
 

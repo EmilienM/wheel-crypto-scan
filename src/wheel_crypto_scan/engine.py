@@ -188,14 +188,18 @@ def _match_wheel_generator(rule, ruleset, evidence, linkage, index) -> Iterator[
 
 def _match_no_source(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
     artifacts = evidence.artifacts
-    if artifacts.source_available or artifacts.pyc_files == 0:
+    # Fires when the wheel contains Python we could not read: bytecode without source,
+    # or source that would not parse. Both leave Layer 3 with nothing to say, and the
+    # record must not present that the same way as a wheel with nothing to find.
+    if artifacts.source_available or (artifacts.pyc_files == 0 and artifacts.py_files == 0):
         return
+    if artifacts.py_files_unparsed:
+        detail = f"{artifacts.py_files_unparsed} of {artifacts.py_files} source files unparsed"
+    else:
+        detail = f"{artifacts.pyc_files} bytecode files, 0 source files"
     yield _Hit(
         subject=None,
-        location=Location(
-            path=evidence.filename,
-            evidence=f"{artifacts.pyc_files} bytecode files, 0 source files",
-        ),
+        location=Location(path=evidence.filename, evidence=detail),
     )
 
 

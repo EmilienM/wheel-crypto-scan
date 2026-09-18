@@ -252,16 +252,22 @@ def _collect_string_bytes(sections: list[Section], max_strings_bytes: int) -> tu
             and (sh_flags & _SHF_ALLOC)
             and not (sh_flags & _SHF_EXECINSTR)
         )
-        if not eligible:
-            continue
-        try:
-            data = section.data()
-        except Exception:
+        # SHT_NOBITS occupies no file space, so pyelftools materialises sh_size zero
+        # bytes for it. sh_size is a 64-bit attacker-controlled field, which makes a
+        # few hundred byte object able to demand gigabytes. It holds no strings anyway.
+        if not eligible or sh_type == "SHT_NOBITS":
             continue
         remaining = max_strings_bytes - len(buf)
         if remaining <= 0:
             truncated = True
             break
+        # Check the declared size before asking for the bytes, not after.
+        if section["sh_size"] > remaining:
+            truncated = True
+        try:
+            data = section.data()
+        except Exception:
+            continue
         if len(data) > remaining:
             buf.extend(data[:remaining])
             truncated = True

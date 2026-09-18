@@ -950,8 +950,8 @@ severity = "medium"
 confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
-title = "Wheel ships bytecode without source"
-why = "Layer 3 cannot run without .py files, so the absence of Python findings means nothing here. Explicitly opaque rather than quietly clean."
+title = "Wheel ships Python that could not be read"
+why = "Either the wheel ships bytecode with no source, or every source file it does ship failed to parse. Either way Layer 3 had nothing to work with, so the absence of Python findings means nothing. Explicitly opaque rather than quietly clean."
 [rule.match]
 kind = "no_source"
 
@@ -1215,6 +1215,21 @@ table = "crypto_library"
 # OpenSSL has its own rules above, which carry more specific wording per posture.
 exclude_libraries = ["openssl"]
 values = ["system", "bundled", "static", "mixed"]
+
+[[rule]]
+id = "BIN_OPENSSL_LINKAGE_UNKNOWN"
+layer = "binary"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "OpenSSL is used but the linkage could not be resolved"
+why = "The wheel calls OpenSSL without declaring a dependency on it, or the only evidence came from an object we could not read. Something resolves those symbols at runtime and it is outside this wheel and outside our sight, so this is opaque rather than nothing found."
+[rule.match]
+kind = "linkage"
+name = "openssl"
+values = ["unknown", "mixed"]
 
 [[rule]]
 id = "BIN_FIPS_PROVIDER_AWARE"

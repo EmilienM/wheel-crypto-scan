@@ -37,6 +37,9 @@ class ScanContext:
     evidence_level: str = "standard"
     archive_limits: ArchiveLimits = field(default_factory=ArchiveLimits)
     max_python_bytes: int = 8 * 1024 * 1024
+    # Caps the binaries list so a wheel with thousands of objects cannot produce an
+    # unbounded single JSONL line that no line-at-a-time consumer can read.
+    max_binaries_per_record: int = 256
 
     @classmethod
     def build(cls, ruleset: Ruleset, **kwargs: Any) -> ScanContext:
@@ -46,11 +49,19 @@ class ScanContext:
 def scan_wheel(path: str | Path, context: ScanContext, sha256: str | None = None) -> dict[str, Any]:
     """Produce the record for one wheel. Never raises for a malformed wheel."""
     path = Path(path)
-    digest = sha256 if sha256 is not None else hash_wheel(path)
+    try:
+        digest = sha256 if sha256 is not None else hash_wheel(path)
+    except OSError as exc:
+        # Unreadable, deleted between discovery and scan, or a broken symlink. The
+        # wheel still gets a record: a scan that loses wheels is worse than one that
+        # marks them opaque.
+        return _unreadable_record(path, "", type(exc).__name__, context)
     try:
         evidence = _collect(path, context, digest)
     except errors.WheelReadError as exc:
         evidence = _unreadable(path, digest, str(exc))
+    except Exception as exc:  # noqa: BLE001 - never lose a wheel to an unexpected failure
+        evidence = _unreadable(path, digest, f"unexpected {type(exc).__name__}")
 
     linkage = resolve_linkage(context.ruleset, evidence)
     findings = apply_rules(context.ruleset, evidence, linkage)
@@ -71,11 +82,14 @@ def _collect(path: Path, context: ScanContext, digest: str) -> Evidence:
             archive, context.patterns, context.ruleset.conventions
         )
         sites, python_errors = _scan_python(archive, context)
+        unparsed = len({error.path for error in python_errors if error.path})
         inventory = build_inventory(
             archive,
             binaries,
             metadata.sbom_paths if metadata else (),
             metadata.record_entries if metadata else 0,
+            py_files_unparsed=unparsed,
+            max_binaries=context.max_binaries_per_record,
         )
         all_errors = (
             *archive.errors,
@@ -89,7 +103,7 @@ def _collect(path: Path, context: ScanContext, digest: str) -> Evidence:
             size_bytes=archive.size_bytes,
             artifacts=inventory,
             metadata=metadata,
-            binaries=binaries,
+            binaries=binaries[: context.max_binaries_per_record],
             py_sites=sites,
             errors=tuple(sorted(set(all_errors), key=ScanError.sort_key)),
         )
@@ -141,4 +155,17 @@ def _unreadable(path: Path, digest: str, message: str) -> Evidence:
         size_bytes=size,
         artifacts=ArtifactInventory(source_available=False, pyc_files=0),
         errors=(ScanError(stage=STAGE_ARCHIVE, kind=errors.BAD_ZIP, message=message, path=None),),
+    )
+
+
+def _unreadable_record(
+    path: Path, digest: str, reason: str, context: ScanContext
+) -> dict[str, Any]:
+    """A record for a wheel we could not even hash."""
+    evidence = _unreadable(path, digest, reason)
+    linkage = resolve_linkage(context.ruleset, evidence)
+    findings = apply_rules(context.ruleset, evidence, linkage)
+    verdict = classify(context.ruleset, findings, linkage)
+    return build_record(
+        evidence, findings, verdict, context.ruleset, evidence_level=context.evidence_level
     )

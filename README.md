@@ -98,6 +98,13 @@ across repeat runs, `--jobs 1` vs `--jobs 8`, cold vs warm cache, and Python 3.1
 3.13 and 3.14. Output is sorted, ASCII-only, float-free, and contains no host paths,
 timestamps or hostnames.
 
+One caveat worth knowing: `ast.parse` follows the grammar of the interpreter running it,
+so a wheel using syntax newer than the scanner's interpreter will not parse. **Pin the
+interpreter** if you need output comparable across hosts. That difference is never
+silently favourable: unparsed files are counted in `artifacts.py_files_unparsed`, and a
+wheel whose every source file failed reports `source_available: false` and comes out
+`OPAQUE`, not clean.
+
 ## Performance
 
 Measured on 100 synthetic wheels averaging 3.3 MiB uncompressed, on 16 cores:
@@ -105,12 +112,16 @@ Measured on 100 synthetic wheels averaging 3.3 MiB uncompressed, on 16 cores:
 | Mode | wheels/s | per wheel |
 |---|---|---|
 | `--jobs 1`, cold | 3.1 | 320 ms |
-| `--jobs 8`, cold | 18.4 | 54 ms |
-| `--jobs 8`, warm cache | 567 | 1.8 ms |
+| `--jobs 4`, cold | 11.8 | 85 ms |
+| `--jobs 8`, cold | 20.4 | 49 ms |
+| `--jobs 8`, warm cache | 674 | 1.5 ms |
 
-Wheels are read from the zip in memory and never extracted to disk. Members above
-`--max-binary-bytes` stream through a seekable zip reader, so a multi-gigabyte extension
-costs a second decompression pass rather than a gigabyte of RAM.
+Wheels are read from the zip in memory and never extracted to disk. Members above the
+in-memory threshold stream through a seekable zip reader that retains a bounded window of
+what it has already decompressed, so a multi-gigabyte extension costs a bounded number of
+passes rather than a gigabyte of resident memory. Reading the real 5.5 MiB
+`libcrypto.so.3` through that path takes 0.19 s with one decompression; without the
+window it took 17 s and 3,161.
 
 ## Development
 

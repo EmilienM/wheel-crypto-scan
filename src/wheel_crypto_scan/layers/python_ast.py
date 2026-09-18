@@ -37,6 +37,16 @@ from .. import errors
 from ..evidence import STAGE_PYTHON, PySite, ScanError
 from ..ruleset import ScanPatterns
 
+# A note on determinism. `ast.parse` follows the grammar of the interpreter running it,
+# and `feature_version` only gates a subset of it, so a wheel using syntax newer than
+# the running interpreter parses on one version and not another. Pinning the scanner's
+# interpreter is what makes output byte-identical across hosts; see README.
+#
+# What matters more is that the difference is never silently favourable. A file that
+# fails to parse is counted in `artifacts.py_files_unparsed`, and a wheel whose every
+# source file failed reports `source_available: false`, so an older interpreter reads
+# such a wheel as OPAQUE rather than as clean.
+
 # ctypes entry points that load a shared library by name. Not ruleset data: these are
 # the fixed set of stdlib call shapes the `py_ctypes_load` matcher understands, whereas
 # the library *names* worth flagging in their first argument come from

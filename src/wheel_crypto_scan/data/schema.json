@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/EmilienM/wheel-crypto-scan/wheel-crypto-scan/src/wheel_crypto_scan/data/schema.json",
+  "$id": "https://raw.githubusercontent.com/EmilienM/wheel-crypto-scan/main/src/wheel_crypto_scan/data/schema.json",
   "title": "wheel-crypto-scan record",
   "description": "One record per wheel. Evidence only: no field of this document asserts FIPS compliance, and the verdict taxonomy has no passing class. Consumers must ignore unknown keys; added optional keys and added rule ids do not bump schema_version, while removing or retyping a field does.",
   "type": "object",
@@ -164,7 +164,9 @@
       "required": [
         "py_files",
         "pyc_files",
+        "py_files_unparsed",
         "source_available",
+        "binaries_truncated",
         "record_entries",
         "total_uncompressed_bytes",
         "extensions",
@@ -184,7 +186,7 @@
         },
         "source_available": {
           "type": "boolean",
-          "description": "False means Layer 3 could not run, so the absence of Python findings means nothing."
+          "description": "True only when at least one .py file was actually parsed. When false, the absence of Python findings means nothing."
         },
         "record_entries": {
           "type": "integer",
@@ -260,6 +262,15 @@
               }
             }
           }
+        },
+        "py_files_unparsed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many .py files could not be parsed. When this equals py_files, Layer 3 produced nothing and source_available is false."
+        },
+        "binaries_truncated": {
+          "type": "boolean",
+          "description": "True when the binaries and extensions lists were capped, so a wheel with thousands of objects cannot produce an unbounded record."
         }
       }
     },

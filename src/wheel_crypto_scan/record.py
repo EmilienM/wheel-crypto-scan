@@ -112,7 +112,9 @@ def _artifacts_block(artifacts: ArtifactInventory) -> dict[str, Any]:
     return {
         "py_files": artifacts.py_files,
         "pyc_files": artifacts.pyc_files,
+        "py_files_unparsed": artifacts.py_files_unparsed,
         "source_available": artifacts.source_available,
+        "binaries_truncated": artifacts.binaries_truncated,
         "record_entries": artifacts.record_entries,
         "total_uncompressed_bytes": artifacts.total_uncompressed_bytes,
         "extensions": [{"path": path, "format": fmt} for path, fmt in artifacts.extensions],

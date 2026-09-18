@@ -164,6 +164,7 @@ def _worker_settings(args: argparse.Namespace, ruleset: Ruleset) -> dict[str, An
         "max_total_uncompressed_bytes": args.max_total_bytes,
         "cache_root": str(args.cache_dir) if args.cache_dir else str(default_cache_root()),
         "cache_enabled": not args.no_cache,
+        "cache_limits": f"{args.max_binary_bytes}:{args.max_total_bytes}",
     }
 
 
@@ -182,18 +183,24 @@ def _init_worker(settings: dict[str, Any]) -> None:
         root=Path(settings["cache_root"]),
         ruleset_version=settings["ruleset_version"],
         evidence_level=settings["evidence_level"],
+        limits=settings["cache_limits"],
         enabled=settings["cache_enabled"],
     )
 
 
 def _scan_path(path: str) -> str:
     assert _CONTEXT is not None and _CACHE is not None
-    digest = hash_wheel(path)
-    cached = _CACHE.get(digest)
+    filename = Path(path).name
+    try:
+        digest = hash_wheel(path)
+    except OSError:
+        # Let scan_wheel turn this into an error record rather than losing the wheel.
+        return to_json_line(scan_wheel(path, _CONTEXT))
+    cached = _CACHE.get(digest, filename)
     if cached is not None:
         return cached
     line = to_json_line(scan_wheel(path, _CONTEXT, sha256=digest))
-    _CACHE.put(digest, line)
+    _CACHE.put(digest, filename, line)
     return line
 
 

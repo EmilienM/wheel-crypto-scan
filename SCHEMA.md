@@ -65,8 +65,14 @@ missing key.
 `sboms`, `symlinks` (`{path, target}`, recorded and never followed),
 `skipped` (`{path, reason}` for members refused by a limit).
 
-`source_available` is `false` when the wheel ships bytecode but no source. **When it is
-false, the absence of Python findings means nothing.**
+`py_files_unparsed` counts source files that would not parse. `binaries_truncated` is
+true when the binary and extension lists were capped, so a wheel with thousands of
+objects cannot produce an unbounded record.
+
+`source_available` is `false` when the wheel ships no readable Python at all: bytecode
+without source, or source that would not parse. **When it is false, the absence of Python
+findings means nothing.** Because `ast.parse` follows the running interpreter's grammar,
+pin the interpreter if you need records comparable across hosts.
 
 ## `binaries`
 

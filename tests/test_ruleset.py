@@ -95,6 +95,7 @@ def test_rules_can_be_selected_by_matcher_kind() -> None:
         "BIN_STATIC_OPENSSL",
         "DERIVED_SYSTEM_OPENSSL_ONLY",
         "BIN_LINKED_CRYPTO_LIBRARY",
+        "BIN_OPENSSL_LINKAGE_UNKNOWN",
     }
 
 

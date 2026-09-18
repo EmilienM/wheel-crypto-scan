@@ -15,7 +15,6 @@ import re
 
 from ..binfmt import read_binary
 from ..evidence import (
-    FORMAT_UNKNOWN,
     STAGE_BINARY,
     ArtifactInventory,
     BinaryEvidence,
@@ -82,10 +81,24 @@ def scan_binaries(
                 patterns,
                 vendored=conventions.is_vendor_path(member.name),
             )
+        except Exception as exc:  # noqa: BLE001 - one bad member never sinks the wheel
+            # Above the in-memory threshold the member is decompressed lazily inside
+            # the reader, so a CRC failure surfaces here rather than at open time.
+            errors.append(
+                ScanError(
+                    stage=STAGE_BINARY,
+                    kind=MEMBER_READ_ERROR,
+                    message=f"could not read member: {type(exc).__name__}",
+                    path=member.name,
+                )
+            )
+            continue
         finally:
             stream.close()
-        if evidence.format != FORMAT_UNKNOWN or member_errors:
-            binaries.append(evidence)
+        # Keep the record even for an unrecognised format. The strings-only fallback
+        # exists so a wheel can never look clean merely because we cannot parse it,
+        # and dropping the object here would throw away exactly that evidence.
+        binaries.append(evidence)
         errors.extend(member_errors)
 
     binaries.sort(key=lambda binary: binary.path)
@@ -97,6 +110,9 @@ def build_inventory(
     binaries: tuple[BinaryEvidence, ...],
     sbom_paths: tuple[str, ...],
     record_entries: int,
+    *,
+    py_files_unparsed: int = 0,
+    max_binaries: int = 256,
 ) -> ArtifactInventory:
     """Count what the wheel contains, independent of any rule."""
     py_files = 0
@@ -117,9 +133,15 @@ def build_inventory(
     return ArtifactInventory(
         py_files=py_files,
         pyc_files=pyc_files,
-        # Nothing to be opaque about when the wheel ships no Python at all.
-        source_available=py_files > 0 or pyc_files == 0,
-        extensions=tuple(sorted((binary.path, binary.format) for binary in binaries)),
+        py_files_unparsed=py_files_unparsed,
+        binaries_truncated=len(binaries) > max_binaries,
+        # True only when we actually read some Python. A wheel whose every source file
+        # failed to parse is as opaque as one that ships no source at all, and must not
+        # report the same empty Python findings as a genuinely clean wheel.
+        source_available=(py_files - py_files_unparsed) > 0 or (py_files == 0 and pyc_files == 0),
+        extensions=tuple(sorted((binary.path, binary.format) for binary in binaries))[
+            :max_binaries
+        ],
         bundled_libs=tuple(sorted(b.path for b in binaries if b.vendored_path)),
         sboms=sbom_paths,
         symlinks=tuple(sorted(symlinks)),

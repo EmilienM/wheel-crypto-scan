@@ -151,8 +151,10 @@ class SbomComponent:
     purl: str | None
     source: str
 
-    def sort_key(self) -> tuple[str, str, str]:
-        return (self.name, self.version or "", self.source)
+    def sort_key(self) -> tuple[str, str, str, str]:
+        # Total over every field that `==` compares, so deduplicating by set and then
+        # sorting cannot leave two entries tied and let hash order pick the winner.
+        return (self.name, self.version or "", self.purl or "", self.source)
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +195,12 @@ class ArtifactInventory:
     skipped: tuple[tuple[str, str], ...] = ()
     total_uncompressed_bytes: int = 0
     record_entries: int = 0
+    # Number of .py files that could not be parsed. When every one of them failed,
+    # the absence of Python findings says nothing.
+    py_files_unparsed: int = 0
+    # Set when the binaries list was capped, so a wheel with thousands of objects
+    # cannot produce an unbounded single JSON line.
+    binaries_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)

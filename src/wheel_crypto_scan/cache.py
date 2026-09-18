@@ -40,6 +40,7 @@ class RecordCache:
         analyzer_version: int = ANALYZER_VERSION,
         schema_version: int = SCHEMA_VERSION,
         tool_version: str = __version__,
+        limits: str = "",
         enabled: bool = True,
     ) -> None:
         self.enabled = enabled
@@ -51,30 +52,39 @@ class RecordCache:
                 ruleset_version,
                 evidence_level,
                 tool_version,
+                # Scan limits change what the binary layer looked at, so a constrained
+                # run must not poison the cache for an unconstrained one.
+                limits,
             )
         )
 
-    def key(self, wheel_sha256: str) -> str:
-        return hashlib.sha256(f"{wheel_sha256}|{self._salt}".encode()).hexdigest()
+    def key(self, wheel_sha256: str, filename: str) -> str:
+        """Identify a record by content *and* filename.
 
-    def _path(self, wheel_sha256: str) -> Path:
-        key = self.key(wheel_sha256)
+        The filename is authoritative for the record's name, version and tags, so two
+        byte-identical archives published under different names are two different
+        records. Keying on the digest alone would make one of them disappear.
+        """
+        return hashlib.sha256(f"{wheel_sha256}|{filename}|{self._salt}".encode()).hexdigest()
+
+    def _path(self, wheel_sha256: str, filename: str) -> Path:
+        key = self.key(wheel_sha256, filename)
         return self.root / key[:2] / f"{key}.json"
 
-    def get(self, wheel_sha256: str) -> str | None:
+    def get(self, wheel_sha256: str, filename: str) -> str | None:
         """The cached record line, or None. A damaged entry is a miss, never an error."""
         if not self.enabled:
             return None
         try:
-            return self._path(wheel_sha256).read_text(encoding="utf-8")
+            return self._path(wheel_sha256, filename).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return None
 
-    def put(self, wheel_sha256: str, line: str) -> None:
+    def put(self, wheel_sha256: str, filename: str, line: str) -> None:
         """Store a record line. Written atomically so an interrupted run leaves no half-entry."""
         if not self.enabled:
             return
-        path = self._path(wheel_sha256)
+        path = self._path(wheel_sha256, filename)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             handle, temporary = tempfile.mkstemp(dir=path.parent, suffix=".tmp")

@@ -42,13 +42,14 @@ def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
         postures = {
             _binary_posture(binary, library, ruleset.conventions) for binary in evidence.binaries
         }
-        value = _aggregate(postures, opaque)
+        value = _aggregate(postures, opaque and library.always_report)
         if value != LINKAGE_NONE or library.always_report:
             result[name] = value
     return result
 
 
 def _aggregate(postures: set[str], opaque: bool) -> str:
+    """Reduce per-binary postures to one answer for the whole wheel."""
     definite = sorted(posture for posture in postures if posture in _DEFINITE)
     if len(definite) == 1:
         return definite[0]

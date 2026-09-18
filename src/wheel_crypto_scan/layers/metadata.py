@@ -311,7 +311,25 @@ def _read_email_member(
                 )
             )
 
+    # A UTF-8 BOM is valid UTF-8, so the check above passes, but BytesParser then reads
+    # the whole header block as a body and silently returns an empty message: every
+    # Requires-Dist vanishes with no error recorded. Strip it before parsing.
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+
     msg = BytesParser(policy=compat32).parsebytes(raw)
+
+    # Any other preamble has the same effect. A metadata file with no headers at all
+    # is unreadable, not empty, and has to say so.
+    if raw.strip() and not msg.keys():
+        decode_errors.append(
+            ScanError(
+                stage=STAGE_METADATA,
+                kind=errors.METADATA_DECODE_ERROR,
+                message=f"{member_name} has no parseable headers",
+                path=path,
+            )
+        )
     return msg, decode_errors
 
 
@@ -435,7 +453,7 @@ def _read_sboms(
         try:
             data = json.loads(raw.decode("utf-8"))
             found = list(_flatten_components(data, path))
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, RecursionError, ValueError):
             found_errors.append(
                 ScanError(
                     stage=STAGE_METADATA,
@@ -451,6 +469,12 @@ def _read_sboms(
     return tuple(sbom_paths), tuple(components), found_errors
 
 
+# Deep enough for any real SBOM, shallow enough that we never rely on the
+# interpreter's own stack limit, which differs by an order of magnitude between
+# Python versions and would make the same wheel parse on one and crash on another.
+_MAX_SBOM_DEPTH = 64
+
+
 def _flatten_components(data: Any, source: str) -> Iterator[SbomComponent]:
     if not isinstance(data, dict):
         raise TypeError("SBOM root is not an object")
@@ -458,10 +482,12 @@ def _flatten_components(data: Any, source: str) -> Iterator[SbomComponent]:
     if components is None:
         # A valid SBOM may legitimately declare no components.
         return
-    yield from _walk_components(components, source)
+    yield from _walk_components(components, source, 0)
 
 
-def _walk_components(components: Any, source: str) -> Iterator[SbomComponent]:
+def _walk_components(components: Any, source: str, depth: int) -> Iterator[SbomComponent]:
+    if depth > _MAX_SBOM_DEPTH:
+        raise ValueError("SBOM components are nested too deeply")
     if not isinstance(components, list):
         # Do not quietly read this as "no bundled dependencies". An SBOM is the
         # highest-confidence evidence the tool gets, so an unreadable one has to be
@@ -482,7 +508,7 @@ def _walk_components(components: Any, source: str) -> Iterator[SbomComponent]:
             )
         nested = entry.get("components")
         if isinstance(nested, list):
-            yield from _walk_components(nested, source)
+            yield from _walk_components(nested, source, depth + 1)
 
 
 # --- shared -----------------------------------------------------------------------------
