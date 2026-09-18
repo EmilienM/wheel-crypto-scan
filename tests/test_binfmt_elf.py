@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from helpers.elfbuilder import (
+from helpers.binfmt import (
     E_SHNUM_OFFSET,
     EM_S390,
     EM_X86_64,

@@ -7,7 +7,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
-from helpers.elfbuilder import DynSym, ElfBuilder
+from helpers.binfmt import DynSym, ElfBuilder
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan.cli import main

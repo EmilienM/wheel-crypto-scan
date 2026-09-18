@@ -12,7 +12,7 @@ import dataclasses
 import io
 
 import pytest
-from helpers.elfbuilder import MachOBuilder, MachOSym, build_fat
+from helpers.binfmt import MachOBuilder, MachOSym, build_fat
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt.macho import read_macho
 from wheel_crypto_scan.errors import MACHO_PARSE_ERROR
