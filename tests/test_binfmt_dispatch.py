@@ -5,8 +5,10 @@ from __future__ import annotations
 import io
 
 from helpers.binfmt import DynSym, ElfBuilder, MachOBuilder, PEBuilder, PEImport
-from wheel_crypto_scan import evidence
-from wheel_crypto_scan.binfmt import read_binary
+from wheel_crypto_scan import binfmt, evidence
+from wheel_crypto_scan.binfmt import _READERS, read_binary
+from wheel_crypto_scan.binfmt.detect import SNIFF_BYTES, detect_format
+from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
 from wheel_crypto_scan.errors import PE_PARSE_ERROR
 from wheel_crypto_scan.ruleset import load_ruleset
 
@@ -89,52 +91,60 @@ def test_vendored_flag_passes_through_every_branch() -> None:
         assert ev.vendored_path is True
 
 
-def test_readers_table_registers_all_known_formats() -> None:
-    from wheel_crypto_scan.binfmt import _READERS, read_elf, read_macho, read_pe
-
-    assert _READERS == {
-        evidence.FORMAT_ELF: read_elf,
-        evidence.FORMAT_MACHO: read_macho,
-        evidence.FORMAT_PE: read_pe,
+def test_every_table_entry_is_reachable_from_detection() -> None:
+    """A reader nothing can sniff its way to is a reader that never runs."""
+    assert set(_READERS) <= {
+        evidence.FORMAT_ELF,
+        evidence.FORMAT_MACHO,
+        evidence.FORMAT_PE,
+        evidence.FORMAT_UNKNOWN,
     }
+    for fmt, data in (
+        (evidence.FORMAT_ELF, ElfBuilder().build()),
+        (evidence.FORMAT_MACHO, MachOBuilder().build()),
+        (evidence.FORMAT_PE, PEBuilder(dll_name="_ext.pyd").build()),
+    ):
+        assert fmt in _READERS
+        assert detect_format(data[:SNIFF_BYTES]) == fmt
+    # The fallback is reached by missing the table, so `unknown` must never be in it.
+    assert evidence.FORMAT_UNKNOWN not in _READERS
 
 
-def test_dispatch_through_readers_table(monkeypatch) -> None:
-    from wheel_crypto_scan.binfmt import _READERS
-
+def test_dispatch_goes_through_the_table(monkeypatch) -> None:
+    """Swapping a table entry swaps the reader: the chain is gone, not just hidden."""
     called: dict[str, object] = {}
 
-    def dummy_reader(
-        stream,
-        path: str,
-        patterns,
-        *,
-        vendored: bool,
-        max_strings_bytes: int = 1024,
-    ):
-        called["stream"] = stream
+    def dummy_reader(stream, path, patterns, *, vendored, max_strings_bytes=1024):
         called["path"] = path
         called["vendored"] = vendored
         called["max_strings_bytes"] = max_strings_bytes
-        return (
-            evidence.BinaryEvidence(path=path, format="custom_elf", vendored_path=vendored),
-            (),
-        )
+        return evidence.BinaryEvidence(path=path, format="stand_in", vendored_path=vendored), ()
 
     monkeypatch.setitem(_READERS, evidence.FORMAT_ELF, dummy_reader)
-    data = ElfBuilder().build()
-    ev, errors = _read(data, path="custom.so", vendored=True)
+    ev, errors = _read(ElfBuilder().build(), path="custom.so", vendored=True)
     assert errors == ()
-    assert ev.format == "custom_elf"
-    assert called["path"] == "custom.so"
-    assert called["vendored"] is True
+    assert ev.format == "stand_in"
+    assert called == {"path": "custom.so", "vendored": True, "max_strings_bytes": MAX_STRINGS_BYTES}
 
 
-def test_read_strings_only_defaults() -> None:
-    from wheel_crypto_scan.binfmt import _read_strings_only
+def test_a_detected_format_with_no_reader_keeps_its_own_name(monkeypatch) -> None:
+    """The fallback records what was sniffed, never a blanket `unknown`.
 
-    stream = io.BytesIO(b"hello crypto world")
-    ev, errors = _read_strings_only(stream, "test.bin", PATTERNS, vendored=False)
+    Adding a format to `detect_format` is meant to be safe before its reader exists:
+    the object still gets a strings pass, and its record still says which format it
+    was. A fallback that defaulted the name would turn that into a mislabelled record
+    and nothing would fail.
+    """
+    monkeypatch.setattr(binfmt, "detect_format", lambda head: "wasm")
+    ev, errors = _read(b"\x00asm\x01\x00\x00\x00 OpenSSL 3.2.1 ", path="mod.wasm")
+    assert errors == ()
+    assert ev.format == "wasm"
+    assert ev.partial_analysis is True
+    assert ev.matched_strings != ()
+
+
+def test_unsniffable_bytes_fall_back_as_unknown() -> None:
+    ev, errors = _read(b"\x00\x01\x02\x03 OpenSSL 3.2.1 ", path="mystery.bin")
     assert errors == ()
     assert ev.format == evidence.FORMAT_UNKNOWN
     assert ev.partial_analysis is True

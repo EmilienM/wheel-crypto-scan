@@ -17,7 +17,7 @@ reported as unread.
 from __future__ import annotations
 
 from dataclasses import replace
-
+from functools import partial
 from typing import Protocol
 
 from .. import evidence
@@ -36,7 +36,12 @@ read_pe = _pe.read_pe
 
 
 class Reader(Protocol):
-    """Uniform signature implemented by format-specific binary readers."""
+    """The one signature every entry in `_READERS` answers to.
+
+    Written down so the table can be a lookup rather than a chain: the branches this
+    replaced each spelled the same argument list out by hand, which is exactly the
+    kind of thing that drifts apart one reader at a time.
+    """
 
     def __call__(
         self,
@@ -75,7 +80,12 @@ def read_binary(
     fmt = detect_format(head)
     stream.seek(0)
 
-    reader = _READERS.get(fmt, _read_strings_only)
+    # The fallback is bound to the format that was actually detected rather than
+    # left to a default. `detect_format` may learn to name a format before this
+    # package has a reader for it, and that object's record has to say what it is:
+    # a table whose miss silently relabels the object `unknown` would take the one
+    # line this refactor was meant to make safe and make it wrong instead.
+    reader = _READERS.get(fmt) or partial(_read_strings_only, fmt=fmt)
     return reader(stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes)
 
 
@@ -85,8 +95,8 @@ def _read_strings_only(
     patterns: BinaryPatterns,
     *,
     vendored: bool,
+    fmt: str,
     max_strings_bytes: int = MAX_STRINGS_BYTES,
-    fmt: str = evidence.FORMAT_UNKNOWN,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     stream.seek(0, 2)
     size = stream.tell()
