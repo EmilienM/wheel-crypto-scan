@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import io
 import tokenize
+import warnings
 from collections.abc import Iterator
 
 from .. import errors
@@ -101,7 +102,13 @@ def scan_python_source(
         return (), (_error(path, errors.PYTHON_DECODE_ERROR, exc.message),)
 
     try:
-        tree = ast.parse(text, filename=path)
+        with warnings.catch_warnings():
+            # A wheel's source is data, and its warnings are not ours to print.
+            # ast.parse emits SyntaxWarning for things like invalid escape sequences,
+            # which on a real index meant hundreds of lines of someone else's lint
+            # landing on our stderr and corrupting anything reading our output.
+            warnings.simplefilter("ignore")
+            tree = ast.parse(text, filename=path)
     except SyntaxError as exc:
         line = exc.lineno or 0
         return (), (_error(path, errors.PYTHON_SYNTAX_ERROR, f"syntax error at line {line}"),)

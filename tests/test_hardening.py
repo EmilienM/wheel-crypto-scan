@@ -401,3 +401,36 @@ def test_one_unparsed_file_among_many_does_not_make_the_wheel_opaque(
     assert record["artifacts"]["py_files_unparsed"] == 1
     assert record["artifacts"]["source_available"] is True
     assert record["verdict"]["class"] == "NO_CRYPTO_DETECTED"
+
+
+# --- scanning untrusted source must stay silent -----------------------------
+
+
+def test_parsing_source_with_invalid_escapes_emits_no_warnings(context, tmp_path: Path) -> None:
+    """Third-party source is data. Its warnings are not ours to print.
+
+    Scanning a real index leaked 592 SyntaxWarnings to stderr, which corrupts any
+    pipeline reading the tool's output and buries genuine messages.
+    """
+    import warnings as warnings_module
+
+    from wheel_crypto_scan.layers.python_ast import scan_python_source
+
+    source = b'import re\nBAD = "\\420 octal"\nPAT = "\\d+"\n'
+    with warnings_module.catch_warnings(record=True) as caught:
+        warnings_module.simplefilter("always")
+        sites, found = scan_python_source(source, "pkg/mod.py", context.patterns)
+    assert [str(w.message) for w in caught] == []
+    assert found == ()
+
+
+def test_a_wheel_with_invalid_escapes_still_scans_normally(context, tmp_path: Path) -> None:
+    """Silencing the warning must not silence the findings."""
+    wheel = build_wheel(
+        tmp_path / "noisy-1.0-py3-none-any.whl",
+        name="noisy",
+        version="1.0",
+        files={"noisy/__init__.py": b'import hashlib\nP = "\\d+"\nh = hashlib.md5()\n'},
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "FIPS_BREAKING"
