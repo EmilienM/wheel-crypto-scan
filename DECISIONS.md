@@ -86,3 +86,55 @@ and `defined` should know why that is representable at all.
 Revisit if a real wheel is found whose architectures disagree about linkage.
 
 Tracked in [#10](https://github.com/EmilienM/wheel-crypto-scan/issues/10).
+
+## A routine cause is recorded but does not make a wheel opaque
+
+**Accepted, and it changes verdicts.**
+
+`partial_analysis` has twenty causes behind it, and `BIN_PARTIAL_FORMAT` used to fire
+`OPAQUE` plus `needs_human_review` for every one of them equally. Two of them are
+conventions a linker produces on purpose rather than anything that went wrong: an import
+or an export bound by ordinal has no name to match.
+
+`WS2_32` is normally bound by ordinal, so that is the ordinary shape of a Windows
+extension that touches sockets. Measured on two wheels identical but for that:
+
+```
+all imports named   -> NO_CRYPTO_DETECTED
+WS2_32 by ordinal   -> OPAQUE
+```
+
+One linker convention, and the wheel joined the README's `select(.verdict.class ==
+"OPAQUE")` triage list. That is a real cost: the list is read by a human, and padding it
+with wheels nobody needs to look at is how a triage list stops being read at all.
+
+**What changed.** `[rule.match] kind = "partial_binary"` takes `reasons` and
+`exclude_reasons`, so the ruleset decides which causes are worth a verdict rather than
+the engine treating them alike. `BIN_PARTIAL_ROUTINE` claims the two ordinal causes with
+no verdict and no human review; `BIN_PARTIAL_FORMAT` keeps `OPAQUE` for everything else. An object with both kinds of cause fires both rules, and each names only the causes
+it speaks for, so the failure still wins.
+
+**What it costs, and why `pe_delay_load` is not on the list.** A wheel whose only
+incompleteness is an ordinal import now reads `NO_CRYPTO_DETECTED` where it read
+`OPAQUE`. That is a real loss of conservatism: the function behind that ordinal genuinely
+has no name, and if it were a crypto entry point we would not know.
+
+What makes it tolerable is that the *dependency* name survives. An object importing
+`libcrypto-3-x64.dll` by ordinal still carries that DLL in `needed`, so it still comes
+out `CONDITIONAL` on the ordinary `needed` rule; what is lost is which function inside
+it. A delay-load directory loses the dependency name itself, with nothing downstream to
+recover it -- no string group matches a bare DLL name -- so a `.pyd` that delay-loads a
+crypto DLL it does not ship would have read clean. It stays with the strict rule. The
+two are not the same kind of gap, and only one of them has a backstop.
+The record is unchanged either way -- `partial_analysis` is still true and
+`partial_reasons` still names the cause -- so a consumer who disagrees can filter on the
+record rather than the verdict.
+
+**Why the strict rule excludes rather than includes.** A cause added later matches no
+include list, so it would report nothing at all. Excluding means a new token is serious
+until someone decides otherwise, which is the safe direction, and a test asserts every
+token the strict rule excludes is claimed by name somewhere else.
+
+Revisit if a crypto library is found being imported by ordinal in a real wheel.
+
+Tracked in [#29](https://github.com/EmilienM/wheel-crypto-scan/issues/29).

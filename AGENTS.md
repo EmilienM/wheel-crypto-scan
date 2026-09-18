@@ -15,7 +15,11 @@ These are design decisions, not accidents. Do not change one without saying so e
   state, and interpreter version. Output is sorted, ASCII-only, float-free, and carries no
   host paths, timestamps or hostnames.
 - **Unreadable means `OPAQUE`, never `NO_CRYPTO_DETECTED`.** Absence of evidence is not
-  evidence of absence, and a test asserts every recordable failure maps to a rule.
+  evidence of absence, and a test asserts every recordable failure maps to a rule. One
+  carve-out, in `DECISIONS.md`: a `partial_reasons` cause that is a linker convention
+  rather than a failure is recorded without a verdict. Today that is the two ordinal
+  causes, and only because the dependency name survives them. Adding to that list is
+  changing this invariant.
 - **One bad wheel never aborts a run.** Failures become error records. The broad
   `except Exception` handlers are deliberate; pylint is configured to allow them.
 - **No network, no LLM, no dataflow analysis at runtime.** The only network access is an

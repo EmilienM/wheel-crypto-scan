@@ -89,7 +89,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "5"
+    assert ruleset.version == "6"
     assert len(ruleset.rules) > 20
 
 
@@ -491,3 +491,48 @@ def test_compiled_pattern_sequences_are_sorted() -> None:
     assert [g.name for g in patterns.binary.symbol_groups] == sorted(
         g.name for g in patterns.binary.symbol_groups
     )
+
+
+def _with_partial_rule(**match) -> dict:
+    """`minimal()` plus one `partial_binary` rule, so the existing one keeps its table."""
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "BIN_PARTIAL_TEST",
+            "layer": "binary",
+            "category": "opacity",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": True,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "partial_binary", **match},
+        }
+    )
+    return data
+
+
+def test_an_unknown_partial_reason_is_rejected() -> None:
+    """A typo'd token is a rule that matches nothing, silently, for ever."""
+    with pytest.raises(RulesetError, match="unknown partial reason"):
+        parse_ruleset(_with_partial_rule(reasons=["pe_ordinal_imprt"]))
+
+
+def test_an_unknown_excluded_partial_reason_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="unknown partial reason"):
+        parse_ruleset(_with_partial_rule(exclude_reasons=["nope"]))
+
+
+def test_naming_both_partial_reason_keys_is_rejected() -> None:
+    """They are alternatives: together they would read as a contradiction."""
+    data = _with_partial_rule(reasons=["pe_ordinal_import"], exclude_reasons=["pe_delay_load"])
+    with pytest.raises(RulesetError, match="alternatives"):
+        parse_ruleset(data)
+
+
+def test_a_partial_binary_rule_may_name_neither_key() -> None:
+    """No filter means the rule speaks for every cause, which is the old behaviour."""
+    ruleset = parse_ruleset(_with_partial_rule())
+    assert [dict(m) for m in ruleset.rule("BIN_PARTIAL_TEST").matches] == [
+        {"kind": "partial_binary"}
+    ]

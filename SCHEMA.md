@@ -35,7 +35,7 @@ timestamps, hostnames or user names appear in any field.
 | `binaries` | array | Per-object native evidence. |
 | `findings` | array | Rules that matched. |
 | `verdict` | object | The classification. |
-| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes are routine rather than failures, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording an error. |
+| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes are routine rather than failures, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording an error. The three that a linker produces on purpose (`pe_ordinal_import`, `pe_ordinal_export`, `pe_delay_load`) are reported by `BIN_PARTIAL_ROUTINE` and carry no verdict; every other cause still makes the wheel `OPAQUE`. |
 
 ## `tool`
 

@@ -22,6 +22,7 @@ from typing import Any
 from packaging.utils import canonicalize_name
 
 from .errors import ERROR_KINDS, RulesetError
+from .evidence import PARTIAL_REASONS
 
 # Matcher kinds the scanner implements. A rule naming anything else cannot run, so the
 # ruleset is rejected rather than quietly skipping the rule.
@@ -569,6 +570,13 @@ def _validate_match_references(
         for error_kind in _require(match, "error_kinds", where):
             if error_kind not in ERROR_KINDS:
                 raise RulesetError(f"{where}: unknown error kind {error_kind!r}")
+    elif kind == "partial_binary":
+        for key in ("reasons", "exclude_reasons"):
+            for reason in match.get(key, ()):
+                if reason not in PARTIAL_REASONS:
+                    raise RulesetError(f"{where}: unknown partial reason {reason!r}")
+        if match.get("reasons") and match.get("exclude_reasons"):
+            raise RulesetError(f"{where}: reasons and exclude_reasons are alternatives")
     elif kind == "linkage":
         values = match.get("values")
         if values is None:

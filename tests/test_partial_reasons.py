@@ -38,6 +38,9 @@ from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import elf as elf_module
 from wheel_crypto_scan.binfmt import read_binary
 from wheel_crypto_scan.binfmt.elf import read_elf
+from wheel_crypto_scan.engine import apply_rules
+from wheel_crypto_scan.evidence import ArtifactInventory, Evidence
+from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset import load_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
@@ -447,3 +450,130 @@ def test_each_cause_names_exactly_its_own_token(case, expected) -> None:
     ev, _ = _read(data)
     assert list(ev.partial_reasons) == expected
     assert ev.partial_analysis is True
+
+
+# --- the ruleset can tell a routine cause from a failure ----------------------
+
+
+def _findings(data: bytes, path: str = "demo/_ext.pyd"):
+    ruleset = load_ruleset()
+    ev, _ = read_binary(io.BytesIO(data), path, PATTERNS, vendored=False)
+    evidence = Evidence(
+        filename="demo-1.0-win_amd64.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        binaries=(ev,),
+    )
+    found = apply_rules(ruleset, evidence, resolve_linkage(ruleset, evidence))
+    return {f.rule_id: f for f in found if f.rule_id.startswith("BIN_PARTIAL")}
+
+
+def test_an_ordinal_import_alone_is_not_opacity() -> None:
+    """`WS2_32` is normally bound by ordinal, so this is the ordinary Windows record.
+
+    Treating it as opacity put every Windows wheel that touches sockets on the README's
+    `OPAQUE` triage list, for a linker convention rather than anything unread about the
+    wheel. The evidence really is incomplete, so it is still recorded; it just is not a
+    reason for a human to look.
+    """
+    data = PEBuilder(
+        imports=(PEImport("WS2_32.dll", ordinals=(115,)),), dll_name="_ext.pyd"
+    ).build()
+    found = _findings(data)
+    assert set(found) == {"BIN_PARTIAL_ROUTINE"}
+    assert found["BIN_PARTIAL_ROUTINE"].verdict is None
+    assert found["BIN_PARTIAL_ROUTINE"].needs_human_review is False
+
+
+def test_a_real_failure_is_still_opacity() -> None:
+    data = PEBuilder(
+        imports=(PEImport("KERNEL32.dll", names=("GetLastError",)),),
+        dll_name="_ext.pyd",
+        truncate_to=0x150,
+    ).build()
+    found = _findings(data)
+    assert set(found) == {"BIN_PARTIAL_FORMAT"}
+    assert found["BIN_PARTIAL_FORMAT"].verdict == "OPAQUE"
+
+
+def test_both_kinds_of_cause_are_reported_separately() -> None:
+    """Each rule names only the causes it speaks for, and the failure still wins."""
+    data = PEBuilder(
+        imports=(PEImport("WS2_32.dll", ordinals=(115,)),),
+        dll_name="_ext.pyd",
+        exports=(PEExport("PyInit__ext"),),
+        declared_export_rva=0x7F000000,
+    ).build()
+    found = _findings(data)
+    assert set(found) == {"BIN_PARTIAL_FORMAT", "BIN_PARTIAL_ROUTINE"}
+    assert found["BIN_PARTIAL_FORMAT"].verdict == "OPAQUE"
+    assert "pe_export_incomplete" in found["BIN_PARTIAL_FORMAT"].locations[0].evidence
+    assert "pe_ordinal_import" not in found["BIN_PARTIAL_FORMAT"].locations[0].evidence
+    assert "pe_ordinal_import" in found["BIN_PARTIAL_ROUTINE"].locations[0].evidence
+
+
+def test_every_reason_is_claimed_by_some_rule() -> None:
+    """A token no rule matches is a cause that would report nothing at all.
+
+    The shape of `test_every_error_kind_is_covered_by_a_rule`, one level down. Asserting
+    that the strict rule's exclusions are claimed elsewhere is not the same thing and
+    goes vacuously true the moment someone empties `exclude_reasons`: what matters is
+    that every token in the vocabulary fires something.
+    """
+    ruleset = load_ruleset()
+    matches = [match for _, match in ruleset.matches_for_kind("partial_binary")]
+    assert matches, "no rule matches partial_binary at all"
+    for token in sorted(evidence.PARTIAL_REASONS):
+        claimed = [
+            match
+            for match in matches
+            if token in match.get("reasons", ())
+            or ("reasons" not in match and token not in match.get("exclude_reasons", ()))
+        ]
+        assert claimed, f"{token} is claimed by no rule"
+
+
+def test_a_routine_cause_still_leaves_the_dependency_name_in_the_record() -> None:
+    """Why the two ordinal causes are routine and `pe_delay_load` is not.
+
+    An ordinal import loses a function name inside a DLL the record still names, so a
+    crypto dependency bound that way is caught by the same rule that catches any other
+    `needed` entry. A delay-load directory loses the dependency name itself, and
+    nothing downstream recovers it, so it stays with the strict rule.
+    """
+    data = PEBuilder(
+        imports=(PEImport("libcrypto-3-x64.dll", ordinals=(1,)),),
+        dll_name="_ext.pyd",
+        exports=(PEExport("PyInit__ext"),),
+    ).build()
+    ev, _ = read_binary(io.BytesIO(data), "demo/_ext.pyd", PATTERNS, vendored=False)
+    assert ev.partial_reasons == (evidence.PARTIAL_PE_ORDINAL_IMPORT,)
+    assert ev.needed == ("libcrypto-3-x64.dll",)
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in _findings_all(data)
+
+
+def test_a_delay_load_directory_is_not_treated_as_routine() -> None:
+    """It loses the dependency name, and no other rule recovers it."""
+    data = PEBuilder(
+        imports=(PEImport("KERNEL32.dll", names=("GetLastError",)),),
+        dll_name="_ext.pyd",
+        exports=(PEExport("PyInit__ext"),),
+        delay_import_directory=True,
+    ).build()
+    found = _findings(data)
+    assert set(found) == {"BIN_PARTIAL_FORMAT"}
+    assert found["BIN_PARTIAL_FORMAT"].verdict == "OPAQUE"
+
+
+def _findings_all(data: bytes) -> set[str]:
+    ruleset = load_ruleset()
+    ev, _ = read_binary(io.BytesIO(data), "demo/_ext.pyd", PATTERNS, vendored=False)
+    e = Evidence(
+        filename="demo-1.0-win_amd64.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        binaries=(ev,),
+    )
+    return {f.rule_id for f in apply_rules(ruleset, e, resolve_linkage(ruleset, e))}

@@ -81,6 +81,11 @@ JSONL, one record per wheel. `SCHEMA.md` documents every field and the versionin
 A wheel that could not be read is `OPAQUE`, never `NO_CRYPTO_DETECTED`. That distinction is
 enforced by a test asserting every recordable failure has a rule.
 
+One carve-out: an import or export bound by ordinal has no name to match, which is
+how Windows normally binds `WS2_32`. That is recorded in `partial_reasons` but does
+not make the wheel `OPAQUE`, because the DLL it names survives in `needed` and is
+matched there. `DECISIONS.md` says what that costs.
+
 ## The ruleset
 
 All policy lives in [`src/wheel_crypto_scan/data/ruleset.toml`](src/wheel_crypto_scan/data/ruleset.toml).
