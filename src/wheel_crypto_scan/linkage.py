@@ -65,7 +65,7 @@ def _binary_posture(
 ) -> str:
     sonames = frozenset(library.sonames)
 
-    if binary.vendored_path and _own_name(binary, conventions) in sonames:
+    if binary.vendored_path and conventions.own_base(binary.soname, binary.path) in sonames:
         return LINKAGE_BUNDLED
 
     system = False
@@ -89,14 +89,9 @@ def _binary_posture(
         # symbols at runtime is outside this wheel and outside our sight.
         return LINKAGE_UNKNOWN
 
-    if _is_opaque(binary):
+    if binary.is_opaque:
         return LINKAGE_UNKNOWN
     return LINKAGE_NONE
-
-
-def _own_name(binary: BinaryEvidence, conventions: Conventions) -> str:
-    name = binary.soname or binary.path.rsplit("/", 1)[-1]
-    return conventions.normalise_soname(name).base
 
 
 def _has_symbol(binary: BinaryEvidence, group: str | None, binding: str) -> bool:
@@ -113,18 +108,7 @@ def _has_string(binary: BinaryEvidence, group: str | None) -> bool:
     return any(match.group == group for match in binary.matched_strings)
 
 
-def _is_opaque(binary: BinaryEvidence) -> bool:
-    """True when the object told us nothing at all, which is itself a finding."""
-    return not (
-        binary.needed
-        or binary.matched_symbols
-        or binary.matched_strings
-        or binary.rust_crates
-        or binary.dynsym_count
-    )
-
-
 def _has_opaque_binary(evidence: Evidence) -> bool:
-    if any(_is_opaque(binary) for binary in evidence.binaries):
+    if any(binary.is_opaque for binary in evidence.binaries):
         return True
     return any(error.stage == STAGE_BINARY for error in evidence.errors)

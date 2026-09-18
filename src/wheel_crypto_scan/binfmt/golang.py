@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 
 from ..evidence import GoBuildInfo
-from ..ruleset import ScanPatterns
+from ..ruleset import BinaryPatterns
 
 # The 14-byte magic every `.go.buildinfo` section starts with, regardless of version.
 _BUILDINFO_MAGIC = b"\xff Go buildinf:"
@@ -81,7 +81,9 @@ def parse_go_buildinfo(data: bytes) -> str | None:
     return text
 
 
-def build_go_info(buildinfo: bytes | None, text: str, patterns: ScanPatterns) -> GoBuildInfo | None:
+def build_go_info(
+    buildinfo: bytes | None, text: str, patterns: BinaryPatterns
+) -> GoBuildInfo | None:
     """Assemble `GoBuildInfo` from a buildinfo section and/or extracted strings.
 
     Returns None when there is nothing at all to report: no buildinfo section and no

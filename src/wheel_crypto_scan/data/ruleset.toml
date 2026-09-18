@@ -259,6 +259,10 @@ why = "Checksum, not a hash function in the security sense. Included so storage 
 # ---------------------------------------------------------------------------
 # Native crypto libraries. `sonames` are base names; the scanner strips version
 # suffixes (.so.3, .3.dylib) and auditwheel/delocate content hashes before matching.
+#
+# An entry's optional `rule` routes the bundled-library finding for that library, and
+# nothing else. The DT_NEEDED and linkage rules read this table too and do not consult
+# it, so they go on firing exactly as before.
 # ---------------------------------------------------------------------------
 
 [[crypto_library]]
@@ -514,6 +518,9 @@ why = "Stock Go crypto package paths. Go implements its own primitives in Go; th
 # Confidence is medium by nature: the path appears because the crate contributed a
 # panic location or similar string, so a crate that contributed no such string can be
 # missed. A PEP 770 SBOM, when present, is the higher-confidence source.
+#
+# An entry's optional `rule` sends that crate's finding to a rule of its own instead of
+# to the default rust_crate rule.
 # ---------------------------------------------------------------------------
 
 [[rust_crate]]
@@ -831,6 +838,11 @@ why = "Any of these names appearing in a ctypes load means crypto is being reach
 # rule looks at; `kind` selects one of the scanner's matchers and everything else
 # on that table is data this file controls.
 #
+# Write `[[rule.match]]` once per alternative, instead of `[rule.match]`, when one
+# concern is worth spotting in two ways. The alternatives are ORed under a single rule
+# id: two of them that find the same subject still produce one finding, which is what
+# splitting the rule in two would lose.
+#
 # Matcher kinds, and what each looks at:
 #   dist_name          the wheel's own canonical project name
 #   requires_dist      names in Requires-Dist
@@ -855,6 +867,21 @@ why = "Any of these names appearing in a ctypes load means crypto is being reach
 #
 # `suppressed_by` drops this rule when another rule already fired, so a more
 # specific finding can replace a broader one.
+#
+# Routing. An entry in [[crypto_distribution]], [[crypto_library]], [[rust_crate]] or
+# [[python_module]] can name a `rule`, sending that entry's finding to that rule rather
+# than to the table's usual one; a rule can claim every entry of a table that names
+# none by setting `default = true` beside its `table`. Exactly one matcher kind per
+# table reads either field:
+#
+#   crypto_distribution   dist_name, requires_dist
+#   crypto_library        bundled_library
+#   rust_crate            rust_crate
+#   python_module         py_import
+#
+# Other kinds read the same tables and ignore routing entirely. Pointing a `rule` or a
+# `default` at one of those is refused at load time: it would look right, load clean,
+# and then quietly match nothing.
 # ===========================================================================
 
 

@@ -9,7 +9,7 @@ from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import read_binary
 from wheel_crypto_scan.ruleset import load_ruleset
 
-PATTERNS = load_ruleset().compile_patterns()
+PATTERNS = load_ruleset().compile_patterns().binary
 
 
 def _read(data: bytes, path: str = "obj", *, vendored: bool = False):

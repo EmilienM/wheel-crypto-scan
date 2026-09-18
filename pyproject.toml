@@ -70,7 +70,7 @@ disable = [
     # says everything a docstring would. The public API that carries judgement is
     # documented at module and class level.
     "missing-function-docstring",
-    # Rule matchers all take the same (rule, ruleset, evidence, linkage, index)
+    # Rule matchers all take the same (rule, match, ruleset, evidence, linkage, index)
     # signature so the engine can dispatch them from one table. Most ignore most of it.
     "unused-argument",
     # Deliberate: one malformed wheel out of thirty thousand must become an error

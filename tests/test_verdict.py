@@ -31,7 +31,7 @@ def finding(rule_id: str, verdict: str | None, *, review: bool = True, subject=N
 
 def test_no_findings_means_no_crypto_detected(ruleset) -> None:
     verdict = classify(ruleset, (), {})
-    assert verdict.verdict_class == NO_CRYPTO_DETECTED
+    assert verdict.headline == NO_CRYPTO_DETECTED
     assert verdict.classes == (NO_CRYPTO_DETECTED,)
 
 
@@ -45,7 +45,7 @@ def test_the_most_severe_class_wins(ruleset) -> None:
         finding("BIN_LIBSODIUM", "NON_APPROVED_CRYPTO"),
         finding("PY_WEAK_HASH_CALL", "FIPS_BREAKING"),
     )
-    assert classify(ruleset, findings, {}).verdict_class == "NON_APPROVED_CRYPTO"
+    assert classify(ruleset, findings, {}).headline == "NON_APPROVED_CRYPTO"
 
 
 def test_every_class_that_fired_is_reported(ruleset) -> None:
@@ -69,7 +69,7 @@ def test_classes_follow_the_rulesets_precedence_order(ruleset) -> None:
 
 def test_findings_without_a_verdict_do_not_create_a_class(ruleset) -> None:
     findings = (finding("BIN_NEEDED_SYSTEM_OPENSSL", None, review=False),)
-    assert classify(ruleset, findings, {}).verdict_class == NO_CRYPTO_DETECTED
+    assert classify(ruleset, findings, {}).headline == NO_CRYPTO_DETECTED
 
 
 def test_an_informational_finding_alone_does_not_force_review(ruleset) -> None:
@@ -129,5 +129,5 @@ def test_reasons_and_rule_ids_are_sorted(ruleset) -> None:
 def test_the_verdict_can_never_be_a_pass(ruleset) -> None:
     """The tool never says compliant, whatever the evidence looks like."""
     verdict = classify(ruleset, (finding("BIN_FIPS_PROVIDER_AWARE", None, review=False),), {})
-    assert verdict.verdict_class in ruleset.precedence
-    assert "COMPLIANT" not in verdict.verdict_class
+    assert verdict.headline in ruleset.precedence
+    assert "COMPLIANT" not in verdict.headline

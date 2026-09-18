@@ -1,11 +1,8 @@
-"""Output writers: the JSONL stream and the human-readable summary."""
+"""The human-readable summary table."""
 
 from __future__ import annotations
 
-import io
-import json
-
-from wheel_crypto_scan.report import render_markdown, write_jsonl
+from wheel_crypto_scan.report import render_markdown
 
 
 def record(name: str, klass: str, linkage: str, review: bool = True) -> dict:
@@ -21,21 +18,6 @@ def record(name: str, klass: str, linkage: str, review: bool = True) -> dict:
         },
         "findings": [],
     }
-
-
-def test_jsonl_writes_one_line_per_record() -> None:
-    stream = io.StringIO()
-    write_jsonl([record("a", "CONDITIONAL", "system"), record("b", "OPAQUE", "unknown")], stream)
-    lines = stream.getvalue().splitlines()
-    assert len(lines) == 2
-    assert json.loads(lines[0])["wheel"]["name"] == "a"
-
-
-def test_jsonl_output_is_canonical() -> None:
-    stream = io.StringIO()
-    write_jsonl([record("a", "CONDITIONAL", "system")], stream)
-    parsed = json.loads(stream.getvalue())
-    assert list(parsed) == sorted(parsed)
 
 
 def test_markdown_has_a_row_per_wheel() -> None:

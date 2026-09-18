@@ -120,6 +120,17 @@ class BinaryEvidence:
     # can never look clean merely because we cannot read it.
     partial_analysis: bool = False
 
+    @property
+    def is_opaque(self) -> bool:
+        """True when the object told us nothing at all."""
+        return not (
+            self.needed
+            or self.matched_symbols
+            or self.matched_strings
+            or self.rust_crates
+            or self.dynsym_count
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PySite:

@@ -32,6 +32,17 @@ ENTRY_TABLES = (
 )
 
 
+def matches_of(rule: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every match table of a rule, written as `[rule.match]` or as `[[rule.match]]`.
+
+    These tests read the raw TOML rather than the parsed ruleset, so they see the list
+    form as a list. Reaching into `rule["match"]` directly works until the first rule
+    is written with two alternatives, and then stops working everywhere at once.
+    """
+    match = rule["match"]
+    return list(match) if isinstance(match, list) else [match]
+
+
 @pytest.fixture(scope="module")
 def ruleset() -> dict[str, Any]:
     path = files("wheel_crypto_scan").joinpath("data/ruleset.toml")
@@ -59,7 +70,8 @@ def test_every_rule_is_completely_specified(ruleset: dict[str, Any]) -> None:
         assert rule["confidence"] in CONFIDENCES, rule["id"]
         assert isinstance(rule["needs_human_review"], bool), rule["id"]
         assert rule["title"].strip(), rule["id"]
-        assert rule["match"]["kind"] in MATCHER_KINDS, rule["id"]
+        for match in matches_of(rule):
+            assert match["kind"] in MATCHER_KINDS, rule["id"]
 
 
 def test_every_rule_explains_itself(ruleset: dict[str, Any]) -> None:
@@ -118,56 +130,57 @@ def test_suppressed_by_references_existing_rules(
 
 def test_rules_reference_existing_tables(ruleset: dict[str, Any]) -> None:
     for rule in ruleset["rule"]:
-        match = rule["match"]
-        for key in ("table", "tables"):
-            names = match.get(key)
-            if names is None:
-                continue
-            for name in [names] if isinstance(names, str) else names:
-                assert name in ENTRY_TABLES, rule["id"]
+        for match in matches_of(rule):
+            for key in ("table", "tables"):
+                names = match.get(key)
+                if names is None:
+                    continue
+                for name in [names] if isinstance(names, str) else names:
+                    assert name in ENTRY_TABLES, rule["id"]
 
 
 def test_rules_reference_existing_groups(ruleset: dict[str, Any]) -> None:
     symbol_groups = {entry["name"] for entry in ruleset["symbol_group"]}
     string_groups = {entry["name"] for entry in ruleset["string_group"]}
     for rule in ruleset["rule"]:
-        match = rule["match"]
-        available = symbol_groups if match["kind"] == "dynamic_symbol" else string_groups
-        if match["kind"] not in {"dynamic_symbol", "binary_string"}:
-            continue
-        names = match.get("groups", [])
-        if "group" in match:
-            names = [match["group"], *names]
-        assert names, rule["id"]
-        for name in names:
-            assert name in available, f"{rule['id']} -> {name}"
+        for match in matches_of(rule):
+            available = symbol_groups if match["kind"] == "dynamic_symbol" else string_groups
+            if match["kind"] not in {"dynamic_symbol", "binary_string"}:
+                continue
+            names = match.get("groups", [])
+            if "group" in match:
+                names = [match["group"], *names]
+            assert names, rule["id"]
+            for name in names:
+                assert name in available, f"{rule['id']} -> {name}"
 
 
 def test_rules_reference_existing_libraries(ruleset: dict[str, Any]) -> None:
     libraries = {entry["name"] for entry in ruleset["crypto_library"]}
     for rule in ruleset["rule"]:
-        match = rule["match"]
-        for key in ("library", "name"):
-            if match["kind"] in {"bundled_library", "dt_needed", "linkage"} and key in match:
-                assert match[key] in libraries, rule["id"]
-        for name in match.get("exclude_libraries", []):
-            assert name in libraries, rule["id"]
+        for match in matches_of(rule):
+            for key in ("library", "name"):
+                if match["kind"] in {"bundled_library", "dt_needed", "linkage"} and key in match:
+                    assert match[key] in libraries, rule["id"]
+            for name in match.get("exclude_libraries", []):
+                assert name in libraries, rule["id"]
 
 
 def test_scan_error_rules_use_known_error_kinds(ruleset: dict[str, Any]) -> None:
     for rule in ruleset["rule"]:
-        if rule["match"]["kind"] != "scan_error":
-            continue
-        for kind in rule["match"]["error_kinds"]:
-            assert kind in ERROR_KINDS, f"{rule['id']} -> {kind}"
+        for match in matches_of(rule):
+            if match["kind"] != "scan_error":
+                continue
+            for kind in match["error_kinds"]:
+                assert kind in ERROR_KINDS, f"{rule['id']} -> {kind}"
 
 
 def test_only_one_default_rule_per_table(ruleset: dict[str, Any]) -> None:
     defaults: dict[str, list[str]] = {}
     for rule in ruleset["rule"]:
-        match = rule["match"]
-        if match.get("default"):
-            defaults.setdefault(match["table"], []).append(rule["id"])
+        for match in matches_of(rule):
+            if match.get("default"):
+                defaults.setdefault(match["table"], []).append(rule["id"])
     for table, ids in defaults.items():
         assert len(ids) == 1, f"{table} has several default rules: {ids}"
 
@@ -175,8 +188,9 @@ def test_only_one_default_rule_per_table(ruleset: dict[str, Any]) -> None:
 def test_dynamic_symbol_rules_declare_a_binding(ruleset: dict[str, Any]) -> None:
     """Imported versus defined is the distinction the whole tool turns on."""
     for rule in ruleset["rule"]:
-        if rule["match"]["kind"] == "dynamic_symbol":
-            assert rule["match"]["binding"] in {"imported", "defined", "any"}, rule["id"]
+        for match in matches_of(rule):
+            if match["kind"] == "dynamic_symbol":
+                assert match["binding"] in {"imported", "defined", "any"}, rule["id"]
 
 
 def test_symbol_groups_are_non_empty(ruleset: dict[str, Any]) -> None:
@@ -187,15 +201,15 @@ def test_symbol_groups_are_non_empty(ruleset: dict[str, Any]) -> None:
 def test_linkage_rules_use_known_values(ruleset: dict[str, Any]) -> None:
     known = {"system", "bundled", "static", "mixed", "none", "unknown"}
     for rule in ruleset["rule"]:
-        match = rule["match"]
-        if match["kind"] != "linkage":
-            continue
-        values = match.get("values", [])
-        if "value" in match:
-            values = [match["value"], *values]
-        assert values, rule["id"]
-        for value in values:
-            assert value in known, rule["id"]
+        for match in matches_of(rule):
+            if match["kind"] != "linkage":
+                continue
+            values = match.get("values", [])
+            if "value" in match:
+                values = [match["value"], *values]
+            assert values, rule["id"]
+            for value in values:
+                assert value in known, rule["id"]
 
 
 def test_every_error_kind_is_covered_by_a_rule(ruleset: dict[str, Any]) -> None:
@@ -207,6 +221,7 @@ def test_every_error_kind_is_covered_by_a_rule(ruleset: dict[str, Any]) -> None:
     """
     covered: set[str] = set()
     for rule in ruleset["rule"]:
-        if rule["match"]["kind"] == "scan_error":
-            covered.update(rule["match"]["error_kinds"])
+        for match in matches_of(rule):
+            if match["kind"] == "scan_error":
+                covered.update(match["error_kinds"])
     assert ERROR_KINDS - covered == set()

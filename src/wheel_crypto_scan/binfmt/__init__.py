@@ -14,7 +14,7 @@ from dataclasses import replace
 
 from .. import evidence
 from ..evidence import BinaryEvidence, ScanError
-from ..ruleset import ScanPatterns
+from ..ruleset import BinaryPatterns
 from . import elf as _elf
 from . import macho as _macho
 from .detect import SNIFF_BYTES, detect_format
@@ -28,7 +28,7 @@ read_macho = _macho.read_macho
 def read_binary(
     stream,
     path: str,
-    patterns: ScanPatterns,
+    patterns: BinaryPatterns,
     *,
     vendored: bool,
     max_strings_bytes: int = 64 * 1024 * 1024,
@@ -60,7 +60,7 @@ def read_binary(
 def _read_strings_only(
     stream,
     path: str,
-    patterns: ScanPatterns,
+    patterns: BinaryPatterns,
     fmt: str,
     *,
     vendored: bool,

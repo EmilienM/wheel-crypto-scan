@@ -26,7 +26,7 @@ from elftools.elf.sections import Section
 from .. import evidence
 from ..errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, SymbolMatch
-from ..ruleset import ScanPatterns
+from ..ruleset import BinaryPatterns
 from .golang import build_go_info
 from .rust import find_rust_crates
 from .strings import extract_printable, match_string_groups
@@ -98,7 +98,7 @@ def _find_section(sections: Sequence[Section], name: str) -> Section | None:
 def read_elf(
     stream,
     path: str,
-    patterns: ScanPatterns,
+    patterns: BinaryPatterns,
     *,
     vendored: bool,
     max_strings_bytes: int = 64 * 1024 * 1024,

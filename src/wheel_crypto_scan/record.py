@@ -194,7 +194,7 @@ def _finding_block(finding: Finding) -> dict[str, Any]:
 
 def _verdict_block(verdict: Verdict) -> dict[str, Any]:
     return {
-        "class": verdict.verdict_class,
+        "class": verdict.headline,
         "classes": list(verdict.classes),
         "rule_ids": list(verdict.rule_ids),
         "reasons": list(verdict.reasons),

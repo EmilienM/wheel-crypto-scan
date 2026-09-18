@@ -15,17 +15,16 @@ from typing import Any
 
 from . import errors
 from .engine import apply_rules
-from .evidence import STAGE_ARCHIVE, STAGE_PYTHON, ArtifactInventory, Evidence, ScanError
-from .layers.binaries import build_inventory, scan_binaries
+from .evidence import STAGE_ARCHIVE, ArtifactInventory, Evidence, ScanError
+from .layers.binaries import scan_binaries
+from .layers.inventory import build_inventory
 from .layers.metadata import read_metadata
-from .layers.python_ast import scan_python_source
+from .layers.python_ast import scan_python_files
 from .linkage import resolve_linkage
 from .record import build_record
 from .ruleset import Ruleset, ScanPatterns
 from .verdict import classify
 from .wheelfile import ArchiveLimits, WheelArchive, hash_wheel
-
-_SOURCE_SUFFIX = ".py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,9 +78,11 @@ def _collect(path: Path, context: ScanContext, digest: str) -> Evidence:
     with WheelArchive.open(path, context.archive_limits, sha256=digest) as archive:
         metadata, metadata_errors = read_metadata(archive.names, archive.read, archive.filename)
         binaries, binary_errors = scan_binaries(
-            archive, context.patterns, context.ruleset.conventions
+            archive, context.patterns.binary, context.ruleset.conventions
         )
-        sites, python_errors = _scan_python(archive, context)
+        sites, python_errors = scan_python_files(
+            archive, context.patterns.python, max_bytes=context.max_python_bytes
+        )
         unparsed = len({error.path for error in python_errors if error.path})
         inventory = build_inventory(
             archive,
@@ -107,40 +108,6 @@ def _collect(path: Path, context: ScanContext, digest: str) -> Evidence:
             py_sites=sites,
             errors=tuple(sorted(set(all_errors), key=ScanError.sort_key)),
         )
-
-
-def _scan_python(archive: WheelArchive, context: ScanContext):  # type: ignore[no-untyped-def]
-    sites = []
-    found: list[ScanError] = []
-    for member in archive.members:
-        if member.is_symlink or not member.name.endswith(_SOURCE_SUFFIX):
-            continue
-        if member.size > context.max_python_bytes:
-            found.append(
-                ScanError(
-                    stage=STAGE_PYTHON,
-                    kind=errors.PYTHON_TOO_LARGE,
-                    message=f"source is {member.size} bytes",
-                    path=member.name,
-                )
-            )
-            continue
-        try:
-            source = archive.read(member.name)
-        except errors.WheelReadError as exc:
-            found.append(
-                ScanError(
-                    stage=STAGE_PYTHON,
-                    kind=errors.MEMBER_READ_ERROR,
-                    message=str(exc),
-                    path=member.name,
-                )
-            )
-            continue
-        member_sites, member_errors = scan_python_source(source, member.name, context.patterns)
-        sites.extend(member_sites)
-        found.extend(member_errors)
-    return tuple(sorted(sites, key=lambda site: site.sort_key())), tuple(found)
 
 
 def _unreadable(path: Path, digest: str, message: str) -> Evidence:

@@ -68,8 +68,7 @@ def test_every_crypto_library_with_a_verdict_is_reachable_by_a_linkage_rule() ->
     """Structural guard: a library nobody can match is a silent hole in the taxonomy."""
     ruleset = load_ruleset()
     covered: set[str] = set()
-    for rule in ruleset.rules_for_kind("linkage"):
-        match = rule.match
+    for _, match in ruleset.matches_for_kind("linkage"):
         if "name" in match:
             covered.add(str(match["name"]))
         elif match.get("table") == "crypto_library":

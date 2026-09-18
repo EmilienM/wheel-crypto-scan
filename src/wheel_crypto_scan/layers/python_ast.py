@@ -36,7 +36,8 @@ from collections.abc import Iterator
 
 from .. import errors
 from ..evidence import STAGE_PYTHON, PySite, ScanError
-from ..ruleset import ScanPatterns
+from ..ruleset import PythonPatterns
+from ..wheelfile import WheelArchive
 
 # A note on determinism. `ast.parse` follows the grammar of the interpreter running it,
 # and `feature_version` only gates a subset of it, so a wheel using syntax newer than
@@ -64,6 +65,8 @@ _HASHLIB_TARGETS = frozenset({"hashlib.md5", "hashlib.sha1", "hashlib.new"})
 
 _DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 
+_SOURCE_SUFFIX = ".py"
+
 
 class _DecodeFailure(Exception):
     """Internal signal only; never escapes `scan_python_source`."""
@@ -73,8 +76,40 @@ class _DecodeFailure(Exception):
         self.message = message
 
 
+def scan_python_files(
+    archive: WheelArchive, patterns: PythonPatterns, *, max_bytes: int = _DEFAULT_MAX_BYTES
+) -> tuple[tuple[PySite, ...], tuple[ScanError, ...]]:
+    """Read every `.py` file in the wheel, in sorted site order.
+
+    Symlinks are skipped for the same reason Layer 2 skips them: their content is a
+    path string, not source. An oversized member is refused before it is decompressed,
+    so a wheel cannot spend our memory on a file we were never going to parse.
+    """
+    sites: list[PySite] = []
+    found: list[ScanError] = []
+    for member in archive.members:
+        if member.is_symlink or not member.name.endswith(_SOURCE_SUFFIX):
+            continue
+        if member.size > max_bytes:
+            found.append(
+                _error(member.name, errors.PYTHON_TOO_LARGE, f"source is {member.size} bytes")
+            )
+            continue
+        try:
+            source = archive.read(member.name)
+        except errors.WheelReadError as exc:
+            found.append(_error(member.name, errors.MEMBER_READ_ERROR, str(exc)))
+            continue
+        member_sites, member_errors = scan_python_source(
+            source, member.name, patterns, max_bytes=max_bytes
+        )
+        sites.extend(member_sites)
+        found.extend(member_errors)
+    return tuple(sorted(sites, key=lambda site: site.sort_key())), tuple(found)
+
+
 def scan_python_source(
-    source: bytes, path: str, patterns: ScanPatterns, *, max_bytes: int = _DEFAULT_MAX_BYTES
+    source: bytes, path: str, patterns: PythonPatterns, *, max_bytes: int = _DEFAULT_MAX_BYTES
 ) -> tuple[tuple[PySite, ...], tuple[ScanError, ...]]:
     """Extract Layer 3 evidence from one `.py` file's raw bytes.
 
@@ -146,7 +181,7 @@ def _error(path: str, kind: str, message: str) -> ScanError:
     return ScanError(stage=STAGE_PYTHON, kind=kind, message=message, path=path)
 
 
-def _collect_sites(tree: ast.AST, path: str, patterns: ScanPatterns) -> tuple[PySite, ...]:
+def _collect_sites(tree: ast.AST, path: str, patterns: PythonPatterns) -> tuple[PySite, ...]:
     """Walk the parsed module once for aliases, once for `py_attr`, once for the rest.
 
     Three passes over an iterative `ast.walk` rather than one recursive visitor: it
@@ -293,7 +328,7 @@ def _flatten_targets(targets: list[ast.expr]) -> Iterator[ast.expr]:
 
 
 def _collect_attr_sites(
-    tree: ast.AST, path: str, patterns: ScanPatterns, aliases: dict[str, str]
+    tree: ast.AST, path: str, patterns: PythonPatterns, aliases: dict[str, str]
 ) -> tuple[list[PySite], set[int]]:
     """Find `py_attr` sites and the value nodes they already accounted for.
 
@@ -373,7 +408,7 @@ def _assigned_value_text(value: ast.expr, aliases: dict[str, str]) -> str:
 def _collect_other_sites(
     tree: ast.AST,
     path: str,
-    patterns: ScanPatterns,
+    patterns: PythonPatterns,
     aliases: dict[str, str],
     suppressed: set[int],
 ) -> list[PySite]:
@@ -403,7 +438,7 @@ def _collect_other_sites(
     return sites
 
 
-def _import_sites(node: ast.Import, path: str, patterns: ScanPatterns) -> list[PySite]:
+def _import_sites(node: ast.Import, path: str, patterns: PythonPatterns) -> list[PySite]:
     sites: list[PySite] = []
     for alias in node.names:
         matched = _module_match(alias.name, patterns.py_modules)
@@ -417,7 +452,7 @@ def _import_sites(node: ast.Import, path: str, patterns: ScanPatterns) -> list[P
     return sites
 
 
-def _import_from_sites(node: ast.ImportFrom, path: str, patterns: ScanPatterns) -> list[PySite]:
+def _import_from_sites(node: ast.ImportFrom, path: str, patterns: PythonPatterns) -> list[PySite]:
     if node.module is None:
         return []
     matched = _module_match(node.module, patterns.py_modules)
@@ -434,7 +469,7 @@ def _import_from_sites(node: ast.ImportFrom, path: str, patterns: ScanPatterns) 
 
 
 def _call_sites(
-    call: ast.Call, path: str, patterns: ScanPatterns, aliases: dict[str, str]
+    call: ast.Call, path: str, patterns: PythonPatterns, aliases: dict[str, str]
 ) -> list[PySite]:
     resolved_pair = _resolve_call_target(call.func, aliases)
     if resolved_pair is None:
@@ -509,7 +544,7 @@ def _hashlib_usedforsecurity(call: ast.Call) -> str:
 
 
 def _ctypes_load_sites(
-    call: ast.Call, path: str, resolved: str, patterns: ScanPatterns
+    call: ast.Call, path: str, resolved: str, patterns: PythonPatterns
 ) -> list[PySite]:
     if not call.args:
         return []

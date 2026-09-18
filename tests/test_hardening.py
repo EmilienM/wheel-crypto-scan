@@ -419,7 +419,7 @@ def test_parsing_source_with_invalid_escapes_emits_no_warnings(context, tmp_path
     source = b'import re\nBAD = "\\420 octal"\nPAT = "\\d+"\n'
     with warnings_module.catch_warnings(record=True) as caught:
         warnings_module.simplefilter("always")
-        sites, found = scan_python_source(source, "pkg/mod.py", context.patterns)
+        sites, found = scan_python_source(source, "pkg/mod.py", context.patterns.python)
     assert [str(w.message) for w in caught] == []
     assert found == ()
 

@@ -18,7 +18,7 @@ from dataclasses import replace
 from .. import evidence
 from ..errors import MACHO_PARSE_ERROR
 from ..evidence import BinaryEvidence, ScanError
-from ..ruleset import ScanPatterns
+from ..ruleset import BinaryPatterns
 from .golang import build_go_info
 from .rust import find_rust_crates
 from .strings import extract_printable, match_string_groups
@@ -65,7 +65,7 @@ def _empty(path: str, *, vendored: bool) -> BinaryEvidence:
 def read_macho(
     stream,
     path: str,
-    patterns: ScanPatterns,
+    patterns: BinaryPatterns,
     *,
     vendored: bool,
     max_strings_bytes: int = 64 * 1024 * 1024,

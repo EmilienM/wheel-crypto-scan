@@ -14,21 +14,14 @@ from __future__ import annotations
 import re
 
 from ..binfmt import read_binary
-from ..evidence import (
-    STAGE_BINARY,
-    ArtifactInventory,
-    BinaryEvidence,
-    ScanError,
-)
+from ..evidence import STAGE_BINARY, BinaryEvidence, ScanError
 from ..errors import MEMBER_READ_ERROR
-from ..ruleset import Conventions, ScanPatterns
+from ..ruleset import BinaryPatterns, Conventions
 from ..wheelfile import MemberInfo, WheelArchive
 
 # `.so`, `.so.3`, `.3.dylib`, `.pyd`, `.dll` and friends.
 _BINARY_SUFFIX = re.compile(r"\.(so|dylib|pyd|dll)(\.\d+)*$", re.IGNORECASE)
 _VERSIONED_DYLIB = re.compile(r"\.\d+(\.\d+)*\.dylib$", re.IGNORECASE)
-_SOURCE_SUFFIXES = (".py",)
-_BYTECODE_SUFFIXES = (".pyc", ".pyo")
 # Directories where a suffix-less file is plausibly an executable or a library.
 _SNIFF_DIRS = ("bin", "lib", "lib64", "scripts", "libexec")
 _SNIFF_MIN_BYTES = 64
@@ -50,7 +43,7 @@ def is_binary_member(member: MemberInfo, conventions: Conventions) -> bool:
 
 
 def scan_binaries(
-    archive: WheelArchive, patterns: ScanPatterns, conventions: Conventions
+    archive: WheelArchive, patterns: BinaryPatterns, conventions: Conventions
 ) -> tuple[tuple[BinaryEvidence, ...], tuple[ScanError, ...]]:
     """Read every native object in the wheel, in archive-name order."""
     binaries: list[BinaryEvidence] = []
@@ -103,49 +96,3 @@ def scan_binaries(
 
     binaries.sort(key=lambda binary: binary.path)
     return tuple(binaries), tuple(sorted(errors, key=ScanError.sort_key))
-
-
-def build_inventory(
-    archive: WheelArchive,
-    binaries: tuple[BinaryEvidence, ...],
-    sbom_paths: tuple[str, ...],
-    record_entries: int,
-    *,
-    py_files_unparsed: int = 0,
-    max_binaries: int = 256,
-) -> ArtifactInventory:
-    """Count what the wheel contains, independent of any rule."""
-    py_files = 0
-    pyc_files = 0
-    symlinks: list[tuple[str, str]] = []
-    for member in archive.members:
-        if member.name.endswith(_SOURCE_SUFFIXES):
-            py_files += 1
-        elif member.name.endswith(_BYTECODE_SUFFIXES):
-            pyc_files += 1
-        if member.is_symlink:
-            symlinks.append((member.name, archive.symlink_target(member.name) or ""))
-
-    skipped = tuple(
-        sorted((error.path, error.kind) for error in archive.errors if error.path is not None)
-    )
-
-    return ArtifactInventory(
-        py_files=py_files,
-        pyc_files=pyc_files,
-        py_files_unparsed=py_files_unparsed,
-        binaries_truncated=len(binaries) > max_binaries,
-        # True only when we actually read some Python. A wheel whose every source file
-        # failed to parse is as opaque as one that ships no source at all, and must not
-        # report the same empty Python findings as a genuinely clean wheel.
-        source_available=(py_files - py_files_unparsed) > 0 or (py_files == 0 and pyc_files == 0),
-        extensions=tuple(sorted((binary.path, binary.format) for binary in binaries))[
-            :max_binaries
-        ],
-        bundled_libs=tuple(sorted(b.path for b in binaries if b.vendored_path)),
-        sboms=sbom_paths,
-        symlinks=tuple(sorted(symlinks)),
-        skipped=skipped,
-        total_uncompressed_bytes=archive.total_uncompressed_bytes,
-        record_entries=record_entries,
-    )

@@ -1,27 +1,16 @@
-"""Output writers: JSONL and the human-readable Markdown summary.
+"""The human-readable Markdown summary. The JSONL contract lives in `record.py`.
 
-JSONL is the contract; Markdown is for reading over someone's shoulder. The summary
-deliberately leads with the verdict class and the OpenSSL linkage, because those are
-the two columns a component team actually triages on.
+Markdown is for reading over someone's shoulder. The summary deliberately leads with
+the verdict class and the OpenSSL linkage, because those are the two columns a
+component team actually triages on.
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import Iterable, Sequence
-from typing import Any, TextIO
+from collections.abc import Sequence
+from typing import Any
 
 _HEADERS = ("wheel", "version", "class", "openssl", "review", "reasons")
-
-
-def write_jsonl(records: Iterable[dict[str, Any]], stream: TextIO) -> int:
-    """Write one canonical JSON line per record. Returns how many were written."""
-    written = 0
-    for record in records:
-        stream.write(json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",", ":")))
-        stream.write("\n")
-        written += 1
-    return written
 
 
 def render_markdown(records: Sequence[dict[str, Any]]) -> str:

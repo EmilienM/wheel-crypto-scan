@@ -2,15 +2,16 @@
 
 Everything policy-shaped lives in the TOML file. This module's job is to read it, to
 refuse a malformed one loudly at load time rather than silently mis-scanning, and to
-hand the extractors a `ScanPatterns` object so they can bound what they collect without
-knowing that rules exist.
+hand each extractor its half of the compiled patterns -- `BinaryPatterns` or
+`PythonPatterns` -- so they can bound what they collect without knowing that rules
+exist. Only `ScanContext` holds both halves.
 """
 
 from __future__ import annotations
 
 import re
 import tomllib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from importlib.resources import files
@@ -64,6 +65,25 @@ ENTRY_TABLES = (
     "python_module",
     "ctypes_library",
 )
+
+# Which matcher kinds honour an entry's `rule` field. Several kinds read the same
+# table -- [[crypto_library]] is read by `bundled_library`, `dt_needed`, `linkage` and
+# `sbom_component` -- and only the kinds listed here route on it; the rest match every
+# entry of the table they read. Routing an entry at a rule of any other kind would
+# silently do nothing, so the parser refuses it.
+ROUTED_KINDS = MappingProxyType(
+    {
+        "crypto_distribution": frozenset({"dist_name", "requires_dist"}),
+        "crypto_library": frozenset({"bundled_library"}),
+        "rust_crate": frozenset({"rust_crate"}),
+        "python_module": frozenset({"py_import"}),
+    }
+)
+
+# Tables whose entries may omit `rule` and fall to the table's default rule. Every
+# [[crypto_distribution]] entry names its rule outright, so a default there could
+# never be consulted and declaring one would only look effective.
+DEFAULTABLE_TABLES = frozenset(ROUTED_KINDS) - {"crypto_distribution"}
 
 _VERSION_SUFFIX = re.compile(r"\.\d+$")
 
@@ -140,10 +160,29 @@ class Conventions:
             return SonameInfo(base=match.group("stem"), mangled=True, original=name)
         return SonameInfo(base=stem, mangled=False, original=name)
 
+    def own_base(self, soname: str | None, path: str) -> str:
+        """The library an object claims to be: its DT_SONAME, else its file name.
+
+        An object that declares no SONAME is still the library its file name says it
+        is, which is how a vendored copy gets recognised when the build stripped the
+        declaration out.
+        """
+        return self.normalise_soname(soname or path.rsplit("/", 1)[-1]).base
+
 
 @dataclass(frozen=True, slots=True)
 class Rule:
-    """One rule as written in the TOML file."""
+    """One rule as written in the TOML file.
+
+    A rule carries one match table, or several when it is written as `[[rule.match]]`.
+    Several are ORed: one concern reached through two matcher kinds is still one rule
+    id in the record, and splitting it in two would split the finding too. NOT is what
+    `suppressed_by` is for, and AND across evidence types is what `linkage` is for.
+
+    There is deliberately no singular `match`: with two tables any such shortcut names
+    whichever was written first and quietly lies about the rest. The engine dispatches
+    per table and hands the matcher the one it was dispatched for.
+    """
 
     id: str
     layer: str
@@ -153,7 +192,7 @@ class Rule:
     needs_human_review: bool
     title: str
     why: str
-    match: Mapping[str, Any]
+    matches: tuple[Mapping[str, Any], ...]
     verdict: str | None = None
     suppressed_by: tuple[str, ...] = ()
 
@@ -182,6 +221,7 @@ class CryptoLibrary:
     name: str
     sonames: tuple[str, ...]
     why: str
+    rule: str | None = None
     symbol_group: str | None = None
     string_group: str | None = None
     # Report this library's linkage even when nothing matched, because consumers
@@ -198,6 +238,7 @@ class RustCrateEntry:
 
     name: str
     why: str
+    rule: str | None = None
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
@@ -237,8 +278,8 @@ class StringGroup:
 
 
 @dataclass(frozen=True, slots=True)
-class ScanPatterns:
-    """What the extractors need, and nothing else.
+class BinaryPatterns:
+    """What the binary readers need, and nothing else.
 
     Extractors take this as an argument instead of importing the ruleset, which is what
     keeps them free of policy while still letting them bound what they collect.
@@ -247,12 +288,6 @@ class ScanPatterns:
     symbol_groups: tuple[SymbolGroup, ...]
     string_groups: tuple[StringGroup, ...]
     cargo_path_regex: re.Pattern[str]
-    py_modules: tuple[str, ...]
-    py_call_targets: tuple[str, ...]
-    py_attributes: tuple[str, ...]
-    py_constants: tuple[str, ...]
-    ctypes_substrings: tuple[str, ...]
-    weak_hash_algorithms: frozenset[str]
     go_boring_group: str
     go_stock_group: str
     limits: Limits
@@ -270,6 +305,34 @@ class ScanPatterns:
 
     def string_group(self, name: str) -> StringGroup:
         return self._string_index[name]
+
+
+@dataclass(frozen=True, slots=True)
+class PythonPatterns:
+    """What the Python source extractor needs, and nothing else.
+
+    The same bargain as `BinaryPatterns`, over a disjoint set of names: nothing here is
+    read while walking a binary, and nothing there is read while walking an AST.
+    """
+
+    py_modules: tuple[str, ...]
+    py_call_targets: tuple[str, ...]
+    py_attributes: tuple[str, ...]
+    py_constants: tuple[str, ...]
+    ctypes_substrings: tuple[str, ...]
+    limits: Limits
+
+
+@dataclass(frozen=True, slots=True)
+class ScanPatterns:
+    """Both compiled halves, built once per worker and handed out one half at a time.
+
+    The two halves share nothing but `limits`, so a contributor reading either one sees
+    only the names that half can actually match on.
+    """
+
+    binary: BinaryPatterns
+    python: PythonPatterns
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,13 +356,28 @@ class Ruleset:
     def rule(self, rule_id: str) -> Rule:
         return self._by_id[rule_id]
 
-    def rules_for_kind(self, kind: str) -> tuple[Rule, ...]:
-        return tuple(rule for rule in self.rules if rule.match["kind"] == kind)
+    def matches_for_kind(self, kind: str) -> tuple[tuple[Rule, Mapping[str, Any]], ...]:
+        """Every (rule, match table) pair of this matcher kind.
 
-    def default_rule_for_table(self, table: str) -> Rule | None:
+        Pairs rather than rules: a rule can be reached through two kinds, so handing
+        back the whole rule would leave the caller guessing which of its tables belongs
+        to the kind it asked for.
+        """
+        return tuple(
+            (rule, match) for rule in self.rules for match in rule.matches if match["kind"] == kind
+        )
+
+    def default_rule_for_table(self, table: str, kind: str) -> Rule | None:
+        """The rule claiming entries of `table` that name none, for one matcher kind.
+
+        The kind is part of the question. Several kinds read the same table and only
+        one of them routes on `rule` (see `ROUTED_KINDS`), so a default declared by a
+        rule of another kind is not this table's default at all.
+        """
         for rule in self.rules:
-            if rule.match.get("default") and rule.match.get("table") == table:
-                return rule
+            for match in rule.matches:
+                if match.get("default") and match.get("table") == table and match["kind"] == kind:
+                    return rule
         return None
 
     def compile_patterns(self) -> ScanPatterns:
@@ -324,29 +402,33 @@ class Ruleset:
         attributes: set[str] = set()
         constants: set[str] = set()
         for rule in self.rules:
-            match = rule.match
-            targets.update(match.get("targets", ()))
-            attributes.update(match.get("attributes", ()))
-            constants.update(match.get("constants", ()))
+            for match in rule.matches:
+                targets.update(match.get("targets", ()))
+                attributes.update(match.get("attributes", ()))
+                constants.update(match.get("constants", ()))
 
         return ScanPatterns(
-            symbol_groups=symbol_groups,
-            string_groups=string_groups,
-            cargo_path_regex=self.conventions.cargo_path_regex,
-            py_modules=tuple(sorted(self.python_modules)),
-            py_call_targets=tuple(sorted(targets)),
-            py_attributes=tuple(sorted(attributes)),
-            py_constants=tuple(sorted(constants)),
-            ctypes_substrings=self.ctypes_substrings,
-            weak_hash_algorithms=self.conventions.weak_hash_algorithms,
-            go_boring_group=self.conventions.go_boring_group,
-            go_stock_group=self.conventions.go_stock_group,
-            limits=self.limits,
-            _exact_index=MappingProxyType(
-                {name: tuple(sorted(groups)) for name, groups in exact_index.items()}
+            binary=BinaryPatterns(
+                symbol_groups=symbol_groups,
+                string_groups=string_groups,
+                cargo_path_regex=self.conventions.cargo_path_regex,
+                go_boring_group=self.conventions.go_boring_group,
+                go_stock_group=self.conventions.go_stock_group,
+                limits=self.limits,
+                _exact_index=MappingProxyType(
+                    {name: tuple(sorted(groups)) for name, groups in exact_index.items()}
+                ),
+                _prefix_probe=probe,
+                _string_index=MappingProxyType({group.name: group for group in string_groups}),
             ),
-            _prefix_probe=probe,
-            _string_index=MappingProxyType({group.name: group for group in string_groups}),
+            python=PythonPatterns(
+                py_modules=tuple(sorted(self.python_modules)),
+                py_call_targets=tuple(sorted(targets)),
+                py_attributes=tuple(sorted(attributes)),
+                py_constants=tuple(sorted(constants)),
+                ctypes_substrings=self.ctypes_substrings,
+                limits=self.limits,
+            ),
         )
 
 
@@ -377,8 +459,7 @@ def _parse_rule(data: Mapping[str, Any], precedence: frozenset[str]) -> Rule:
     verdict = data.get("verdict")
     if verdict is not None:
         _check(verdict, precedence, "verdict class", where)
-    match = _require(data, "match", where)
-    _check(_require(match, "kind", f"{where} match"), MATCHER_KINDS, "matcher kind", where)
+    matches = _parse_matches(_require(data, "match", where), where)
     return Rule(
         id=str(rule_id),
         layer=_check(_require(data, "layer", where), LAYERS, "layer", where),
@@ -388,24 +469,39 @@ def _parse_rule(data: Mapping[str, Any], precedence: frozenset[str]) -> Rule:
         needs_human_review=bool(_require(data, "needs_human_review", where)),
         title=str(_require(data, "title", where)),
         why=str(_require(data, "why", where)),
-        match=MappingProxyType(dict(match)),
+        matches=matches,
         verdict=None if verdict is None else str(verdict),
         suppressed_by=tuple(data.get("suppressed_by", ())),
     )
+
+
+def _parse_matches(match: Any, where: str) -> tuple[Mapping[str, Any], ...]:
+    """Read `match` as one table, or as the list of alternatives `[[rule.match]]` gives."""
+    tables = list(match) if isinstance(match, list) else [match]
+    if not tables:
+        raise RulesetError(f"{where}: match is empty")
+    for table in tables:
+        _check(_require(table, "kind", f"{where} match"), MATCHER_KINDS, "matcher kind", where)
+    return tuple(MappingProxyType(dict(table)) for table in tables)
 
 
 def _validate_rule_references(
     rule: Rule, ruleset_data: Mapping[str, Any], rule_ids: set[str]
 ) -> None:
     where = f"rule {rule.id!r}"
-    match = rule.match
-    kind = match["kind"]
-
     for other in rule.suppressed_by:
         if other not in rule_ids:
             raise RulesetError(f"{where}: suppressed_by names unknown rule {other!r}")
         if other == rule.id:
             raise RulesetError(f"{where}: suppressed_by names itself")
+    for match in rule.matches:
+        _validate_match_references(match, ruleset_data, where)
+
+
+def _validate_match_references(
+    match: Mapping[str, Any], ruleset_data: Mapping[str, Any], where: str
+) -> None:
+    kind = match["kind"]
 
     tables = match.get("tables", [])
     if "table" in match:
@@ -454,6 +550,33 @@ def _group_names(match: Mapping[str, Any]) -> list[str]:
     return names
 
 
+def _entry_rule(
+    entry: Mapping[str, Any], table: str, rules: Mapping[str, Rule], where: str
+) -> str | None:
+    """The rule an entry routes itself to, when it names one.
+
+    An entry that names no rule belongs to its table's default rule, which is what
+    lets one table feed several rules of the same kind without them all double-firing.
+    Only the kinds in `ROUTED_KINDS` read that routing, so naming a rule of any other
+    kind is refused here: the ruleset would load clean and the entry would route
+    nothing, taking its old rule's finding with it.
+    """
+    rule_id = entry.get("rule")
+    if rule_id is None:
+        return None
+    rule = rules.get(str(rule_id))
+    if rule is None:
+        raise RulesetError(f"{where}: unknown rule {rule_id!r}")
+    kinds = ROUTED_KINDS[table]
+    if not any(match["kind"] in kinds for match in rule.matches):
+        wanted = " or ".join(sorted(kinds))
+        raise RulesetError(
+            f"{where}: rule {rule_id!r} has no {wanted} match, so it never reads "
+            f"[[{table}]] routing"
+        )
+    return str(rule_id)
+
+
 def _entry_overrides(
     entry: Mapping[str, Any], precedence: frozenset[str], where: str
 ) -> dict[str, Any]:
@@ -495,15 +618,26 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             if rule.id in seen:
                 raise RulesetError(f"{source}: duplicate rule id {rule.id!r}")
             seen.add(rule.id)
+    by_id = {rule.id: rule for rule in rules}
 
     for rule in rules:
         _validate_rule_references(rule, data, rule_ids)
 
-    defaults: dict[str, list[str]] = {}
+    defaults: dict[str, set[str]] = {}
     for rule in rules:
-        if rule.match.get("default"):
-            table = _require(rule.match, "table", f"rule {rule.id!r}")
-            defaults.setdefault(str(table), []).append(rule.id)
+        for match in rule.matches:
+            if not match.get("default"):
+                continue
+            where = f"rule {rule.id!r}"
+            table = str(_require(match, "table", where))
+            if table not in DEFAULTABLE_TABLES:
+                raise RulesetError(f"{where}: [[{table}]] entries never fall back to a default")
+            if match["kind"] not in ROUTED_KINDS[table]:
+                raise RulesetError(
+                    f"{where}: a {match['kind']!r} match cannot be the default for "
+                    f"[[{table}]], which only {' or '.join(sorted(ROUTED_KINDS[table]))} reads"
+                )
+            defaults.setdefault(table, set()).add(rule.id)
     for table, ids in sorted(defaults.items()):
         if len(ids) > 1:
             raise RulesetError(
@@ -514,9 +648,10 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     for entry in data["crypto_distribution"]:
         name = canonicalize_name(str(_require(entry, "name", "[[crypto_distribution]]")))
         where = f"crypto_distribution {name!r}"
-        rule_id = str(_require(entry, "rule", where))
-        if rule_id not in rule_ids:
-            raise RulesetError(f"{where}: unknown rule {rule_id!r}")
+        # Unlike the other entry tables, a distribution always names its own rule.
+        rule_id = _entry_rule(entry, "crypto_distribution", by_id, where)
+        if rule_id is None:
+            raise RulesetError(f"{where}: missing required field 'rule'")
         distributions[name] = Distribution(
             name=name, rule=rule_id, **_entry_overrides(entry, classes, where)
         )
@@ -538,6 +673,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         libraries[name] = CryptoLibrary(
             name=name,
             sonames=tuple(_require(entry, "sonames", where)),
+            rule=_entry_rule(entry, "crypto_library", by_id, where),
             symbol_group=None if symbol_group is None else str(symbol_group),
             string_group=None if string_group is None else str(string_group),
             always_report=bool(entry.get("always_report", False)),
@@ -548,18 +684,19 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     for entry in data["rust_crate"]:
         name = str(_require(entry, "name", "[[rust_crate]]"))
         where = f"rust_crate {name!r}"
-        crates[name] = RustCrateEntry(name=name, **_entry_overrides(entry, classes, where))
+        crates[name] = RustCrateEntry(
+            name=name,
+            rule=_entry_rule(entry, "rust_crate", by_id, where),
+            **_entry_overrides(entry, classes, where),
+        )
 
     modules: dict[str, PythonModule] = {}
     for entry in data["python_module"]:
         name = str(_require(entry, "name", "[[python_module]]"))
         where = f"python_module {name!r}"
-        rule_id = entry.get("rule")
-        if rule_id is not None and rule_id not in rule_ids:
-            raise RulesetError(f"{where}: unknown rule {rule_id!r}")
         modules[name] = PythonModule(
             name=name,
-            rule=None if rule_id is None else str(rule_id),
+            rule=_entry_rule(entry, "python_module", by_id, where),
             **_entry_overrides(entry, classes, where),
         )
 
@@ -604,7 +741,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         symbol_groups=MappingProxyType(symbol_groups),
         string_groups=MappingProxyType(string_groups),
         ctypes_substrings=tuple(sorted(ctypes_substrings)),
-        _by_id=MappingProxyType({rule.id: rule for rule in rules}),
+        _by_id=MappingProxyType(by_id),
     )
 
 
@@ -616,8 +753,3 @@ def load_ruleset(path: str | Path | None = None) -> Ruleset:
     source = Path(path)
     with source.open("rb") as handle:
         return parse_ruleset(tomllib.load(handle), source.name)
-
-
-def known_matcher_kinds() -> Sequence[str]:
-    """The matcher kinds this scanner implements, sorted."""
-    return tuple(sorted(MATCHER_KINDS))

@@ -12,20 +12,26 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from packaging.utils import canonicalize_name
 
-from .evidence import BinaryEvidence, Evidence
+from .evidence import Evidence
 from .findings import Finding, Location
-from .linkage import _is_opaque
 from .ruleset import CryptoLibrary, Limits, Rule, Ruleset
+
+__all__ = ["Hit", "apply_rules"]
 
 _PRINTABLE = frozenset(range(0x20, 0x7F))
 
 
 @dataclass(frozen=True, slots=True)
-class _Hit:
-    """One match, before matches are grouped into findings."""
+class Hit:
+    """One match, before matches are grouped into findings.
+
+    Public because a new matcher is the one thing a contributor writes in this module,
+    and this is everything such a matcher has to produce.
+    """
 
     subject: str | None
     location: Location
@@ -42,17 +48,21 @@ def apply_rules(
 ) -> tuple[Finding, ...]:
     """Match every rule against the evidence and return findings, sorted and capped."""
     index = _SonameIndex(ruleset)
-    grouped: dict[tuple[str, str | None], list[_Hit]] = {}
+    grouped: dict[tuple[str, str | None], list[Hit]] = {}
     rules: dict[tuple[str, str | None], Rule] = {}
 
     for rule in ruleset.rules:
-        matcher = _MATCHERS.get(rule.match["kind"])
-        if matcher is None:
-            continue
-        for hit in matcher(rule, ruleset, evidence, linkage, index):
-            key = (rule.id, hit.subject)
-            grouped.setdefault(key, []).append(hit)
-            rules[key] = rule
+        # A rule's match tables are alternatives, and hits key on (rule id, subject):
+        # one finding per subject, not one per matcher. Two tables that spot the same
+        # subject make one finding; two that spot different subjects still make two.
+        for match in rule.matches:
+            matcher = _MATCHERS.get(match["kind"])
+            if matcher is None:
+                continue
+            for hit in matcher(rule, match, ruleset, evidence, linkage, index):
+                key = (rule.id, hit.subject)
+                grouped.setdefault(key, []).append(hit)
+                rules[key] = rule
 
     findings = [
         _build_finding(rules[key], hits, ruleset.limits)
@@ -61,7 +71,7 @@ def apply_rules(
     return _apply_suppression(findings, ruleset)
 
 
-def _build_finding(rule: Rule, hits: Sequence[_Hit], limits: Limits) -> Finding:
+def _build_finding(rule: Rule, hits: Sequence[Hit], limits: Limits) -> Finding:
     locations = sorted({hit.location for hit in hits}, key=Location.sort_key)
     first = hits[0]
     return Finding(
@@ -119,24 +129,41 @@ def _attrs(site) -> dict[str, str]:  # type: ignore[no-untyped-def]
     return dict(site.attrs)
 
 
-def _own_base(binary: BinaryEvidence, ruleset: Ruleset) -> str:
-    name = binary.soname or binary.path.rsplit("/", 1)[-1]
-    return ruleset.conventions.normalise_soname(name).base
+def _owns(rule: Rule, entry_rule: str | None, default: Rule | None, *, unowned: bool) -> bool:
+    """Whether a table entry belongs to this rule.
+
+    An entry names the rule it fires, and failing that the table's default rule owns
+    it. `unowned` decides what happens to an entry with neither, and the callers do not
+    agree. `python_module` drops it, as it always has, so a module no rule owns fires
+    nothing. `crypto_library` and `rust_crate` keep it, because `crypto_library` names
+    no default and its two `bundled_library` rules separate themselves by `library` and
+    `exclude_libraries` filters instead of by ownership. Changing either changes
+    records.
+
+    Routing is only a guarantee against double-firing where there is an owner to
+    compare against: two rules of the same kind over a table with no default and an
+    entry that names none both fire, by design.
+    """
+    owner = entry_rule or (default.id if default is not None else None)
+    if owner is None:
+        return unowned
+    return owner == rule.id
 
 
 # --- matchers ---------------------------------------------------------------
 #
-# Each takes (rule, ruleset, evidence, linkage, index) and yields _Hit values.
+# Each takes (rule, match, ruleset, evidence, linkage, index) and yields Hit values.
+# `match` is the one table this matcher was dispatched for, never the rule's whole list.
 
 
-def _match_dist_name(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_dist_name(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     meta = evidence.metadata
     if meta is None:
         return
     entry = ruleset.distributions.get(meta.canonical_name)
     if entry is None or entry.rule != rule.id:
         return
-    yield _Hit(
+    yield Hit(
         subject_kind="distribution",
         subject=entry.name,
         location=Location(
@@ -149,18 +176,18 @@ def _match_dist_name(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
     )
 
 
-def _match_requires_dist(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_requires_dist(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     meta = evidence.metadata
     if meta is None:
         return
-    any_entry = bool(rule.match.get("any_entry"))
+    any_entry = bool(match.get("any_entry"))
     for name in meta.requires_dist_names:
         entry = ruleset.distributions.get(name)
         if entry is None or (not any_entry and entry.rule != rule.id):
             continue
         # An `any_entry` rule is a dependency edge, not the dependency's own risk, so
         # it deliberately does not inherit the entry's severity or verdict.
-        yield _Hit(
+        yield Hit(
             subject_kind="distribution",
             subject=name,
             location=Location(
@@ -172,11 +199,11 @@ def _match_requires_dist(rule, ruleset, evidence, linkage, index) -> Iterator[_H
         )
 
 
-def _match_wheel_generator(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_wheel_generator(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     meta = evidence.metadata
     if meta is None or not meta.generator_raw:
         return
-    yield _Hit(
+    yield Hit(
         subject_kind="generator",
         subject=meta.generator_name,
         location=Location(
@@ -186,7 +213,7 @@ def _match_wheel_generator(rule, ruleset, evidence, linkage, index) -> Iterator[
     )
 
 
-def _match_no_source(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_no_source(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     artifacts = evidence.artifacts
     # Fires when the wheel contains Python we could not read: bytecode without source,
     # or source that would not parse. Both leave Layer 3 with nothing to say, and the
@@ -197,29 +224,29 @@ def _match_no_source(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
         detail = f"{artifacts.py_files_unparsed} of {artifacts.py_files} source files unparsed"
     else:
         detail = f"{artifacts.pyc_files} bytecode files, 0 source files"
-    yield _Hit(
+    yield Hit(
         subject=None,
         location=Location(path=evidence.filename, evidence=detail),
     )
 
 
-def _match_record_mismatch(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_record_mismatch(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     meta = evidence.metadata
     if meta is None:
         return
     for path in meta.record_mismatches:
-        yield _Hit(
+        yield Hit(
             subject=None,
             location=Location(path=path, evidence="not reconciled with RECORD"),
         )
 
 
-def _match_scan_error(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    wanted = frozenset(rule.match["error_kinds"])
+def _match_scan_error(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    wanted = frozenset(match["error_kinds"])
     for error in evidence.errors:
         if error.kind not in wanted:
             continue
-        yield _Hit(
+        yield Hit(
             subject=None,
             location=Location(
                 path=error.path or evidence.filename,
@@ -230,17 +257,17 @@ def _match_scan_error(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]
         )
 
 
-def _match_sbom_component(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_sbom_component(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     meta = evidence.metadata
     if meta is None:
         return
-    tables = rule.match.get("tables", [])
+    tables = match.get("tables", [])
     for component in meta.sbom_components:
         entry = _sbom_entry(ruleset, tables, component.name)
         if entry is None:
             continue
         version = f" {component.version}" if component.version else ""
-        yield _Hit(
+        yield Hit(
             subject_kind="component",
             subject=component.name,
             location=Location(
@@ -268,26 +295,29 @@ def _sbom_entry(ruleset: Ruleset, tables: Sequence[str], name: str):  # type: ig
     return None
 
 
-def _match_bundled_library(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    wanted = rule.match.get("library")
-    excluded = frozenset(rule.match.get("exclude_libraries", ()))
+def _match_bundled_library(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    wanted = match.get("library")
+    excluded = frozenset(match.get("exclude_libraries", ()))
+    default = ruleset.default_rule_for_table("crypto_library", "bundled_library")
     for binary in evidence.binaries:
         if not binary.vendored_path:
             continue
-        library = index.get(_own_base(binary, ruleset))
+        library = index.get(ruleset.conventions.own_base(binary.soname, binary.path))
         if library is None or library.name in excluded:
             continue
         if wanted is not None and library.name != wanted:
             continue
+        if not _owns(rule, library.rule, default, unowned=True):
+            continue
         detail = f"DT_SONAME={binary.soname}" if binary.soname else f"file {binary.path}"
         banners = [
-            match.value
-            for match in binary.matched_strings
-            if library.string_group and match.group == library.string_group
+            banner.value
+            for banner in binary.matched_strings
+            if library.string_group and banner.group == library.string_group
         ]
         if banners:
             detail = f"{detail}; rodata={banners[0]!r}"
-        yield _Hit(
+        yield Hit(
             subject_kind="library",
             subject=library.name,
             location=Location(
@@ -299,9 +329,9 @@ def _match_bundled_library(rule, ruleset, evidence, linkage, index) -> Iterator[
         )
 
 
-def _match_dt_needed(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    wanted = rule.match.get("library")
-    want_mangled = rule.match.get("mangled")
+def _match_dt_needed(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    wanted = match.get("library")
+    want_mangled = match.get("mangled")
     for binary in evidence.binaries:
         for needed in binary.needed:
             info = ruleset.conventions.normalise_soname(needed)
@@ -312,7 +342,7 @@ def _match_dt_needed(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
                 continue
             if want_mangled is not None and info.mangled is not want_mangled:
                 continue
-            yield _Hit(
+            yield Hit(
                 subject_kind="library",
                 subject=library.name,
                 location=Location(
@@ -324,16 +354,16 @@ def _match_dt_needed(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
             )
 
 
-def _match_dynamic_symbol(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    groups = _groups(rule)
-    binding = rule.match["binding"]
+def _match_dynamic_symbol(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    groups = _groups(match)
+    binding = match["binding"]
     for binary in evidence.binaries:
         for symbol in binary.matched_symbols:
             if symbol.group not in groups:
                 continue
             if binding not in ("any", symbol.binding):
                 continue
-            yield _Hit(
+            yield Hit(
                 subject_kind="symbol_group",
                 subject=symbol.group,
                 location=Location(
@@ -346,29 +376,30 @@ def _match_dynamic_symbol(rule, ruleset, evidence, linkage, index) -> Iterator[_
             )
 
 
-def _match_binary_string(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    groups = _groups(rule)
+def _match_binary_string(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    groups = _groups(match)
     for binary in evidence.binaries:
-        for match in binary.matched_strings:
-            if match.group not in groups:
+        for found in binary.matched_strings:
+            if found.group not in groups:
                 continue
-            yield _Hit(
+            yield Hit(
                 subject_kind="string_group",
-                subject=match.group,
+                subject=found.group,
                 location=Location(
                     path=binary.path,
-                    evidence=_clean(f"rodata={match.value!r}", ruleset.limits.max_evidence_chars),
+                    evidence=_clean(f"rodata={found.value!r}", ruleset.limits.max_evidence_chars),
                 ),
             )
 
 
-def _match_rust_crate(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_rust_crate(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    default = ruleset.default_rule_for_table("rust_crate", "rust_crate")
     for binary in evidence.binaries:
         for crate in binary.rust_crates:
             entry = ruleset.rust_crates.get(crate.name)
-            if entry is None:
+            if entry is None or not _owns(rule, entry.rule, default, unowned=True):
                 continue
-            yield _Hit(
+            yield Hit(
                 subject_kind="crate",
                 subject=crate.name,
                 location=Location(
@@ -384,14 +415,13 @@ def _match_rust_crate(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]
             )
 
 
-def _match_linkage(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     """Match a resolved linkage posture, for one named library or a whole table.
 
     The table form exists so that every crypto library with a verdict is reachable.
     Without it a resolved linkage could sit in `verdict.conditions` while the verdict
     class said nothing was found, which is the one thing the headline field must not do.
     """
-    match = rule.match
     values = frozenset(match.get("values", ())) or frozenset({match["value"]})
     inherit = "table" in match
     if "name" in match:
@@ -405,7 +435,7 @@ def _match_linkage(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
         if value not in values:
             continue
         library = ruleset.libraries.get(name)
-        yield _Hit(
+        yield Hit(
             subject=name,
             subject_kind="library",
             location=Location(
@@ -417,11 +447,11 @@ def _match_linkage(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
         )
 
 
-def _match_opaque_binary(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_opaque_binary(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     for binary in evidence.binaries:
-        if not _is_opaque(binary):
+        if not binary.is_opaque:
             continue
-        yield _Hit(
+        yield Hit(
             subject=None,
             location=Location(
                 path=binary.path,
@@ -430,11 +460,11 @@ def _match_opaque_binary(rule, ruleset, evidence, linkage, index) -> Iterator[_H
         )
 
 
-def _match_partial_binary(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_partial_binary(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     for binary in evidence.binaries:
         if not binary.partial_analysis:
             continue
-        yield _Hit(
+        yield Hit(
             subject_kind="format",
             subject=binary.format,
             location=Location(
@@ -443,18 +473,15 @@ def _match_partial_binary(rule, ruleset, evidence, linkage, index) -> Iterator[_
         )
 
 
-def _match_py_import(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    default = ruleset.default_rule_for_table("python_module")
+def _match_py_import(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    default = ruleset.default_rule_for_table("python_module", "py_import")
     for site in evidence.py_sites:
         if site.kind != "py_import":
             continue
         entry = ruleset.python_modules.get(site.target)
-        if entry is None:
+        if entry is None or not _owns(rule, entry.rule, default, unowned=False):
             continue
-        owner = entry.rule or (default.id if default else None)
-        if owner != rule.id:
-            continue
-        yield _Hit(
+        yield Hit(
             subject_kind="module",
             subject=entry.name,
             location=_site_location(site, ruleset.limits),
@@ -464,11 +491,11 @@ def _match_py_import(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
         )
 
 
-def _match_py_call(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    targets = frozenset(rule.match.get("targets", ()))
-    weak_only = bool(rule.match.get("weak_algorithms_only"))
-    want_used = rule.match.get("usedforsecurity")
-    want_algorithm = rule.match.get("algorithm")
+def _match_py_call(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    targets = frozenset(match.get("targets", ()))
+    weak_only = bool(match.get("weak_algorithms_only"))
+    want_used = match.get("usedforsecurity")
+    want_algorithm = match.get("algorithm")
     weak = ruleset.conventions.weak_hash_algorithms
     for site in evidence.py_sites:
         if site.kind != "py_call" or not _target_matches(site.target, targets):
@@ -481,39 +508,39 @@ def _match_py_call(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
             continue
         if want_used is not None and attrs.get("usedforsecurity") != want_used:
             continue
-        yield _Hit(subject=None, location=_site_location(site, ruleset.limits))
+        yield Hit(subject=None, location=_site_location(site, ruleset.limits))
 
 
-def _match_py_attr(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    attributes = frozenset(rule.match.get("attributes", ()))
-    values = rule.match.get("values")
+def _match_py_attr(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    attributes = frozenset(match.get("attributes", ()))
+    values = match.get("values")
     for site in evidence.py_sites:
         if site.kind != "py_attr" or site.target not in attributes:
             continue
         if values is not None and _attrs(site).get("value") not in values:
             continue
-        yield _Hit(
+        yield Hit(
             subject_kind="attribute",
             subject=site.target,
             location=_site_location(site, ruleset.limits),
         )
 
 
-def _match_py_constant(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
-    constants = frozenset(rule.match.get("constants", ()))
+def _match_py_constant(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    constants = frozenset(match.get("constants", ()))
     for site in evidence.py_sites:
         if site.kind == "py_constant" and site.target in constants:
-            yield _Hit(
+            yield Hit(
                 subject_kind="constant",
                 subject=site.target,
                 location=_site_location(site, ruleset.limits),
             )
 
 
-def _match_py_ctypes_load(rule, ruleset, evidence, linkage, index) -> Iterator[_Hit]:
+def _match_py_ctypes_load(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     for site in evidence.py_sites:
         if site.kind == "py_ctypes_load":
-            yield _Hit(
+            yield Hit(
                 subject_kind="library",
                 subject=site.target,
                 location=_site_location(site, ruleset.limits),
@@ -533,10 +560,10 @@ def _site_location(site, limits: Limits) -> Location:  # type: ignore[no-untyped
     )
 
 
-def _groups(rule: Rule) -> frozenset[str]:
-    names = list(rule.match.get("groups", ()))
-    if "group" in rule.match:
-        names.append(rule.match["group"])
+def _groups(match: Mapping[str, Any]) -> frozenset[str]:
+    names = list(match.get("groups", ()))
+    if "group" in match:
+        names.append(match["group"])
     return frozenset(names)
 
 

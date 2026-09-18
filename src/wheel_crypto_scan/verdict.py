@@ -22,7 +22,7 @@ NO_CRYPTO_DETECTED = "NO_CRYPTO_DETECTED"
 class Verdict:
     """The wheel's classification and everything needed to argue with it."""
 
-    verdict_class: str
+    headline: str
     classes: tuple[str, ...]
     rule_ids: tuple[str, ...]
     reasons: tuple[str, ...]
@@ -43,7 +43,7 @@ def classify(ruleset: Ruleset, findings: Sequence[Finding], linkage: Mapping[str
     rule_ids = sorted({finding.rule_id for finding in contributing})
 
     return Verdict(
-        verdict_class=classes[0],
+        headline=classes[0],
         classes=classes,
         rule_ids=tuple(rule_ids),
         reasons=tuple(reasons),
