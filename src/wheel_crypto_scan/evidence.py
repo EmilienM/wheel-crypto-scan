@@ -116,8 +116,10 @@ class BinaryEvidence:
     go: GoBuildInfo | None = None
     symbols_truncated: bool = False
     strings_truncated: bool = False
-    # Set when the format is understood only partially (PE today), so that a wheel
-    # can never look clean merely because we cannot read it.
+    # Set when part of the object was not read: a format with no structural reader, a
+    # Mach-O whose `LC_SYMTAB` could not be read in full, or the slices of a fat binary
+    # that were never examined. A wheel can never look clean merely because we read less
+    # of it than usual.
     partial_analysis: bool = False
 
     @property

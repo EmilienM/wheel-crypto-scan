@@ -468,7 +468,7 @@ def _match_partial_binary(rule, match, ruleset, evidence, linkage, index) -> Ite
             subject_kind="format",
             subject=binary.format,
             location=Location(
-                path=binary.path, evidence=f"{binary.format} objects are read for strings only"
+                path=binary.path, evidence=f"{binary.format} object was only partially read"
             ),
         )
 

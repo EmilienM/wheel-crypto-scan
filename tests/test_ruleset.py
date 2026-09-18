@@ -85,7 +85,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "1"
+    assert ruleset.version == "2"
     assert len(ruleset.rules) > 20
 
 

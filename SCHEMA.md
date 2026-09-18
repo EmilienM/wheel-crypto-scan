@@ -84,9 +84,9 @@ One entry per native object. `path`, `format`, `machine`, `bits`, `endian`, `elf
 | `vendored_path` | The object lives in an auditwheel `*.libs/` or delocate `.dylibs/` directory, i.e. the wheel ships it. |
 | `matched_symbols[].binding` | **`imported`** = the code lives elsewhere; **`defined`** = this object carries it. This is the distinction the whole tool turns on. |
 | `matched_strings[]` | `{group, value}` from read-only data. Version banners land here. |
-| `stripped` | No `.symtab`. Normal for release wheels; recorded, not a finding. |
+| `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. Normal for release wheels; recorded, not a finding. |
 | `truncated` | `{symbols, strings}` — evidence was capped. |
-| `partial_analysis` | The format is only partially readable (currently Windows PE, read for strings only). |
+| `partial_analysis` | Part of the object was not read: a Windows PE (strings only), a Mach-O whose `LC_SYMTAB` could not be read in full, or a fat Mach-O, where only the first slice is examined. |
 
 ## `findings`
 

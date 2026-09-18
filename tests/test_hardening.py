@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from helpers.elfbuilder import DynSym, ElfBuilder
+from helpers.elfbuilder import DynSym, ElfBuilder, MachOBuilder, MachOSym
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import errors
@@ -23,6 +23,7 @@ from wheel_crypto_scan.scan import ScanContext, scan_wheel
 from wheel_crypto_scan.wheelfile import ArchiveLimits, WheelArchive
 
 MANYLINUX = "cp39-abi3-manylinux_2_28_x86_64"
+MACOS = "cp312-cp312-macosx_11_0_arm64"
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 
 
@@ -289,6 +290,34 @@ def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> 
     )
     record = scan_wheel(wheel, context)  # must return promptly without 3 GiB of RSS
     assert record["wheel"]["name"] == "fakenobits"
+
+
+def test_a_mach_o_that_declares_a_giant_symbol_table_does_not_allocate(
+    context, tmp_path: Path
+) -> None:
+    """`nsyms` is the Mach-O version of the same attack: a 32-bit count, self-declared.
+
+    Four hundred bytes of object claiming four billion symbols is 64 GiB of nlist
+    entries if the reader believes it, so the read is measured against the slice.
+    """
+    payload = MachOBuilder(
+        id_dylib="@rpath/_ext.cpython-312-darwin.so",
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+        declared_nsyms=0xFFFFFFFF,
+        declared_strsize=0xFFFFFFFF,
+    ).build()
+    wheel = build_wheel(
+        tmp_path / f"fatliar-1.0-{MACOS}.whl",
+        name="fatliar",
+        version="1.0",
+        tags=(MACOS,),
+        files={"fatliar/_ext.cpython-312-darwin.so": payload},
+    )
+    record = scan_wheel(wheel, context)  # must return promptly without 64 GiB of RSS
+    assert any(e["kind"] == errors.MACHO_PARSE_ERROR for e in record["errors"])
+    # The entry that was really there is still evidence, and the object stays partial.
+    assert record["binaries"][0]["matched_symbols"]
+    assert record["binaries"][0]["partial_analysis"] is True
 
 
 # --- M6: record size must be bounded in member count too --------------------
