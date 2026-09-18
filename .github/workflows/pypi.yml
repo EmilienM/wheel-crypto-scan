@@ -2,7 +2,7 @@ name: Publish to PyPI
 
 # Publishes on a version tag and nothing else.
 #
-#     git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+#     git tag -a 0.1.0 -m "0.1.0" && git push origin 0.1.0
 #
 # Authentication is PyPI Trusted Publishing (OIDC), so there is no API token to store.
 # Register this repository as a trusted publisher before the first tag:
@@ -13,7 +13,8 @@ name: Publish to PyPI
 
 on:
   push:
-    tags: ["v*"]
+    # Bare version tags, no "v" prefix: 0.1.0, 1.2.3, 2.0.0rc1.
+    tags: ["[0-9]*"]
 
 permissions:
   contents: read
@@ -56,8 +57,8 @@ jobs:
         run: |
           set -euo pipefail
           built=$(ls dist/*.tar.gz | sed -E 's/.*-([0-9][^-]*)\.tar\.gz/\1/')
-          tag=${GITHUB_REF_NAME#v}
-          if [ "$built" != "$tag" ]; then
+          # The tag is the version, exactly. No prefix to strip, nothing to normalise.
+          if [ "$built" != "$GITHUB_REF_NAME" ]; then
             echo "::error::project version $built does not match tag $GITHUB_REF_NAME"
             exit 1
           fi

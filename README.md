@@ -143,8 +143,10 @@ Publishing is triggered by a version tag and nothing else. Bump `version` in
 `pyproject.toml`, commit, then:
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+git tag -a 0.1.0 -m "0.1.0" && git push origin 0.1.0
 ```
+
+The tag is the version exactly, with no `v` prefix.
 
 The workflow re-runs the full matrix, refuses to publish if the built version does not
 match the tag, and uploads through PyPI Trusted Publishing, so there is no token to
