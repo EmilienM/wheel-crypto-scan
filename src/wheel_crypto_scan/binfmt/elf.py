@@ -29,7 +29,7 @@ from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
 from .golang import build_go_info
 from .rust import find_rust_crates
-from .strings import extract_printable, match_string_groups
+from .strings import MAX_STRINGS_BYTES, extract_printable, match_string_groups
 
 _SHF_ALLOC = 0x2
 _SHF_EXECINSTR = 0x4
@@ -101,7 +101,7 @@ def read_elf(
     patterns: BinaryPatterns,
     *,
     vendored: bool,
-    max_strings_bytes: int = 64 * 1024 * 1024,
+    max_strings_bytes: int = MAX_STRINGS_BYTES,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Read one ELF object and return its evidence, plus any non-fatal errors.
 

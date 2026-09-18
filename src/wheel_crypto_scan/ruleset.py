@@ -117,8 +117,8 @@ class Limits:
 class SonameInfo:
     """A library file name reduced to its base name, plus whether it was renamed.
 
-    auditwheel and delocate append a content hash to every library they vendor, so a
-    mangled name is itself evidence that the wheel carries its own copy.
+    auditwheel, delocate and delvewheel append a content hash to every library they
+    vendor, so a mangled name is itself evidence that the wheel carries its own copy.
     """
 
     base: str
@@ -132,9 +132,11 @@ class Conventions:
 
     vendor_dir_globs: tuple[str, ...]
     mangled_soname_regex: re.Pattern[str]
+    windows_version_suffix_regex: re.Pattern[str]
     cargo_path_regex: re.Pattern[str]
     weak_hash_algorithms: frozenset[str]
     library_suffixes: tuple[str, ...] = (".so", ".dylib", ".dll", ".pyd")
+    windows_library_suffixes: tuple[str, ...] = (".dll", ".pyd")
     go_boring_group: str = "go_boring"
     go_stock_group: str = "go_stock_crypto"
 
@@ -144,21 +146,53 @@ class Conventions:
         return any(fnmatch(part, glob) for part in parts for glob in self.vendor_dir_globs)
 
     def normalise_soname(self, name: str) -> SonameInfo:
-        """Reduce `libcrypto-3a1f2b4c.so.3` to `libcrypto`, remembering it was renamed."""
+        """Reduce `libcrypto-3a1f2b4c.so.3` or `libcrypto-3-x64.dll` to `libcrypto`.
+
+        Windows spells a library's version, and sometimes its architecture, inside the
+        file name where Unix spells it as a `.so.N` suffix. That is a property of the
+        platform rather than of any one library, so it is undone here instead of being
+        enumerated per library: `libgnutls-30.dll` and `libgcrypt-20.dll` are the same
+        convention as `libcrypto-3-x64.dll` and none of them would otherwise resolve.
+
+        The reduction applies only to a name that carried a Windows suffix, because a
+        Unix `libfoo-2.so` really is called `libfoo-2`. Those names are casefolded for
+        the same reason: Windows file names are case-insensitive and an import names
+        its DLL in whatever case the linker happened to write.
+        """
         stem = name.split("/")[-1]
+        windows = False
         while True:
             stripped = _VERSION_SUFFIX.sub("", stem)
             for suffix in self.library_suffixes:
-                if stripped.endswith(suffix):
+                # Only a Windows suffix is matched without regard to case, because only
+                # Windows file names are case-insensitive. A Linux `libcrypto.SO.3` is
+                # a file genuinely called that, and reducing it would be inventing one.
+                on_windows = suffix in self.windows_library_suffixes
+                matched = (
+                    stripped.casefold().endswith(suffix.casefold())
+                    if on_windows
+                    else stripped.endswith(suffix)
+                )
+                if matched:
                     stripped = stripped[: -len(suffix)]
+                    windows = windows or on_windows
                     break
             if stripped == stem:
                 break
             stem = stripped
+        if windows:
+            stem = stem.casefold()
         match = self.mangled_soname_regex.match(stem)  # pylint: disable=no-member
+        mangled = match is not None
         if match is not None:
-            return SonameInfo(base=match.group("stem"), mangled=True, original=name)
-        return SonameInfo(base=stem, mangled=False, original=name)
+            stem = match.group("stem")
+        if windows:
+            # After the hash, so a vendored `libcrypto-3-x64-<hash>.dll` loses the hash
+            # first and is still recognised as the vendored copy it is.
+            decorated = self.windows_version_suffix_regex.match(stem)  # pylint: disable=no-member
+            if decorated is not None:
+                stem = decorated.group("stem")
+        return SonameInfo(base=stem, mangled=mangled, original=name)
 
     def own_base(self, soname: str | None, path: str) -> str:
         """The library an object claims to be: its DT_SONAME, else its file name.
@@ -436,18 +470,28 @@ def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
     where = "[conventions]"
     try:
         mangled = re.compile(str(_require(data, "mangled_soname_regex", where)))
+        windows = re.compile(str(_require(data, "windows_version_suffix_regex", where)))
         cargo = re.compile(str(_require(data, "cargo_path_regex", where)))
     except re.error as exc:
         raise RulesetError(f"{where}: invalid regular expression: {exc}") from None
-    for pattern, group in ((mangled, "stem"), (cargo, "name")):
+    for pattern, group in ((mangled, "stem"), (windows, "stem"), (cargo, "name")):
         if group not in pattern.groupindex:
             raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
+    suffixes = tuple(_require(data, "library_suffixes", where))
+    windows_suffixes = tuple(_require(data, "windows_library_suffixes", where))
+    # A Windows suffix that is not also stripped would never be seen, so the reduction
+    # it is meant to trigger would silently never happen.
+    unknown = sorted(set(windows_suffixes) - set(suffixes))
+    if unknown:
+        raise RulesetError(f"{where}: windows_library_suffixes {unknown} are not library_suffixes")
     return Conventions(
         vendor_dir_globs=tuple(_require(data, "vendor_dir_globs", where)),
         mangled_soname_regex=mangled,
+        windows_version_suffix_regex=windows,
         cargo_path_regex=cargo,
         weak_hash_algorithms=frozenset(_require(data, "weak_hash_algorithms", where)),
-        library_suffixes=tuple(_require(data, "library_suffixes", where)),
+        library_suffixes=suffixes,
+        windows_library_suffixes=windows_suffixes,
         go_boring_group=str(_require(data, "go_boring_group", where)),
         go_stock_group=str(_require(data, "go_stock_group", where)),
     )

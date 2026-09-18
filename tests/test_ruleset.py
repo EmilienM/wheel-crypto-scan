@@ -34,9 +34,13 @@ def minimal(**overrides: Any) -> dict[str, Any]:
         "conventions": {
             "vendor_dir_globs": ["*.libs", ".dylibs"],
             "mangled_soname_regex": r"^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$",
+            "windows_version_suffix_regex": (
+                r"^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<arch>x64|x86|arm64|arm64ec))?$"
+            ),
             "cargo_path_regex": r"cargo/registry/src/[^/]+/(?P<name>[a-z-]+)-(?P<version>[0-9.]+)/",
             "weak_hash_algorithms": ["md5", "sha1"],
             "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
+            "windows_library_suffixes": [".dll", ".pyd"],
             "go_boring_group": "go_boring",
             "go_stock_group": "go_stock_crypto",
         },
@@ -85,7 +89,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "2"
+    assert ruleset.version == "3"
     assert len(ruleset.rules) > 20
 
 
@@ -335,12 +339,50 @@ def test_table_entry_inherits_the_rule_severity_when_it_sets_none() -> None:
         ("libssl.3.dylib", "libssl", False),
         ("libcrypto-3a1f2b4c.dylib", "libcrypto", True),
         ("libsecp256k1.so.0", "libsecp256k1", False),
+        # A Unix name that ends in a version keeps it: there the digits are the name.
+        ("libfoo-2.so", "libfoo-2", False),
+        ("libnss3.so", "libnss3", False),
     ],
 )
 def test_soname_normalisation(soname: str, base: str, mangled: bool) -> None:
     conventions = parse_ruleset(minimal()).conventions
     result = conventions.normalise_soname(soname)
     assert (result.base, result.mangled) == (base, mangled)
+
+
+@pytest.mark.parametrize(
+    ("soname", "base", "mangled"),
+    [
+        ("libcrypto-3-x64.dll", "libcrypto", False),
+        ("libcrypto-3.dll", "libcrypto", False),
+        ("libssl-1_1-x64.dll", "libssl", False),
+        ("libssl-3-arm64.dll", "libssl", False),
+        ("libgnutls-30.dll", "libgnutls", False),
+        ("libgcrypt-20.dll", "libgcrypt", False),
+        # The hash goes first, so a vendored copy is still recognisably vendored.
+        ("libcrypto-3-x64-a1b2c3d4.dll", "libcrypto", True),
+        # Windows file names are case-insensitive, and so is the import that names one.
+        ("LIBCRYPTO-3-X64.dll", "libcrypto", False),
+        ("libcrypto-3-x64.DLL", "libcrypto", False),
+        # Nothing to undo: no version in the stem, and no version suffix either.
+        ("libcrypto.dll", "libcrypto", False),
+        ("python312.dll", "python312", False),
+        ("_ext.pyd", "_ext", False),
+    ],
+)
+def test_windows_soname_normalisation(soname: str, base: str, mangled: bool) -> None:
+    """Windows spells the version in the stem, so the stem is where it is undone."""
+    conventions = parse_ruleset(minimal()).conventions
+    result = conventions.normalise_soname(soname)
+    assert (result.base, result.mangled) == (base, mangled)
+
+
+def test_a_windows_suffix_that_is_never_stripped_is_refused() -> None:
+    """It would never be seen, so the reduction it gates would silently never happen."""
+    data = minimal()
+    data["conventions"]["windows_library_suffixes"] = [".dll", ".exe"]
+    with pytest.raises(RulesetError, match="windows_library_suffixes"):
+        parse_ruleset(data)
 
 
 def test_own_base_falls_back_to_the_file_name() -> None:

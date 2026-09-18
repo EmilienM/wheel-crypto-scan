@@ -77,16 +77,22 @@ pin the interpreter if you need records comparable across hosts.
 ## `binaries`
 
 One entry per native object. `path`, `format`, `machine`, `bits`, `endian`, `elf_type`,
-`soname`, `needed`, `rpath`, `runpath`, `symbol_counts`, `rust_crates`, `go`.
+`soname`, `needed`, `rpath`, `runpath`, `rust_crates`, `go`.
 
 | Field | Meaning |
 |---|---|
 | `vendored_path` | The object lives in an auditwheel `*.libs/` or delocate `.dylibs/` directory, i.e. the wheel ships it. |
 | `matched_symbols[].binding` | **`imported`** = the code lives elsewhere; **`defined`** = this object carries it. This is the distinction the whole tool turns on. |
 | `matched_strings[]` | `{group, value}` from read-only data. Version banners land here. |
-| `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. Normal for release wheels; recorded, not a finding. |
+| `symbol_counts` | `{dynsym, symtab}`, and `symtab` means something different per format: `.symtab` entries in ELF, `LC_SYMTAB` entries in Mach-O, and in PE the things the object named — one per import thunk and one per export slot — because PE has no symbol table of its own to count. |
+| `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. Never set for PE, whose own symbol table is debug information every linker drops, so there is no absence that could mean this; `symbol_counts.symtab == 0` is how a PE says it named nothing. Normal for release wheels; recorded, not a finding. |
 | `truncated` | `{symbols, strings}` — evidence was capped. |
-| `partial_analysis` | Part of the object was not read: a Windows PE (strings only), a Mach-O whose `LC_SYMTAB` could not be read in full, or a fat Mach-O, where only the first slice is examined. |
+| `partial_analysis` | Part of the object was not read: a format with no structural reader (strings only); a PE whose section table was truncated, whose import directory was absent or could not be walked, that names an import or an export by ordinal alone, or that carries a delay-load import directory, which this reader does not parse; a Mach-O whose `LC_SYMTAB` could not be read in full; or a fat Mach-O, where only the first slice is examined. |
+
+A PE with genuinely no imports — a resource-only or satellite DLL — therefore always
+reads as `partial_analysis: true`, because naming at least one dependency is part of
+what clears the flag. That is the conservative direction, and a known source of false
+positives rather than a surprise.
 
 ## `findings`
 

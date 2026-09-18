@@ -15,6 +15,12 @@ from dataclasses import dataclass
 from ..evidence import StringMatch
 from ..ruleset import StringGroup
 
+# How much of one object every reader pulls into memory. It bounds the strings pass in
+# all of them, and in `binfmt.pe` it bounds the structural read as well, because that
+# reader resolves every directory inside this same buffer. Defined once: four copies of
+# the number are four things that can drift apart.
+MAX_STRINGS_BYTES = 64 * 1024 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class ExtractedStrings:

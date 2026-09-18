@@ -8,11 +8,21 @@ cache that served the wrong record.
 from __future__ import annotations
 
 import json
+import time
+import tracemalloc
 import zipfile
 from pathlib import Path
 
 import pytest
-from helpers.elfbuilder import DynSym, ElfBuilder, MachOBuilder, MachOSym
+from helpers.elfbuilder import (
+    DynSym,
+    ElfBuilder,
+    MachOBuilder,
+    MachOSym,
+    PEBuilder,
+    PEExport,
+    PEImport,
+)
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import errors
@@ -24,6 +34,7 @@ from wheel_crypto_scan.wheelfile import ArchiveLimits, WheelArchive
 
 MANYLINUX = "cp39-abi3-manylinux_2_28_x86_64"
 MACOS = "cp312-cp312-macosx_11_0_arm64"
+WINDOWS = "cp312-cp312-win_amd64"
 FIXED_DATE = (1980, 1, 1, 0, 0, 0)
 
 
@@ -318,6 +329,80 @@ def test_a_mach_o_that_declares_a_giant_symbol_table_does_not_allocate(
     # The entry that was really there is still evidence, and the object stays partial.
     assert record["binaries"][0]["matched_symbols"]
     assert record["binaries"][0]["partial_analysis"] is True
+
+
+def test_a_pe_that_declares_a_giant_export_table_does_not_allocate(context, tmp_path: Path) -> None:
+    """`NumberOfNames` is the PE spelling of the same attack: a 32-bit, self-declared count.
+
+    Two kilobytes of object claiming four billion exported names is sixteen gigabytes of
+    name pointers if the reader believes it, so every table is measured against the
+    section that carries it.
+    """
+    payload = PEBuilder(
+        imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+        exports=(PEExport("PyInit__ext"),),
+        dll_name="_ext.pyd",
+        declared_name_count=0xFFFFFFFF,
+        declared_function_count=0xFFFFFFFF,
+    ).build()
+    wheel = build_wheel(
+        tmp_path / f"peliar-1.0-{WINDOWS}.whl",
+        name="peliar",
+        version="1.0",
+        tags=(WINDOWS,),
+        files={"peliar/_ext.pyd": payload},
+    )
+    record = scan_wheel(wheel, context)  # must return promptly without 16 GiB of RSS
+    assert any(e["kind"] == errors.PE_PARSE_ERROR for e in record["errors"])
+    # The import directory that was really there is still evidence, and the object
+    # stays partial because its exports were not read.
+    assert record["binaries"][0]["needed"] == ["libcrypto-3-x64.dll"]
+    assert record["binaries"][0]["partial_analysis"] is True
+
+
+def test_a_pe_whose_descriptors_share_one_thunk_array_stays_bounded(
+    context, tmp_path: Path
+) -> None:
+    """Two per-scope caps do not bound a walk that can multiply them together.
+
+    Nothing stops every import descriptor pointing its lookup table at the same thunk
+    array, so a cap per descriptor and a cap per DLL multiply: 512 descriptors sharing
+    one 65,536-entry table is 33.5 million iterations, each of which was appending a
+    fresh string to a list that nothing deduplicated. Measured on the reader before the
+    budget was made whole-object: 0.25 s and 5 MiB per descriptor, i.e. minutes of CPU
+    and gigabytes of resident memory out of a wheel under two kilobytes.
+    """
+    payload = PEBuilder(
+        imports=tuple(PEImport(f"d{index:04d}.dll") for index in range(512)),
+        shared_thunk_entries=65536,
+        exports=(PEExport("PyInit__ext"),),
+        dll_name="_ext.pyd",
+    ).build()
+    wheel = build_wheel(
+        tmp_path / f"peboom-1.0-{WINDOWS}.whl",
+        name="peboom",
+        version="1.0",
+        tags=(WINDOWS,),
+        files={"peboom/_ext.pyd": payload},
+    )
+
+    tracemalloc.start()
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    assert peak < 128 * 1024 * 1024, f"the walk peaked at {peak / 1024**2:.0f} MiB"
+    # Exactly the whole-object budget, plus the one export. Deterministic, and the
+    # number the wall clock and the memory both follow from.
+    assert record["binaries"][0]["symbol_counts"]["symtab"] == 65536 + 1
+    # Bounded, not abandoned: every DLL it named is still recorded, and the read that
+    # stopped short says so.
+    assert len(record["binaries"][0]["needed"]) == 512
+    assert record["binaries"][0]["partial_analysis"] is True
+    assert any(e["kind"] == errors.PE_PARSE_ERROR for e in record["errors"])
 
 
 # --- M6: record size must be bounded in member count too --------------------
