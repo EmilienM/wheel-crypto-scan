@@ -10,3 +10,4 @@ dist/
 # Local scan corpus and outputs, never committed.
 .corpus/
 *.jsonl
+uv.lock
