@@ -137,6 +137,20 @@ behind `hostbin`.
 
 Dependencies are `pyelftools` and `packaging`, and nothing else without asking.
 
+### Releasing
+
+Publishing is triggered by a version tag and nothing else. Bump `version` in
+`pyproject.toml`, commit, then:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+```
+
+The workflow re-runs the full matrix, refuses to publish if the built version does not
+match the tag, and uploads through PyPI Trusted Publishing, so there is no token to
+store. The repository must be registered as a trusted publisher first (workflow
+`pypi.yml`, environment `pypi`).
+
 ## Licence
 
 Apache 2.0. See [LICENSE](LICENSE).

@@ -1,29 +1,42 @@
 name: Publish to PyPI
 
-# Publishing uses PyPI Trusted Publishing (OIDC), so there is no API token to store.
-# Before the first run, register this repository as a trusted publisher on PyPI:
-#   https://pypi.org/manage/project/wheel-crypto-scan/settings/publishing/
-#   workflow: pypi.yml, environment: pypi
-# Until that is configured the publish step will fail with a 403, and nothing else will.
+# Publishes on a version tag and nothing else.
+#
+#     git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+#
+# Authentication is PyPI Trusted Publishing (OIDC), so there is no API token to store.
+# Register this repository as a trusted publisher before the first tag:
+#   https://pypi.org/manage/account/publishing/
+#   owner: EmilienM   repository: wheel-crypto-scan
+#   workflow: pypi.yml   environment: pypi
+# Until that exists the publish step fails with a 403 and nothing is uploaded.
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      target:
-        description: Where to publish
-        required: true
-        default: testpypi
-        type: choice
-        options: [testpypi, pypi]
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
 
 jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install interpreters
+        run: uv python install 3.11 3.12 3.13 3.14
+      # A tag can point at any commit, so re-run the full matrix rather than trusting
+      # that CI already passed on whatever this tag happens to reference.
+      - name: Run the full matrix
+        run: uvx --with tox-uv tox
+
   build:
     name: build the distribution
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,45 +47,29 @@ jobs:
         run: uv build
       - name: Check metadata
         run: uvx twine check --strict dist/*
-      - name: Confirm the version matches the tag
-        if: github.event_name == 'release'
+      - name: Confirm the ruleset and schema ship in the distribution
+        run: |
+          set -euo pipefail
+          python3 -m zipfile -l dist/*.whl | grep -q 'data/ruleset.toml'
+          python3 -m zipfile -l dist/*.whl | grep -q 'data/schema.json'
+      - name: Confirm the project version matches the tag
         run: |
           set -euo pipefail
           built=$(ls dist/*.tar.gz | sed -E 's/.*-([0-9][^-]*)\.tar\.gz/\1/')
           tag=${GITHUB_REF_NAME#v}
           if [ "$built" != "$tag" ]; then
-            echo "::error::project version $built does not match release tag $tag"
+            echo "::error::project version $built does not match tag $GITHUB_REF_NAME"
             exit 1
           fi
-          echo "version $built matches tag $tag"
+          echo "version $built matches tag $GITHUB_REF_NAME"
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
-  test-pypi:
-    name: publish to TestPyPI
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/wheel-crypto-scan
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-
-  pypi:
+  publish:
     name: publish to PyPI
     needs: build
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
     runs-on: ubuntu-latest
     environment:
       name: pypi
