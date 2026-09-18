@@ -1,0 +1,28 @@
+# Dependabot configuration.
+#
+# The important one is github-actions. Every action in .github/workflows is pinned to a
+# full commit SHA, which is what stops a compromised tag from reaching CI, and which
+# also means nothing updates unless something updates it. That something is Dependabot.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Wait 3 days after a new action version is published before opening a PR.
+    # Gives time for supply chain compromises to be caught. Security updates
+    # are exempt and arrive immediately.
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10
+
+  # Runtime dependencies are declared with open lower bounds (pyelftools>=0.31), so
+  # this stays quiet until something is pinned or a lower bound actually blocks a
+  # release. It is here so that the day one is pinned, it is already watched.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 5

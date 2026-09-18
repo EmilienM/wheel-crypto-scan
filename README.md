@@ -139,19 +139,20 @@ Dependencies are `pyelftools` and `packaging`, and nothing else without asking.
 
 ### Releasing
 
-Publishing is triggered by a version tag and nothing else. Bump `version` in
-`pyproject.toml`, commit, then:
+Publishing is triggered by a bare semver tag and nothing else. There is no version to
+bump: it is derived from the tag at build time by `uv-dynamic-versioning`, so the
+version in a record is always the version that produced it.
 
 ```bash
 git tag -a 0.1.0 -m "0.1.0" && git push origin 0.1.0
 ```
 
-The tag is the version exactly, with no `v` prefix.
+No `v` prefix. The workflow re-runs the full matrix, builds, checks that the ruleset and
+schema are actually inside the distribution, and uploads through PyPI Trusted
+Publishing, so there is no token to store.
 
-The workflow re-runs the full matrix, refuses to publish if the built version does not
-match the tag, and uploads through PyPI Trusted Publishing, so there is no token to
-store. The repository must be registered as a trusted publisher first (workflow
-`pypi.yml`, environment `pypi`).
+An untagged build reports its commit, for example `0.0.0.post14.dev0+1105fe9`, which
+makes it obvious when a record came from something other than a release.
 
 ## Licence
 

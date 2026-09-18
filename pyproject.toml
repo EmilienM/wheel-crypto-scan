@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.18", "uv-dynamic-versioning>=0.6"]
 build-backend = "hatchling.build"
 
 [project]
 name = "wheel-crypto-scan"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Deterministic FIPS-risk evidence inspector for Python wheels"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,15 @@ dependencies = [
 
 [project.scripts]
 wheel-crypto-scan = "wheel_crypto_scan.cli:main"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+pattern = "^(?P<base>\\d+\\.\\d+\\.\\d+)$"
+fallback-version = "0.0.0+unknown"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wheel_crypto_scan"]
