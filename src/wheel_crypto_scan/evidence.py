@@ -120,7 +120,7 @@ class BinaryEvidence:
     # PE whose section table was truncated, whose import directory was absent or could
     # not be walked, that named something by ordinal alone, or that carries a delay-load
     # import directory, which is not parsed; a Mach-O whose `LC_SYMTAB` could not be read
-    # in full; or the slices of a fat binary that were never examined. A wheel can never
+    # in full; or a slice of a fat binary that could not be read. A wheel can never
     # look clean merely because we read less of it than usual.
     partial_analysis: bool = False
     partial_reasons: tuple[str, ...] = ()

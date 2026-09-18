@@ -76,8 +76,14 @@ pin the interpreter if you need records comparable across hosts.
 
 ## `binaries`
 
-One entry per native object. `path`, `format`, `machine`, `bits`, `endian`, `elf_type`,
+One entry per native object: `path`, `format`, `machine`, `bits`, `endian`, `elf_type`,
 `soname`, `needed`, `rpath`, `runpath`, `rust_crates`, `go`.
+
+For a universal Mach-O that is one entry for the member rather than one per
+architecture, because the slices are merged. `matched_symbols` can therefore carry one
+name as both `imported` and `defined`, which no single slice can be, when the
+architectures disagree; `machine`, `bits` and `endian` describe the first slice alone.
+`DECISIONS.md` records why they are merged anyway.
 
 | Field | Meaning |
 |---|---|
@@ -87,7 +93,7 @@ One entry per native object. `path`, `format`, `machine`, `bits`, `endian`, `elf
 | `symbol_counts` | `{dynsym, symtab}`, and `symtab` means something different per format: `.symtab` entries in ELF, `LC_SYMTAB` entries in Mach-O, and in PE the things the object named — one per import thunk and one per export slot — because PE has no symbol table of its own to count. |
 | `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. Never set for PE, whose own symbol table is debug information every linker drops, so there is no absence that could mean this; `symbol_counts.symtab == 0` is how a PE says it named nothing. Normal for release wheels; recorded, not a finding. |
 | `truncated` | `{symbols, strings}` — evidence was capped. |
-| `partial_analysis` | Part of the object was not read. |
+| `partial_analysis` | Part of the object was not read: a format with no structural reader (strings only); an object of any format whose header would not parse, which keeps the strings it had already found and is recorded as partial rather than empty; a PE whose section table was truncated, whose import directory was absent or could not be walked, that names an import or an export by ordinal alone, or that carries a delay-load import directory, which this reader does not parse; a Mach-O whose `LC_SYMTAB` could not be read in full; or a fat Mach-O with a slice that could not be read or that its header placed outside the object. A fat Mach-O whose every slice read cleanly is not partial: the slices are merged into one record, with `needed`, `rpath` and `matched_symbols` as sorted unions and `symtab_count` as a sum. |
 | `partial_reasons` | Sorted array of stable tokens explaining `partial_analysis`, such as `strings_only`, `macho_symtab_incomplete`, `macho_fat_slices_unread`, `pe_no_import_directory`, `pe_ordinal_import`, `pe_delay_load`, or `pe_import_budget`. Values are open-ended. |
 
 A PE with genuinely no imports — a resource-only or satellite DLL — therefore always

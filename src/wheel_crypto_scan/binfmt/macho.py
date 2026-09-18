@@ -21,10 +21,16 @@ missed rather than reported as unread.
 
 `partial_analysis` survives for three cases: a `LC_SYMTAB` that could not be read in
 full, whether it is absent, unreachable or names nothing we could resolve, so the
-imported/defined split is missing or incomplete; a fat binary, where only the first
-slice is examined and the other slices are left unread pending the follow-up work to
-walk all of them; and a header or set of load commands that would not parse at all,
-which costs the structural read but not the strings already found.
+imported/defined split is missing or incomplete; a slice of a fat binary that could not
+be read, or that the fat header placed outside the object, so one architecture is
+unknown rather than clean; and a header or set of load commands that would not parse at
+all, which costs the structural read but not the strings already found.
+
+A universal binary is read slice by slice and merged into one record. Every slice
+reading cleanly is what clears the flag, which matters because most macOS wheels are
+universal2: while only the first slice was read, every fat object was partial, and a
+universal2 wheel with no crypto in it came out `OPAQUE` rather than
+`NO_CRYPTO_DETECTED`.
 """
 
 from __future__ import annotations
@@ -67,6 +73,11 @@ _N_UNDF = 0x00
 # difference that matters here.
 _NLIST_SIZE = {False: 12, True: 16}
 
+# A real universal binary carries a handful of architectures: Apple has never shipped
+# more than four at once. Past that it is a way to make one small object cost a pass over
+# itself per entry, so the declared count is capped and the excess reported as unread.
+_MAX_FAT_SLICES = 32
+
 _CPU_TYPE_NAMES = {
     0x00000007: "CPU_TYPE_X86",
     0x01000007: "CPU_TYPE_X86_64",
@@ -75,6 +86,59 @@ _CPU_TYPE_NAMES = {
     0x00000012: "CPU_TYPE_POWERPC",
     0x01000012: "CPU_TYPE_POWERPC64",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _Slice:
+    """Where one architecture's Mach-O object sits inside the file.
+
+    A thin object is one slice at offset zero; a universal binary is one per
+    architecture. `size` is what the fat header declares, and like every other
+    self-declared length here it is measured against the bytes that exist.
+    """
+
+    offset: int
+    size: int
+
+
+class _Unreadable(Exception):
+    """A slice this reader cannot make sense of. Its text is what the record carries.
+
+    Spelled the way `binfmt.pe._Malformed` is, so the two hand-rolled readers answer
+    "this structure is not what it claims" the same way.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class _SliceHeader:
+    """One slice's header and load commands, before its symbol table is reached."""
+
+    slice_: _Slice
+    cputype: int
+    is64: bool
+    big_endian: bool
+    soname: str | None
+    needed: tuple[str, ...]
+    rpath: tuple[str, ...]
+    symtab: _Symtab | None
+
+
+@dataclass(frozen=True, slots=True)
+class _SliceEvidence:
+    """What one slice yielded, before the slices are merged into one record."""
+
+    cputype: int
+    is64: bool
+    big_endian: bool
+    soname: str | None
+    needed: tuple[str, ...]
+    rpath: tuple[str, ...]
+    matches: frozenset[SymbolMatch]
+    symtab_count: int
+    stripped: bool
+    has_symtab: bool
+    symbols_complete: bool
+    symbols_failed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,8 +181,7 @@ def _unparsed(
     *,
     vendored: bool,
     max_strings_bytes: int,
-    message: str,
-    reason: str = "macho_structure_incomplete",
+    messages: tuple[str, ...],
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     """Evidence for a Mach-O whose structure we could not read, plus the error saying so.
 
@@ -138,8 +201,10 @@ def _unparsed(
         fmt=evidence.FORMAT_MACHO,
         max_strings_bytes=max_strings_bytes,
     )
-    result = replace(result, partial_reasons=(reason,))
-    return result, (_error(path, message),)
+    result = replace(result, partial_reasons=("macho_structure_incomplete",))
+    return result, tuple(
+        sorted({_error(path, why) for why in messages}, key=lambda e: e.sort_key())
+    )
 
 
 def read_macho(
@@ -150,13 +215,28 @@ def read_macho(
     vendored: bool,
     max_strings_bytes: int = MAX_STRINGS_BYTES,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
-    """Read one Mach-O object (thin or fat) and return its evidence.
+    """Read one Mach-O object, thin or fat, and return one record for it.
 
-    Strings are extracted from the whole object rather than from individual
-    segments: unlike ELF, this reader does not parse `LC_SEGMENT[_64]`, so there is
-    no section list to filter by allocation or executability. That is a coarser
-    signal than the ELF reader's, but it still catches the banners and cargo paths
-    this tool looks for.
+    A universal binary is read slice by slice and merged into a single
+    `BinaryEvidence`, because the thing being described is the member of the wheel,
+    not the architecture: `path` is what `own_base` and the vendored-path matching key
+    on, and one record per slice would duplicate it. `needed`, `rpath` and
+    `matched_symbols` merge as sorted unions and `symtab_count` as a sum, so a symbol
+    defined in only one architecture is still a symbol this object defines.
+
+    `machine`, `bits` and `endian` come from the first slice that parsed, which is what
+    they meant before every slice was read. They describe one architecture and cannot
+    describe several; the merged fields above are the ones that answer the question
+    this tool asks. `soname` follows a third rule, the first one any slice declared: it
+    is `LC_ID_DYLIB`, the install name, and every slice of a real universal binary
+    carries the same one. It is called out because `linkage` reads it first of all, so
+    a wrong answer here is a wrong posture.
+
+    Strings are extracted from the whole object rather than from individual segments:
+    unlike ELF, this reader does not parse `LC_SEGMENT[_64]`, so there is no section
+    list to filter by allocation or executability. For a universal binary that means
+    one pass over every slice at once, which is also why it is done here rather than
+    per slice.
     """
     stream.seek(0, 2)
     size = stream.tell()
@@ -169,17 +249,16 @@ def read_macho(
             patterns,
             vendored=vendored,
             max_strings_bytes=max_strings_bytes,
-            message="object is too short to sniff",
+            messages=("object is too short to sniff",),
         )
     magic = int.from_bytes(head, "big")
 
-    is_fat = magic in (_FAT_MAGIC, _FAT_CIGAM)
-    slice_offset = 0
-    slice_size = size
-    if is_fat:
+    slices: tuple[_Slice, ...] = (_Slice(offset=0, size=size),)
+    header_reasons: tuple[str, ...] = ()
+    if magic in (_FAT_MAGIC, _FAT_CIGAM):
         try:
             stream.seek(0)
-            found = _find_fat_slice(stream, size)
+            slices, header_reasons = _list_fat_slices(stream, size)
         except Exception:
             return _unparsed(
                 stream,
@@ -187,147 +266,257 @@ def read_macho(
                 patterns,
                 vendored=vendored,
                 max_strings_bytes=max_strings_bytes,
-                message="failed to read the fat header",
+                messages=("failed to read the fat header",),
             )
-        if found is None:
+        if not slices:
             return _unparsed(
                 stream,
                 path,
                 patterns,
                 vendored=vendored,
                 max_strings_bytes=max_strings_bytes,
-                message="no readable slice in fat binary",
+                messages=("no readable slice in fat binary",),
             )
-        slice_offset, slice_size = found
-        stream.seek(slice_offset)
-        head = stream.read(4)
-        magic = int.from_bytes(head, "big")
 
-    if magic in (_MH_MAGIC_32, _MH_CIGAM_32):
-        is64, big_endian = False, magic == _MH_MAGIC_32
-    elif magic in (_MH_MAGIC_64, _MH_CIGAM_64):
-        is64, big_endian = True, magic == _MH_MAGIC_64
-    else:
+    # Headers first, then the strings buffer, then the symbol tables. The order is the
+    # point: every read here runs forward, and the one rewind to zero happens while the
+    # stream is still only as far in as the last slice's load commands. Reading `raw`
+    # first would put that rewind after a pass over the whole object, and through a
+    # `wheelfile.SeekableZipMember` a rewind past the retained window is a second full
+    # decompression of the member.
+    headers: list[_SliceHeader] = []
+    unread: list[str] = []
+    for slice_ in slices:
+        try:
+            headers.append(_read_slice_header(stream, slice_))
+        except _Unreadable as bad:
+            unread.append(str(bad))
+
+    if not headers:
+        # Nothing parsed. For a thin object that is its own header; for a fat one it is
+        # every architecture it declared. Either way the strings survive it.
         return _unparsed(
             stream,
             path,
             patterns,
             vendored=vendored,
             max_strings_bytes=max_strings_bytes,
-            message="not a recognisable Mach-O object",
+            messages=tuple(unread),
         )
-
-    try:
-        stream.seek(slice_offset)
-        header_evidence = _read_thin(stream, slice_offset, slice_size, is64, big_endian)
-    except struct.error:
-        return _unparsed(
-            stream,
-            path,
-            patterns,
-            vendored=vendored,
-            max_strings_bytes=max_strings_bytes,
-            message="mach-o header is truncated",
-        )
-    except Exception:
-        return _unparsed(
-            stream,
-            path,
-            patterns,
-            vendored=vendored,
-            max_strings_bytes=max_strings_bytes,
-            message="failed to parse mach-o load commands",
-        )
-
-    cputype, soname, needed, rpath, symtab = header_evidence
 
     stream.seek(0)
     raw = stream.read(min(size, max_strings_bytes))
     truncated_read = size > max_strings_bytes
-    strings_found = scan_strings(raw, patterns, max_strings_bytes)
-    go = build_go_info(None, strings_found.text, patterns)
+
+    read = [_read_slice_symbols(stream, raw, header, patterns, size=size) for header in headers]
 
     errors: list[ScanError] = []
     partial_reasons: set[str] = set()
-    if is_fat:
+    if header_reasons:
         partial_reasons.add("macho_fat_slices_unread")
-    matched_symbols: tuple[SymbolMatch, ...] = ()
-    symbols_truncated = False
-    symtab_count = 0
-    # Absent until proven otherwise: the flag this drives must never be cleared by a
-    # table we failed to read.
-    symbols_complete = False
-    if symtab is not None:
-        try:
-            matched_symbols, symbols_truncated, symtab_count, symbols_complete = _read_symbols(
-                stream,
-                raw,
-                symtab,
-                patterns,
-                base=slice_offset,
-                end=min(size, slice_offset + slice_size),
-                is64=is64,
-                big_endian=big_endian,
-            )
-        except Exception:
-            errors.append(_error(path, "failed to read the mach-o symbol table"))
-        else:
-            if not symbols_complete:
-                errors.append(_error(path, "mach-o symbol table could not be read in full"))
-    if not symbols_complete:
+    if unread:
+        partial_reasons.add("macho_fat_slices_unread" if len(slices) > 1 else "macho_structure_incomplete")
+    # One per distinct reason. `ScanError` is deduplicated and sorted on the way out, so
+    # two slices failing the same way is one message rather than two identical ones.
+    errors.extend(_error(path, why) for why in unread)
+    errors.extend(_error(path, why) for why in header_reasons)
+    if any(slice_evidence.symbols_failed for slice_evidence in read):
+        errors.append(_error(path, "failed to read the mach-o symbol table"))
+        partial_reasons.add("macho_symtab_incomplete")
+    # A slice with no `LC_SYMTAB` at all is incomplete but not an error: that is what
+    # `strip` leaves behind and it is normal for a release wheel. Only a table that
+    # was there and could not be read in full earns a message.
+    if any(
+        slice_evidence.has_symtab
+        and not slice_evidence.symbols_failed
+        and not slice_evidence.symbols_complete
+        for slice_evidence in read
+    ):
+        errors.append(_error(path, "mach-o symbol table could not be read in full"))
         partial_reasons.add("macho_symtab_incomplete")
 
-    machine = _CPU_TYPE_NAMES.get(cputype, f"0x{cputype & 0xFFFFFFFF:08x}")
-    # The Mach-O spelling of `binfmt.elf`'s "no `.symtab`": no `LC_SYMTAB` at all, or one
-    # that declares no entries. Both are what `strip` leaves behind, and both are normal
-    # for a release wheel, so this is recorded rather than treated as a finding.
-    stripped = symtab is None or symtab.nsyms == 0
+    first = read[0]
+    merged: set[SymbolMatch] = set()
+    needed: set[str] = set()
+    rpath: set[str] = set()
+    soname: str | None = None
+    symtab_count = 0
+    for slice_evidence in read:
+        merged |= slice_evidence.matches
+        needed |= set(slice_evidence.needed)
+        rpath |= set(slice_evidence.rpath)
+        symtab_count += slice_evidence.symtab_count
+        if soname is None:
+            soname = slice_evidence.soname
+
+    ordered = tuple(sorted(merged, key=lambda match: match.sort_key()))
+    limit = patterns.limits.max_symbols_per_binary
+
+    found = scan_strings(raw, patterns, max_strings_bytes)
+    go = build_go_info(None, found.text, patterns)
+
     result = BinaryEvidence(
         path=path,
         format=evidence.FORMAT_MACHO,
         vendored_path=vendored,
-        machine=machine,
-        bits=64 if is64 else 32,
-        endian="big" if big_endian else "little",
+        machine=_CPU_TYPE_NAMES.get(first.cputype, f"0x{first.cputype & 0xFFFFFFFF:08x}"),
+        bits=64 if first.is64 else 32,
+        endian="big" if first.big_endian else "little",
         soname=soname,
-        needed=needed,
-        rpath=rpath,
-        stripped=stripped,
+        needed=tuple(sorted(needed)),
+        rpath=tuple(sorted(rpath)),
+        # The Mach-O spelling of `binfmt.elf`'s "no `.symtab`": no `LC_SYMTAB` at all,
+        # or one that declares no entries. Both are what `strip` leaves behind, and
+        # both are normal for a release wheel, so this is recorded rather than treated
+        # as a finding. A universal binary is stripped only when every slice is: one
+        # architecture that kept its symbols is an object that has symbols.
+        stripped=all(slice_evidence.stripped for slice_evidence in read),
         # `LC_SYMTAB` is the Mach-O counterpart of both ELF tables, so its entry count
-        # lands here. `BinaryEvidence.is_opaque` deliberately tests only `dynsym_count`,
-        # which no Mach-O ever sets: widening it would also flip every ELF object that
-        # has a `.symtab` but no `.dynsym`, which is not this reader's call to make.
+        # lands here, summed over the slices. `BinaryEvidence.is_opaque` deliberately
+        # tests only `dynsym_count`, which no Mach-O ever sets: widening it would also
+        # flip every ELF object that has a `.symtab` but no `.dynsym`, which is not
+        # this reader's call to make.
         symtab_count=symtab_count,
-        matched_symbols=matched_symbols,
-        matched_strings=strings_found.matched_strings,
-        rust_crates=strings_found.rust_crates,
+        matched_symbols=ordered[:limit],
+        matched_strings=found.matched_strings,
+        rust_crates=found.rust_crates,
         go=go,
-        symbols_truncated=symbols_truncated,
-        strings_truncated=truncated_read or strings_found.truncated,
-        partial_analysis=bool(partial_reasons),
+        symbols_truncated=len(ordered) > limit,
+        strings_truncated=truncated_read or found.truncated,
+        # Every architecture has to have been read, and read in full, before this
+        # object can claim it was examined. An unread slice is an unread object.
+        partial_analysis=bool(unread)
+        or bool(header_reasons)
+        or not all(slice_evidence.symbols_complete for slice_evidence in read),
         partial_reasons=tuple(sorted(partial_reasons)),
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 
 
-def _find_fat_slice(stream, size: int) -> tuple[int, int] | None:
-    """Return (offset, size) of the first slice this reader can parse a header from.
+def _list_fat_slices(stream, size: int) -> tuple[tuple[_Slice, ...], tuple[str, ...]]:
+    """Return every slice a fat header declares, plus what it declared and we did not read.
 
     Fat headers and `fat_arch` entries are always big-endian on disk, regardless of
     host or slice byte order, so this part never needs an endianness switch.
+
+    `nfat_arch` is a 32-bit field the object declares about itself, in the same family
+    as Mach-O's `nsyms` and PE's `NumberOfNames`, and it is capped rather than believed.
+    Reading every slice is what made it worth attacking: a few hundred bytes of arch
+    table can name one symbol table ten thousand times over, and each entry would be a
+    full parse of it.
+
+    Duplicate offsets collapse to one slice, and that is not a shortfall: two entries
+    naming one slice describe one slice, and counting it twice would inflate
+    `symtab_count` for bytes that exist once.
+
+    Each reason returned is an architecture that was named and not examined, which is
+    not the same as having examined it, so the caller records the object as partial.
     """
     header = stream.read(8)
     if len(header) < 8:
-        return None
+        return (), ("fat header is truncated",)
     _, nfat_arch = struct.unpack(">II", header)
-    for _ in range(nfat_arch):
+    slices: list[_Slice] = []
+    seen: set[int] = set()
+    reasons: set[str] = set()
+    if nfat_arch > _MAX_FAT_SLICES:
+        reasons.add("fat header declares more architectures than this reader walks")
+    for _ in range(min(nfat_arch, _MAX_FAT_SLICES)):
         entry = stream.read(20)
         if len(entry) < 20:
-            return None
+            reasons.add("fat arch table is truncated")
+            break
         _cputype, _cpusubtype, offset, arch_size, _align = struct.unpack(">iiIII", entry)
-        if offset + 4 <= size:
-            return offset, arch_size
-    return None
+        if offset + 4 > size:
+            reasons.add("fat header places a slice outside the object")
+        elif offset not in seen:
+            seen.add(offset)
+            slices.append(_Slice(offset=offset, size=arch_size))
+    return tuple(slices), tuple(sorted(reasons))
+
+
+def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
+    """Parse one slice's header and load commands, from the stream, reading forward.
+
+    Raises `_Unreadable` when the slice's magic is not one this reader knows, or when
+    its header or load commands will not parse. The reason travels with the exception
+    the way `binfmt.pe._Malformed` carries its own: "this is not a Mach-O at all" and
+    "this is a Mach-O that was cut short" are different facts about the object, and a
+    reader of the record can act on the difference.
+    """
+    stream.seek(slice_.offset)
+    head = stream.read(4)
+    if len(head) < 4:
+        raise _Unreadable("object is too short to sniff")
+    magic = int.from_bytes(head, "big")
+    if magic in (_MH_MAGIC_32, _MH_CIGAM_32):
+        is64, big_endian = False, magic == _MH_MAGIC_32
+    elif magic in (_MH_MAGIC_64, _MH_CIGAM_64):
+        is64, big_endian = True, magic == _MH_MAGIC_64
+    else:
+        raise _Unreadable("not a recognisable Mach-O object")
+
+    try:
+        stream.seek(slice_.offset)
+        cputype, soname, needed, rpath, symtab = _read_thin(
+            stream, slice_.offset, slice_.size, is64, big_endian
+        )
+    except struct.error as bad:
+        raise _Unreadable("mach-o header is truncated") from bad
+    except Exception as bad:
+        raise _Unreadable("failed to parse mach-o load commands") from bad
+
+    return _SliceHeader(
+        slice_=slice_,
+        cputype=cputype,
+        is64=is64,
+        big_endian=big_endian,
+        soname=soname,
+        needed=needed,
+        rpath=rpath,
+        symtab=symtab,
+    )
+
+
+def _read_slice_symbols(
+    stream, raw: bytes, header: _SliceHeader, patterns: BinaryPatterns, *, size: int
+) -> _SliceEvidence:
+    """Read one slice's symbol table, once its header has already been parsed."""
+    matches: set[SymbolMatch] = set()
+    symtab_count = 0
+    # Absent until proven otherwise: the flag this drives must never be cleared by a
+    # table we failed to read.
+    symbols_complete = False
+    symbols_failed = False
+    if header.symtab is not None:
+        try:
+            matches, symtab_count, symbols_complete = _read_symbols(
+                stream,
+                raw,
+                header.symtab,
+                patterns,
+                base=header.slice_.offset,
+                end=min(size, header.slice_.offset + header.slice_.size),
+                is64=header.is64,
+                big_endian=header.big_endian,
+            )
+        except Exception:
+            symbols_failed = True
+
+    return _SliceEvidence(
+        cputype=header.cputype,
+        is64=header.is64,
+        big_endian=header.big_endian,
+        soname=header.soname,
+        needed=header.needed,
+        rpath=header.rpath,
+        matches=frozenset(matches),
+        symtab_count=symtab_count,
+        stripped=header.symtab is None or header.symtab.nsyms == 0,
+        has_symtab=header.symtab is not None,
+        symbols_complete=symbols_complete,
+        symbols_failed=symbols_failed,
+    )
 
 
 def _read_thin(
@@ -403,8 +592,12 @@ def _read_symbols(
     end: int,
     is64: bool,
     big_endian: bool,
-) -> tuple[tuple[SymbolMatch, ...], bool, int, bool]:
-    """Return the matches, whether they were capped, the entry count, and completeness.
+) -> tuple[set[SymbolMatch], int, bool]:
+    """Return this slice's matches, its entry count, and whether it was read in full.
+
+    The matches come back uncapped and unordered. A universal binary merges the
+    slices before sorting and capping, so capping here would let which symbols
+    survive depend on which slice they came from.
 
     `symoff` and `stroff` are measured from the start of the slice, not the start of the
     file, so `base` is what makes a fat binary's tables resolve to the architecture whose
@@ -450,8 +643,6 @@ def _read_symbols(
         for group in groups:
             matches.add(SymbolMatch(name=name, group=group, binding=binding))
 
-    ordered = tuple(sorted(matches, key=lambda match: match.sort_key()))
-    limit = patterns.limits.max_symbols_per_binary
     # "We read every name and none of them was crypto" has to be earned, because it is
     # indistinguishable in the record from "this object has no crypto". An entry naming
     # a string we could not resolve, and a table whose entries name nothing readable at
@@ -464,7 +655,7 @@ def _read_symbols(
         and not unresolved
         and (not symtab.nsyms or (bool(strings) and bool(named)))
     )
-    return ordered[:limit], len(ordered) > limit, len(table) // entry_size, complete
+    return matches, len(table) // entry_size, complete
 
 
 def _available(start: int, wanted: int, end: int) -> int:
