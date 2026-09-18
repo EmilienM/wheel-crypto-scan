@@ -16,6 +16,7 @@ from wheel_crypto_scan.evidence import (
     BINDING_DEFINED,
     BINDING_IMPORTED,
     FORMAT_ELF,
+    FORMAT_MACHO,
     FORMAT_PE,
     STAGE_BINARY,
     STAGE_PYTHON,
@@ -236,6 +237,30 @@ def test_a_partially_readable_format_is_flagged(ruleset) -> None:
         binaries=(binary("demo/_ext.pyd", format=FORMAT_PE, partial_analysis=True, needed=("a",)),)
     )
     assert "BIN_PARTIAL_FORMAT" in ids(run(ruleset, evidence))
+
+
+def test_the_partial_finding_does_not_contradict_the_record_that_carries_it(ruleset) -> None:
+    """A fat Mach-O is partial *and* has matched symbols, in the same record.
+
+    Wording this finding as "read for strings only" would have the record deny its own
+    finding, so the evidence line says which object was partially read and nothing about
+    how much of it was read.
+    """
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_ext.cpython-312-darwin.so",
+                format=FORMAT_MACHO,
+                partial_analysis=True,
+                matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            ),
+        )
+    )
+    finding = one(run(ruleset, evidence), "BIN_PARTIAL_FORMAT")
+    assert finding.subject == FORMAT_MACHO
+    assert [location.evidence for location in finding.locations] == [
+        "macho object was only partially read"
+    ]
 
 
 def test_boringcrypto_suppresses_the_stock_go_crypto_finding(ruleset) -> None:

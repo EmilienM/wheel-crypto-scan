@@ -484,7 +484,7 @@
           },
           "partial_analysis": {
             "type": "boolean",
-            "description": "True when the format is only partially readable, currently Windows PE."
+            "description": "True when part of the object was not read: a format with no structural reader (Windows PE today, strings only), a Mach-O whose LC_SYMTAB could not be read in full, or the unexamined slices of a fat Mach-O."
           }
         }
       }
