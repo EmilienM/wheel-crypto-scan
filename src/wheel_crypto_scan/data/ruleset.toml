@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "4"
+ruleset_version = "5"
 
 
 # ---------------------------------------------------------------------------
@@ -1495,7 +1495,7 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "Binary format only partially readable"
-why = "Part of this object was not read, so some dependency or symbol evidence is missing for it: the format has no structural reader and was read for strings only, or the object's own header would not parse and only its strings survive, or a PE has a truncated section table, declares no import directory, has one that could not be walked, names an import or an export by ordinal alone, or carries a delay-load import directory that this tool does not parse, or a Mach-O symbol table could not be read in full, or a fat Mach-O carries slices we never examined. Recorded so a wheel can never look clean merely because we read less of it."
+why = "Part of this object was not read, so some dependency or symbol evidence is missing for it: the format has no structural reader and was read for strings only, or the object's own header would not parse and only its strings survive, or a PE has a truncated section table, declares no import directory, has one that could not be walked, names an import or an export by ordinal alone, or carries a delay-load import directory that this tool does not parse, or a Mach-O symbol table could not be read in full, or a fat Mach-O has a slice that could not be read or that its header placed outside the object. Recorded so a wheel can never look clean merely because we read less of it."
 [rule.match]
 kind = "partial_binary"
 
