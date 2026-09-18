@@ -87,3 +87,54 @@ def test_vendored_flag_passes_through_every_branch() -> None:
     for data in (elf_data, macho_data, pe_data, unknown_data):
         ev, _ = _read(data, vendored=True)
         assert ev.vendored_path is True
+
+
+def test_readers_table_registers_all_known_formats() -> None:
+    from wheel_crypto_scan.binfmt import _READERS, read_elf, read_macho, read_pe
+
+    assert _READERS == {
+        evidence.FORMAT_ELF: read_elf,
+        evidence.FORMAT_MACHO: read_macho,
+        evidence.FORMAT_PE: read_pe,
+    }
+
+
+def test_dispatch_through_readers_table(monkeypatch) -> None:
+    from wheel_crypto_scan.binfmt import _READERS
+
+    called: dict[str, object] = {}
+
+    def dummy_reader(
+        stream,
+        path: str,
+        patterns,
+        *,
+        vendored: bool,
+        max_strings_bytes: int = 1024,
+    ):
+        called["stream"] = stream
+        called["path"] = path
+        called["vendored"] = vendored
+        called["max_strings_bytes"] = max_strings_bytes
+        return (
+            evidence.BinaryEvidence(path=path, format="custom_elf", vendored_path=vendored),
+            (),
+        )
+
+    monkeypatch.setitem(_READERS, evidence.FORMAT_ELF, dummy_reader)
+    data = ElfBuilder().build()
+    ev, errors = _read(data, path="custom.so", vendored=True)
+    assert errors == ()
+    assert ev.format == "custom_elf"
+    assert called["path"] == "custom.so"
+    assert called["vendored"] is True
+
+
+def test_read_strings_only_defaults() -> None:
+    from wheel_crypto_scan.binfmt import _read_strings_only
+
+    stream = io.BytesIO(b"hello crypto world")
+    ev, errors = _read_strings_only(stream, "test.bin", PATTERNS, vendored=False)
+    assert errors == ()
+    assert ev.format == evidence.FORMAT_UNKNOWN
+    assert ev.partial_analysis is True

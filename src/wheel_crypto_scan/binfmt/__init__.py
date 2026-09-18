@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from typing import Protocol
+
 from .. import evidence
 from ..evidence import BinaryEvidence, ScanError
 from ..ruleset import BinaryPatterns
@@ -31,6 +33,27 @@ from .strings import MAX_STRINGS_BYTES, extract_printable, match_string_groups
 read_elf = _elf.read_elf
 read_macho = _macho.read_macho
 read_pe = _pe.read_pe
+
+
+class Reader(Protocol):
+    """Uniform signature implemented by format-specific binary readers."""
+
+    def __call__(
+        self,
+        stream,
+        path: str,
+        patterns: BinaryPatterns,
+        *,
+        vendored: bool,
+        max_strings_bytes: int = MAX_STRINGS_BYTES,
+    ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]: ...
+
+
+_READERS: dict[str, Reader] = {
+    evidence.FORMAT_ELF: read_elf,
+    evidence.FORMAT_MACHO: read_macho,
+    evidence.FORMAT_PE: read_pe,
+}
 
 
 def read_binary(
@@ -52,31 +75,18 @@ def read_binary(
     fmt = detect_format(head)
     stream.seek(0)
 
-    if fmt == evidence.FORMAT_ELF:
-        return read_elf(
-            stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes
-        )
-    if fmt == evidence.FORMAT_MACHO:
-        return read_macho(
-            stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes
-        )
-    if fmt == evidence.FORMAT_PE:
-        return read_pe(
-            stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes
-        )
-    return _read_strings_only(
-        stream, path, patterns, fmt, vendored=vendored, max_strings_bytes=max_strings_bytes
-    )
+    reader = _READERS.get(fmt, _read_strings_only)
+    return reader(stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes)
 
 
 def _read_strings_only(
     stream,
     path: str,
     patterns: BinaryPatterns,
-    fmt: str,
     *,
     vendored: bool,
-    max_strings_bytes: int,
+    max_strings_bytes: int = MAX_STRINGS_BYTES,
+    fmt: str = evidence.FORMAT_UNKNOWN,
 ) -> tuple[BinaryEvidence, tuple[ScanError, ...]]:
     stream.seek(0, 2)
     size = stream.tell()
@@ -110,4 +120,4 @@ def _read_strings_only(
     return result, ()
 
 
-__all__ = ["read_binary", "read_elf", "read_macho", "read_pe"]
+__all__ = ["Reader", "read_binary", "read_elf", "read_macho", "read_pe"]
