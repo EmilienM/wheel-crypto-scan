@@ -1,4 +1,8 @@
-"""Deterministic ELF fixtures for binfmt tests."""
+"""Deterministic, dependency-free ELF writers for `binfmt.elf` tests.
+
+Program headers, relocations and a real entry point are left out because nothing under
+test looks at them. See `helpers.binfmt` for why these are real objects, not stubs.
+"""
 
 from __future__ import annotations
 

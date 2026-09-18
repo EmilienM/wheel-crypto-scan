@@ -1,11 +1,14 @@
-"""Deterministic Mach-O fixtures for binfmt tests."""
+"""Deterministic, dependency-free Mach-O writers for `binfmt.macho` tests.
+
+Only the load commands `binfmt.macho` reads are emitted: `LC_ID_DYLIB`, `LC_LOAD_DYLIB`,
+`LC_RPATH` and `LC_SYMTAB`. No segments, no sections, no `LC_DYLD_INFO`. See
+`helpers.binfmt` for why these are real objects, not stubs.
+"""
 
 from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
-
-# --- Mach-O -------------------------------------------------------------------
 
 MH_MAGIC_32 = 0xFEEDFACE
 MH_MAGIC_64 = 0xFEEDFACF

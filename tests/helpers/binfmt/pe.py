@@ -1,11 +1,15 @@
-"""Deterministic PE fixtures for binfmt tests."""
+"""Deterministic, dependency-free PE writers for `binfmt.pe` tests.
+
+Only the header chain and the directories `binfmt.pe` walks are emitted: the DOS stub,
+the COFF and optional headers, the section table, and the import and export directories.
+No relocations, no resources, no COFF symbol table. See `helpers.binfmt` for why these
+are real objects, not stubs.
+"""
 
 from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, replace
-
-# --- PE -----------------------------------------------------------------------
 
 IMAGE_FILE_MACHINE_I386 = 0x014C
 IMAGE_FILE_MACHINE_AMD64 = 0x8664
