@@ -13,6 +13,7 @@ from dataclasses import dataclass
 MH_MAGIC_32 = 0xFEEDFACE
 MH_MAGIC_64 = 0xFEEDFACF
 FAT_MAGIC = 0xCAFEBABE
+FAT_MAGIC_64 = 0xCAFEBABF
 
 LC_SYMTAB = 0x02
 LC_LOAD_DYLIB = 0x0C
@@ -202,17 +203,29 @@ class MachOBuilder:
         return struct.pack(end + "III", LC_RPATH, cmdsize, header_len) + path_bytes
 
 
-def build_fat(slices: list[bytes], *, cputypes: list[int] | None = None) -> bytes:
-    """Wrap thin Mach-O slices in a fat (universal) header, in the given order."""
+def build_fat(
+    slices: list[bytes], *, cputypes: list[int] | None = None, wide: bool = False
+) -> bytes:
+    """Wrap thin Mach-O slices in a fat (universal) header, in the given order.
+
+    `wide` emits the `FAT_MAGIC_64` form, whose only difference is the arch table:
+    `fat_arch_64` widens `offset` and `size` to 64 bits and adds a reserved word, so an
+    entry is 32 bytes rather than 20. The slices themselves are unchanged.
+    """
     cputypes = cputypes if cputypes is not None else [CPU_TYPE_X86_64] * len(slices)
-    header = struct.pack(">II", FAT_MAGIC, len(slices))
+    magic, entry_size, entry_format = (
+        (FAT_MAGIC_64, 32, ">iiQQII") if wide else (FAT_MAGIC, 20, ">iiIII")
+    )
+    header = struct.pack(">II", magic, len(slices))
     arch_table = bytearray()
-    offset = len(header) + 20 * len(slices)
+    offset = len(header) + entry_size * len(slices)
     body = bytearray()
     for cputype, part in zip(cputypes, slices, strict=True):
         pad = (-len(body)) % 8
         body.extend(b"\x00" * pad)
         slice_offset = offset + len(body)
-        arch_table.extend(struct.pack(">iiIII", cputype, 0, slice_offset, len(part), 3))
+        # Wide adds only `reserved`; everything before it is the same table.
+        fields = (cputype, 0, slice_offset, len(part), 3) + ((0,) if wide else ())
+        arch_table.extend(struct.pack(entry_format, *fields))
         body.extend(part)
     return bytes(header) + bytes(arch_table) + bytes(body)

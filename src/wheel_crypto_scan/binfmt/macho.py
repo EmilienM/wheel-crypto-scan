@@ -26,11 +26,12 @@ be read, or that the fat header placed outside the object, so one architecture i
 unknown rather than clean; and a header or set of load commands that would not parse at
 all, which costs the structural read but not the strings already found.
 
-A universal binary is read slice by slice and merged into one record. Every slice
-reading cleanly is what clears the flag, which matters because most macOS wheels are
-universal2: while only the first slice was read, every fat object was partial, and a
-universal2 wheel with no crypto in it came out `OPAQUE` rather than
-`NO_CRYPTO_DETECTED`.
+A universal binary is read slice by slice and merged into one record, in both the
+`FAT_MAGIC` and `FAT_MAGIC_64` forms, which differ only in the width of the arch table's
+offset and size fields. Every slice reading cleanly is what clears the flag, which
+matters because most macOS wheels are universal2: while only the first slice was read,
+every fat object was partial, and a universal2 wheel with no crypto in it came out
+`OPAQUE` rather than `NO_CRYPTO_DETECTED`.
 """
 
 from __future__ import annotations
@@ -53,6 +54,19 @@ _MH_MAGIC_64 = 0xFEEDFACF
 _MH_CIGAM_64 = 0xCFFAEDFE
 _FAT_MAGIC = 0xCAFEBABE
 _FAT_CIGAM = 0xBEBAFECA
+# The 64-bit variants differ only in the arch table: `fat_arch_64` widens `offset` and
+# `size` to 64 bits and adds a reserved word, so an entry is 32 bytes rather than 20.
+# The magic is one bit away from the 32-bit one, which is exactly how an object of this
+# shape gets missed.
+_FAT_MAGIC_64 = 0xCAFEBABF
+_FAT_CIGAM_64 = 0xBFBAFECA
+
+# `fat_arch` is cputype, cpusubtype, offset, size, align. `fat_arch_64` is the same with
+# 64-bit offset and size, plus a reserved word. The entry size sits beside the format
+# rather than being derived at every use, and is asserted against it so the two cannot
+# drift.
+_FAT_ARCH = {False: (20, ">iiIII"), True: (32, ">iiQQII")}
+assert all(struct.calcsize(fmt) == size for size, fmt in _FAT_ARCH.values())
 
 _LC_SYMTAB = 0x02
 _LC_LOAD_DYLIB = 0x0C
@@ -255,10 +269,12 @@ def read_macho(
 
     slices: tuple[_Slice, ...] = (_Slice(offset=0, size=size),)
     header_reasons: tuple[str, ...] = ()
-    if magic in (_FAT_MAGIC, _FAT_CIGAM):
+    if magic in (_FAT_MAGIC, _FAT_CIGAM, _FAT_MAGIC_64, _FAT_CIGAM_64):
         try:
             stream.seek(0)
-            slices, header_reasons = _list_fat_slices(stream, size)
+            slices, header_reasons = _list_fat_slices(
+                stream, size, wide=magic in (_FAT_MAGIC_64, _FAT_CIGAM_64)
+            )
         except Exception:
             return _unparsed(
                 stream,
@@ -390,11 +406,22 @@ def read_macho(
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 
 
-def _list_fat_slices(stream, size: int) -> tuple[tuple[_Slice, ...], tuple[str, ...]]:
+def _list_fat_slices(
+    stream, size: int, *, wide: bool
+) -> tuple[tuple[_Slice, ...], tuple[str, ...]]:
     """Return every slice a fat header declares, plus what it declared and we did not read.
 
-    Fat headers and `fat_arch` entries are always big-endian on disk, regardless of
-    host or slice byte order, so this part never needs an endianness switch.
+    Fat headers and their arch entries are always big-endian on disk, regardless of host
+    or slice byte order, so this part never needs an endianness switch. `wide` selects
+    the `fat_arch_64` layout, which is the only thing `FAT_MAGIC_64` changes.
+
+    `wide` is about the table's stride, not its byte order, and the two are independent.
+    `FAT_CIGAM_64` is grouped with `FAT_MAGIC_64` because that is where real support
+    would start if it were ever added, but the grouping changes no real object's record:
+    a genuinely byte-swapped header has a little-endian table, which this reads
+    big-endian, so `nfat_arch` comes out huge, the cap fires and every entry is garbage
+    at either stride. The only input the choice changes is a byte-swapped magic in front
+    of a big-endian table, which no toolchain emits.
 
     `nfat_arch` is a 32-bit field the object declares about itself, in the same family
     as Mach-O's `nsyms` and PE's `NumberOfNames`, and it is capped rather than believed.
@@ -413,17 +440,18 @@ def _list_fat_slices(stream, size: int) -> tuple[tuple[_Slice, ...], tuple[str, 
     if len(header) < 8:
         return (), ("fat header is truncated",)
     _, nfat_arch = struct.unpack(">II", header)
+    entry_size, entry_format = _FAT_ARCH[wide]
     slices: list[_Slice] = []
     seen: set[int] = set()
     reasons: set[str] = set()
     if nfat_arch > _MAX_FAT_SLICES:
         reasons.add("fat header declares more architectures than this reader walks")
     for _ in range(min(nfat_arch, _MAX_FAT_SLICES)):
-        entry = stream.read(20)
-        if len(entry) < 20:
+        entry = stream.read(entry_size)
+        if len(entry) < entry_size:
             reasons.add("fat arch table is truncated")
             break
-        _cputype, _cpusubtype, offset, arch_size, _align = struct.unpack(">iiIII", entry)
+        _cputype, _cpusubtype, offset, arch_size, *_rest = struct.unpack(entry_format, entry)
         if offset + 4 > size:
             reasons.add("fat header places a slice outside the object")
         elif offset not in seen:

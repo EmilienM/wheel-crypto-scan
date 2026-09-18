@@ -42,3 +42,12 @@ def test_unknown_format() -> None:
 def test_short_head_is_unknown_not_a_crash() -> None:
     assert detect_format(b"") == evidence.FORMAT_UNKNOWN
     assert detect_format(b"M") == evidence.FORMAT_UNKNOWN
+
+
+def test_both_fat_magics_sniff_as_macho() -> None:
+    """`FAT_MAGIC_64` differs from `FAT_MAGIC` by one bit, and by 12 bytes an entry."""
+    assert detect_format(b"\xca\xfe\xba\xbe") == evidence.FORMAT_MACHO
+    assert detect_format(b"\xca\xfe\xba\xbf") == evidence.FORMAT_MACHO
+    # The byte-swapped forms, kept defensively alongside the thin CIGAM magics.
+    assert detect_format(b"\xbe\xba\xfe\xca") == evidence.FORMAT_MACHO
+    assert detect_format(b"\xbf\xba\xfe\xca") == evidence.FORMAT_MACHO

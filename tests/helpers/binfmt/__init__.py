@@ -27,7 +27,7 @@ from .elf import (
     ElfBuilder,
     patch_u16,
 )
-from .macho import MachOBuilder, MachOSym, build_fat
+from .macho import FAT_MAGIC, FAT_MAGIC_64, MachOBuilder, MachOSym, build_fat
 from .pe import (
     IMAGE_FILE_MACHINE_AMD64,
     IMAGE_FILE_MACHINE_ARM64,
@@ -46,6 +46,8 @@ __all__ = [
     "ET_EXEC",
     "E_SHNUM_OFFSET",
     "ElfBuilder",
+    "FAT_MAGIC",
+    "FAT_MAGIC_64",
     "IMAGE_FILE_MACHINE_AMD64",
     "IMAGE_FILE_MACHINE_ARM64",
     "IMAGE_FILE_MACHINE_I386",

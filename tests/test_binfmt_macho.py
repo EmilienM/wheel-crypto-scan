@@ -697,3 +697,72 @@ def test_every_unreadable_slice_says_why_it_was_unreadable() -> None:
         "not a recognisable Mach-O object",
     ]
     assert ev.partial_analysis is True
+
+
+# --- 64-bit universal binaries ------------------------------------------------
+
+
+def test_a_64_bit_fat_binary_reads_the_same_as_a_32_bit_one() -> None:
+    """`FAT_MAGIC_64` changes the arch table and nothing else.
+
+    The magic is one bit from the 32-bit one, which is how an object of this shape gets
+    missed: it used to sniff as `unknown` and fall to the strings-only reader, so its
+    install name, its dependencies and its imported OpenSSL symbol were all lost.
+    """
+    slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    slice_b = MachOBuilder(
+        is64=False,
+        big_endian=True,
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_EVP_EncryptInit_ex", defined=True),),
+    ).build()
+    narrow, narrow_errors = _read(build_fat([slice_a, slice_b]), path="fat.dylib")
+    wide, wide_errors = _read(build_fat([slice_a, slice_b], wide=True), path="fat.dylib")
+
+    assert narrow_errors == () and wide_errors == ()
+    assert dataclasses.asdict(wide) == dataclasses.asdict(narrow)
+    assert wide.partial_analysis is False
+    assert [m.name for m in wide.matched_symbols] == [
+        "EVP_DigestInit_ex",
+        "EVP_EncryptInit_ex",
+    ]
+
+
+def test_a_64_bit_fat_slice_that_could_not_be_read_stays_partial() -> None:
+    slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    ev, errors = _read(build_fat([slice_a, b"\x00" * 64], wide=True), path="fat.dylib")
+    assert [e.message for e in errors] == ["not a recognisable Mach-O object"]
+    assert ev.partial_analysis is True
+    assert [m.name for m in ev.matched_symbols] == ["EVP_DigestInit_ex"]
+
+
+def test_a_64_bit_fat_header_uses_the_wider_arch_entry() -> None:
+    """Reading a `fat_arch_64` table at 20 bytes an entry would desynchronise it."""
+    thin = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    wide = build_fat([thin, thin], wide=True)
+    narrow = build_fat([thin, thin])
+    # 8 bytes of header, then 32 bytes an entry rather than 20.
+    assert len(wide) - len(narrow) == 2 * (32 - 20)
+    ev, errors = _read(wide, path="fat.dylib")
+    assert errors == ()
+    assert ev.partial_analysis is False
+
+
+def test_a_byte_swapped_fat_header_is_defensive_not_supported() -> None:
+    """Both `CIGAM` magics sniff as Mach-O and then fail the same way.
+
+    Fat headers are big-endian on disk, so a byte-swapped one is not a thing a real
+    toolchain emits. The magics are carried so such an object is recognised and read
+    for strings rather than silently classified as some other format, and this pins
+    that the 64-bit spelling behaves exactly like the 32-bit one rather than being
+    mistaken for a well-formed wide table.
+    """
+    banner = b"OpenSSL 3.0.14 4 Jun 2024"
+    records = []
+    for magic in (b"\xbe\xba\xfe\xca", b"\xbf\xba\xfe\xca"):
+        ev, errors = _read(magic + b"\x00" * 64 + banner + b"\x00", path="swapped.dylib")
+        assert ev.format == evidence.FORMAT_MACHO
+        assert ev.partial_analysis is True
+        assert [m.value for m in ev.matched_strings] == [banner.decode()]
+        records.append((list(ev.partial_reasons), [e.message for e in errors]))
+    assert records[0] == records[1]
