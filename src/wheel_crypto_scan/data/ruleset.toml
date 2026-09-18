@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "5"
+ruleset_version = "6"
 
 
 # ---------------------------------------------------------------------------
@@ -1495,9 +1495,23 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "Binary format only partially readable"
-why = "Part of this object was not read, so some dependency or symbol evidence is missing for it: the format has no structural reader and was read for strings only, or the object's own header would not parse and only its strings survive, or a PE has a truncated section table, declares no import directory, has one that could not be walked, names an import or an export by ordinal alone, or carries a delay-load import directory that this tool does not parse, or a Mach-O symbol table could not be read in full, or a fat Mach-O has a slice that could not be read or that its header placed outside the object. Recorded so a wheel can never look clean merely because we read less of it."
+why = "Part of this object was not read, so some dependency or symbol evidence is missing for it, and the object's partial_reasons names which causes applied. Recorded so a wheel can never look clean merely because we read less of it. The two ordinal causes are handled by BIN_PARTIAL_ROUTINE instead; everything else lands here, including any cause added later."
 [rule.match]
 kind = "partial_binary"
+exclude_reasons = ["pe_ordinal_import", "pe_ordinal_export"]
+
+[[rule]]
+id = "BIN_PARTIAL_ROUTINE"
+layer = "binary"
+category = "opacity"
+severity = "info"
+confidence = "high"
+needs_human_review = false
+title = "Binary declares something this tool cannot name, by design"
+why = "This object was not read in full, but the cause is a convention rather than a failure: an import or an export bound by ordinal has no name to match. WS2_32 is normally bound by ordinal, so this is the ordinary shape of a Windows extension that touches sockets, and treating it as opacity put every such wheel on the OPAQUE triage list. What is lost is a function name inside a DLL the record still names, so a crypto dependency bound this way is still caught by its DT_NEEDED equivalent. Recorded without a verdict: the evidence really is incomplete, so the record says so, but it is not on its own a reason for a human to look."
+[rule.match]
+kind = "partial_binary"
+reasons = ["pe_ordinal_import", "pe_ordinal_export"]
 
 [[rule]]
 id = "BIN_UNPARSEABLE"

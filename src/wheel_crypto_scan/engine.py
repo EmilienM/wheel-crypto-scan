@@ -461,17 +461,38 @@ def _match_opaque_binary(rule, match, ruleset, evidence, linkage, index) -> Iter
 
 
 def _match_partial_binary(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    # Which causes this rule speaks for. `reasons` selects them, `exclude_reasons`
+    # selects everything else, and a rule with neither speaks for all of them. The two
+    # are alternatives, which the ruleset loader enforces.
+    #
+    # Excluding is what the strict rule uses, so that a cause added later is serious
+    # until someone says otherwise: an include list would leave a new token matching no
+    # rule at all, which is the one outcome this field exists to prevent.
+    # Keyed on the key being present, not on the list being non-empty: an explicit
+    # `reasons = []` means this rule claims nothing, never everything.
+    wanted = frozenset(match["reasons"]) if "reasons" in match else None
+    unwanted = frozenset(match["exclude_reasons"]) if "exclude_reasons" in match else None
     for binary in evidence.binaries:
         if not binary.partial_analysis:
             continue
-        # Name the causes here too. A triager reads `findings` and `verdict.reasons`;
-        # without this the tokens would only reach someone opening the raw record. The
-        # suffix is conditional rather than defaulted: every reader that sets the flag
-        # also names a reason, so an empty tuple means someone built the evidence by
-        # hand, and inventing text for it would be worse than saying less.
+        if wanted is not None:
+            reasons = tuple(r for r in binary.partial_reasons if r in wanted)
+            # None of this rule's causes applied, so it is not this rule's to report.
+            if not reasons:
+                continue
+        elif unwanted is not None:
+            reasons = tuple(r for r in binary.partial_reasons if r not in unwanted)
+            # Every cause was one this rule excludes. A flag set with no cause named at
+            # all is a different thing and stays here: no reader produces it, so it
+            # means something built the evidence by hand, and an unexplained partial
+            # read is the last thing to quietly downgrade.
+            if binary.partial_reasons and not reasons:
+                continue
+        else:
+            reasons = tuple(binary.partial_reasons)
         detail = f"{binary.format} object was only partially read"
-        if binary.partial_reasons:
-            detail = f"{detail}: {', '.join(binary.partial_reasons)}"
+        if reasons:
+            detail = f"{detail}: {', '.join(reasons)}"
         yield Hit(
             subject_kind="format",
             subject=binary.format,
