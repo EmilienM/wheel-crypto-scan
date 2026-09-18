@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 
 from helpers.binfmt import DynSym, ElfBuilder, MachOBuilder, PEBuilder, PEImport
@@ -91,14 +92,17 @@ def test_vendored_flag_passes_through_every_branch() -> None:
         assert ev.vendored_path is True
 
 
-def test_every_table_entry_is_reachable_from_detection() -> None:
-    """A reader nothing can sniff its way to is a reader that never runs."""
-    assert set(_READERS) <= {
-        evidence.FORMAT_ELF,
-        evidence.FORMAT_MACHO,
-        evidence.FORMAT_PE,
-        evidence.FORMAT_UNKNOWN,
-    }
+def test_every_registered_format_is_one_detection_can_return() -> None:
+    """A reader nothing can sniff its way to is a reader that never runs.
+
+    The set of known formats is derived rather than spelled out, so registering a
+    fourth format stays the one-line change #16 was about: a typo'd key still fails,
+    a real new format does not.
+    """
+    known = {value for name, value in vars(evidence).items() if name.startswith("FORMAT_")}
+    assert set(_READERS) <= known - {evidence.FORMAT_UNKNOWN}
+    # The fallback is reached by missing the table, so `unknown` must never be in it.
+    assert evidence.FORMAT_UNKNOWN not in _READERS
     for fmt, data in (
         (evidence.FORMAT_ELF, ElfBuilder().build()),
         (evidence.FORMAT_MACHO, MachOBuilder().build()),
@@ -106,8 +110,26 @@ def test_every_table_entry_is_reachable_from_detection() -> None:
     ):
         assert fmt in _READERS
         assert detect_format(data[:SNIFF_BYTES]) == fmt
-    # The fallback is reached by missing the table, so `unknown` must never be in it.
-    assert evidence.FORMAT_UNKNOWN not in _READERS
+
+
+def test_every_registered_reader_has_the_dispatch_signature() -> None:
+    """Nothing type-checks this repo, so the `_Reader` protocol is asserted here.
+
+    A reader registered with a drifted signature raises only when a wheel of that
+    format is scanned, and `layers.binaries` catches it as one more unreadable object.
+    The run survives and says nothing loud, which is the worst possible way to find out.
+    """
+    for fmt, reader in _READERS.items():
+        parameters = inspect.signature(reader).parameters
+        assert list(parameters) == [
+            "stream",
+            "path",
+            "patterns",
+            "vendored",
+            "max_strings_bytes",
+        ], fmt
+        assert parameters["vendored"].kind is inspect.Parameter.KEYWORD_ONLY, fmt
+        assert parameters["max_strings_bytes"].kind is inspect.Parameter.KEYWORD_ONLY, fmt
 
 
 def test_dispatch_goes_through_the_table(monkeypatch) -> None:
@@ -127,24 +149,36 @@ def test_dispatch_goes_through_the_table(monkeypatch) -> None:
     assert called == {"path": "custom.so", "vendored": True, "max_strings_bytes": MAX_STRINGS_BYTES}
 
 
+def test_a_callers_max_strings_bytes_reaches_both_paths() -> None:
+    """Dispatch forwards the caller's bound, rather than letting a default stand in."""
+    banner = b"OpenSSL 3.2.1 30 Jan 2024"
+    for data in (ElfBuilder(rodata=banner).build(), b"\x00\x01\x02\x03" + banner):
+        stream = io.BytesIO(data)
+        ev, _ = read_binary(stream, "obj", PATTERNS, vendored=False, max_strings_bytes=8)
+        assert ev.strings_truncated is True
+        assert ev.matched_strings == ()
+
+
 def test_a_detected_format_with_no_reader_keeps_its_own_name(monkeypatch) -> None:
     """The fallback records what was sniffed, never a blanket `unknown`.
 
     Adding a format to `detect_format` is meant to be safe before its reader exists:
     the object still gets a strings pass, and its record still says which format it
-    was. A fallback that defaulted the name would turn that into a mislabelled record
-    and nothing would fail.
+    was. A fallback that defaulted the name would put the wrong format into the record,
+    into `engine`'s partial-read finding subject and into its evidence line, and
+    nothing would fail. The name here is one no reader will ever be registered for, so
+    this test cannot be defeated by someone taking #16 up on its offer.
     """
-    monkeypatch.setattr(binfmt, "detect_format", lambda head: "wasm")
-    ev, errors = _read(b"\x00asm\x01\x00\x00\x00 OpenSSL 3.2.1 ", path="mod.wasm")
+    monkeypatch.setattr(binfmt, "detect_format", lambda head: "format-with-no-reader")
+    ev, errors = _read(b"\x00\x01\x02\x03 OpenSSL 3.2.1 30 Jan 2024 ", path="mod.bin")
     assert errors == ()
-    assert ev.format == "wasm"
+    assert ev.format == "format-with-no-reader"
     assert ev.partial_analysis is True
     assert ev.matched_strings != ()
 
 
 def test_unsniffable_bytes_fall_back_as_unknown() -> None:
-    ev, errors = _read(b"\x00\x01\x02\x03 OpenSSL 3.2.1 ", path="mystery.bin")
+    ev, errors = _read(b"\x00\x01\x02\x03 OpenSSL 3.2.1 30 Jan 2024 ", path="mystery.bin")
     assert errors == ()
     assert ev.format == evidence.FORMAT_UNKNOWN
     assert ev.partial_analysis is True
