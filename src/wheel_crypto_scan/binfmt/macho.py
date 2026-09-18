@@ -200,6 +200,7 @@ def _unparsed(
         vendored=vendored,
         fmt=evidence.FORMAT_MACHO,
         max_strings_bytes=max_strings_bytes,
+        reason=evidence.PARTIAL_MACHO_HEADER_UNREAD,
     )
     return result, tuple(
         sorted({_error(path, why) for why in messages}, key=lambda e: e.sort_key())
@@ -327,6 +328,14 @@ def read_macho(
     ):
         errors.append(_error(path, "mach-o symbol table could not be read in full"))
 
+    # Every architecture has to have been read, and read in full, before this object
+    # can claim it was examined. An unread slice is an unread object.
+    partial: set[str] = set()
+    if unread or header_reasons:
+        partial.add(evidence.PARTIAL_MACHO_FAT_SLICE_UNREAD)
+    if not all(slice_evidence.symbols_complete for slice_evidence in read):
+        partial.add(evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE)
+
     first = read[0]
     merged: set[SymbolMatch] = set()
     needed: set[str] = set()
@@ -375,11 +384,8 @@ def read_macho(
         go=go,
         symbols_truncated=len(ordered) > limit,
         strings_truncated=truncated_read or found.truncated,
-        # Every architecture has to have been read, and read in full, before this
-        # object can claim it was examined. An unread slice is an unread object.
-        partial_analysis=bool(unread)
-        or bool(header_reasons)
-        or not all(slice_evidence.symbols_complete for slice_evidence in read),
+        partial_analysis=bool(partial),
+        partial_reasons=tuple(sorted(partial)),
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 

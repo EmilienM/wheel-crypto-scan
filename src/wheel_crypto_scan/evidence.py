@@ -21,6 +21,75 @@ FORMAT_MACHO = "macho"
 FORMAT_PE = "pe"
 FORMAT_UNKNOWN = "unknown"
 
+# Why one object was not read in full. `BinaryEvidence.partial_analysis` is a single
+# boolean with a dozen causes behind it, and five of them record no `ScanError` at all,
+# so a record could read `partial_analysis: true, errors: []` with no way to tell which
+# applied. Two of those five are the common case rather than an exotic one: a stripped
+# Mach-O, which is every release macOS wheel, and an ordinal-only PE import, because
+# `WS2_32` is normally bound by ordinal. Both read identically to "we could parse
+# nothing at all".
+#
+# These are facts about what a reader did, not policy, so they live here beside the
+# field rather than in `ruleset.toml`, the way `FORMAT_*` and `STAGE_*` do. They are
+# part of the output contract: adding one is not a `schema_version` bump, renaming one
+# is. Each names a cause, never the method used to cope with it -- every object whose
+# header would not parse is also read for strings alone, so "strings only" would not
+# tell those records apart from the ones that have no reader at all.
+
+# No reader for this format. The object was still scanned for strings.
+PARTIAL_NO_STRUCTURAL_READER = "no_structural_reader"
+# The ELF header itself would not parse.
+PARTIAL_ELF_HEADER_UNREAD = "elf_header_unread"
+# The ELF header parsed; the section header table it points at does not fit the object.
+PARTIAL_ELF_SECTION_TABLE_TRUNCATED = "elf_section_table_truncated"
+# The Mach-O header, or a fat header, would not parse.
+PARTIAL_MACHO_HEADER_UNREAD = "macho_header_unread"
+# `LC_SYMTAB` was absent, unreachable, or named nothing we could resolve, so the
+# imported-versus-defined split is missing or incomplete. Records no error: this is
+# what `strip` leaves behind and it is normal for a release wheel.
+PARTIAL_MACHO_SYMTAB_INCOMPLETE = "macho_symtab_incomplete"
+# A slice of a universal binary could not be read, or its header named one it did not
+# describe, so an architecture is unknown rather than clean.
+PARTIAL_MACHO_FAT_SLICE_UNREAD = "macho_fat_slice_unread"
+# The PE header chain would not parse.
+PARTIAL_PE_HEADER_UNREAD = "pe_header_unread"
+# The section table was cut short, so an address may resolve to the wrong bytes.
+PARTIAL_PE_SECTION_TABLE_TRUNCATED = "pe_section_table_truncated"
+# No import directory, or one naming no DLL: this object declared no dependency.
+# Records no error.
+PARTIAL_PE_NO_IMPORT_DIRECTORY = "pe_no_import_directory"
+# An import directory that was there and could not be walked to its terminator.
+PARTIAL_PE_IMPORT_INCOMPLETE = "pe_import_incomplete"
+# An export directory that was there and could not be read in full.
+PARTIAL_PE_EXPORT_INCOMPLETE = "pe_export_incomplete"
+# An import named by ordinal alone, so its function has no name to match. Records no
+# error: routine on Windows, where `WS2_32` is normally bound this way.
+PARTIAL_PE_ORDINAL_IMPORT = "pe_ordinal_import"
+# An export the name table never points at: a definition with no name. Records no error.
+PARTIAL_PE_ORDINAL_EXPORT = "pe_ordinal_export"
+# A delay-load import directory, which this reader does not parse, so the libraries it
+# names are undeclared dependencies. Records no error.
+PARTIAL_PE_DELAY_LOAD = "pe_delay_load"
+
+PARTIAL_REASONS: frozenset[str] = frozenset(
+    {
+        PARTIAL_NO_STRUCTURAL_READER,
+        PARTIAL_ELF_HEADER_UNREAD,
+        PARTIAL_ELF_SECTION_TABLE_TRUNCATED,
+        PARTIAL_MACHO_HEADER_UNREAD,
+        PARTIAL_MACHO_SYMTAB_INCOMPLETE,
+        PARTIAL_MACHO_FAT_SLICE_UNREAD,
+        PARTIAL_PE_HEADER_UNREAD,
+        PARTIAL_PE_SECTION_TABLE_TRUNCATED,
+        PARTIAL_PE_NO_IMPORT_DIRECTORY,
+        PARTIAL_PE_IMPORT_INCOMPLETE,
+        PARTIAL_PE_EXPORT_INCOMPLETE,
+        PARTIAL_PE_ORDINAL_IMPORT,
+        PARTIAL_PE_ORDINAL_EXPORT,
+        PARTIAL_PE_DELAY_LOAD,
+    }
+)
+
 STAGE_ARCHIVE = "archive"
 STAGE_METADATA = "metadata"
 STAGE_BINARY = "binary"
@@ -123,6 +192,10 @@ class BinaryEvidence:
     # in full; or a slice of a fat binary that could not be read. A wheel can never
     # look clean merely because we read less of it than usual.
     partial_analysis: bool = False
+    # Which of the causes above applied, sorted. Empty when `partial_analysis` is
+    # false, and never the other way round: a reader that sets the boolean names its
+    # reason. Filter on the boolean; read this to find out what to do about it.
+    partial_reasons: tuple[str, ...] = ()
 
     @property
     def is_opaque(self) -> bool:

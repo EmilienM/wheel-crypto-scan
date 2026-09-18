@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from helpers.binfmt import DynSym, ElfBuilder
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import TOOL_NAME
@@ -292,18 +293,43 @@ def test_schema_prints_valid_json(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_the_schema_matches_what_the_scanner_actually_emits(
-    corpus: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Drift between record.py and schema.json would mislead every consumer."""
+    directory = tmp_path / "drift"
+    directory.mkdir()
+    # Not the shared `corpus`: that is two pure-Python wheels, so `binaries` comes back
+    # empty and the array half of this check would assert nothing.
+    build_wheel(
+        directory / "withext-1.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        name="withext",
+        version="1.0",
+        tags=("cp312-cp312-manylinux_2_28_x86_64",),
+        files={
+            "withext/__init__.py": CLEAN_SOURCE,
+            "withext/_ext.abi3.so": ElfBuilder(
+                needed=("libcrypto.so.3",),
+                dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
+            ).build(),
+        },
+    )
     main(["schema"])
     schema = json.loads(capsys.readouterr().out)
     out = tmp_path / "out.jsonl"
-    main(["scan", str(corpus), "-o", str(out), "--no-cache", "-q"])
+    main(["scan", str(directory), "-o", str(out), "--no-cache", "-q"])
     record = read_records(out)[0]
 
     assert set(record) == set(schema["required"])
     for section in ("tool", "wheel", "artifacts", "verdict"):
         assert set(record[section]) == set(schema["properties"][section]["required"]), section
+
+    # The arrays too. Checking only the object sections let a key be dropped from
+    # `record.py` while `schema.json` still required it, with the suite staying green.
+    binaries = [binary for found in read_records(out) for binary in found["binaries"]]
+    assert binaries, "the corpus must carry a binary or this asserts nothing"
+    required = set(schema["properties"]["binaries"]["items"]["required"])
+    for binary in binaries:
+        assert required <= set(binary)
 
 
 def test_the_schema_has_no_passing_class(capsys: pytest.CaptureFixture[str]) -> None:

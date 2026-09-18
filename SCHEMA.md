@@ -35,7 +35,7 @@ timestamps, hostnames or user names appear in any field.
 | `binaries` | array | Per-object native evidence. |
 | `findings` | array | Rules that matched. |
 | `verdict` | object | The classification. |
-| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** |
+| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes are routine rather than failures, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording an error. |
 
 ## `tool`
 
@@ -93,12 +93,33 @@ architectures disagree; `machine`, `bits` and `endian` describe the first slice 
 | `symbol_counts` | `{dynsym, symtab}`, and `symtab` means something different per format: `.symtab` entries in ELF, `LC_SYMTAB` entries in Mach-O, and in PE the things the object named — one per import thunk and one per export slot — because PE has no symbol table of its own to count. |
 | `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. Never set for PE, whose own symbol table is debug information every linker drops, so there is no absence that could mean this; `symbol_counts.symtab == 0` is how a PE says it named nothing. Normal for release wheels; recorded, not a finding. |
 | `truncated` | `{symbols, strings}` — evidence was capped. |
-| `partial_analysis` | Part of the object was not read: a format with no structural reader (strings only); an object of any format whose header would not parse, which keeps the strings it had already found and is recorded as partial rather than empty; a PE whose section table was truncated, whose import directory was absent or could not be walked, that names an import or an export by ordinal alone, or that carries a delay-load import directory, which this reader does not parse; a Mach-O whose `LC_SYMTAB` could not be read in full; or a fat Mach-O with a slice that could not be read or that its header placed outside the object. A fat Mach-O whose every slice read cleanly is not partial: the slices are merged into one record, with `needed`, `rpath` and `matched_symbols` as sorted unions and `symtab_count` as a sum. |
+| `partial_analysis` | Part of the object was not read. **This is the field to filter on.** |
+| `partial_reasons` | Sorted, deduplicated tokens saying *which* causes applied, empty exactly when `partial_analysis` is false. Several are routine rather than failures and record no entry in `errors`. New values may appear without a `schema_version` bump. |
 
 A PE with genuinely no imports — a resource-only or satellite DLL — therefore always
 reads as `partial_analysis: true`, because naming at least one dependency is part of
 what clears the flag. That is the conservative direction, and a known source of false
 positives rather than a surprise.
+
+
+Each reason:
+
+| Token | Cause |
+|---|---|
+| `no_structural_reader` | This tool has no reader for the format, so the object was scanned for strings alone. |
+| `elf_header_unread` | The ELF header itself would not parse. |
+| `elf_section_table_truncated` | The ELF header parsed but the section header table it points at does not fit the object. |
+| `macho_header_unread` | The Mach-O header, or a fat header, would not parse. |
+| `macho_symtab_incomplete` | LC_SYMTAB was absent, unreachable or named nothing resolvable, so the imported-versus-defined split is missing; routine, and records no error. |
+| `macho_fat_slice_unread` | A slice of a universal binary could not be read, or its header named one it did not describe. |
+| `pe_header_unread` | The PE header chain would not parse. |
+| `pe_section_table_truncated` | The section table was cut short, so an address may resolve to the wrong bytes. |
+| `pe_no_import_directory` | No import directory, or one naming no DLL, so the object declared no dependency; records no error. |
+| `pe_import_incomplete` | An import directory that was there and could not be walked in full. |
+| `pe_export_incomplete` | An export directory that was there and could not be read in full. |
+| `pe_ordinal_import` | An import named by ordinal alone, so its function has no name to match; routine on Windows, and records no error. |
+| `pe_ordinal_export` | An export the name table never points at: a definition with no name; records no error. |
+| `pe_delay_load` | A delay-load import directory, which this reader does not parse, so the libraries it names are undeclared dependencies; records no error. |
 
 ## `findings`
 

@@ -252,14 +252,16 @@ def test_the_partial_finding_does_not_contradict_the_record_that_carries_it(rule
                 "demo/_ext.cpython-312-darwin.so",
                 format=FORMAT_MACHO,
                 partial_analysis=True,
+                partial_reasons=("macho_symtab_incomplete",),
                 matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
             ),
         )
     )
     finding = one(run(ruleset, evidence), "BIN_PARTIAL_FORMAT")
     assert finding.subject == FORMAT_MACHO
+    # Which object, and which cause, but nothing about how much of it was read.
     assert [location.evidence for location in finding.locations] == [
-        "macho object was only partially read"
+        "macho object was only partially read: macho_symtab_incomplete"
     ]
 
 

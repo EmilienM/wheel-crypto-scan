@@ -99,7 +99,7 @@ def read_binary(
         # exists for it, and relabelling such an object `unknown` would put the wrong
         # format into its record, into `engine`'s partial-read finding subject, and
         # into that finding's evidence line.
-        reader = partial(read_strings_only, fmt=fmt)
+        reader = partial(read_strings_only, fmt=fmt, reason=evidence.PARTIAL_NO_STRUCTURAL_READER)
     return reader(stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes)
 
 

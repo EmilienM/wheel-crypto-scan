@@ -282,6 +282,7 @@ def read_pe(
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
+            partial_reasons=(evidence.PARTIAL_PE_HEADER_UNREAD,),
         ), (_error(path, str(bad)),)
     except Exception:
         return BinaryEvidence(
@@ -293,6 +294,7 @@ def read_pe(
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
+            partial_reasons=(evidence.PARTIAL_PE_HEADER_UNREAD,),
         ), (_error(path, "failed to parse the pe headers"),)
 
     image = _Image(raw=raw, sections=headers.sections)
@@ -344,15 +346,35 @@ def read_pe(
     # anything named by ordinal alone each mean some of this object's dependencies or
     # symbols are unknown, and a record that dropped them would be indistinguishable
     # from one for an object that genuinely has none.
-    complete = (
-        headers.sections_complete
-        and imports is not None
-        and imports.complete
-        and bool(imports.dlls)
-        and not imports.unnamed
-        and (exports is None or (exports.complete and not exports.unnamed))
-        and not delay_rva
-    )
+    #
+    # Each cause names itself. This predicate used to be a seven-clause conjunction
+    # collapsing into one boolean, and four of these causes record no `ScanError`, so
+    # the record said `partial_analysis: true, errors: []` and nothing said which.
+    # An ordinal-only import is the routine case, not the exotic one: `WS2_32` is
+    # normally bound by ordinal, so that is what a typical Windows record looks like,
+    # and it read exactly like an object we could parse nothing of.
+    # Each cause names itself, and none of them is an `elif`: an import directory that
+    # was there and could not be walked is a different fact from one that was never
+    # there, and reporting only the first would be the conflation this array exists to
+    # remove, one level down. `imports` comes back with `complete=False` and no DLLs
+    # when the directory lies past the buffer, which is exactly that case.
+    reasons: set[str] = set()
+    if not headers.sections_complete:
+        reasons.add(evidence.PARTIAL_PE_SECTION_TABLE_TRUNCATED)
+    if not import_rva or (imports is not None and not imports.dlls):
+        reasons.add(evidence.PARTIAL_PE_NO_IMPORT_DIRECTORY)
+    if import_rva and (imports is None or not imports.complete):
+        reasons.add(evidence.PARTIAL_PE_IMPORT_INCOMPLETE)
+    if imports is not None and imports.unnamed:
+        reasons.add(evidence.PARTIAL_PE_ORDINAL_IMPORT)
+    # `exports is None` with a directory address means the read raised. That used to
+    # leave the object looking fully read, with the error beside it saying otherwise.
+    if export_rva and (exports is None or not exports.complete):
+        reasons.add(evidence.PARTIAL_PE_EXPORT_INCOMPLETE)
+    if exports is not None and exports.unnamed:
+        reasons.add(evidence.PARTIAL_PE_ORDINAL_EXPORT)
+    if delay_rva:
+        reasons.add(evidence.PARTIAL_PE_DELAY_LOAD)
     entries = (imports.entries if imports else 0) + (exports.entries if exports else 0)
     result = BinaryEvidence(
         path=path,
@@ -380,7 +402,8 @@ def read_pe(
         symtab_count=entries,
         matched_symbols=ordered[:limit],
         symbols_truncated=len(ordered) > limit,
-        partial_analysis=not complete,
+        partial_analysis=bool(reasons),
+        partial_reasons=tuple(sorted(reasons)),
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 
