@@ -14,7 +14,7 @@ import dataclasses
 import io
 
 import pytest
-from helpers.elfbuilder import IMAGE_FILE_MACHINE_I386, PEBuilder, PEExport, PEImport
+from helpers.binfmt import IMAGE_FILE_MACHINE_I386, PEBuilder, PEExport, PEImport
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt.pe import read_pe
 from wheel_crypto_scan.errors import PE_PARSE_ERROR

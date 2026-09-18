@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 
-from helpers.elfbuilder import DynSym, ElfBuilder, MachOBuilder, PEBuilder, PEImport
+from helpers.binfmt import DynSym, ElfBuilder, MachOBuilder, PEBuilder, PEImport
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import read_binary
 from wheel_crypto_scan.errors import PE_PARSE_ERROR
