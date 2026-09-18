@@ -225,13 +225,38 @@ class BinaryEvidence:
 
     @property
     def is_opaque(self) -> bool:
-        """True when the object told us nothing at all."""
+        """True when the object told us nothing at all.
+
+        Which count means "we read some symbols" is per format, and testing the wrong
+        one is indistinguishable from reading nothing. `binfmt.elf` reports `.dynsym`
+        in `dynsym_count`; Mach-O's `LC_SYMTAB` and PE's named entries land in
+        `symtab_count`, and neither format ever sets `dynsym_count`. Keying on that
+        field alone made the symbols invisible to this property for both formats.
+
+        `needed` is tested first and rescued most real objects: every loadable dylib
+        links `libSystem` and every `.pyd` imports its `pythonXY.dll`, so they were
+        never opaque. What was left wrongly opaque is the object that declares no
+        dependency at all -- a Mach-O `MH_OBJECT`, a statically linked extension, a
+        resource-only DLL -- which reported having told us nothing while carrying the
+        symbols it told us.
+
+        Reading less than usual is still caught, by a different route: any failed read
+        sets `partial_analysis`, which fires a rule whose verdict is `OPAQUE` whatever
+        this property says. That backstop is why widening this is safe.
+
+        Testing both counts for every format would fix those two by changing a third:
+        an ELF with a `.symtab` and no `.dynsym`, which is the ordinary shape of a
+        static executable, would stop being opaque. Whether *that* object has told us
+        anything is a separate question, and not one this property should answer by
+        accident, so the count is chosen by format instead.
+        """
+        symbols = self.dynsym_count if self.format == FORMAT_ELF else self.symtab_count
         return not (
             self.needed
             or self.matched_symbols
             or self.matched_strings
             or self.rust_crates
-            or self.dynsym_count
+            or symbols
         )
 
 
