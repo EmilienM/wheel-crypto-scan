@@ -476,3 +476,26 @@ def test_a_table_straddling_the_end_of_the_string_read_is_not_re_read_from_the_s
     # Seeking back over the header to sniff it is free; seeking back into the tables is
     # the regression.
     assert [seek for seek in stream.backwards if seek[1] >= symoff] == []
+
+
+def test_an_escaped_symbol_name_keeps_its_underscore() -> None:
+    """`_strip_abi_prefix` runs before `sanitize`, and the order is load-bearing.
+
+    A leading `\\x01` means "the linker added no ABI prefix". Sanitising first would
+    drop the escape and invite the underscore that follows to be stripped as one,
+    turning a symbol that is not `EVP_DigestInit_ex` into a *defined* match for it:
+    "this wheel carries its own OpenSSL", out of nothing.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("\x01_EVP_DigestInit_ex", defined=True),),
+    ).build()
+    ev, _ = _read(data, path="odd.dylib")
+    assert ev.matched_symbols == ()
+
+
+def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
+    banner = b"OpenSSL 3.0.14 4 Jun 2024"
+    stream = io.BytesIO(MachOBuilder(id_dylib="libfoo.dylib").build() + banner)
+    ev, _ = read_macho(stream, "libfoo.dylib", PATTERNS, vendored=False, max_strings_bytes=8)
+    assert ev.strings_truncated is True

@@ -468,3 +468,33 @@ def test_a_large_symbol_table_does_not_thrash_a_streamed_member(tmp_path) -> Non
     # The cost must scale with the number of sections, not the number of symbols.
     # Before the fix this was one full decompression per symbol.
     assert member.reopens < 50, f"re-decompressed {member.reopens} times"
+
+
+# --- the shared strings pass keeps feeding the reader's own inputs ------------
+
+
+def _go_buildinfo(version: str) -> bytes:
+    """A `.go.buildinfo` section, the shape `binfmt.golang` parses."""
+    header = b"\xff Go buildinf:" + bytes([8, 0x2]) + b"\x00" * 16
+    assert len(header) == 32
+    return header + bytes([len(version)]) + version.encode("ascii")
+
+
+def test_go_buildinfo_section_bytes_reach_the_go_reader() -> None:
+    """`read_elf` passes the section it read, not just the strings pass text.
+
+    Mach-O and PE have no such section and pass `None`. Losing ELF's first argument
+    leaves `go` populated from the build id alone, with `go_version` quietly `None`,
+    which is why this asserts the version rather than that `go` exists.
+    """
+    data = ElfBuilder(go_buildinfo=_go_buildinfo("go1.22.3")).build()
+    ev, errors = _read(data, path="go.so")
+    assert errors == ()
+    assert ev.go is not None
+    assert ev.go.go_version == "go1.22.3"
+
+
+def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
+    stream = io.BytesIO(ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build())
+    ev, _ = read_elf(stream, "mod.so", PATTERNS, vendored=False, max_strings_bytes=8)
+    assert ev.strings_truncated is True

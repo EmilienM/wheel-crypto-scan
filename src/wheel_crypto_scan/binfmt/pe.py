@@ -46,15 +46,14 @@ PDB.
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from .. import evidence
 from ..errors import PE_PARSE_ERROR
 from ..evidence import BinaryEvidence, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
 from .golang import build_go_info
-from .rust import find_rust_crates
-from .strings import MAX_STRINGS_BYTES, extract_printable, match_string_groups
+from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
 
 _DOS_MAGIC = b"MZ"
 _DOS_HEADER_SIZE = 0x40
@@ -112,8 +111,6 @@ _MACHINE_NAMES = {
     0x8664: "IMAGE_FILE_MACHINE_AMD64",
     0xAA64: "IMAGE_FILE_MACHINE_ARM64",
 }
-
-_PRINTABLE = range(0x20, 0x7F)
 
 
 class _Malformed(Exception):
@@ -178,7 +175,7 @@ class _Image:
         end = window.find(b"\x00")
         if end == -1:
             return None
-        return _sanitize(window[:end].decode("utf-8", "replace")) or None
+        return sanitize(window[:end].decode("utf-8", "replace")) or None
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,10 +231,6 @@ class _Exports:
     complete: bool
 
 
-def _sanitize(text: str) -> str:
-    return "".join(ch for ch in text if ord(ch) in _PRINTABLE)
-
-
 def _error(path: str, message: str) -> ScanError:
     return ScanError(stage=evidence.STAGE_BINARY, kind=PE_PARSE_ERROR, message=message, path=path)
 
@@ -268,21 +261,9 @@ def read_pe(
     stream.seek(0)
     raw = stream.read(min(size, max_strings_bytes))
 
-    extracted = extract_printable(raw, patterns.limits.min_string_length, max_strings_bytes)
-    string_matches, string_match_truncated = match_string_groups(
-        extracted, patterns.string_groups, patterns.limits.max_strings_per_binary
-    )
-    matched_strings = tuple(
-        replace(match, value=match.value[: patterns.limits.max_evidence_chars])
-        for match in string_matches
-    )
-    rust_crates, rust_truncated = find_rust_crates(
-        extracted.text, patterns.cargo_path_regex, patterns.limits.max_rust_crates_per_binary
-    )
-    strings_truncated = (
-        size > max_strings_bytes or extracted.truncated or string_match_truncated or rust_truncated
-    )
-    go = build_go_info(None, extracted.text, patterns)
+    strings_found = scan_strings(raw, patterns, max_strings_bytes)
+    strings_truncated = size > max_strings_bytes or strings_found.truncated
+    go = build_go_info(None, strings_found.text, patterns)
 
     errors: list[ScanError] = []
     try:
@@ -296,8 +277,8 @@ def read_pe(
             path=path,
             format=evidence.FORMAT_PE,
             vendored_path=vendored,
-            matched_strings=matched_strings,
-            rust_crates=rust_crates,
+            matched_strings=strings_found.matched_strings,
+            rust_crates=strings_found.rust_crates,
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
@@ -307,8 +288,8 @@ def read_pe(
             path=path,
             format=evidence.FORMAT_PE,
             vendored_path=vendored,
-            matched_strings=matched_strings,
-            rust_crates=rust_crates,
+            matched_strings=strings_found.matched_strings,
+            rust_crates=strings_found.rust_crates,
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
@@ -377,8 +358,8 @@ def read_pe(
         path=path,
         format=evidence.FORMAT_PE,
         vendored_path=vendored,
-        matched_strings=matched_strings,
-        rust_crates=rust_crates,
+        matched_strings=strings_found.matched_strings,
+        rust_crates=strings_found.rust_crates,
         go=go,
         strings_truncated=strings_truncated,
         machine=_MACHINE_NAMES.get(headers.machine, f"0x{headers.machine:04x}"),
