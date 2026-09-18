@@ -28,7 +28,7 @@ from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from wheel_crypto_scan.ruleset import load_ruleset
 
-PATTERNS = load_ruleset().compile_patterns()
+PATTERNS = load_ruleset().compile_patterns().binary
 
 
 def _read(data: bytes, path: str = "mod.so", *, vendored: bool = False):
@@ -454,7 +454,7 @@ def test_a_large_symbol_table_does_not_thrash_a_streamed_member(tmp_path) -> Non
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(zipfile.ZipInfo("lib/big.so", date_time=(1980, 1, 1, 0, 0, 0)), blob)
 
-    patterns = load_ruleset().compile_patterns()
+    patterns = load_ruleset().compile_patterns().binary
     with zipfile.ZipFile(archive_path) as archive:
         # window_bytes=0 is the worst case: no read-back at all.
         member = SeekableZipMember(archive, "lib/big.so", len(blob), 0)

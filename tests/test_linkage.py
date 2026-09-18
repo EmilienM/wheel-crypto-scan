@@ -17,6 +17,7 @@ from wheel_crypto_scan.evidence import (
     ArtifactInventory,
     BinaryEvidence,
     Evidence,
+    RustCrate,
     ScanError,
     StringMatch,
     SymbolMatch,
@@ -156,6 +157,14 @@ def test_an_opaque_binary_makes_the_answer_unknown_not_none(ruleset) -> None:
     """Absence of evidence is not evidence of absence, and the field must say so."""
     evidence = wheel(binary("pkg/_ext.so", stripped=True))
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_binary_is_opaque_only_when_it_yielded_nothing() -> None:
+    """The property `linkage` and the opaque-binary rule both turn on."""
+    assert binary("pkg/_ext.so").is_opaque
+    assert not binary("pkg/_ext.so", dynsym_count=12).is_opaque
+    assert not binary("pkg/_ext.so", needed=("libcrypto.so.3",)).is_opaque
+    assert not binary("pkg/_ext.so", rust_crates=(RustCrate("ring", "0.17.8"),)).is_opaque
 
 
 def test_an_unparseable_binary_makes_the_answer_unknown(ruleset) -> None:

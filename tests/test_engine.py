@@ -6,6 +6,9 @@ ruleset, so these tests assert the matching machinery rather than the classifica
 
 from __future__ import annotations
 
+import tomllib
+from importlib.resources import files
+
 import pytest
 
 from wheel_crypto_scan.engine import apply_rules
@@ -28,7 +31,7 @@ from wheel_crypto_scan.evidence import (
     SymbolMatch,
 )
 from wheel_crypto_scan.linkage import resolve_linkage
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset import load_ruleset, parse_ruleset
 
 
 @pytest.fixture(scope="module")
@@ -452,3 +455,128 @@ def test_python_errors_are_reported_without_a_verdict(ruleset) -> None:
     )
     finding = one(run(ruleset, wheel(errors=(error,))), "PY_UNREADABLE")
     assert finding.verdict is None
+
+
+# --- rule shape: several matches, and entries that pick their rule -----------
+
+
+def shipped_data() -> dict:
+    """The shipped ruleset as data, so a test can add a rule without editing policy."""
+    return tomllib.loads(
+        files("wheel_crypto_scan").joinpath("data/ruleset.toml").read_text(encoding="utf-8")
+    )
+
+
+def rule_entry(rule_id: str, match, **overrides) -> dict:
+    entry = {
+        "id": rule_id,
+        "layer": "binary",
+        "category": "test",
+        "severity": "high",
+        "confidence": "high",
+        "needs_human_review": True,
+        "title": "t",
+        "why": "w",
+        "match": match,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_one_rule_can_match_through_two_matcher_kinds() -> None:
+    """Why `match` may be a list: one concern, two matchers, still one rule id."""
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry(
+            "PY_TLS_EITHER_WAY",
+            [
+                {"kind": "py_attr", "attributes": ["check_hostname"], "values": ["False"]},
+                {"kind": "py_constant", "constants": ["ssl._create_unverified_context"]},
+            ],
+            layer="python",
+        )
+    )
+    evidence = wheel(
+        py_sites=(
+            site("py_attr", "check_hostname", line=3, value="False"),
+            site("py_constant", "ssl._create_unverified_context", line=7),
+        )
+    )
+    findings = [f for f in run(parse_ruleset(data), evidence) if f.rule_id == "PY_TLS_EITHER_WAY"]
+    assert {finding.subject for finding in findings} == {
+        "check_hostname",
+        "ssl._create_unverified_context",
+    }
+
+
+def test_a_crate_entry_routes_to_the_rule_it_names() -> None:
+    """Without routing a second rule of the same kind would fire on every crate too."""
+    data = shipped_data()
+    data["rule"].append(rule_entry("BIN_RING_ONLY", {"kind": "rust_crate", "table": "rust_crate"}))
+    for entry in data["rust_crate"]:
+        if entry["name"] == "ring":
+            entry["rule"] = "BIN_RING_ONLY"
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_rust.abi3.so",
+                rust_crates=(RustCrate("ring", "0.17.8"), RustCrate("blake3", "1.5.1")),
+            ),
+        )
+    )
+    # Pairs, not a dict keyed by subject: a dict is last-wins, so a rule that wrongly
+    # fired on both crates would be overwritten by the default rule and pass unnoticed.
+    owners = {
+        (finding.rule_id, finding.subject)
+        for finding in run(parse_ruleset(data), evidence)
+        if finding.rule_id in {"BIN_RING_ONLY", "BIN_RUST_CRYPTO_CRATE"}
+    }
+    assert owners == {("BIN_RING_ONLY", "ring"), ("BIN_RUST_CRYPTO_CRATE", "blake3")}
+
+
+def test_a_library_entry_routes_to_the_rule_it_names() -> None:
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry("BIN_BUNDLED_SODIUM", {"kind": "bundled_library", "table": "crypto_library"})
+    )
+    for entry in data["crypto_library"]:
+        if entry["name"] == "libsodium":
+            entry["rule"] = "BIN_BUNDLED_SODIUM"
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo.libs/libsodium-9f2c1e3a.so.23",
+                vendored_path=True,
+                soname="libsodium-9f2c1e3a.so.23",
+            ),
+        )
+    )
+    fired = ids(run(parse_ruleset(data), evidence))
+    assert "BIN_BUNDLED_SODIUM" in fired
+    assert "BIN_BUNDLED_CRYPTO_LIB" not in fired
+
+
+def test_a_module_entry_no_rule_claims_fires_nothing() -> None:
+    """py_import routing is strict: no `rule` and no default means no finding.
+
+    Reproduced by deleting `default = true` from PY_IMPORT_CRYPTO_MODULE, which leaves
+    two py_import rules and a table full of entries neither of them claims. Matching
+    those leniently would report the Mersenne Twister rule against `import ssl`.
+    """
+    data = shipped_data()
+    for rule in data["rule"]:
+        if rule["id"] == "PY_IMPORT_CRYPTO_MODULE":
+            del rule["match"]["default"]
+    findings = run(parse_ruleset(data), wheel(py_sites=(site("py_import", "ssl"),)))
+    assert ids(findings) & {"PY_IMPORT_CRYPTO_MODULE", "PY_INSECURE_RNG"} == set()
+
+
+def test_a_module_entry_that_names_its_rule_still_fires_without_a_default() -> None:
+    """The other half of strictness: routing works, it is only the unclaimed that drop."""
+    data = shipped_data()
+    for rule in data["rule"]:
+        if rule["id"] == "PY_IMPORT_CRYPTO_MODULE":
+            del rule["match"]["default"]
+    findings = run(parse_ruleset(data), wheel(py_sites=(site("py_import", "random"),)))
+    assert one(findings, "PY_INSECURE_RNG").subject == "random"
+    assert "PY_IMPORT_CRYPTO_MODULE" not in ids(findings)

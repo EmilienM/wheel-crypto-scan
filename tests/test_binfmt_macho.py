@@ -15,7 +15,7 @@ from wheel_crypto_scan.binfmt.macho import read_macho
 from wheel_crypto_scan.errors import MACHO_PARSE_ERROR
 from wheel_crypto_scan.ruleset import load_ruleset
 
-PATTERNS = load_ruleset().compile_patterns()
+PATTERNS = load_ruleset().compile_patterns().binary
 
 
 def _read(data: bytes, path: str = "libfoo.dylib", *, vendored: bool = False):

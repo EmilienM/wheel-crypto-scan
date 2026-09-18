@@ -1,19 +1,23 @@
 """Tests for the Layer 3 (Python source) AST scanner.
 
 Every source is an inline `bytes` literal: this layer never touches the filesystem, so
-neither should its tests. Detail strings are asserted verbatim wherever the spec commits
-to a shape, precisely so a future change to synthesis (or a slide back to
-`ast.unparse`) gets caught here rather than discovered downstream.
+neither should its tests. The one exception is `scan_python_files`, whose whole job is
+the archive walk, so its test builds a real wheel. Detail strings are asserted verbatim
+wherever the spec commits to a shape, precisely so a future change to synthesis (or a
+slide back to `ast.unparse`) gets caught here rather than discovered downstream.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from wheel_crypto_scan.layers.python_ast import scan_python_source
-from wheel_crypto_scan.ruleset import ScanPatterns, load_ruleset
+from helpers.wheelbuilder import build_wheel
 
-PATTERNS: ScanPatterns = load_ruleset().compile_patterns()
+from wheel_crypto_scan.layers.python_ast import scan_python_files, scan_python_source
+from wheel_crypto_scan.ruleset import PythonPatterns, load_ruleset
+from wheel_crypto_scan.wheelfile import WheelArchive
+
+PATTERNS: PythonPatterns = load_ruleset().compile_patterns().python
 
 
 def _kinds(sites, kind):
@@ -407,3 +411,28 @@ def test_an_untracked_augmented_assignment_is_ignored() -> None:
     source = b"total = 0\ntotal += 1\n"
     sites, _ = scan_python_source(source, "pkg/m.py", PATTERNS)
     assert [site for site in sites if site.kind == "py_attr"] == []
+
+
+# --------------------------- walking the archive ---------------------------
+
+
+def test_every_source_member_is_read_in_archive_order(tmp_path) -> None:
+    """`scan_python_files` picks the members; everything above tests one file's bytes."""
+    wheel = build_wheel(
+        tmp_path / "demo-1.0-py3-none-any.whl",
+        name="demo",
+        version="1.0",
+        files={
+            "demo/b.py": b"import hashlib\n",
+            "demo/a.py": b"import ssl\n",
+            "demo/data.txt": b"import hashlib\n",
+        },
+    )
+    with WheelArchive.open(wheel) as archive:
+        sites, scan_errors = scan_python_files(archive, PATTERNS)
+
+    assert scan_errors == ()
+    assert [(site.path, site.target) for site in sites] == [
+        ("demo/a.py", "ssl"),
+        ("demo/b.py", "hashlib"),
+    ]

@@ -8,7 +8,14 @@ from typing import Any
 import pytest
 
 from wheel_crypto_scan.errors import RulesetError
-from wheel_crypto_scan.ruleset import load_ruleset, parse_ruleset
+from wheel_crypto_scan.ruleset import (
+    DEFAULTABLE_TABLES,
+    ENTRY_TABLES,
+    MATCHER_KINDS,
+    ROUTED_KINDS,
+    load_ruleset,
+    parse_ruleset,
+)
 
 
 def minimal(**overrides: Any) -> dict[str, Any]:
@@ -85,18 +92,20 @@ def test_loads_the_shipped_ruleset() -> None:
 def test_shipped_ruleset_knows_the_bundled_openssl_rule() -> None:
     rule = load_ruleset().rule("BIN_BUNDLED_OPENSSL")
     assert rule.verdict == "CONDITIONAL"
-    assert rule.match["kind"] == "bundled_library"
+    assert [match["kind"] for match in rule.matches] == ["bundled_library"]
 
 
 def test_rules_can_be_selected_by_matcher_kind() -> None:
+    """Selection yields (rule, match) pairs: a rule may be reached through two kinds."""
     ruleset = load_ruleset()
-    ids = {rule.id for rule in ruleset.rules_for_kind("linkage")}
-    assert ids == {
+    selected = ruleset.matches_for_kind("linkage")
+    assert {rule.id for rule, _ in selected} == {
         "BIN_STATIC_OPENSSL",
         "DERIVED_SYSTEM_OPENSSL_ONLY",
         "BIN_LINKED_CRYPTO_LIBRARY",
         "BIN_OPENSSL_LINKAGE_UNKNOWN",
     }
+    assert {match["kind"] for _, match in selected} == {"linkage"}
 
 
 def test_unknown_rule_id_raises_key_error() -> None:
@@ -121,6 +130,39 @@ def test_unknown_matcher_kind_is_rejected() -> None:
         parse_ruleset(data)
 
 
+def test_a_rule_can_carry_several_match_tables() -> None:
+    """`[[rule.match]]` is OR: one concern, one rule id, two ways of spotting it."""
+    data = minimal()
+    data["rule"][0]["match"] = [
+        {"kind": "dist_name", "table": "crypto_distribution"},
+        {"kind": "requires_dist", "table": "crypto_distribution"},
+    ]
+    ruleset = parse_ruleset(data)
+    rule = ruleset.rule("DIST_NON_APPROVED_CRYPTO")
+    assert [match["kind"] for match in rule.matches] == ["dist_name", "requires_dist"]
+    for kind in ("dist_name", "requires_dist"):
+        selected = ruleset.matches_for_kind(kind)
+        assert [found.id for found, _ in selected] == ["DIST_NON_APPROVED_CRYPTO"]
+        assert [match["kind"] for _, match in selected] == [kind]
+
+
+def test_an_unknown_kind_among_several_matches_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["match"] = [
+        {"kind": "dist_name", "table": "crypto_distribution"},
+        {"kind": "read_the_authors_mind"},
+    ]
+    with pytest.raises(RulesetError, match="unknown matcher kind"):
+        parse_ruleset(data)
+
+
+def test_a_rule_matching_nothing_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["match"] = []
+    with pytest.raises(RulesetError, match="match is empty"):
+        parse_ruleset(data)
+
+
 def test_unknown_verdict_class_is_rejected() -> None:
     data = minimal()
     data["rule"][0]["verdict"] = "COMPLIANT"
@@ -131,6 +173,20 @@ def test_unknown_verdict_class_is_rejected() -> None:
 def test_table_entry_naming_a_missing_rule_is_rejected() -> None:
     data = minimal()
     data["crypto_distribution"][0]["rule"] = "DIST_TYPO"
+    with pytest.raises(RulesetError, match="unknown rule"):
+        parse_ruleset(data)
+
+
+def test_a_library_entry_naming_a_missing_rule_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["rule"] = "BIN_TYPO"
+    with pytest.raises(RulesetError, match="unknown rule"):
+        parse_ruleset(data)
+
+
+def test_a_crate_entry_naming_a_missing_rule_is_rejected() -> None:
+    data = minimal()
+    data["rust_crate"][0]["rule"] = "BIN_TYPO"
     with pytest.raises(RulesetError, match="unknown rule"):
         parse_ruleset(data)
 
@@ -165,13 +221,71 @@ def test_unknown_scan_error_kind_is_rejected() -> None:
 
 def test_two_default_rules_for_one_table_are_rejected() -> None:
     data = minimal()
-    data["rule"][0]["match"]["default"] = True
-    second = dict(data["rule"][0])
-    second["id"] = "DIST_OTHER"
-    second["match"] = {"kind": "dist_name", "table": "crypto_distribution", "default": True}
-    data["rule"].append(second)
+    for rule_id in ("PY_IMPORT_ONE", "PY_IMPORT_TWO"):
+        data["rule"].append(
+            dict(
+                data["rule"][0],
+                id=rule_id,
+                layer="python",
+                match={"kind": "py_import", "table": "python_module", "default": True},
+            )
+        )
     with pytest.raises(RulesetError, match="more than one default rule"):
         parse_ruleset(data)
+
+
+def test_a_default_declared_by_another_kind_is_rejected() -> None:
+    """A `linkage` rule claiming [[crypto_library]] would silence both bundled rules."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_LINKED_CRYPTO_LIBRARY",
+            layer="binary",
+            match={
+                "kind": "linkage",
+                "table": "crypto_library",
+                "value": "bundled",
+                "default": True,
+            },
+        )
+    )
+    with pytest.raises(RulesetError, match="cannot be the default"):
+        parse_ruleset(data)
+
+
+def test_a_default_on_a_table_that_never_falls_back_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["match"]["default"] = True
+    with pytest.raises(RulesetError, match="never fall back"):
+        parse_ruleset(data)
+
+
+def test_an_entry_routed_to_a_rule_that_ignores_routing_is_rejected() -> None:
+    """`rule` on a library entry routes the bundled-library finding and nothing else.
+
+    A `linkage` rule reads the same table and ignores `rule` entirely, so accepting
+    this would drop the entry's real finding and put nothing in its place.
+    """
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_LINKED_CRYPTO_LIBRARY",
+            layer="binary",
+            match={"kind": "linkage", "name": "openssl", "value": "bundled"},
+        )
+    )
+    data["crypto_library"][0]["rule"] = "BIN_LINKED_CRYPTO_LIBRARY"
+    with pytest.raises(RulesetError, match="never reads"):
+        parse_ruleset(data)
+
+
+def test_routing_is_declared_against_real_tables_and_matchers() -> None:
+    """A typo in the routing map would reject a legal ruleset, or accept a dead one."""
+    assert set(ROUTED_KINDS) <= set(ENTRY_TABLES)
+    assert set().union(*ROUTED_KINDS.values()) <= MATCHER_KINDS
+    assert DEFAULTABLE_TABLES <= set(ROUTED_KINDS)
 
 
 def test_missing_required_rule_field_is_rejected() -> None:
@@ -229,6 +343,14 @@ def test_soname_normalisation(soname: str, base: str, mangled: bool) -> None:
     assert (result.base, result.mangled) == (base, mangled)
 
 
+def test_own_base_falls_back_to_the_file_name() -> None:
+    """A build that stripped the SONAME out must not hide a vendored copy."""
+    conventions = parse_ruleset(minimal()).conventions
+    assert conventions.own_base("libcrypto-3a1f2b4c.so.3", "pkg.libs/renamed.so") == "libcrypto"
+    assert conventions.own_base(None, "pkg.libs/libcrypto-3a1f2b4c.so.3") == "libcrypto"
+    assert conventions.own_base("", "pkg.libs/libssl.so.3") == "libssl"
+
+
 @pytest.mark.parametrize(
     ("path", "vendored"),
     [
@@ -253,17 +375,17 @@ def test_weak_hash_algorithms_are_available_for_call_matching() -> None:
 
 
 def test_symbol_group_matches_a_prefix() -> None:
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
     assert patterns.symbol_groups_for("EVP_DigestInit_ex") == ("openssl",)
 
 
 def test_symbol_group_matches_an_exact_name() -> None:
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
     assert patterns.symbol_groups_for("RAND_bytes") == ("openssl",)
 
 
 def test_symbol_group_ignores_an_unrelated_name() -> None:
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
     assert patterns.symbol_groups_for("PyInit__foo") == ()
 
 
@@ -271,12 +393,12 @@ def test_symbol_group_results_are_sorted() -> None:
     """Two groups can claim one symbol; the order must not depend on table order."""
     data = minimal()
     data["symbol_group"].insert(0, {"name": "zzz", "prefixes": ["EVP_"], "exact": [], "why": "x"})
-    patterns = parse_ruleset(data).compile_patterns()
+    patterns = parse_ruleset(data).compile_patterns().binary
     assert patterns.symbol_groups_for("EVP_DigestInit_ex") == ("openssl", "zzz")
 
 
 def test_string_group_exposes_a_compiled_pattern() -> None:
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
     group = patterns.string_group("openssl_banner")
     assert isinstance(group.pattern, re.Pattern)
     assert group.pattern.search("OpenSSL 3.0.14 4 Jun 2024")
@@ -284,12 +406,12 @@ def test_string_group_exposes_a_compiled_pattern() -> None:
 
 def test_string_group_pattern_escapes_regex_metacharacters() -> None:
     """Substrings are literal text. A dot must not match any character."""
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
     assert patterns.string_group("openssl_banner").pattern.search("OpenSSL 3x0") is None
 
 
 def test_cargo_path_regex_extracts_crate_and_version() -> None:
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
     match = patterns.cargo_path_regex.search(
         "/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ring-0.17.8/src/lib.rs"
     )
@@ -298,23 +420,23 @@ def test_cargo_path_regex_extracts_crate_and_version() -> None:
 
 
 def test_python_module_names_are_available_to_the_ast_scanner() -> None:
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().python
     assert "nacl" in patterns.py_modules
 
 
 def test_ctypes_substrings_are_available_to_the_ast_scanner() -> None:
-    patterns = parse_ruleset(minimal()).compile_patterns()
+    patterns = parse_ruleset(minimal()).compile_patterns().python
     assert "libcrypto" in patterns.ctypes_substrings
 
 
 def test_shipped_patterns_expose_the_python_call_targets() -> None:
-    patterns = load_ruleset().compile_patterns()
+    patterns = load_ruleset().compile_patterns().python
     assert "hashlib.md5" in patterns.py_call_targets
     assert "hashlib.new" in patterns.py_call_targets
 
 
 def test_shipped_patterns_expose_tls_attributes_and_constants() -> None:
-    patterns = load_ruleset().compile_patterns()
+    patterns = load_ruleset().compile_patterns().python
     assert "check_hostname" in patterns.py_attributes
     assert "ssl.CERT_NONE" in patterns.py_constants
 
@@ -322,8 +444,8 @@ def test_shipped_patterns_expose_tls_attributes_and_constants() -> None:
 def test_compiled_pattern_sequences_are_sorted() -> None:
     """Extractors iterate these; unsorted input would leak into the output order."""
     patterns = load_ruleset().compile_patterns()
-    assert list(patterns.py_call_targets) == sorted(patterns.py_call_targets)
-    assert list(patterns.py_modules) == sorted(patterns.py_modules)
-    assert [g.name for g in patterns.symbol_groups] == sorted(
-        g.name for g in patterns.symbol_groups
+    assert list(patterns.python.py_call_targets) == sorted(patterns.python.py_call_targets)
+    assert list(patterns.python.py_modules) == sorted(patterns.python.py_modules)
+    assert [g.name for g in patterns.binary.symbol_groups] == sorted(
+        g.name for g in patterns.binary.symbol_groups
     )

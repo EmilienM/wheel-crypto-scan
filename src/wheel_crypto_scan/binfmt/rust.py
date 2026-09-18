@@ -18,7 +18,7 @@ def find_rust_crates(
 ) -> tuple[tuple[RustCrate, ...], bool]:
     """Extract every distinct (name, version) pair `pattern` finds in `text`.
 
-    `pattern` must have `name` and `version` groups (`ScanPatterns.cargo_path_regex`
+    `pattern` must have `name` and `version` groups (`BinaryPatterns.cargo_path_regex`
     guarantees this). Deduplication happens before sorting and the cap is applied
     after, so which crates survive truncation never depends on scan order.
     """
