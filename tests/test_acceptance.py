@@ -61,7 +61,7 @@ def subdir(tmp_path: Path, name: str) -> Path:
 
 @pytest.fixture
 def system_wheel(tmp_path: Path) -> Path:
-    """A Red Hat style build: it resolves libcrypto from the host."""
+    """A distro style build: it resolves libcrypto from the host."""
     return build_wheel(
         subdir(tmp_path, "system") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",
         name="fakecrypto",

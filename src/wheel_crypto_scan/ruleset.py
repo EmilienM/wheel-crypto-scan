@@ -135,7 +135,7 @@ class Conventions:
             if stripped == stem:
                 break
             stem = stripped
-        match = self.mangled_soname_regex.match(stem)
+        match = self.mangled_soname_regex.match(stem)  # pylint: disable=no-member
         if match is not None:
             return SonameInfo(base=match.group("stem"), mangled=True, original=name)
         return SonameInfo(base=stem, mangled=False, original=name)
@@ -160,6 +160,8 @@ class Rule:
 
 @dataclass(frozen=True, slots=True)
 class Distribution:
+    """A Python project on the watch list, and the rule it fires."""
+
     name: str
     rule: str
     why: str
@@ -192,6 +194,8 @@ class CryptoLibrary:
 
 @dataclass(frozen=True, slots=True)
 class RustCrateEntry:
+    """A cargo crate on the watch list, with its own severity and verdict."""
+
     name: str
     why: str
     severity: str | None = None
@@ -201,6 +205,8 @@ class RustCrateEntry:
 
 @dataclass(frozen=True, slots=True)
 class PythonModule:
+    """An importable module on the watch list, with its own severity and verdict."""
+
     name: str
     why: str
     rule: str | None = None

@@ -327,7 +327,7 @@ def _match_dynamic_symbol(rule, ruleset, evidence, linkage, index) -> Iterator[_
         for symbol in binary.matched_symbols:
             if symbol.group not in groups:
                 continue
-            if binding != "any" and symbol.binding != binding:
+            if binding not in ("any", symbol.binding):
                 continue
             yield _Hit(
                 subject_kind="symbol_group",

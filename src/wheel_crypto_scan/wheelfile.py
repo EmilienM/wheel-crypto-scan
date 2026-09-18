@@ -248,7 +248,8 @@ class WheelArchive:
         member = self._members[name]
         if member.size <= self.limits.max_in_memory_bytes:
             return io.BytesIO(self.read(name))
-        return io.BufferedReader(SeekableZipMember(self._zip, name, member.size))  # type: ignore[return-value]
+        member_stream = SeekableZipMember(self._zip, name, member.size)
+        return io.BufferedReader(member_stream)  # type: ignore[return-value]
 
     def symlink_target(self, name: str) -> str | None:
         """The path a symlink member points at. Recorded, never followed."""

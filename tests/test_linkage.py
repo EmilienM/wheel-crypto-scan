@@ -59,7 +59,7 @@ def wheel(*binaries: BinaryEvidence, errors: tuple[ScanError, ...] = ()) -> Evid
 
 
 def test_a_wheel_linking_the_system_openssl_is_system(ruleset) -> None:
-    """The Red Hat build: it resolves to whatever OpenSSL the host provides."""
+    """A distro build: it resolves to whatever OpenSSL the host provides."""
     evidence = wheel(
         binary(
             "cryptography/hazmat/bindings/_openssl.abi3.so",

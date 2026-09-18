@@ -129,7 +129,15 @@ def _merge(
 ) -> Iterator[str]:
     for wheel in wheels:
         kept = existing.get(wheel.name)
-        yield kept if kept is not None else next(scanned)
+        if kept is not None:
+            yield kept
+            continue
+        # Never `next()` bare inside a generator: an exhausted iterator would raise
+        # StopIteration, which PEP 479 turns into an opaque RuntimeError here.
+        produced = next(scanned, None)
+        if produced is None:
+            return
+        yield produced
 
 
 def _scan_all(wheels: Sequence[Path], args: argparse.Namespace, ruleset: Ruleset) -> Iterator[str]:

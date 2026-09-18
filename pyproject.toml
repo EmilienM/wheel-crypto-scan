@@ -45,3 +45,42 @@ markers = [
     "real: opt-in tests that need real wheels in WCS_CORPUS_DIR (deselected by default)",
     "hostbin: opt-in tests that read real system binaries such as /usr/lib64/libcrypto.so.3",
 ]
+
+[tool.pylint.main]
+py-version = "3.11"
+jobs = 0
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint."messages control"]
+# Each of these is a deliberate design choice rather than an oversight. The reasons
+# are recorded here so a future contributor can tell the difference.
+disable = [
+    # Almost every case is a `sort_key()` or a one-line accessor whose name already
+    # says everything a docstring would. The public API that carries judgement is
+    # documented at module and class level.
+    "missing-function-docstring",
+    # Rule matchers all take the same (rule, ruleset, evidence, linkage, index)
+    # signature so the engine can dispatch them from one table. Most ignore most of it.
+    "unused-argument",
+    # Deliberate: one malformed wheel out of thirty thousand must become an error
+    # record, never an exception that aborts the run.
+    "broad-exception-caught",
+    # Evidence and record types are wide because the output contract is wide.
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-instance-attributes",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-return-statements",
+    "too-many-statements",
+    "too-few-public-methods",
+    # The binary readers share a deliberate shape; collapsing them would couple the
+    # ELF and Mach-O paths to each other.
+    "duplicate-code",
+    # Worker process state, set exactly once in the pool initializer.
+    "global-statement",
+    # mkstemp is used for its file descriptor, which `with` would not give us.
+    "consider-using-with",
+]

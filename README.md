@@ -1,7 +1,7 @@
 # wheel-crypto-scan
 
-Reports crypto-relevant **evidence** found inside Python wheels, so component teams
-consuming [packages.redhat.com](https://packages.redhat.com) can see per-wheel FIPS risk.
+Reports crypto-relevant **evidence** found inside Python wheels, so the teams consuming a
+package index can see per-wheel FIPS risk before they ship it.
 
 It gathers evidence. It does not decide compliance.
 
