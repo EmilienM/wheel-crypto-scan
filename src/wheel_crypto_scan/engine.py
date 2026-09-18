@@ -316,7 +316,7 @@ def _match_bundled_library(rule, match, ruleset, evidence, linkage, index) -> It
             if library.string_group and banner.group == library.string_group
         ]
         if banners:
-            detail = f"{detail}; rodata={banners[0]!r}"
+            detail = f"{detail}; string={banners[0]!r}"
         yield Hit(
             subject_kind="library",
             subject=library.name,
@@ -387,7 +387,7 @@ def _match_binary_string(rule, match, ruleset, evidence, linkage, index) -> Iter
                 subject=found.group,
                 location=Location(
                     path=binary.path,
-                    evidence=_clean(f"rodata={found.value!r}", ruleset.limits.max_evidence_chars),
+                    evidence=_clean(f"string={found.value!r}", ruleset.limits.max_evidence_chars),
                 ),
             )
 

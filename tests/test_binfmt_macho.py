@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import struct
 
 import pytest
 from helpers.binfmt import MachOBuilder, MachOSym, build_fat
@@ -499,3 +500,79 @@ def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
     stream = io.BytesIO(MachOBuilder(id_dylib="libfoo.dylib").build() + banner)
     ev, _ = read_macho(stream, "libfoo.dylib", PATTERNS, vendored=False, max_strings_bytes=8)
     assert ev.strings_truncated is True
+
+
+# --- a header that does not parse costs the header, not the strings ----------
+
+BANNER = b"OpenSSL 3.0.14 4 Jun 2024"
+CARGO = b"/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ring-0.17.8/src/lib.rs"
+
+
+def test_unreadable_fat_header_keeps_the_strings_it_already_found() -> None:
+    """A fat header too short to walk still leaves the object's banner readable."""
+    data = b"\xca\xfe\xba\xbe" + BANNER + b"\x00" + CARGO + b"\x00"
+    ev, errors = _read(data, path="fat.dylib")
+    assert [e.kind for e in errors] == [MACHO_PARSE_ERROR]
+    assert ev.format == evidence.FORMAT_MACHO
+    assert ev.partial_analysis is True
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+    assert [(c.name, c.version) for c in ev.rust_crates] == [("ring", "0.17.8")]
+
+
+def test_unrecognisable_magic_keeps_the_strings_it_already_found() -> None:
+    data = b"\xfe\xed\x00\x00" + BANNER + b"\x00"
+    ev, errors = _read(data, path="odd.dylib")
+    assert [e.kind for e in errors] == [MACHO_PARSE_ERROR]
+    assert ev.partial_analysis is True
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_a_fat_binary_with_no_readable_slice_keeps_its_strings() -> None:
+    """Every architecture placed outside the object, and the banner still survives."""
+    header = struct.pack(">II", 0xCAFEBABE, 1) + struct.pack(">iiIII", 7, 0, 1 << 30, 16, 0)
+    ev, errors = _read(header + BANNER + b"\x00", path="fat.dylib")
+    assert [e.message for e in errors] == ["no readable slice in fat binary"]
+    assert ev.partial_analysis is True
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_the_failure_path_still_honours_max_strings_bytes() -> None:
+    """The fallback is bounded by the caller's limit, not by the object's size."""
+    stream = io.BytesIO(b"\xca\xfe\xba\xbe" + BANNER + b"\x00")
+    ev, _ = read_macho(stream, "fat.dylib", PATTERNS, vendored=False, max_strings_bytes=8)
+    assert ev.partial_analysis is True
+    assert ev.strings_truncated is True
+    assert ev.matched_strings == ()
+
+
+def test_go_markers_survive_a_header_that_would_not_parse() -> None:
+    """`binfmt.pe` always kept these; the contract says every format does."""
+    marker = b"GOEXPERIMENT=boringcrypto\x00_Cfunc__goboringcrypto_DLEAY_version\x00"
+    ev, _ = _read(b"\xca\xfe\xba\xbe" + marker, path="fat.dylib")
+    assert ev.go is not None
+    assert ev.go.boring_crypto is True
+
+
+def test_truncated_load_commands_keep_the_strings_it_already_found() -> None:
+    """Load commands that run off the end cost the load commands, nothing more."""
+    full = MachOBuilder(id_dylib="libfoo.dylib", load_dylibs=("libcrypto.3.dylib",)).build()
+    # mach_header_64 is magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, ...
+    (sizeofcmds,) = struct.unpack_from("<I", full, 20)
+    # Keep the header, drop the load commands, and leave the banner where the reader
+    # will still find it: the object now promises more commands than it carries.
+    data = full[:32] + BANNER + b"\x00"
+    assert len(data) - 32 < sizeofcmds
+    ev, errors = _read(data, path="chopped.dylib")
+    assert [e.kind for e in errors] == [MACHO_PARSE_ERROR]
+    assert ev.partial_analysis is True
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_unparsed_macho_reports_no_structural_evidence() -> None:
+    """Strings survive; nothing else is invented to go with them."""
+    ev, _ = _read(b"\xca\xfe\xba\xbe" + BANNER, path="fat.dylib")
+    assert ev.needed == ()
+    assert ev.soname is None
+    assert ev.matched_symbols == ()
+    assert ev.machine is None
+    assert ev.symtab_count == 0

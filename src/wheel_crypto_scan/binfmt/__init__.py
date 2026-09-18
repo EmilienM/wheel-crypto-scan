@@ -7,6 +7,14 @@ is the single entry point; it sniffs the format and dispatches to the reader
 registered for it, or to `binfmt.fallback` when none is, so a wheel can never look
 clean merely because we cannot read it.
 
+Every reader here answers to one contract about failure: a structure that does not
+parse costs that structure, never the evidence already gathered. A reader that cannot
+read its own header still returns the strings, cargo paths and Go markers it found, and
+still marks the object `partial_analysis`. Absence of evidence is not evidence of
+absence, and the strings are often the only evidence there is. That is the outcome
+required; how each reader reaches it is its own business, and `binfmt.pe` writes its
+failure records out field by field where the other two call `binfmt.fallback`.
+
 `max_strings_bytes` bounds how much of an object is pulled into memory. For ELF and
 Mach-O that bounds the strings pass alone, because their structural reads go through
 the stream. For PE it bounds the structural read too: that reader resolves every
