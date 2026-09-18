@@ -15,7 +15,15 @@ import json
 from pathlib import Path
 
 import pytest
-from helpers.binfmt import DynSym, ElfBuilder
+from helpers.binfmt import (
+    DynSym,
+    ElfBuilder,
+    MachOBuilder,
+    MachOSym,
+    PEBuilder,
+    PEExport,
+    build_fat,
+)
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan.ruleset import load_ruleset
@@ -383,3 +391,64 @@ def test_a_rebuilt_fixture_produces_the_same_record(context, tmp_path: Path) -> 
     first = to_json_line(scan(context, build(tmp_path / "a")))
     second = to_json_line(scan(context, build(tmp_path / "b")))
     assert first == second
+
+
+def test_a_macho_that_declares_no_dependency_is_not_opaque(context, tmp_path: Path) -> None:
+    """Every slice parsed, two symbols were read, nothing crypto-related was found.
+
+    `needed` is tested before the symbol count, so a dylib that links `libSystem` was
+    never opaque. This is the shape that was: no dependency to fall back on, and a
+    symbol count in the field `is_opaque` did not look at. It reported having told us
+    nothing while carrying the symbols it told us.
+    """
+    slices = [
+        MachOBuilder(id_dylib="_ext.so", symbols=(MachOSym("_PyInit__ext", defined=True),)).build(),
+        MachOBuilder(
+            is64=False,
+            big_endian=True,
+            id_dylib="_ext.so",
+            symbols=(MachOSym("_PyInit__ext", defined=True),),
+        ).build(),
+    ]
+    tag = "cp312-cp312-macosx_11_0_universal2"
+    wheel = build_wheel(
+        tmp_path / f"universal-1.0-{tag}.whl",
+        name="universal",
+        version="1.0",
+        tags=(tag,),
+        files={
+            "universal/__init__.py": "def add(a, b):\n    return a + b\n",
+            "universal/_ext.so": build_fat(slices),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    binary = record["binaries"][0]
+    assert binary["partial_analysis"] is False
+    assert binary["partial_reasons"] == []
+    assert binary["symbol_counts"]["symtab"] == 2
+    assert record["verdict"]["class"] == "NO_CRYPTO_DETECTED"
+
+
+def test_a_pe_that_declares_no_import_is_not_opaque(context, tmp_path: Path) -> None:
+    """The PE half of the same bug: its named entries land in `symtab_count` too.
+
+    A resource-only or statically linked DLL imports nothing, so `needed` could not
+    rescue it either, and the export it does declare was invisible to `is_opaque`.
+    """
+    tag = "cp312-cp312-win_amd64"
+    wheel = build_wheel(
+        tmp_path / f"winext-1.0-{tag}.whl",
+        name="winext",
+        version="1.0",
+        tags=(tag,),
+        files={
+            "winext/__init__.py": "def add(a, b):\n    return a + b\n",
+            "winext/_ext.pyd": PEBuilder(
+                dll_name="_ext.pyd", exports=(PEExport("PyInit__ext"),)
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["binaries"][0]["symbol_counts"]["symtab"] == 1
+    assert "BIN_OPAQUE" not in {f["rule_id"] for f in record["findings"]}
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "none"

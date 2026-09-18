@@ -455,7 +455,7 @@ def _match_opaque_binary(rule, match, ruleset, evidence, linkage, index) -> Iter
             subject=None,
             location=Location(
                 path=binary.path,
-                evidence="no dependencies, no dynamic symbols, no readable strings",
+                evidence="no dependencies, no symbols, no readable strings",
             ),
         )
 

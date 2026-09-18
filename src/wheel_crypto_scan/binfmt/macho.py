@@ -389,10 +389,10 @@ def read_macho(
         # architecture that kept its symbols is an object that has symbols.
         stripped=all(slice_evidence.stripped for slice_evidence in read),
         # `LC_SYMTAB` is the Mach-O counterpart of both ELF tables, so its entry count
-        # lands here, summed over the slices. `BinaryEvidence.is_opaque` deliberately
-        # tests only `dynsym_count`, which no Mach-O ever sets: widening it would also
-        # flip every ELF object that has a `.symtab` but no `.dynsym`, which is not
-        # this reader's call to make.
+        # lands here, summed over the slices. `BinaryEvidence.is_opaque` reads this
+        # field for Mach-O and `dynsym_count` for ELF, rather than one field for every
+        # format: no Mach-O sets `dynsym_count`, so keying on it alone called every
+        # Mach-O opaque however much of it was read.
         symtab_count=symtab_count,
         matched_symbols=ordered[:limit],
         matched_strings=found.matched_strings,

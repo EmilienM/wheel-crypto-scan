@@ -13,6 +13,7 @@ from wheel_crypto_scan.evidence import (
     BINDING_DEFINED,
     BINDING_IMPORTED,
     FORMAT_ELF,
+    FORMAT_MACHO,
     FORMAT_PE,
     STAGE_BINARY,
     ArtifactInventory,
@@ -238,6 +239,45 @@ def test_a_binary_is_opaque_only_when_it_yielded_nothing() -> None:
     assert not binary("pkg/_ext.so", dynsym_count=12).is_opaque
     assert not binary("pkg/_ext.so", needed=("libcrypto.so.3",)).is_opaque
     assert not binary("pkg/_ext.so", rust_crates=(RustCrate("ring", "0.17.8"),)).is_opaque
+
+
+def test_which_symbol_count_means_something_is_read_depends_on_the_format() -> None:
+    """Mach-O and PE never set `dynsym_count`; their counts land in `symtab_count`.
+
+    Keying on `dynsym_count` for every format called every Mach-O and every PE opaque
+    however much of it was read, which is how a crypto-free universal2 wheel whose
+    slices all parsed came back saying it had told us nothing.
+    """
+    for fmt in (FORMAT_MACHO, FORMAT_PE):
+        assert not binary("pkg/_ext", format=fmt, symtab_count=12).is_opaque, fmt
+        assert binary("pkg/_ext", format=fmt).is_opaque, fmt
+
+
+def test_an_elf_with_a_symtab_and_no_dynsym_is_still_opaque() -> None:
+    """The reason the counts are chosen by format rather than simply both tested.
+
+    That is the ordinary shape of a static executable. Whether it has told us anything
+    is a separate question from the Mach-O and PE one, and answering it by widening
+    this property would be answering it by accident.
+    """
+    assert binary("pkg/_ext.so", format=FORMAT_ELF, symtab_count=12).is_opaque
+    assert not binary("pkg/_ext.so", format=FORMAT_ELF, dynsym_count=12).is_opaque
+
+
+def test_a_readable_crypto_free_macho_resolves_openssl_to_none(ruleset) -> None:
+    """`is_opaque` is what `linkage` falls back on, and it is the half users filter.
+
+    Both of this property's callers in `linkage` could be deleted with the whole suite
+    still green, which is how the format bug reached the field at all.
+    """
+    evidence = wheel(binary("pkg/_ext.so", format=FORMAT_MACHO, symtab_count=12))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
+
+
+def test_a_macho_that_yielded_nothing_keeps_openssl_unknown(ruleset) -> None:
+    """Absence of evidence is not evidence of absence, for Mach-O as much as ELF."""
+    evidence = wheel(binary("pkg/_ext.so", format=FORMAT_MACHO))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
 
 
 def test_an_unparseable_binary_makes_the_answer_unknown(ruleset) -> None:
