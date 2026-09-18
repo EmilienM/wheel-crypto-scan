@@ -129,12 +129,16 @@ class SeekableZipMember(io.RawIOBase):
 class WheelArchive:
     """A wheel opened for reading, with its identity and its guards."""
 
-    def __init__(self, path: Path, limits: ArchiveLimits | None = None) -> None:
+    def __init__(
+        self, path: Path, limits: ArchiveLimits | None = None, sha256: str | None = None
+    ) -> None:
         self._path = Path(path)
         self.limits = limits or ArchiveLimits()
         self.filename = self._path.name
         self.size_bytes = self._path.stat().st_size
-        self.sha256 = _hash_file(self._path)
+        # Callers that already hashed the file (the cache lookup does) pass it back in
+        # rather than paying for a second full read of every wheel in the index.
+        self.sha256 = sha256 if sha256 is not None else hash_wheel(self._path)
         self._errors: dict[tuple[str, str, str], ScanError] = {}
         try:
             self._zip = zipfile.ZipFile(self._path)
@@ -168,8 +172,10 @@ class WheelArchive:
             )
 
     @classmethod
-    def open(cls, path: str | Path, limits: ArchiveLimits | None = None) -> WheelArchive:
-        return cls(Path(path), limits)
+    def open(
+        cls, path: str | Path, limits: ArchiveLimits | None = None, sha256: str | None = None
+    ) -> WheelArchive:
+        return cls(Path(path), limits, sha256)
 
     # --- membership ---------------------------------------------------------
 
@@ -271,7 +277,9 @@ class WheelArchive:
         self.close()
 
 
-def _hash_file(path: Path) -> str:
+def hash_wheel(path: str | Path) -> str:
+    """The sha256 of the wheel file, which is half of the scan cache key."""
+    path = Path(path)
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(_HASH_CHUNK), b""):

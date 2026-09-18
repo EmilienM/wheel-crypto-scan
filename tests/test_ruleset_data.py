@@ -189,3 +189,17 @@ def test_linkage_rules_use_known_values(ruleset: dict[str, Any]) -> None:
     for rule in ruleset["rule"]:
         if rule["match"]["kind"] == "linkage":
             assert rule["match"]["value"] in known, rule["id"]
+
+
+def test_every_error_kind_is_covered_by_a_rule(ruleset: dict[str, Any]) -> None:
+    """An unmatched error kind reads as "nothing found", which is the worst outcome.
+
+    A wheel we could not open must never be reported the same way as a wheel that
+    genuinely has no crypto in it, so every failure the scanner can record has to have
+    a rule that turns it into a finding.
+    """
+    covered: set[str] = set()
+    for rule in ruleset["rule"]:
+        if rule["match"]["kind"] == "scan_error":
+            covered.update(rule["match"]["error_kinds"])
+    assert ERROR_KINDS - covered == set()

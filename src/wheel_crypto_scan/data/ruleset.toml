@@ -956,7 +956,81 @@ title = "Wheel metadata missing or unreadable"
 why = "Without METADATA or WHEEL we cannot identify the distribution, so none of the name-based rules can be trusted for this wheel."
 [rule.match]
 kind = "scan_error"
-error_kinds = ["metadata_missing", "metadata_decode_error", "wheel_missing", "dist_info_ambiguous"]
+error_kinds = [
+    "metadata_missing",
+    "metadata_decode_error",
+    "wheel_missing",
+    "dist_info_missing",
+    "dist_info_ambiguous",
+]
+
+[[rule]]
+id = "WHEEL_UNREADABLE"
+layer = "metadata"
+category = "opacity"
+severity = "high"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Wheel could not be opened"
+why = "Not a readable zip at all, so nothing in it was examined. This has to be a finding: a wheel that produced no evidence because we could not open it must never be reported the same way as a wheel that produced no evidence because there was none."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["bad_zip"]
+
+[[rule]]
+id = "WHEEL_MEMBER_UNREADABLE"
+layer = "metadata"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Part of the wheel could not be read"
+why = "A member was unreadable, too large, or expanded far enough to look like a zip bomb, so it was skipped. Whatever was inside it is unexamined rather than absent."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["member_read_error", "size_limit_exceeded", "compression_ratio_exceeded"]
+
+[[rule]]
+id = "WHEEL_ARCHIVE_ANOMALY"
+layer = "metadata"
+category = "integrity"
+severity = "info"
+confidence = "high"
+needs_human_review = true
+title = "Archive structure is unusual"
+why = "A duplicated member name, a symlink member, or a filename that is not a valid wheel name. Usually a repair tool being sloppy, occasionally worth asking about, never on its own a crypto finding."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["duplicate_member", "symlink_member", "wheel_filename_invalid"]
+
+[[rule]]
+id = "WHEEL_RECORD_UNREADABLE"
+layer = "metadata"
+category = "integrity"
+severity = "info"
+confidence = "high"
+needs_human_review = false
+title = "RECORD missing or unparseable"
+why = "Without RECORD the file inventory cannot be reconciled against the archive. Informational: it says we did one fewer cross-check, not that anything is wrong."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["record_missing", "record_parse_error"]
+
+[[rule]]
+id = "SBOM_UNREADABLE"
+layer = "metadata"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Shipped SBOM could not be parsed"
+why = "The wheel ships an SBOM, which is the highest-confidence statement we can get about what it bundles, and we could not read it. Marked opaque rather than ignored, because the one file that would have told us what is vendored is the file that failed."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["sbom_parse_error"]
 
 [[rule]]
 id = "WHEEL_RECORD_MISMATCH"
