@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import stat
 import sys
 from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -110,7 +111,9 @@ def _run_scan(args: argparse.Namespace) -> int:
     )
 
     existing: dict[str, str] = {}
-    if args.resume and args.output is not None:
+    if args.resume and args.output is not None and not _is_non_regular(args.output):
+        # Reading records back out of a FIFO blocks until someone writes to it, and
+        # nobody will. There is nothing to resume from a device or a socket either.
         existing = _existing_records(args.output)
 
     pending = [wheel for wheel in wheels if wheel.name not in existing]
@@ -243,12 +246,53 @@ def _write(lines: Iterable[str], args: argparse.Namespace) -> int:
     if args.output is None:
         emit(sys.stdout)
         return 0
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = args.output.with_name(args.output.name + ".partial")
-    with temporary.open("w", encoding="utf-8") as stream:
-        emit(stream)
-    temporary.replace(args.output)
+
+    # Nothing but a regular file can be atomically replaced by a rename, and the
+    # rename dance exists only to spare regular files a truncated record file after
+    # an interrupted run. Write straight to anything else: a `.partial` sibling next
+    # to a path like /dev/null cannot even be created.
+    non_regular = _is_non_regular(args.output)
+    target = args.output if non_regular else args.output.with_name(args.output.name + ".partial")
+
+    try:
+        if not non_regular:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", encoding="utf-8") as stream:
+            emit(stream)
+        if not non_regular:
+            target.replace(args.output)
+    except OSError as error:
+        if not non_regular:
+            _discard(target)
+        print(f"{TOOL_NAME}: cannot write output to {args.output}: {error}", file=sys.stderr)
+        return 1
     return 0
+
+
+def _is_non_regular(path: Path) -> bool:
+    """True for an existing path that is not a regular file: a device, FIFO, socket
+    or directory, none of which a rename can atomically replace.
+
+    `lstat`, not `stat`. `/dev/stdout` is a symlink onto whatever fd 1 happens to be,
+    so following it would call `-o /dev/stdout >records.jsonl` a regular file and then
+    rename the temporary over the symlink itself. A path that does not exist yet takes
+    the temp-and-rename path, which is the ordinary case.
+    """
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        return False
+    return not stat.S_ISREG(mode)
+
+
+def _discard(target: Path) -> None:
+    """Drop a half-written temporary. A failure here must not mask the write error
+    that caused it, which is the thing the user actually needs to read.
+    """
+    try:
+        target.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # --- rules and schema -------------------------------------------------------
