@@ -23,8 +23,11 @@ from .elf import (
     EM_X86_64,
     ET_DYN,
     ET_EXEC,
+    SHF_COMPRESSED,
     DynSym,
     ElfBuilder,
+    patch_header_field,
+    patch_section_header,
     patch_u16,
 )
 from .macho import FAT_MAGIC, FAT_MAGIC_64, MachOBuilder, MachOSym, build_fat
@@ -44,6 +47,7 @@ __all__ = [
     "EM_X86_64",
     "ET_DYN",
     "ET_EXEC",
+    "SHF_COMPRESSED",
     "E_SHNUM_OFFSET",
     "ElfBuilder",
     "FAT_MAGIC",
@@ -57,5 +61,7 @@ __all__ = [
     "PEExport",
     "PEImport",
     "build_fat",
+    "patch_header_field",
+    "patch_section_header",
     "patch_u16",
 ]

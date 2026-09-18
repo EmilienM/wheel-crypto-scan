@@ -42,6 +42,24 @@ PARTIAL_NO_STRUCTURAL_READER = "no_structural_reader"
 PARTIAL_ELF_HEADER_UNREAD = "elf_header_unread"
 # The ELF header parsed; the section header table it points at does not fit the object.
 PARTIAL_ELF_SECTION_TABLE_TRUNCATED = "elf_section_table_truncated"
+# A section header could not be read. A section we cannot name is a section we cannot
+# use, so anything derived from the section list may be missing rather than absent:
+# `needed`, `soname`, `rpath`, `runpath`, the symbol counts and the strings alike.
+PARTIAL_ELF_SECTIONS_UNREAD = "elf_sections_unread"
+# A section's bytes could not be read, so the strings pass ran over less than the
+# object holds. On its own this used to be silent, which made a wheel whose only
+# evidence was a `.rodata` banner able to come back with no findings at all.
+PARTIAL_ELF_SECTION_DATA_UNREAD = "elf_section_data_unread"
+# `.dynamic` would not resolve, so `needed`, `soname`, `rpath` and `runpath` are empty
+# because they could not be read, not because the object declares none.
+PARTIAL_ELF_DYNAMIC_UNREAD = "elf_dynamic_unread"
+# `.dynsym` would not read, so the imported-versus-defined split is missing or partial.
+PARTIAL_ELF_DYNSYM_UNREAD = "elf_dynsym_unread"
+# `.symtab` would not read, so `stripped` and `symbol_counts.symtab` describe a table we
+# failed on rather than one the object does not have.
+PARTIAL_ELF_SYMTAB_UNREAD = "elf_symtab_unread"
+# `.go.buildinfo` would not read, so Go toolchain provenance is missing.
+PARTIAL_ELF_GO_BUILDINFO_UNREAD = "elf_go_buildinfo_unread"
 # The Mach-O header, or a fat header, would not parse.
 PARTIAL_MACHO_HEADER_UNREAD = "macho_header_unread"
 # `LC_SYMTAB` was absent, unreachable, or named nothing we could resolve, so the
@@ -76,6 +94,12 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_NO_STRUCTURAL_READER,
         PARTIAL_ELF_HEADER_UNREAD,
         PARTIAL_ELF_SECTION_TABLE_TRUNCATED,
+        PARTIAL_ELF_SECTIONS_UNREAD,
+        PARTIAL_ELF_SECTION_DATA_UNREAD,
+        PARTIAL_ELF_DYNAMIC_UNREAD,
+        PARTIAL_ELF_DYNSYM_UNREAD,
+        PARTIAL_ELF_SYMTAB_UNREAD,
+        PARTIAL_ELF_GO_BUILDINFO_UNREAD,
         PARTIAL_MACHO_HEADER_UNREAD,
         PARTIAL_MACHO_SYMTAB_INCOMPLETE,
         PARTIAL_MACHO_FAT_SLICE_UNREAD,
@@ -186,9 +210,11 @@ class BinaryEvidence:
     symbols_truncated: bool = False
     strings_truncated: bool = False
     # Set when part of the object was not read: a format with no structural reader; a
-    # PE whose section table was truncated, whose import directory was absent or could
-    # not be walked, that named something by ordinal alone, or that carries a delay-load
-    # import directory, which is not parsed; a Mach-O whose `LC_SYMTAB` could not be read
+    # ELF whose header, section headers, `.dynamic`, symbol tables, section data or
+    # `.go.buildinfo` would not read; a PE whose section table was truncated, whose
+    # import directory was absent or could not be walked, that named something by
+    # ordinal alone, or that carries a delay-load import directory, which is not
+    # parsed; a Mach-O whose `LC_SYMTAB` could not be read
     # in full; or a slice of a fat binary that could not be read. A wheel can never
     # look clean merely because we read less of it than usual.
     partial_analysis: bool = False

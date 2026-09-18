@@ -180,6 +180,11 @@ def read_elf(
         )
 
     errors: list[ScanError] = []
+    # Every error below is evidence this object has and we did not get, so each names
+    # itself here too. The record used to say `partial_analysis: false` beside them: a
+    # `.dynamic` that would not resolve emptied `needed` and the record then read as a
+    # complete read of an object with no dependencies.
+    reasons: set[str] = set()
 
     # A proactive truncation check, done before we attempt to read anything the
     # header points at: if the section header table itself does not fit in the
@@ -213,11 +218,13 @@ def read_elf(
     except Exception:
         num_sections = 0
         errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the elf section count"))
+        reasons.add(evidence.PARTIAL_ELF_SECTIONS_UNREAD)
     for index in range(num_sections):
         try:
             sections.append(elf.get_section(index))
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read an elf section header"))
+            reasons.add(evidence.PARTIAL_ELF_SECTIONS_UNREAD)
 
     dynamic = _find_section(sections, ".dynamic")
     needed: tuple[str, ...] = ()
@@ -235,6 +242,7 @@ def read_elf(
             )
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic section"))
+            reasons.add(evidence.PARTIAL_ELF_DYNAMIC_UNREAD)
             needed, soname, rpath, runpath = (), None, (), ()
 
     dynsym = _find_section(sections, ".dynsym")
@@ -245,6 +253,7 @@ def read_elf(
             dynsym_count = dynsym.num_symbols()
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic symbol table"))
+            reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
             dynsym_count = 0
         try:
             for name, undefined in _iter_symbols(elf, dynsym):
@@ -256,6 +265,7 @@ def read_elf(
                     symbol_matches.add(SymbolMatch(name=name, group=group, binding=binding))
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic symbol table"))
+            reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
 
     symtab = _find_section(sections, ".symtab")
     symtab_count = 0
@@ -264,6 +274,7 @@ def read_elf(
             symtab_count = symtab.num_symbols()
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the symbol table"))
+            reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
             symtab_count = 0
     stripped = symtab is None or symtab_count == 0
 
@@ -271,7 +282,12 @@ def read_elf(
     symbols_truncated = len(ordered_symbols) > patterns.limits.max_symbols_per_binary
     matched_symbols = ordered_symbols[: patterns.limits.max_symbols_per_binary]
 
-    raw_bytes, sections_truncated = _collect_string_bytes(sections, max_strings_bytes)
+    raw_bytes, sections_truncated, sections_unread = _collect_string_bytes(
+        sections, max_strings_bytes
+    )
+    if sections_unread:
+        errors.append(_error(path, ELF_PARSE_ERROR, "failed to read a section's bytes"))
+        reasons.add(evidence.PARTIAL_ELF_SECTION_DATA_UNREAD)
     strings_found = scan_strings(raw_bytes, patterns, max_strings_bytes)
 
     buildinfo_section = _find_section(sections, ".go.buildinfo")
@@ -281,6 +297,7 @@ def read_elf(
             buildinfo_bytes = buildinfo_section.data()
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read .go.buildinfo"))
+            reasons.add(evidence.PARTIAL_ELF_GO_BUILDINFO_UNREAD)
     has_buildid = _find_section(sections, ".note.go.buildid") is not None
     go = build_go_info(buildinfo_bytes, strings_found.text, patterns)
     if go is None and (buildinfo_section is not None or has_buildid):
@@ -307,13 +324,15 @@ def read_elf(
         go=go,
         symbols_truncated=symbols_truncated,
         strings_truncated=sections_truncated or strings_found.truncated,
-        partial_analysis=False,
-        partial_reasons=(),
+        partial_analysis=bool(reasons),
+        partial_reasons=tuple(sorted(reasons)),
     )
     return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
 
 
-def _collect_string_bytes(sections: list[Section], max_strings_bytes: int) -> tuple[bytes, bool]:
+def _collect_string_bytes(
+    sections: list[Section], max_strings_bytes: int
+) -> tuple[bytes, bool, bool]:
     """Concatenate the read-only, non-executable data sections, in header order.
 
     A section qualifies when it is allocated `PROGBITS` data that is not executable
@@ -323,6 +342,7 @@ def _collect_string_bytes(sections: list[Section], max_strings_bytes: int) -> tu
     """
     buf = bytearray()
     truncated = False
+    unread = False
     for section in sections:
         sh_type = section["sh_type"]
         sh_flags = section["sh_flags"]
@@ -346,10 +366,20 @@ def _collect_string_bytes(sections: list[Section], max_strings_bytes: int) -> tu
         try:
             data = section.data()
         except Exception:
+            # The one failure here that used to be silent: no error, no reason, and the
+            # strings simply absent. A `.rodata` flagged `SHF_COMPRESSED` over bytes
+            # that are not compressed reaches this, and a wheel whose only evidence was
+            # the banner in it came back with no findings and nothing saying why.
+            unread = True
             continue
+        if not data and section["sh_size"]:
+            # A short read rather than a raise: `sh_offset` past the end of the object
+            # yields no bytes at all. Deliberately not `len(data) < sh_size`, because a
+            # compressed section legitimately decompresses to a different length.
+            unread = True
         if len(data) > remaining:
             buf.extend(data[:remaining])
             truncated = True
             break
         buf.extend(data)
-    return bytes(buf), truncated
+    return bytes(buf), truncated, unread

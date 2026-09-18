@@ -426,3 +426,44 @@ def patch_u16(data: bytes, offset: int, value: int, *, big_endian: bool = False)
     buf = bytearray(data)
     buf[offset : offset + 2] = struct.pack(end + "H", value)
     return bytes(buf)
+
+
+# Section header fields a test can rewrite after the fact, by byte offset within the
+# header. Only the ones a fixture has a reason to lie about.
+_SH_FIELDS = {"sh_flags": (0x08, "<Q"), "sh_offset": (0x18, "<Q"), "sh_size": (0x20, "<Q")}
+
+SHF_COMPRESSED = 0x800
+
+
+def patch_section_header(
+    data: bytes, name: str, field: str, value: int, *, bitwise_or: bool = False
+):
+    """Rewrite one field of one named section header in a built 64-bit ELF.
+
+    The builder only emits well-formed objects, which is the point of it. A test that
+    needs a section whose bytes cannot be read has to corrupt one afterwards, and doing
+    that by name rather than by offset keeps the test readable.
+    """
+    buf = bytearray(data)
+    (shoff,) = struct.unpack_from("<Q", buf, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", buf, 0x3A)
+    (names_at,) = struct.unpack_from("<Q", buf, shoff + shstrndx * shentsize + 0x18)
+    offset, fmt = _SH_FIELDS[field]
+    for index in range(shnum):
+        header = shoff + index * shentsize
+        (name_offset,) = struct.unpack_from("<I", buf, header)
+        end = buf.index(b"\x00", names_at + name_offset)
+        if bytes(buf[names_at + name_offset : end]).decode() != name:
+            continue
+        (current,) = struct.unpack_from(fmt, buf, header + offset)
+        struct.pack_into(fmt, buf, header + offset, current | value if bitwise_or else value)
+        return bytes(buf)
+    raise AssertionError(f"no section named {name}")
+
+
+def patch_header_field(data: bytes, field: str, value: int) -> bytes:
+    """Rewrite one field of the ELF header itself."""
+    offset, fmt = {"e_shoff": (0x28, "<Q"), "e_shnum": (0x3C, "<H")}[field]
+    buf = bytearray(data)
+    struct.pack_into(fmt, buf, offset, value)
+    return bytes(buf)

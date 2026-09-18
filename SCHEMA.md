@@ -109,6 +109,12 @@ Each reason:
 | `no_structural_reader` | This tool has no reader for the format, so the object was scanned for strings alone. |
 | `elf_header_unread` | The ELF header itself would not parse. |
 | `elf_section_table_truncated` | The ELF header parsed but the section header table it points at does not fit the object. |
+| `elf_sections_unread` | A section header could not be read. A section we cannot name is one we cannot use, so anything derived from the section list may be missing rather than absent: `needed`, `soname`, `rpath`, `runpath`, the symbol counts and the strings alike. |
+| `elf_section_data_unread` | A section's bytes could not be read, so the strings pass ran over less than the object holds. |
+| `elf_dynamic_unread` | `.dynamic` would not resolve, so `needed`, `soname`, `rpath` and `runpath` are empty because they could not be read, not because the object declares none. |
+| `elf_dynsym_unread` | `.dynsym` would not read, so the imported-versus-defined split is missing or partial. |
+| `elf_symtab_unread` | `.symtab` would not read, so `stripped` and `symbol_counts.symtab` describe a table we failed on rather than one the object does not have. |
+| `elf_go_buildinfo_unread` | `.go.buildinfo` would not read, so Go toolchain provenance is missing. |
 | `macho_header_unread` | The Mach-O header, or a fat header, would not parse. |
 | `macho_symtab_incomplete` | LC_SYMTAB was absent, unreachable or named nothing resolvable, so the imported-versus-defined split is missing; routine, and records no error. |
 | `macho_fat_slice_unread` | A slice of a universal binary could not be read, or its header named one it did not describe. |
