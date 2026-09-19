@@ -101,7 +101,31 @@ _MAX_IMPORT_DESCRIPTORS = 4096
 # walk with no declared length, so this is the only thing bounding it.
 _MAX_THUNKS = 65536
 _MAX_EXPORT_NAMES = 262144
-_MAX_NAME_BYTES = 1024
+# How far to look for one name's terminator. `locate` already bounds a name by its own
+# section, so this is a second bound rather than the only one, and falling short of it
+# is not a short name -- it is a name reported as unresolvable, which costs the slot and
+# marks the object partial.
+#
+# It was 1024, which is three bytes short of a real wheel. Measured over 30,835 export
+# names in 383 PE objects from 37 `win_amd64` wheels: half are 30 bytes, p99.99 is 808,
+# and the longest is a 1027-byte MSVC-mangled C++ name in duckdb's extension, which put
+# a wheel with 3547 of its 3548 exports read correctly on the `OPAQUE` triage list.
+# Eight times the longest real name, which is also what bounds one entry's width in the
+# record: a name is never truncated to fit, so this is how wide a `matched_symbols`
+# entry or a `needed` entry can get.
+_MAX_NAME_BYTES = 8 * 1024
+# And one budget for the whole object, the way `_MAX_THUNKS` is, because the per-name
+# bound multiplies. `_MAX_EXPORT_NAMES` pointers may all aim at one long name, so the
+# cost is names times bytes and neither factor bounds the product: measured at 4096
+# names just under a 64 KiB bound, one 137 KiB object cost 16 seconds and 269 MB, and
+# the reachable ceiling is 64 times that. What makes it expensive is `sanitize`, a
+# per-character pass in Python, so it is the bytes resolved that have to be bounded
+# rather than the lookups.
+#
+# Sized off the same corpus: the heaviest single object resolves 557 KiB of export-name
+# bytes and all 383 together come to 2.14 MiB, so this is roughly fifteen times the
+# worst real object. Exhausting it is an incomplete read like any other.
+_MAX_NAME_TOTAL_BYTES = 8 * 1024 * 1024
 
 _MACHINE_NAMES = {
     0x014C: "IMAGE_FILE_MACHINE_I386",
@@ -128,12 +152,20 @@ class _Section:
     raw_size: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _Image:
-    """The bytes in hand, and the section table that maps addresses onto them."""
+    """The bytes in hand, and the section table that maps addresses onto them.
+
+    Mutable, unlike its siblings here, because `names_budget` is spent as names are
+    read and every name in one object comes through this one object.
+    """
 
     raw: bytes
     sections: tuple[_Section, ...]
+    # Name bytes left to resolve out of this object. Not per directory: an object can
+    # spend it all on imports, all on exports, or aim every pointer of both at the same
+    # long string, and only a budget over the whole read bounds that.
+    names_budget: int = _MAX_NAME_TOTAL_BYTES
 
     def locate(self, rva: int) -> tuple[int, int] | None:
         """(file offset, readable bytes from there) for `rva`, or None when it is nowhere.
@@ -167,16 +199,30 @@ class _Image:
         A name with no terminator inside its own section is a name we did not read
         rather than a short one: reporting the bytes up to the section boundary would
         invent a symbol out of whatever happened to follow it.
+
+        The terminator is searched for in place rather than in a copied window. Slicing
+        first costs `min(available, _MAX_NAME_BYTES)` bytes per lookup whatever the name
+        turns out to be, once per export and once per import, so the copy rather than
+        the search is what made the bound expensive -- and an expensive bound is how it
+        ended up set below the length of names real compilers emit.
+
+        An object that spends `names_budget` gets `None` from here on, which the callers
+        already read as a name they could not resolve: the read is incomplete and the
+        object is partial, which is the honest answer and the one they give for every
+        other name they cannot get.
         """
         found = self.locate(rva)
         if found is None:
             return None
         offset, available = found
-        window = self.raw[offset : offset + min(available, _MAX_NAME_BYTES)]
-        end = window.find(b"\x00")
+        window = min(available, _MAX_NAME_BYTES, self.names_budget)
+        if window <= 0:
+            return None
+        end = self.raw.find(b"\x00", offset, offset + window)
         if end == -1:
             return None
-        return sanitize(window[:end].decode("utf-8", "replace")) or None
+        self.names_budget -= end - offset
+        return sanitize(self.raw[offset:end].decode("utf-8", "replace")) or None
 
 
 @dataclass(frozen=True, slots=True)
