@@ -35,27 +35,35 @@ _DEFINITE = (LINKAGE_SYSTEM, LINKAGE_BUNDLED, LINKAGE_STATIC)
 
 def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
     """Map each crypto library with evidence in this wheel to its linkage posture."""
-    opaque = _has_opaque_binary(evidence)
+    unanswered = _left_unanswered(ruleset, evidence)
     result: dict[str, str] = {}
     for name in sorted(ruleset.libraries):
         library = ruleset.libraries[name]
         postures = {
             _binary_posture(binary, library, ruleset.conventions) for binary in evidence.binaries
         }
-        value = _aggregate(postures, opaque and library.always_report)
+        value = _aggregate(postures, unanswered and library.always_report)
         if value != LINKAGE_NONE or library.always_report:
             result[name] = value
     return result
 
 
-def _aggregate(postures: set[str], opaque: bool) -> str:
-    """Reduce per-binary postures to one answer for the whole wheel."""
+def _aggregate(postures: set[str], unanswered: bool) -> str:
+    """Reduce per-binary postures to one answer for the whole wheel.
+
+    `unanswered` is the wheel-wide signal that some object did not answer, and it is
+    only consulted when nothing in the wheel answered definitely: one unreadable
+    object must not erase what the readable ones said. It reaches here already gated
+    on `always_report`, so an object we could not read makes the answer `unknown` for
+    the libraries reported whatever the evidence -- where a false `none` is what does
+    the damage -- and does not list every library in the ruleset as unknown.
+    """
     definite = sorted(posture for posture in postures if posture in _DEFINITE)
     if len(definite) == 1:
         return definite[0]
     if len(definite) > 1:
         return LINKAGE_MIXED
-    if LINKAGE_UNKNOWN in postures or opaque:
+    if LINKAGE_UNKNOWN in postures or unanswered:
         return LINKAGE_UNKNOWN
     return LINKAGE_NONE
 
@@ -108,7 +116,38 @@ def _has_string(binary: BinaryEvidence, group: str | None) -> bool:
     return any(match.group == group for match in binary.matched_strings)
 
 
-def _has_opaque_binary(evidence: Evidence) -> bool:
-    if any(binary.is_opaque for binary in evidence.binaries):
-        return True
+def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
+    """Did any object in this wheel fail to answer the question linkage asks?
+
+    Three ways, and the third was missing for a long time. An object that yielded
+    nothing at all; a binary that never produced a record, which shows up as a
+    binary-stage error; and an object a reader read and explicitly marked as not read
+    in full.
+
+    That third one is the everyday case rather than the exotic one -- a stripped macOS
+    extension records `macho_symtab_incomplete` and no error -- and without it the
+    record said both "we could not read this object's symbols" and "there is no
+    OpenSSL in it", which is a claim the first half says we cannot make. `is_opaque`
+    does not rescue it: `needed` is non-empty for every loadable dylib and every
+    `.pyd`.
+
+    Which causes count is policy and is read off the ruleset, because most of
+    `partial_reasons` is a failure and some of it is a linker convention that leaves
+    every field linkage reads intact. Counting the tuple wholesale would turn every
+    ordinal import into `openssl_linkage: unknown`, which is the noise #32 removed.
+    """
+    for binary in evidence.binaries:
+        if binary.is_opaque:
+            return True
+        if not binary.partial_analysis:
+            continue
+        # A partial read naming no cause is the shape `engine._match_partial_binary`
+        # singles out as the most serious of all: no reader produces it, so the
+        # evidence was built by hand, and an unexplained partial read is the last
+        # thing to quietly downgrade. The two consumers of one field must not read it
+        # in opposite directions.
+        if not binary.partial_reasons or ruleset.linkage_policy.costs_an_answer(
+            binary.partial_reasons
+        ):
+            return True
     return any(error.stage == STAGE_BINARY for error in evidence.errors)

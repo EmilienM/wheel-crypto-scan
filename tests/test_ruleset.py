@@ -91,7 +91,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "6"
+    assert ruleset.version == "7"
     assert len(ruleset.rules) > 20
 
 
@@ -160,6 +160,77 @@ def test_an_unknown_kind_among_several_matches_is_rejected() -> None:
     ]
     with pytest.raises(RulesetError, match="unknown matcher kind"):
         parse_ruleset(data)
+
+
+def test_an_unknown_linkage_exemption_is_rejected() -> None:
+    """A typo here loads clean and exempts nothing, and the symptom looks like success."""
+    data = minimal(linkage_policy={"why": "w", "exclude_reasons": ["pe_ordinal_imports"]})
+    with pytest.raises(RulesetError, match="unknown partial reason"):
+        parse_ruleset(data)
+
+
+def test_an_unknown_key_in_the_linkage_policy_is_rejected() -> None:
+    """`excluded_reasons` parses, exempts nothing, and looks exactly like it worked.
+
+    `[conventions]` gets away without this because every key it has is required, so a
+    typo drops a required one and errors. This table's only key is optional.
+    """
+    data = minimal(linkage_policy={"why": "w", "excluded_reasons": ["pe_ordinal_import"]})
+    with pytest.raises(RulesetError, match="unknown keys"):
+        parse_ruleset(data)
+
+
+def test_a_linkage_policy_without_a_why_is_rejected() -> None:
+    data = minimal(linkage_policy={"exclude_reasons": []})
+    with pytest.raises(RulesetError, match="why"):
+        parse_ruleset(data)
+
+
+def test_a_ruleset_with_no_linkage_policy_derives_it_from_the_rules() -> None:
+    """`minimal()` has no verdict-less partial_binary rule, so it derives to nothing."""
+    assert parse_ruleset(minimal()).linkage_policy.exclude_reasons == frozenset()
+
+
+def test_a_verdict_less_complement_rule_claims_every_cause_it_does_not_exclude() -> None:
+    """`reasons` selects and `exclude_reasons` takes the complement, for both readers.
+
+    The containment check has to see a verdict-less rule written either way. Written
+    the complement way it claims almost the whole vocabulary, which is the arm that
+    silently grows when a token is added.
+    """
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "BIN_PARTIAL_QUIET",
+            "layer": "binary",
+            "category": "opacity",
+            "severity": "info",
+            "confidence": "high",
+            "needs_human_review": False,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "partial_binary", "exclude_reasons": ["pe_delay_load"]},
+        }
+    )
+    derived = parse_ruleset(data).linkage_policy.exclude_reasons
+    assert "pe_delay_load" not in derived
+    assert "macho_symtab_incomplete" in derived
+
+
+def test_every_always_report_library_can_be_recognised_without_its_symbols() -> None:
+    """The premise under `pe_ordinal_export`'s exemption, held by a test rather than luck.
+
+    An export bound by ordinal costs a definition, and a definition is how `static` is
+    recognised. What is left is the string group, so a library reported whatever the
+    evidence needs one -- otherwise the exemption silently stops having a backstop the
+    day a second library gets `always_report`. It is a weaker premise than it sounds:
+    an object can carry the static copy and no banner. `DECISIONS.md` says so.
+    """
+    libraries = load_ruleset().libraries.values()
+    reported = [library for library in libraries if library.always_report]
+    assert reported, "no library is reported unconditionally"
+    for library in reported:
+        assert library.string_group, library.name
 
 
 def test_a_rule_matching_nothing_is_rejected() -> None:

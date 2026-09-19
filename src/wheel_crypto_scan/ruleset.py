@@ -178,6 +178,32 @@ class SonameInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class LinkagePolicy:
+    """Which `partial_reasons` causes leave a linkage posture answerable.
+
+    `linkage` asks one question of every object -- system, bundled, static or nothing
+    -- off `needed`, `vendored_path`, the imported/defined split and the matched
+    strings. A cause that can cost any of those means the object did not answer, and
+    the wheel's posture has to say `unknown` rather than `none`.
+
+    Which causes those are is policy, so the list lives in `ruleset.toml` beside the
+    one `BIN_PARTIAL_ROUTINE` draws for verdicts. They are two different questions
+    over one vocabulary and their answers differ: `elf_symtab_unread` is worth a
+    verdict and costs linkage nothing, because the split comes from `.dynsym`.
+    """
+
+    exclude_reasons: frozenset[str] = frozenset()
+
+    def costs_an_answer(self, reasons: Iterable[str]) -> bool:
+        """True when any of these causes could have hidden what linkage reads.
+
+        Excluding rather than including, so a cause added to the vocabulary later
+        costs us the answer until someone decides it does not.
+        """
+        return any(reason not in self.exclude_reasons for reason in reasons)
+
+
+@dataclass(frozen=True, slots=True)
 class Conventions:
     """How build tools lay wheels out. Structural facts, not policy."""
 
@@ -431,6 +457,7 @@ class Ruleset:
     precedence: tuple[str, ...]
     limits: Limits
     conventions: Conventions
+    linkage_policy: LinkagePolicy
     rules: tuple[Rule, ...]
     distributions: Mapping[str, Distribution]
     libraries: Mapping[str, CryptoLibrary]
@@ -551,6 +578,78 @@ def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
         go_boring_group=str(_require(data, "go_boring_group", where)),
         go_stock_group=str(_require(data, "go_stock_group", where)),
     )
+
+
+def _claimed_reasons(match: Mapping[str, Any]) -> frozenset[str]:
+    """Which causes one `partial_binary` match table speaks for.
+
+    `reasons` selects, `exclude_reasons` takes the complement, and neither claims the
+    lot. Written once because two callers ask it -- the linkage coherence check below
+    and the tests -- and because the complement arm is the one that silently changes
+    meaning when a token is added to the vocabulary.
+    """
+    if "reasons" in match:
+        return frozenset(match["reasons"])
+    return PARTIAL_REASONS - frozenset(match.get("exclude_reasons", ()))
+
+
+def routine_reasons(rules: Iterable[Rule]) -> frozenset[str]:
+    """Causes recorded without a verdict: not on their own a reason to look.
+
+    Read off `verdict is None` rather than off a rule id, because that is the property
+    that matters and a second verdict-less rule added later would slip past a name.
+    """
+    return frozenset().union(
+        *(
+            _claimed_reasons(match)
+            for rule in rules
+            if rule.verdict is None
+            for match in rule.matches
+            if match["kind"] == "partial_binary"
+        ),
+        frozenset(),
+    )
+
+
+def _parse_linkage_policy(data: Mapping[str, Any] | None, rules: Iterable[Rule]) -> LinkagePolicy:
+    """Read `[linkage_policy]`, which is optional and derived from the rules when absent.
+
+    **Absent means coherent with your own rules, not "exempt nothing".** A cause
+    recorded without a verdict promises the wheel is not on its own worth a human's
+    time; making that same cause cost the linkage answer puts it straight back on the
+    triage list through `BIN_OPENSSL_LINKAGE_UNKNOWN`, which carries `OPAQUE`. An
+    empty default would have made every ruleset supplied through `--ruleset` do
+    exactly that, so absence derives the exemptions from the verdict-less rules and
+    the explicit table is the override that widens them.
+
+    The same coherence is then required of a table that is written out, so a ruleset
+    whose two lists contradict each other is refused at load time rather than
+    resolving the contradiction silently in favour of whichever consumer runs first.
+
+    Keys and tokens are both checked, for the reason a rule's `reasons` are checked in
+    `_validate_match_references`: `excluded_reasons` would otherwise load clean and
+    exempt nothing, and the symptom -- a wheel reading `unknown` where it used to read
+    `none` -- looks like the feature working.
+    """
+    routine = routine_reasons(rules)
+    where = "[linkage_policy]"
+    if data is None:
+        return LinkagePolicy(exclude_reasons=routine)
+    unknown_keys = sorted(set(data) - {"why", "exclude_reasons"})
+    if unknown_keys:
+        raise RulesetError(f"{where}: unknown keys {unknown_keys}")
+    _require(data, "why", where)
+    reasons = frozenset(data.get("exclude_reasons", ()))
+    for reason in sorted(reasons):
+        if reason not in PARTIAL_REASONS:
+            raise RulesetError(f"{where}: unknown partial reason {reason!r}")
+    missing = sorted(routine - reasons)
+    if missing:
+        raise RulesetError(
+            f"{where}: {missing} are recorded without a verdict and must be excluded here "
+            "too, or they put the wheel back on the triage list through the linkage rule"
+        )
+    return LinkagePolicy(exclude_reasons=reasons)
 
 
 def _parse_rule(data: Mapping[str, Any], precedence: frozenset[str]) -> Rule:
@@ -840,6 +939,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         precedence=precedence,
         limits=Limits(**dict(data.get("limits", {}))),
         conventions=_parse_conventions(_require(data, "conventions", source)),
+        linkage_policy=_parse_linkage_policy(data.get("linkage_policy"), rules),
         rules=rules,
         distributions=MappingProxyType(distributions),
         libraries=MappingProxyType(libraries),

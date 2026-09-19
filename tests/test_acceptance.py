@@ -429,6 +429,41 @@ def test_a_macho_that_declares_no_dependency_is_not_opaque(context, tmp_path: Pa
     assert record["verdict"]["class"] == "NO_CRYPTO_DETECTED"
 
 
+def test_a_stripped_macho_wheel_does_not_claim_there_is_no_openssl(context, tmp_path: Path):
+    """The whole chain for #40, which every other test for it drives from the middle.
+
+    Reader to `partial_reasons` to the linkage policy to the rule to the record. The
+    unit tests hand `resolve_linkage` a `BinaryEvidence` built by hand, so a reader
+    that stopped emitting `macho_symtab_incomplete` would leave all of them green and
+    put `openssl_linkage: none` back on every stripped macOS wheel.
+
+    A stripped dylib is what `strip` leaves and what every release macOS wheel is, so
+    this is the ordinary object rather than a crafted one.
+    """
+    tag = "cp312-cp312-macosx_11_0_arm64"
+    wheel = build_wheel(
+        tmp_path / f"stripped-1.0-{tag}.whl",
+        name="stripped",
+        version="1.0",
+        tags=(tag,),
+        files={
+            "stripped/__init__.py": "def add(a, b):\n    return a + b\n",
+            "stripped/_ext.so": MachOBuilder(
+                id_dylib="_ext.so", load_dylibs=("/usr/lib/libSystem.B.dylib",)
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    binary = record["binaries"][0]
+    assert binary["partial_analysis"] is True
+    assert binary["partial_reasons"] == ["macho_symtab_incomplete"]
+    # `needed` is non-empty, so the object is not opaque and nothing else would have
+    # stopped it answering definitely.
+    assert binary["needed"] == ["/usr/lib/libSystem.B.dylib"]
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "unknown"
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" in {f["rule_id"] for f in record["findings"]}
+
+
 def test_a_pe_that_declares_no_import_is_not_opaque(context, tmp_path: Path) -> None:
     """The PE half of the same bug: its named entries land in `symtab_count` too.
 

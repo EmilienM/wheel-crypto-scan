@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "6"
+ruleset_version = "7"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +114,79 @@ cargo_path_regex = '''cargo/registry/src/[^/\x00"']+/(?P<name>[A-Za-z0-9_][A-Za-
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
 # usedforsecurity=False.
 weak_hash_algorithms = ["md4", "md5", "md5-sha1", "ripemd160", "sha1", "sm3", "whirlpool"]
+
+
+# ---------------------------------------------------------------------------
+# Linkage policy. Which of `partial_reasons`' causes cost us an answer about how a
+# crypto library is linked, and which leave it answerable.
+#
+# Named `linkage_policy` rather than `linkage` because three different things in this
+# tool are already called linkage: the resolved posture per library, `kind = "linkage"`
+# which matches on those postures, and this, which is about neither.
+#
+# `resolve_linkage` used to read only `is_opaque` and the binary-stage errors, so an
+# object a reader explicitly marked as not read in full, but that recorded no error,
+# still contributed a definite posture. A stripped macOS extension is the everyday
+# case: one field said its symbol table was not read, the next said `openssl_linkage:
+# none`, and the second is a claim the first says we cannot make.
+#
+# Reading `partial_analysis` wholesale would be wrong in the other direction. Some
+# causes are conventions rather than failures, and some cost evidence linkage never
+# reads, so every ordinal import would have turned into `openssl_linkage: unknown`.
+# What follows is the same kind of split [[rule]] draws for verdicts, drawn again for
+# linkage -- and it is deliberately not the same list, which is why it is a list of
+# its own rather than a second use of `BIN_PARTIAL_ROUTINE`'s.
+#
+# It excludes rather than includes for the reason the strict rule does: a cause added
+# later costs us the answer until someone decides otherwise, which is the safe
+# direction. `linkage` reads `needed`, `vendored_path`, the imported/defined split in
+# `matched_symbols`, and `matched_strings`; a cause that can cost any of those belongs
+# nowhere near this list.
+#
+# One coherence rule is enforced at load time rather than left to prose. Every cause a
+# verdict-less rule claims must appear here too: a cause that records no verdict has
+# promised the wheel is not on its own worth a human's time, and making it cost the
+# linkage answer puts it straight back on the triage list through
+# BIN_OPENSSL_LINKAGE_UNKNOWN. A ruleset omitting this table entirely gets exactly
+# those causes and no more, so leaving it out is coherent rather than conservative.
+# ---------------------------------------------------------------------------
+[linkage_policy]
+why = "A cause on this list leaves every field linkage reads intact, so an object carrying it can still be given a definite posture. Everything else, named or added later, makes the wheel's answer `unknown` rather than `none` -- for the libraries reported unconditionally, which is where a false `none` does the damage."
+exclude_reasons = [
+    # The DLL is still named in `needed`, and `needed` is the first thing a posture is
+    # read off, which is the same reason BIN_PARTIAL_ROUTINE claims it. That covers a
+    # DLL whose name is a soname this file knows; it does not cover an ordinal import
+    # from a DLL nothing here recognises, where what is lost is the imported symbol
+    # that would otherwise have made the object `unknown`. Kept anyway, because
+    # costing the answer for every ordinal import is the noise BIN_PARTIAL_ROUTINE
+    # exists to remove and WS2_32 is bound this way on every socket-using extension.
+    # A test pins the shape that is given up.
+    "pe_ordinal_import",
+    # The weakest entry here, and it is on the list because the ruleset records it
+    # without a verdict rather than because the argument for it is strong. An export
+    # with no name is a definition we could not match, and a definition is how
+    # `static` is recognised; the banner in `matched_strings` is a backstop only when
+    # the object carries one, and `strings_truncated` can cut it without setting
+    # `partial_analysis` at all. DECISIONS.md has the measurement and the issues. The
+    # load time check above is what makes re-rating it a single coherent change rather
+    # than two that can be made apart.
+    "pe_ordinal_export",
+    # `.symtab` drives `stripped` and `symbol_counts.symtab` and nothing else. The
+    # imported-versus-defined split linkage turns on comes from `.dynsym` alone, which
+    # has a cause of its own and is not on this list.
+    "elf_symtab_unread",
+    # `.go.buildinfo` carries Go toolchain provenance and feeds the `go` object. No
+    # field linkage reads comes from it.
+    "elf_go_buildinfo_unread",
+    # An absence the reader observed rather than a read it failed at. It fires when the
+    # optional header points at no import directory, or when the walk finished and
+    # named no DLL; a walk that actually fell short carries `pe_import_incomplete`,
+    # which is not on this list. A resource-only or statically linked DLL importing
+    # nothing is the ordinary shape here, and its `needed` really is empty -- a dynamic
+    # dependency on libcrypto would be in the directory that is not there. The static
+    # copy such an object might carry is still read off its exports and its banner.
+    "pe_no_import_directory",
+]
 
 
 # ---------------------------------------------------------------------------

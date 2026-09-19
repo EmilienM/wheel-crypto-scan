@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import io
 import json
+import tomllib
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -40,8 +42,9 @@ from wheel_crypto_scan.binfmt import read_binary
 from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.evidence import ArtifactInventory, Evidence
+from wheel_crypto_scan.errors import RulesetError
 from wheel_crypto_scan.linkage import resolve_linkage
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset import routine_reasons, load_ruleset, parse_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
 
@@ -573,6 +576,35 @@ def test_a_routine_cause_still_leaves_the_dependency_name_in_the_record() -> Non
     assert "BIN_NEEDED_SYSTEM_OPENSSL" in _findings_all(data)
 
 
+def test_an_ordinal_import_from_an_unrecognised_dll_answers_nothing() -> None:
+    """The residual under the ordinal-import exemption, named rather than assumed away.
+
+    "The DLL it names survives in `needed`" only rescues the case where that name is a
+    soname the ruleset knows, and that case answers definitely without any help. The
+    branch that needs help is the other one -- `linkage._binary_posture` returns
+    `unknown` for an object calling a library it neither ships nor declares -- and an
+    ordinal import erases exactly the imported symbol that branch reads.
+
+    So the exemption costs this shape: by name it is `unknown` and a finding, by
+    ordinal it is `none` and no verdict at all. Kept, because costing the answer for
+    every ordinal import is the noise removed when the split was drawn for verdicts,
+    and `WS2_32` is bound this way on every Windows extension that touches sockets.
+    Pinned here so it is a known hole rather than an assumed non-hole.
+    """
+    named = PEBuilder(
+        dll_name="_ext.pyd",
+        imports=(PEImport("mycrypto.dll", names=("EVP_DigestInit_ex",)),),
+        exports=(PEExport("PyInit__ext"),),
+    ).build()
+    by_ordinal = PEBuilder(
+        dll_name="_ext.pyd",
+        imports=(PEImport("mycrypto.dll", ordinals=(1,)),),
+        exports=(PEExport("PyInit__ext"),),
+    ).build()
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" in _findings_all(named)
+    assert _findings_all(by_ordinal) == {"BIN_PARTIAL_ROUTINE"}
+
+
 def test_a_delay_load_directory_is_not_treated_as_routine() -> None:
     """It loses the dependency name, and no other rule recovers it."""
     data = PEBuilder(
@@ -599,19 +631,83 @@ def _findings_all(data: bytes) -> set[str]:
     return {f.rule_id for f in apply_rules(ruleset, e, resolve_linkage(ruleset, e))}
 
 
+def test_the_documented_linkage_exemptions_are_the_ones_the_ruleset_claims() -> None:
+    """The same prose-versus-policy drift guard, for the second split over one vocabulary.
+
+    Two lists are drawn over `PARTIAL_REASONS` now and they are deliberately not the
+    same list: `elf_symtab_unread` is worth a verdict and costs linkage nothing. A
+    reader deciding whether a `none` can be trusted reads the table, so the table has
+    to be the ruleset.
+    """
+    excluded = load_ruleset().linkage_policy.exclude_reasons
+    assert excluded, "the ruleset exempts no cause from costing linkage an answer"
+    documented = Path("SCHEMA.md").read_text(encoding="utf-8").splitlines()
+    for token in sorted(evidence.PARTIAL_REASONS):
+        row = next(ln for ln in documented if ln.startswith(f"| `{token}` |"))
+        assert ("Does not cost the linkage answer" in row) is (token in excluded), token
+
+
+def test_the_two_splits_over_one_vocabulary_are_not_the_same_list() -> None:
+    """Why linkage got a list of its own rather than reusing the verdict-less one.
+
+    If these ever coincide, the mechanism is a rename and the simpler thing is to say
+    so. Today they do not: a cause can be worth a verdict and cost linkage nothing.
+    Asserted as a non-empty difference rather than as the exact sets, which the two
+    tests either side of this one already pin.
+    """
+    ruleset = load_ruleset()
+    assert ruleset.linkage_policy.exclude_reasons - routine_reasons(ruleset.rules), (
+        "the linkage list adds nothing to the verdict-less one"
+    )
+
+
+def test_a_verdict_less_cause_that_costs_the_linkage_answer_is_refused() -> None:
+    """The containment is a load-time refusal, not a property of the shipped file.
+
+    A cause recorded without a verdict promises the wheel is not on its own worth a
+    human's time. Letting it cost the linkage answer puts it back on the triage list
+    through `BIN_OPENSSL_LINKAGE_UNKNOWN`, which carries `OPAQUE`. Asserting that only
+    over `load_ruleset()` left every `--ruleset` user outside the guard.
+    """
+    data = tomllib.loads(
+        files("wheel_crypto_scan").joinpath("data/ruleset.toml").read_text(encoding="utf-8")
+    )
+    data["linkage_policy"]["exclude_reasons"] = [
+        reason
+        for reason in data["linkage_policy"]["exclude_reasons"]
+        if reason != evidence.PARTIAL_PE_ORDINAL_IMPORT
+    ]
+    with pytest.raises(RulesetError, match="recorded without a verdict"):
+        parse_ruleset(data)
+
+
+def test_a_ruleset_with_no_linkage_policy_still_agrees_with_its_own_rules() -> None:
+    """Absence derives the exemptions rather than emptying them.
+
+    An empty default would have made every ruleset supplied through `--ruleset` report
+    `openssl_linkage: unknown` for an ordinary ordinal import, which is both the noise
+    #32 removed and the contradiction the load-time check refuses.
+    """
+    data = tomllib.loads(
+        files("wheel_crypto_scan").joinpath("data/ruleset.toml").read_text(encoding="utf-8")
+    )
+    del data["linkage_policy"]
+    derived = parse_ruleset(data).linkage_policy
+    assert derived.exclude_reasons == routine_reasons(load_ruleset().rules)
+    assert not derived.costs_an_answer((evidence.PARTIAL_PE_ORDINAL_IMPORT,))
+
+
 def test_the_documented_routine_causes_are_the_ones_the_ruleset_claims() -> None:
     """Three copies of this list exist and nothing held the prose to the rule.
 
     `SCHEMA.md` listed `pe_delay_load` as routine after the ruleset had stopped
     treating it as such, which is exactly the drift a reader would act on.
+
+    Read off `verdict is None` rather than off the rule id: the id is one spelling of
+    the property, and a second verdict-less rule would slip past a name.
     """
     ruleset = load_ruleset()
-    routine = {
-        reason
-        for rule, match in ruleset.matches_for_kind("partial_binary")
-        if rule.id == "BIN_PARTIAL_ROUTINE"
-        for reason in match.get("reasons", ())
-    }
+    routine = routine_reasons(ruleset.rules)
     assert routine, "no rule claims any routine cause"
     documented = Path("SCHEMA.md").read_text(encoding="utf-8").splitlines()
     for token in sorted(evidence.PARTIAL_REASONS):
