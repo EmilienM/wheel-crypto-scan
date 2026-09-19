@@ -614,3 +614,121 @@ Revisit if a ruleset ever wants limits below its own key counts, which the loade
 refuses: the question then is whether to drop the guarantee or raise the limit.
 
 Tracked in [#51](https://github.com/EmilienM/wheel-crypto-scan/issues/51).
+
+## A forwarder resolves the dependency it forwards to, not just its own name
+
+**Accepted, and it changes what a forwarding wrapper can hide.**
+
+`_read_exports` told a forwarder from a definition correctly -- its "address" lands
+back inside the export directory, where it is a string rather than code -- but then
+recorded only the export's *own* name as imported, and never read that string. A `.pyd`
+exporting `my_digest_init` as a forwarder to `libcrypto-3-x64.EVP_DigestInit_ex` put
+neither the DLL nor the real symbol anywhere in the record:
+
+```
+before  -> needed: [],  matched_symbols: [], NO_CRYPTO_DETECTED, needs_human_review: false
+after   -> needed: ['libcrypto-3-x64.dll'], matched_symbols: [EVP_DigestInit_ex/imported],
+           CONDITIONAL (openssl_linkage: system), needs_human_review: true
+```
+
+Only a wrapper whose *own* export name happened to match the ruleset was ever caught,
+which is coincidence standing in for evidence -- the exact shape the "unreadable means
+`OPAQUE`, never `NO_CRYPTO_DETECTED`" invariant exists to rule out, except here nothing
+was even unreadable. The bytes were sitting in the object; this reader just never asked
+for them.
+
+**What changed.** The forwarder string itself, `OTHERDLL.Symbol` or `OTHERDLL.#Ordinal`,
+is now read through the same `image.cstring` every other name in this file goes
+through, split on its *first* dot -- the DLL half never carries the file extension, the
+same convention `NTDLL.RtlAllocateHeap` uses, so `.dll` is appended to match what
+`needed` already holds for every other dependency. The resolved DLL joins `needed`
+beside `imports.dlls`; the resolved symbol, when the string names one rather than an
+ordinal, joins `matched_symbols` as `imported` beside the wrapper's own name.
+
+**First dot, not last, and this one was revised after the first pass shipped.** The
+first pass split on the *last* dot on the theory that nothing in the format forbids a
+dot in a DLL name. It missed a real shape: MSVC hot/cold splitting produces symbol
+names like `EVP_DigestInit_ex.cold` or `Func.part.0`, so a forwarder to
+`libcrypto-3-x64.EVP_DigestInit_ex.cold` last-dot-split into DLL =
+`libcrypto-3-x64.EVP_DigestInit_ex` (garbage, matches nothing in the ruleset) and
+symbol = `cold` (also matches nothing), which reads the wheel clean -- exactly the
+failure this whole change exists to close. A literal dot in a DLL name is not something
+the format forbids either, but it is not a shape a real Windows DLL name uses in
+practice -- the `.dll` extension is implicit in the forwarder string, never spelled out
+-- while a dot in the symbol half is a documented compiler behaviour. First-dot is the
+bet that loses less evidence, not a reading the format makes certain: every forwarder
+string this reader has had to resolve before now carried exactly one dot, so single-dot
+fixtures read identically under either split and this only changes the multi-dot case.
+
+**Why the DLL, not just the symbol.** The alternative on the table was to record only
+the target symbol and leave `needed` alone, which is weaker on the field that matters
+most: `linkage._binary_posture` reads `needed` first, and `BIN_NEEDED_SYSTEM_OPENSSL` /
+`BIN_NEEDED_MANGLED_CRYPTO` key on it, not on `matched_symbols`. The Windows loader
+resolves a forwarder exactly like an import at load time -- it opens the target DLL
+before it can fail to find the symbol in it -- so the dependency is real in exactly the
+sense `needed` already means, and recording only half of it would leave
+`openssl_linkage` blind to a wheel that forwards its whole extension to system OpenSSL.
+
+**An ordinal-named forwarder reuses `pe_ordinal_import`, not a new token.** A forwarder
+to `SOMEDLL.#123` loses the function name the same way an ordinal-bound import does, for
+the same reason: the loader opens the DLL regardless, so the dependency survives in
+`needed` and only the symbol is unrecoverable. That is the exact shape
+`BIN_PARTIAL_ROUTINE` already carves out with no verdict, so this reuses it rather than
+adding a second cause with the same justification -- the "go and find a crypto object
+that reads clean because the cause is on the list" test in `AGENTS.md` finds nothing
+here that the existing entry did not already cover: the dependency name still survives.
+
+**A forwarder string this reader cannot terminate is `pe_export_incomplete`, not a
+silent gap.** Past `_MAX_NAME_BYTES` or the object's name budget, `cstring` returns
+`None` the same as it does for any other name, and the object is marked incomplete
+rather than reported as forwarding to nothing. One existing fixture,
+`test_a_forwarder_at_the_export_directory_s_first_byte_is_still_a_forwarder`, places its
+forwarder "address" at the export directory's own header bytes to test the boundary
+classification in isolation; there is no real string there to resolve, so that object
+now correctly picks up `pe_export_incomplete` too -- a fixture artifact surfacing the
+same honesty the rest of this reader already has, not a new failure mode.
+
+**What was rejected.** Recording only the target symbol and leaving `needed` untouched,
+covered above. Inventing a new `partial_reasons` token for the ordinal-forwarder case,
+which would have duplicated `pe_ordinal_import` for no reason the ruleset could tell
+apart from the original. For the split direction itself: recording both candidate
+splits -- union the symbol-group matches from both halves, union both candidate DLL
+names into `needed` -- was on the table too, and was rejected as overkill for a case
+that is, by the corpus this reader was measured against, vanishingly rare (a forwarder
+string with more than one dot at all), against a real cost: doubling `needed` and
+`matched_symbols` cardinality for every multi-dot forwarder, cutting against the same
+record-size discipline `binfmt.caps` exists to hold. First-dot-as-primary is the
+cheaper bet and, per the measurement above, the one less likely to be wrong.
+
+**What it costs.** `ANALYZER_VERSION` moves, because a wheel already scanned under the
+old reader can now produce a different record without changing on disk. Every wrapper
+that forwards to a DLL or symbol the ruleset recognises moves off `NO_CRYPTO_DETECTED`.
+That claim needs a correction from the first pass: nothing on `main`, before this whole
+change, could "move the other way," because the forwarder string was never read at all
+there -- there was no resolution to fail. This change is what introduces the
+possibility of a forwarder failing to resolve (`pe_export_incomplete`) where it
+previously read, silently and wrongly, as `NO_CRYPTO_DETECTED`. And the split-direction
+choice itself has a real, if judged unlikely, failure mode: a forwarder string whose
+DLL half genuinely embeds a literal dot now splits wrong, the same way the last-dot
+choice split the `.cold` case wrong. `libcrypto.3.dll` as a DLL name is not actually an
+example of this -- first-dot still yields `libcrypto`, `normalise_soname`'s suffix
+stripping was never the thing at risk, and the object still resolves `system`. The real
+shape is a dotted name whose first segment is not one the ruleset recognises on its
+own, the way .NET's native shims are named: a forwarder to
+`System.Security.Cryptography.Native.OpenSsl.CryptoNative_EvpDigestUpdate` first-dot
+splits to DLL `System` and loses the rest, where last-dot would have recovered the
+symbol. Nothing in the PE format rules either shape out, so this is a bet, not a
+guarantee, and it is made in the direction the evidence above says loses less: MSVC
+hot/cold splitting is default-on compiler behaviour for any MSVC-built wrapper, while a
+CPython extension forwarding into a dotted native-shim family is a narrower shape.
+
+Revisit if a real wheel forwards to a DLL name that legitimately carries a dot of its
+own -- inside or outside the file extension -- which first-dot splitting would then
+misread the way last-dot splitting misread `.cold`; or if `needed`'s forwarder-derived
+entries need their own bound, since `exports.forwarded_dlls` is capped only by the
+export directory's own `_MAX_EXPORT_NAMES`/`_MAX_NAME_TOTAL_BYTES` budget, not by
+`_MAX_IMPORT_DESCRIPTORS` the way `imports.dlls` is -- large but not unbounded, and
+a record-size question rather than a resource-exhaustion one, so left open rather than
+given a cap purpose-built for this one source.
+
+Tracked in [#54](https://github.com/EmilienM/wheel-crypto-scan/issues/54).

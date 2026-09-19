@@ -31,7 +31,13 @@ An absent export directory is read differently, as a complete reading of an empt
 an object the loader can resolve nothing against genuinely exports nothing. Read in
 full, the export address table also separates a definition from a forwarder, whose
 address points back inside the export directory because the "code" is a string naming
-another DLL. A forwarded export is recorded as imported, which is what it is.
+another DLL. The wrapper's own export name is recorded as imported, which is what it
+is -- but the string the forwarder points at, `OTHERDLL.Symbol` or `OTHERDLL.#Ordinal`,
+is read too: the Windows loader resolves a forwarder exactly like an import at load
+time, so the DLL it names joins `needed` and the symbol it names, when it has one,
+joins `matched_symbols`. A forwarder to a name this reader cannot terminate, or past
+the object's name budget, is a name we could not resolve, the same as anywhere else in
+this file, and costs the object `pe_export_incomplete` rather than a silent gap.
 
 Not read, and a real blind spot: the delay-load import directory, whose descriptors name
 libraries loaded on first call. It is not parsed, so an object carrying one stays
@@ -272,9 +278,22 @@ class _Exports:
     dll_name: str | None
     defined: tuple[str, ...]
     forwarded: tuple[str, ...]
+    # The DLL a forwarder resolves to, normalised the way `needed` is: the forwarder
+    # string never carries the extension, so this is the name plus ".dll" the loader
+    # would actually open. One entry per readable forwarder, ordinal or named alike,
+    # because the loader opens the DLL before it can fail to find the ordinal in it.
+    forwarded_dlls: tuple[str, ...]
+    # The symbol name a forwarder resolves to, when the forwarder string names one
+    # rather than an ordinal. This is the evidence the ruleset actually matches on.
+    forwarded_targets: tuple[str, ...]
     entries: int
     # Addresses the name table never points at: definitions with no name to record.
     unnamed: int
+    # Forwarders whose target is named by ordinal alone: the DLL survives, the symbol
+    # does not. Counted apart from `unnamed` because it is the same shape as an
+    # ordinal *import*, not an ordinal export -- nothing here fails to have a name,
+    # the loader just resolves this one by number.
+    forwarded_unnamed: int
     complete: bool
 
 
@@ -392,6 +411,11 @@ def read_pe(
     if exports is not None:
         _record(matches, exports.defined, evidence.BINDING_DEFINED, patterns)
         _record(matches, exports.forwarded, evidence.BINDING_IMPORTED, patterns)
+        # The symbol the forwarder resolves to, e.g. `EVP_DigestInit_ex` in
+        # `libcrypto-3-x64.EVP_DigestInit_ex`, is the crypto-relevant name here; the
+        # wrapper's own export name is kept above because it is a name this object
+        # really does spell out, but the ruleset has nothing crypto to match it on.
+        _record(matches, exports.forwarded_targets, evidence.BINDING_IMPORTED, patterns)
     ordered, symbols_truncated = cap(matches, patterns.limits.max_symbols_per_binary)
 
     # "We read every name and none of them was crypto" has to be earned. An absent
@@ -426,6 +450,12 @@ def read_pe(
         reasons.add(evidence.PARTIAL_PE_EXPORT_INCOMPLETE)
     if exports is not None and exports.unnamed:
         reasons.add(evidence.PARTIAL_PE_ORDINAL_EXPORT)
+    # A forwarder whose target is named by ordinal is the same shape as an ordinal
+    # *import*: the DLL is still named, only the function inside it has no name to
+    # match. Reusing the token rather than costing this a verdict of its own keeps
+    # the same carve-out `pe_ordinal_import` already is, for the same reason.
+    if exports is not None and exports.forwarded_unnamed:
+        reasons.add(evidence.PARTIAL_PE_ORDINAL_IMPORT)
     if delay_rva:
         reasons.add(evidence.PARTIAL_PE_DELAY_LOAD)
     entries = (imports.entries if imports else 0) + (exports.entries if exports else 0)
@@ -443,7 +473,15 @@ def read_pe(
         # the format rather than something read out of this object.
         endian="little",
         soname=exports.dll_name if exports else None,
-        needed=tuple(sorted(set(imports.dlls))) if imports else (),
+        # A forwarder resolves at load time exactly like an import does, so the DLL it
+        # names belongs beside `imports.dlls` here rather than only in `matched_symbols`
+        # -- `linkage._binary_posture` reads this field first, and `needed` is what
+        # `BIN_NEEDED_SYSTEM_OPENSSL` and `BIN_NEEDED_MANGLED_CRYPTO` key on.
+        needed=tuple(
+            sorted(
+                {*(imports.dlls if imports else ()), *(exports.forwarded_dlls if exports else ())}
+            )
+        ),
         # Never set for PE. Its own symbol table is COFF debug information that every
         # modern linker drops in favour of a PDB, so there is no table whose absence
         # could mean what it means in ELF; and setting it from `entries` would let a
@@ -641,6 +679,37 @@ def _read_thunks(image: _Image, rva: int, entry_size: int, budget: int) -> _Thun
     return _Thunks(tuple(names), entries, unnamed, False)
 
 
+def _split_forwarder(text: str) -> tuple[str, str] | None:
+    """Split a forwarder string on its first dot: `DLL.Symbol` or `DLL.#Ordinal`.
+
+    The DLL half never carries the file extension -- that is the loader's own
+    convention, the same one that makes `NTDLL.RtlAllocateHeap` a forwarder to
+    `ntdll.dll` -- so the caller appends `.dll` to match what `needed` already holds
+    for every other dependency. The first dot is the split point rather than the
+    last. A real Windows DLL name practically never embeds a literal dot of its own
+    -- the `.dll` extension is implicit, not spelled out in the forwarder string --
+    while the symbol half legitimately can: MSVC hot/cold splitting produces names
+    like `EVP_DigestInit_ex.cold` or `Func.part.0`, a real shape, not a synthetic
+    one. A last-dot split of `libcrypto-3-x64.EVP_DigestInit_ex.cold` would land on
+    DLL=`libcrypto-3-x64.EVP_DigestInit_ex` and symbol=`cold`, matching nothing in
+    the ruleset and losing the crypto evidence outright; a first-dot split keeps the
+    DLL a single token and hands the rest of the string, every dot in it, to the
+    symbol half, which is what `symbol_groups_for` needs to match it by prefix. Every
+    forwarder string this reader has ever had to resolve carries exactly one dot, so
+    this only changes behaviour on the multi-dot case -- there is no format rule that
+    forbids a dot in a DLL name either, so this is a bet on which shape a real wheel
+    is more likely to produce, not a certainty, and it is the direction less likely
+    to lose evidence rather than the only one consistent with the format. A string
+    with no dot at all is not a forwarder this format defines, and needs no check of
+    its own to say so: `partition` on a separator that is not there returns the whole
+    string as `dll` and `""` as `remainder`, which the guard below already refuses.
+    """
+    dll, _, remainder = text.partition(".")
+    if not dll or not remainder:
+        return None
+    return dll, remainder
+
+
 def _read_exports(image: _Image, rva: int, size: int) -> _Exports:
     """Read the export directory: the object's own name, and what it defines.
 
@@ -651,7 +720,7 @@ def _read_exports(image: _Image, rva: int, size: int) -> _Exports:
     """
     header = image.read(rva, _EXPORT_DIRECTORY_SIZE)
     if header is None:
-        return _Exports(None, (), (), 0, 0, False)
+        return _Exports(None, (), (), (), (), 0, 0, 0, False)
     (
         name_rva,
         _ordinal_base,
@@ -665,7 +734,7 @@ def _read_exports(image: _Image, rva: int, size: int) -> _Exports:
     dll_name = image.cstring(name_rva) if name_rva else None
     complete = dll_name is not None or not name_rva
     if name_count > _MAX_EXPORT_NAMES or function_count > _MAX_EXPORT_NAMES:
-        return _Exports(dll_name, (), (), 0, 0, False)
+        return _Exports(dll_name, (), (), (), (), 0, 0, 0, False)
 
     pointers = image.read(name_pointer_rva, name_count * 4) if name_count else b""
     ordinals = image.read(ordinal_rva, name_count * 2) if name_count else b""
@@ -676,6 +745,9 @@ def _read_exports(image: _Image, rva: int, size: int) -> _Exports:
 
     defined: list[str] = []
     forwarded: list[str] = []
+    forwarded_dlls: list[str] = []
+    forwarded_targets: list[str] = []
+    forwarded_unnamed = 0
     named_slots: set[int] = set()
     for index in range(len(pointers) // 4):
         (entry_rva,) = struct.unpack_from("<I", pointers, index * 4)
@@ -698,6 +770,25 @@ def _read_exports(image: _Image, rva: int, size: int) -> _Exports:
         # string naming another DLL. The code is not here, so neither is the definition.
         if rva <= address < rva + size:
             forwarded.append(name)
+            # The forwarder string itself: `OTHERDLL.Symbol` or `OTHERDLL.#Ordinal`.
+            # It names a real dependency the Windows loader resolves exactly like an
+            # import at load time, so it belongs in `needed` and `matched_symbols`
+            # alongside them -- not just the wrapper's own name, which is all the
+            # object's own export table can tell us on its own.
+            target = image.cstring(address)
+            if target is None:
+                complete = False
+            else:
+                split = _split_forwarder(target)
+                if split is None:
+                    complete = False
+                else:
+                    forward_dll, remainder = split
+                    forwarded_dlls.append(f"{forward_dll}.dll")
+                    if remainder.startswith("#"):
+                        forwarded_unnamed += 1
+                    else:
+                        forwarded_targets.append(remainder)
         else:
             defined.append(name)
 
@@ -712,7 +803,10 @@ def _read_exports(image: _Image, rva: int, size: int) -> _Exports:
         dll_name=dll_name,
         defined=tuple(defined),
         forwarded=tuple(forwarded),
+        forwarded_dlls=tuple(forwarded_dlls),
+        forwarded_targets=tuple(forwarded_targets),
         entries=len(defined) + len(forwarded) + unnamed,
         unnamed=unnamed,
+        forwarded_unnamed=forwarded_unnamed,
         complete=complete,
     )

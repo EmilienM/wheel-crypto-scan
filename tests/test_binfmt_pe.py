@@ -425,6 +425,12 @@ def test_a_forwarder_at_the_export_directory_s_first_byte_is_still_a_forwarder()
     An address equal to the directory's own is inside the directory, so the "code" it
     names is a string. An exclusive lower bound would record this as a definition:
     OpenSSL compiled into the wheel rather than resolved from another DLL.
+
+    The fixture points the "string" at the directory's own header fields, which are
+    not a NUL-terminated name at all, so resolving what it forwards to correctly
+    fails: the object is `pe_export_incomplete` rather than silently skipping the
+    target. The wrapper's own export name is still read in full and still classified
+    as a forwarder either way.
     """
     forwarding = _extension(
         imports=(PEImport("python312.dll", names=("PyModule_Create2",)),),
@@ -432,8 +438,233 @@ def test_a_forwarder_at_the_export_directory_s_first_byte_is_still_a_forwarder()
         forwarder_at_directory_start=True,
     )
     ev, errors = _read(forwarding.build())
-    assert errors == ()
+    assert PE_PARSE_ERROR in {error.kind for error in errors}
+    assert "pe_export_incomplete" in ev.partial_reasons
     assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
+
+
+def test_a_forwarder_names_the_dll_and_symbol_it_forwards_to() -> None:
+    """The reproduction from issue #54.
+
+    A wrapper forwarding `my_digest_init` to `libcrypto-3-x64.EVP_DigestInit_ex` used
+    to read `NO_CRYPTO_DETECTED` with `needs_human_review: false`, because only the
+    wrapper's own export name -- not crypto vocabulary -- ever reached the record. The
+    Windows loader resolves a forwarder exactly like an import at load time, so both
+    the target DLL and the target symbol belong in the record the same way any other
+    dependency does.
+    """
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder=f"{OPENSSL_DLL[:-4]}.EVP_DigestInit_ex"),),
+    )
+    ev, errors = _read(wrapper.build())
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert OPENSSL_DLL in ev.needed
+    assert _symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED) in ev.matched_symbols
+
+    # The evidence alone is not the whole claim: run it through the same engine that
+    # decides the verdict, to confirm the wheel no longer reads clean.
+    from wheel_crypto_scan.engine import apply_rules
+    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
+    from wheel_crypto_scan.linkage import resolve_linkage
+    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
+
+    ruleset = load_ruleset()
+    wheel_evidence = Evidence(
+        filename="demo-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        metadata=MetadataEvidence(name="demo", canonical_name="demo", version="1.0"),
+        binaries=(ev,),
+    )
+    linkage = resolve_linkage(ruleset, wheel_evidence)
+    findings = apply_rules(ruleset, wheel_evidence, linkage)
+    verdict = classify(ruleset, findings, linkage)
+    assert verdict.headline != NO_CRYPTO_DETECTED
+    assert verdict.needs_human_review is True
+
+
+def test_an_ordinal_forwarder_still_names_its_dll() -> None:
+    """A forwarder target named by ordinal is the same shape as an ordinal import.
+
+    The DLL survives -- the loader has to open it before it can fail to find the
+    ordinal inside -- only the function name does not, so this reuses
+    `pe_ordinal_import` rather than costing the object a verdict of its own.
+
+    `matched_symbols == ()` is checked directly rather than through a substring
+    search: `symbol_groups_for("123")` never matches a ruleset group whether or not
+    the ordinal remainder gets recorded as a symbol name, since a bare number is not
+    a shape any group's prefixes or exact names can produce a hit on -- a check that
+    goes through the matcher can't tell the fixed version from the broken one. The
+    fixture below inspects `_read_exports`'s own output instead, where recording the
+    remainder would actually show up as a non-empty `forwarded_targets`.
+    """
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder=f"{OPENSSL_DLL[:-4]}.#123"),),
+    )
+    ev, errors = _read(wrapper.build())
+    assert errors == ()  # routine: an ordinal names no function, and that is not a failure
+    assert OPENSSL_DLL in ev.needed
+    assert ev.partial_analysis is True
+    assert "pe_ordinal_import" in ev.partial_reasons
+    assert ev.matched_symbols == ()
+
+
+def test_an_ordinal_forwarder_s_remainder_never_reaches_forwarded_targets() -> None:
+    """The non-vacuous half of the check above: inspects the export read directly.
+
+    Recording `"123"` (or `"#123"`) into `forwarded_targets` would not show up in
+    `matched_symbols` -- nothing in the ruleset matches a bare number -- so the only
+    way to pin this is to read what `_read_exports` actually produced.
+    """
+    from wheel_crypto_scan.binfmt import pe as pe_module
+
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder=f"{OPENSSL_DLL[:-4]}.#123"),),
+    )
+    data = wrapper.build()
+    headers = pe_module._read_headers(data)
+    image = pe_module._Image(raw=data, sections=headers.sections)
+    rva, size = headers.directories[0]
+    exports = pe_module._read_exports(image, rva, size)
+    assert exports.forwarded_targets == ()
+    assert exports.forwarded_unnamed == 1
+
+
+def test_a_forwarder_string_past_the_name_cap_is_unresolved() -> None:
+    """A forwarder target this reader cannot terminate is a name it did not read.
+
+    Recording the DLL anyway on the strength of a name that ran past the budget
+    would be exactly the fabrication `cstring` exists to refuse everywhere else in
+    this file, so the object is `pe_export_incomplete` instead, the same as any other
+    export name that ran past its cap.
+    """
+    from wheel_crypto_scan.binfmt.pe import _MAX_NAME_BYTES
+
+    long_forwarder = "libcrypto-3-x64." + "E" * (_MAX_NAME_BYTES + 16)
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder=long_forwarder),),
+    )
+    ev, errors = _read(wrapper.build())
+    assert PE_PARSE_ERROR in {error.kind for error in errors}
+    assert "pe_export_incomplete" in ev.partial_reasons
+    assert OPENSSL_DLL not in ev.needed
+
+
+def test_split_forwarder_splits_on_the_first_dot_not_the_last() -> None:
+    """Pins the split direction directly, independent of any fixture's shape.
+
+    A last-dot split of a string with two dots would hand the DLL half everything up
+    to the *second* dot and the symbol half only what follows it -- exactly backwards
+    from what a hot/cold-split symbol needs. This is the mutant that swapping
+    `partition` back for `rpartition` produces.
+    """
+    from wheel_crypto_scan.binfmt.pe import _split_forwarder
+
+    assert _split_forwarder("libcrypto-3-x64.EVP_DigestInit_ex.cold") == (
+        "libcrypto-3-x64",
+        "EVP_DigestInit_ex.cold",
+    )
+    # The common, single-dot case: first and last dot are the same dot, so either
+    # direction agrees, and this is what every fixture before this one relied on.
+    assert _split_forwarder("libcrypto-3-x64.EVP_DigestInit_ex") == (
+        "libcrypto-3-x64",
+        "EVP_DigestInit_ex",
+    )
+
+
+def test_a_forwarder_with_a_dot_in_its_symbol_half_still_resolves() -> None:
+    """MSVC hot/cold splitting embeds a dot in the symbol half of a real forwarder.
+
+    `libcrypto-3-x64.EVP_DigestInit_ex.cold` is what MSVC's cold-path split of
+    `EVP_DigestInit_ex` looks like as a forwarder target. A last-dot split reads DLL
+    as `libcrypto-3-x64.EVP_DigestInit_ex` (garbage, matches nothing in the ruleset)
+    and symbol as `cold` (also matches nothing), losing the crypto evidence entirely
+    and reading the wheel clean. Before this fix, that is exactly what happened; this
+    fixture pins that it no longer does.
+    """
+    forwarder = f"{OPENSSL_DLL[:-4]}.EVP_DigestInit_ex.cold"
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder=forwarder),),
+    )
+    ev, errors = _read(wrapper.build())
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert OPENSSL_DLL in ev.needed
+    assert _symbol("EVP_DigestInit_ex.cold", evidence.BINDING_IMPORTED) in ev.matched_symbols
+
+    # As with the plain forwarder case: confirm the verdict itself moves, not just
+    # the evidence fields.
+    from wheel_crypto_scan.engine import apply_rules
+    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
+    from wheel_crypto_scan.linkage import resolve_linkage
+    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
+
+    ruleset = load_ruleset()
+    wheel_evidence = Evidence(
+        filename="demo-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        metadata=MetadataEvidence(name="demo", canonical_name="demo", version="1.0"),
+        binaries=(ev,),
+    )
+    linkage = resolve_linkage(ruleset, wheel_evidence)
+    findings = apply_rules(ruleset, wheel_evidence, linkage)
+    verdict = classify(ruleset, findings, linkage)
+    assert verdict.headline != NO_CRYPTO_DETECTED
+    assert verdict.needs_human_review is True
+
+
+def test_a_dotless_forwarder_target_is_unresolved() -> None:
+    """A forwarder string with no dot at all is not a shape this format defines.
+
+    Silently treating it as a bare DLL name with an empty symbol, or as a plain
+    definition, would invent a reading this reader never earned. `_split_forwarder`
+    has no check of its own for a missing dot: `partition` on one that is not there
+    leaves `remainder` empty, and the same "empty half" guard that catches
+    `"DLL."`/`".symbol"` catches this too. Both halves stay unread and the object is
+    `pe_export_incomplete`, the same as any other name this reader could not resolve.
+    """
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder="GARBAGE"),),
+    )
+    ev, errors = _read(wrapper.build())
+    assert PE_PARSE_ERROR in {error.kind for error in errors}
+    assert "pe_export_incomplete" in ev.partial_reasons
+    assert ev.needed == ("python312.dll",)
+
+
+def test_a_forwarder_target_with_an_empty_dll_half_is_unresolved() -> None:
+    """A forwarder string starting with a dot names no DLL at all."""
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder=".EVP_DigestInit_ex"),),
+    )
+    ev, errors = _read(wrapper.build())
+    assert PE_PARSE_ERROR in {error.kind for error in errors}
+    assert "pe_export_incomplete" in ev.partial_reasons
+    assert ev.needed == ("python312.dll",)
+
+
+def test_a_forwarder_target_with_an_empty_symbol_half_is_unresolved() -> None:
+    """A forwarder string ending in a dot names no symbol at all."""
+    wrapper = _extension(
+        imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("my_digest_init", forwarder="libcrypto-3-x64."),),
+    )
+    ev, errors = _read(wrapper.build())
+    assert PE_PARSE_ERROR in {error.kind for error in errors}
+    assert "pe_export_incomplete" in ev.partial_reasons
+    assert OPENSSL_DLL not in ev.needed
+    assert ev.needed == ("python312.dll",)
 
 
 def test_exports_the_name_table_never_points_at_leave_the_object_partial() -> None:

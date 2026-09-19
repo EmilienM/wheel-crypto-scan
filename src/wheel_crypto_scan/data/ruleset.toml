@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "8"
+ruleset_version = "9"
 
 
 # ---------------------------------------------------------------------------
@@ -1572,7 +1572,7 @@ severity = "info"
 confidence = "high"
 needs_human_review = false
 title = "Binary declares something this tool cannot name, by design"
-why = "This object was not read in full, but the cause is a convention rather than a failure: an import bound by ordinal has no function name to match. WS2_32 is normally bound by ordinal, so this is the ordinary shape of a Windows extension that touches sockets, and treating it as opacity put every such wheel on the OPAQUE triage list. What is lost is a function name inside a DLL the record still names, so a crypto dependency bound this way is still caught by its DT_NEEDED equivalent. Recorded without a verdict: the evidence really is incomplete, so the record says so, but it is not on its own a reason for a human to look. An ordinal export is not this: it names a definition rather than a dependency, so BIN_PARTIAL_FORMAT claims it."
+why = "This object was not read in full, but the cause is a convention rather than a failure: an import bound by ordinal has no function name to match. WS2_32 is normally bound by ordinal, so this is the ordinary shape of a Windows extension that touches sockets, and treating it as opacity put every such wheel on the OPAQUE triage list. What is lost is a function name inside a DLL the record still names, so a crypto dependency bound this way is still caught by its DT_NEEDED equivalent. A forwarder whose target is named by ordinal -- `SOMEDLL.#123` -- is the same shape: the loader opens the DLL before it can fail to find the ordinal inside, so the dependency survives in needed the same way, and this cause is reused rather than given a token of its own. Recorded without a verdict: the evidence really is incomplete, so the record says so, but it is not on its own a reason for a human to look. An ordinal export is not this: it names a definition rather than a dependency, so BIN_PARTIAL_FORMAT claims it."
 [rule.match]
 kind = "partial_binary"
 reasons = ["pe_ordinal_import"]
