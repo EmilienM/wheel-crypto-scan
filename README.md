@@ -81,10 +81,12 @@ JSONL, one record per wheel. `SCHEMA.md` documents every field and the versionin
 A wheel that could not be read is `OPAQUE`, never `NO_CRYPTO_DETECTED`. That distinction is
 enforced by a test asserting every recordable failure has a rule.
 
-One carve-out: an import or export bound by ordinal has no name to match, which is
-how Windows normally binds `WS2_32`. That is recorded in `partial_reasons` but does
-not make the wheel `OPAQUE`, because the DLL it names survives in `needed` and is
-matched there. `DECISIONS.md` says what that costs.
+One carve-out: an import bound by ordinal has no function name to match, which is how
+Windows normally binds `WS2_32`. That is recorded in `partial_reasons` but does not make
+the wheel `OPAQUE`, because the DLL it names survives in `needed` and is matched there.
+An *export* bound by ordinal is not the same trade and is not carved out: it loses a
+definition, which is how a statically linked copy is recognised, and it names no
+dependency to fall back on. `DECISIONS.md` says what both cost.
 
 ## The ruleset
 

@@ -18,11 +18,17 @@ These are design decisions, not accidents. Do not change one without saying so e
 - **Unreadable means `OPAQUE`, never `NO_CRYPTO_DETECTED`.** Absence of evidence is not
   evidence of absence, and a test asserts every recordable failure maps to a rule. One
   carve-out, in `DECISIONS.md`: a `partial_reasons` cause that is a linker convention
-  rather than a failure is recorded without a verdict. Today that is the two ordinal
-  causes, and only because the dependency name survives them -- when it is a name the
-  ruleset knows, which `DECISIONS.md` now measures rather than assumes. Adding to that
-  list is changing this invariant. That list is also the floor of the linkage exemptions
-  below, and the ruleset loader enforces the containment.
+  rather than a failure is recorded without a verdict. Today that is one cause, an
+  ordinal import, and only because the dependency name survives it -- when it is a name
+  the ruleset knows, which `DECISIONS.md` measures rather than assumes. The ordinal
+  *export* was on that list too and was taken off: it loses a definition, and a
+  definition is how `static` is recognised, so the sentence that carried the import
+  never applied to it. Adding to this list is changing this invariant, and the admission
+  test is behavioural rather than editorial: go and find a crypto object that reads
+  clean because the cause is on the list. If it exists the cause does not belong there,
+  whatever the sentence says. That list is also the floor of the linkage exemptions
+  below; the loader refuses a ruleset that drops an exemption without re-rating, and a
+  test pins the other direction.
 - **A structure that does not parse costs that structure, never the evidence already
   gathered.** A reader that cannot read its own header still returns the strings, cargo
   paths and Go markers it found, and still marks the object `partial_analysis`. The

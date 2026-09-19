@@ -89,12 +89,14 @@ Tracked in [#10](https://github.com/EmilienM/wheel-crypto-scan/issues/10).
 
 ## A routine cause is recorded but does not make a wheel opaque
 
-**Accepted, and it changes verdicts.**
+**Accepted, and it changes verdicts. Half of it was later taken back -- see "The export
+half of this was wrong" below, which is the part to read first if you are deciding
+whether a new cause belongs on this list.**
 
-`partial_analysis` has twenty causes behind it, and `BIN_PARTIAL_FORMAT` used to fire
-`OPAQUE` plus `needs_human_review` for every one of them equally. Two of them are
-conventions a linker produces on purpose rather than anything that went wrong: an import
-or an export bound by ordinal has no name to match.
+`partial_analysis` has a score of causes behind it, and `BIN_PARTIAL_FORMAT` used to fire
+`OPAQUE` plus `needs_human_review` for every one of them equally. Two of them looked
+like conventions a linker produces on purpose rather than anything that went wrong: an
+import or an export bound by ordinal has no name to match.
 
 `WS2_32` is normally bound by ordinal, so that is the ordinary shape of a Windows
 extension that touches sockets. Measured on two wheels identical but for that:
@@ -110,7 +112,7 @@ with wheels nobody needs to look at is how a triage list stops being read at all
 
 **What changed.** `[rule.match] kind = "partial_binary"` takes `reasons` and
 `exclude_reasons`, so the ruleset decides which causes are worth a verdict rather than
-the engine treating them alike. `BIN_PARTIAL_ROUTINE` claims the two ordinal causes with
+the engine treating them alike. `BIN_PARTIAL_ROUTINE` claims the ordinal import with
 no verdict and no human review; `BIN_PARTIAL_FORMAT` keeps `OPAQUE` for everything else. An object with both kinds of cause fires both rules, and each names only the causes
 it speaks for, so the failure still wins.
 
@@ -138,6 +140,94 @@ token the strict rule excludes is claimed by name somewhere else.
 Revisit if a crypto library is found being imported by ordinal in a real wheel.
 
 Tracked in [#29](https://github.com/EmilienM/wheel-crypto-scan/issues/29).
+
+### The export half of this was wrong
+
+**Reversed. `pe_ordinal_export` is a failure to read, not a convention.**
+
+The sentence above carries both causes at once -- "an import or an export bound by
+ordinal has no name to match" -- and then justifies them with one argument: the
+dependency name survives in `needed`, so a crypto dependency bound that way is still
+caught. That argument is about imports. **An export names no dependency.** What an
+ordinal export loses is a *definition*, and a definition is how a statically linked copy
+is recognised, which is the posture this tool exists to catch and the one with no
+`needed` entry behind it by definition. The export was on the list because it was
+written into the same sentence, not because the sentence was ever true of it.
+
+What that cost, measured on one `.pyd` exporting `PyInit__ext`, `EVP_DigestInit_ex` and
+`SSL_new`, with no OpenSSL banner in it to fall back on:
+
+```
+honest                     -> static, BIN_STATIC_OPENSSL
+NumberOfNames = 0          -> none,   BIN_PARTIAL_ROUTINE only, needs_human_review: false
+NumberOfNames = 1 (of 3)   -> none,   BIN_PARTIAL_ROUTINE only, needs_human_review: false
+```
+
+One edited header field and a statically linked OpenSSL read clean. `NumberOfNames` is a
+count the object keeps about itself and PE has no string table to check it against, the
+way ELF and Mach-O now check theirs, so understating it is free. The name table simply
+stops being walked, every address slot becomes one no name points at, and `unnamed`
+fires -- so the cause *was* recorded. Only its classification made the record clean.
+
+**What it costs to reverse, measured rather than assumed.** `unnamed` counts export
+address slots the name table never points at, so an object exporting exactly what it
+names has `unnamed == 0` and does not move. Two shapes do: a deliberate
+`EXPORTS foo @1 NONAME`, and any name the reader could not resolve, which drops the slot
+out of the named set. The population at risk is not only `.pyd` files -- every `.dll` a
+wheel ships is read the same way, and ordinal-only exports are likelier in a
+redistributable runtime than in an extension module.
+
+Measured over 37 real `win_amd64` wheels from PyPI, 383 PE objects, chosen across
+compiled extensions and the runtimes they vendor:
+
+```
+pe_ordinal_import       12
+pe_export_incomplete     2
+pe_ordinal_export        1
+pe_import_incomplete     1
+pe_no_import_directory   1
+
+objects where pe_ordinal_export is the only cause:  0
+net new OPAQUE wheels from this change:             0
+```
+
+The single object carrying it is `duckdb`'s `_duckdb.cp310-win_amd64.pyd`, and it is not
+a NONAME export: export 724 of 3548 is a 1027-byte MSVC-mangled C++ name, three bytes
+past the reader's own 1024-byte cap, so the name fails to resolve and the slot falls out
+of the named set. That object already carried `pe_export_incomplete` and was already
+`OPAQUE`, so it does not move either. The triage list does not grow by one wheel across
+that corpus.
+
+Revisit if a real Windows wheel is found whose only incompleteness is an ordinal export.
+
+**Why the import stays.** Its argument survives its own scrutiny: `WS2_32` really is
+bound by ordinal on every Windows extension that touches sockets, so the cost of
+reversing it is every such wheel, and the DLL name really does survive in `needed`. The
+residual there is narrower and is pinned by a test rather than assumed away: an ordinal
+import from a DLL no soname matches loses the imported symbol that would have made the
+object `unknown`.
+
+Tracked in [#47](https://github.com/EmilienM/wheel-crypto-scan/issues/47), and it is
+most of [#42](https://github.com/EmilienM/wheel-crypto-scan/issues/42). What is left
+there is the shapes that leave nothing to notice: an export directory that zeroes
+`NumberOfFunctions` as well, and one whose data directory entry is zeroed outright,
+which this reader deliberately treats as a complete reading of an object that exports
+nothing. Both still want the count check.
+
+### A carve-out list is a claim, and claims get tested
+
+**The general rule this produced, promoted out of the story that produced it.**
+
+Two causes went onto a list that exempts them from a verdict because one sentence
+covered both, and the sentence was true of one. Nothing failed; the list is policy and
+policy has no wrong answers to fail against.
+
+So the admission test for that list is behavioural, not editorial: **go and find a
+crypto object that reads clean because the cause is on it.** If that object exists the
+cause does not belong there, whatever the sentence says. For the ordinal export it took
+one fixture and one edited header field. `AGENTS.md` carries this beside the invariant,
+because the list is the invariant's only carve-out and the next candidate will arrive
+with a sentence too.
 
 ## A symbol table is checked against the string table, not taken at its word
 
@@ -229,8 +319,12 @@ contract pins.
 `.dynsym` alone -- so a lie there costs a field that is recorded rather than a finding.
 PE has no analogue to bring the check to: its imports have no declared count at all, and
 its exports have one with no string table to check it against, because export names are
-individually addressed rather than pooled. `NumberOfNames = 0` over a real name table
-therefore still reads clean, which is tracked in [#42](https://github.com/EmilienM/wheel-crypto-scan/issues/42).
+individually addressed rather than pooled. `NumberOfNames = 0` over a real name table is
+nonetheless caught, but incidentally rather than by a check: understating the count
+leaves every address slot with no name pointing at it, `unnamed` fires, and since
+[#47](https://github.com/EmilienM/wheel-crypto-scan/issues/47) that cause carries
+`OPAQUE`. Zero `NumberOfFunctions` as well and there is nothing left to notice, which is
+what remains of [#42](https://github.com/EmilienM/wheel-crypto-scan/issues/42).
 
 **Errors say which way it fell short.** A table that fell short records an error naming
 the cause, instead of every case claiming the object "could not be read in full" when
@@ -310,44 +404,20 @@ removed when the split was drawn for verdicts and the contradiction the check ab
 refuses. Omitting the table now yields exactly the verdict-less causes; the explicit
 table is the override that widens them.
 
-**The awkward one is `pe_ordinal_export`, and it is on the list because the containment
-puts it there, not because the argument for it is good.** An import bound by ordinal
-keeps the DLL name in `needed`, which is the first thing a posture is read off -- but
-only when that name is a soname this ruleset knows, and that is the case which answers
-definitely anyway. The branch needing the rescue is the other one, where an object calls
-a library it neither ships nor declares, and an ordinal import erases exactly the
-imported symbol `_binary_posture` reads there:
+**`pe_ordinal_export` was on this list and is not any more.** It was exempt because the
+containment put it there: the ruleset recorded it without a verdict, so exempting it was
+forced. That was the tail wagging the dog, and the fix was at the other end -- the cause
+is a failure to read a definition, it now carries `OPAQUE`, and the exemption went with
+it. "The export half of this was wrong", above, has the measurement.
 
-```
-EVP_DigestInit_ex imported by name from an unrecognised DLL -> unknown, a finding
-the same import bound by ordinal                            -> none, no verdict
-```
-
-Kept, because costing the answer for every ordinal import is the noise removed when the
-split was drawn for verdicts, and a test now pins the shape given up so it is a known
-hole rather than an assumed non-hole. An export bound by ordinal is a *definition* we could not match, and
-a definition is how `static` is recognised. The backstop offered for it -- that a
-statically linked OpenSSL leaves its version banner in read-only data, which
-`matched_strings` reads and no ordinal export touches -- is real but not guaranteed. A
-build that drops `OPENSSL_VERSION_TEXT` has no banner to find, and `strings_truncated`
-can cut one that is there without setting `partial_analysis` at all, so the fallback is
-best effort rather than a backstop.
-Measured on one synthesised `.pyd` exporting `PyInit__ext`, `EVP_DigestInit_ex` and
-`SSL_new`, with no banner in it:
-
-```
-honest                     -> openssl_linkage: static   BIN_STATIC_OPENSSL
-NumberOfNames = 0          -> openssl_linkage: none     BIN_PARTIAL_ROUTINE only
-NumberOfNames = 1 (of 3)   -> openssl_linkage: none     BIN_PARTIAL_ROUTINE only
-```
-
-One edited field and a statically linked OpenSSL reads clean. That is not a regression
-introduced here -- it is what the tree already does -- and it is not fixed here either,
-because the fix is to re-rate the cause out of the verdict-less rule, which reverses a
-decision made with measurement behind it. What this change does is make the two halves
-inseparable: the loader now refuses a ruleset that costs the linkage answer for a cause
-it records without a verdict, so whoever re-rates it cannot do half of it. Tracked
-separately, with the reproduction, against the PE reader work.
+The containment helped, in one direction only, and it is worth being exact about which.
+The loader refuses `routine` that is not a subset of `exclude_reasons`, so dropping the
+exemption forces the re-rating. It does not refuse the converse -- re-rating the verdict
+while leaving the exemption in place loads clean, because a cause being worth a verdict
+and costing linkage nothing is legitimate and is what `elf_symtab_unread` is. What holds
+that side is the exact-set assertion in `tests/test_linkage.py`, which is a test over
+the shipped ruleset and so does not reach a `--ruleset` user. That is the weaker
+mechanism, and it is weaker on purpose: there is nothing here to enforce.
 
 `pe_no_import_directory` is exempt on plainer grounds. It fires when the optional header
 points at no import directory, or when the walk finished and named no DLL: both are an
