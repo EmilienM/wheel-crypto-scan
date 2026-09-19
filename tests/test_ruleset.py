@@ -235,6 +235,36 @@ def test_every_always_report_library_can_be_recognised_without_its_symbols() -> 
         assert library.string_group, library.name
 
 
+@pytest.mark.parametrize(
+    ("limit", "value"),
+    [
+        ("max_strings_per_binary", 0),
+        ("max_symbols_per_binary", 1),
+        ("max_rust_crates_per_binary", 0),
+    ],
+)
+def test_a_limit_too_small_to_hold_one_of_each_key_is_rejected(limit, value) -> None:
+    """`binfmt.caps` keeps one of every key, and below that it is the alphabet again.
+
+    `SCHEMA.md` states the guarantee without conditions, and nothing checked the one
+    condition it has. A limit is not policy in the sense the rest of this file means:
+    nobody sets one to change what is detected, so a value that silently does is a
+    mistake rather than a decision.
+    """
+    data = minimal()
+    data["limits"][limit] = value
+    with pytest.raises(RulesetError, match="chooses which evidence survives"):
+        parse_ruleset(data)
+
+
+def test_the_shipped_limits_leave_room_for_every_key() -> None:
+    """The shipped ruleset is the one that has to satisfy it, and it does with room."""
+    ruleset = load_ruleset()
+    assert ruleset.limits.max_strings_per_binary >= len(ruleset.string_groups)
+    assert ruleset.limits.max_symbols_per_binary >= 2 * len(ruleset.symbol_groups)
+    assert ruleset.limits.max_rust_crates_per_binary >= len(ruleset.rust_crates)
+
+
 def test_a_rule_matching_nothing_is_rejected() -> None:
     data = minimal()
     data["rule"][0]["match"] = []

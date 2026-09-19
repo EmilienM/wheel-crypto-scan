@@ -52,6 +52,7 @@ from .. import evidence
 from ..errors import PE_PARSE_ERROR
 from ..evidence import BinaryEvidence, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
+from .caps import cap
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
 
@@ -345,8 +346,7 @@ def read_pe(
     if exports is not None:
         _record(matches, exports.defined, evidence.BINDING_DEFINED, patterns)
         _record(matches, exports.forwarded, evidence.BINDING_IMPORTED, patterns)
-    ordered = tuple(sorted(matches, key=lambda match: match.sort_key()))
-    limit = patterns.limits.max_symbols_per_binary
+    ordered, symbols_truncated = cap(matches, patterns.limits.max_symbols_per_binary)
 
     # "We read every name and none of them was crypto" has to be earned. An absent
     # import directory, a chain that did not terminate, a name that resolved nowhere and
@@ -407,8 +407,8 @@ def read_pe(
         # Not a symbol table: PE has no equivalent, so this counts the named things
         # this object declared, one per import thunk and one per export slot.
         symtab_count=entries,
-        matched_symbols=ordered[:limit],
-        symbols_truncated=len(ordered) > limit,
+        matched_symbols=ordered,
+        symbols_truncated=symbols_truncated,
         partial_analysis=bool(reasons),
         partial_reasons=tuple(sorted(reasons)),
     )

@@ -179,6 +179,16 @@ class SymbolMatch:
     def sort_key(self) -> tuple[str, str, str]:
         return (self.group, self.name, self.binding)
 
+    def cap_key(self) -> tuple[str, str]:
+        """What a rule or `linkage` reads off this match, and nothing more.
+
+        Two symbols sharing it are interchangeable to every consumer, so a cap need
+        keep only one of them. The binding is half of it rather than decoration:
+        `linkage` asks for a *defined* symbol to call an object `static`, and an
+        imported one does not answer that question.
+        """
+        return (self.group, self.binding)
+
 
 @dataclass(frozen=True, slots=True)
 class StringMatch:
@@ -190,6 +200,10 @@ class StringMatch:
     def sort_key(self) -> tuple[str, str]:
         return (self.group, self.value)
 
+    def cap_key(self) -> str:
+        """The group is all a rule or `linkage` reads off a string match."""
+        return self.group
+
 
 @dataclass(frozen=True, slots=True)
 class RustCrate:
@@ -200,6 +214,10 @@ class RustCrate:
 
     def sort_key(self) -> tuple[str, str]:
         return (self.name, self.version)
+
+    def cap_key(self) -> str:
+        """The name is what `[[rust_crate]]` matches; the version is detail."""
+        return self.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,10 +256,12 @@ class BinaryEvidence:
     # A recording cap, and deliberately not a `partial_reasons` cause: see
     # `strings_truncated` below.
     symbols_truncated: bool = False
-    # More matches than the limits keep. A recording cap, never a partial read: the
-    # object was read, and what was capped is what got written down, so neither of
-    # these two fields is a cause and neither should become one. Bytes that went
-    # unread are a different fact and carry `strings_bytes_unread`.
+    # More matches than the limits keep, so what is recorded is a sample. A recording
+    # cap, never a partial read: the object was read, and what was capped is what got
+    # written down, so neither of these two fields is a cause and neither should become
+    # one. Bytes that went unread are a different fact and carry
+    # `strings_bytes_unread`. `binfmt.caps` chooses the sample so that a cap bounds the
+    # record's size without silencing a kind of evidence.
     strings_truncated: bool = False
     # Set when part of the object was not read: a format with no structural reader; a
     # ELF whose header, section headers, `.dynamic`, symbol tables, section data or
