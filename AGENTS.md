@@ -20,6 +20,14 @@ These are design decisions, not accidents. Do not change one without saying so e
   rather than a failure is recorded without a verdict. Today that is the two ordinal
   causes, and only because the dependency name survives them. Adding to that list is
   changing this invariant.
+- **A structure that does not parse costs that structure, never the evidence already
+  gathered.** A reader that cannot read its own header still returns the strings, cargo
+  paths and Go markers it found, and still marks the object `partial_analysis`. The
+  strings are often the only evidence there is: `cryptography` 42 and later compiles
+  OpenSSL into the extension, with no library file and no dependency to name.
+- **`partial_analysis` and `partial_reasons` never disagree.** The tuple is non-empty
+  exactly when the boolean is true, asserted across every reader. Filter on the boolean;
+  read the tuple to find out what to do about it.
 - **One bad wheel never aborts a run.** Failures become error records. The broad
   `except Exception` handlers are deliberate; pylint is configured to allow them.
 - **No network, no LLM, no dataflow analysis at runtime.** The only network access is an
@@ -35,6 +43,8 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `binfmt/` | ELF, Mach-O, PE, Go and Rust readers, the shared strings pass, the fallback |
 | `wheelfile.py` | In-memory zip reading with the bounded decompression window |
 | `record.py`, `verdict.py` | Output record shape and verdict assembly |
+| `evidence.py` | What extractors may say: the record dataclasses, and the `FORMAT_*`, `STAGE_*`, `BINDING_*` and `PARTIAL_REASONS` vocabularies |
+| `errors.py` | The `ScanError` kinds, which the ruleset can match on |
 
 ## Working rules
 
@@ -43,11 +53,28 @@ These are design decisions, not accidents. Do not change one without saying so e
   for anything you add.
 - **Bump `ruleset_version` after editing the ruleset.** It is part of the cache key, so the
   bump is what re-evaluates already-scanned wheels.
+- **Bump `ANALYZER_VERSION` when an unchanged wheel would produce a different record.**
+  Extraction, a new field, a changed verdict: all of it. The cache stores *serialised
+  records*, so without the bump a stale entry is served and the change silently does not
+  apply to anything already scanned. It is easy to forget because nothing fails without
+  it. `schema_version` is different and rarer: adding an optional key or a new value does
+  not bump it, removing or retyping a field does.
+- **Vocabularies are facts, policy is what to do about them.** `FORMAT_*`, `PARTIAL_REASONS`
+  and the error kinds live in Python because they describe what a reader did; which of
+  them is worth a verdict lives in `ruleset.toml`, matched through `kind = "scan_error"`
+  or `kind = "partial_binary"`. A token named by a rule is validated at load time, so a
+  typo is a load error rather than a rule that silently matches nothing.
 - **Keep `record.py` and `data/schema.json` in step,** and update `SCHEMA.md` with them. A
   test fails on drift.
 - **Dependencies are `pyelftools` and `packaging`.** Ask before adding a third.
-- **Test fixtures are synthesised,** including the ELF objects (`tests/helpers/`). The suite
-  needs no compiler, no network and no committed binaries. Keep it that way.
+- **Test fixtures are synthesised,** including the object files: `tests/helpers/binfmt/`
+  writes ELF, Mach-O and PE byte for byte with `struct`. The suite needs no compiler, no
+  network and no committed binaries. Keep it that way.
+- **Break a guard to see whether it guards.** Much of this suite exists to hold an
+  invariant rather than a behaviour, and such a test passes just as well when it asserts
+  nothing. Deleting the line under test, or mutating it to the wrong answer, is the only
+  way to tell. Several guards here were added after a review showed the obvious version
+  of them stayed green.
 - Wheels are read from the zip in memory, never extracted to disk.
 
 ## Commands
