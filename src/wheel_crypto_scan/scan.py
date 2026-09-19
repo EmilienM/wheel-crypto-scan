@@ -36,8 +36,11 @@ class ScanContext:
     evidence_level: str = "standard"
     archive_limits: ArchiveLimits = field(default_factory=ArchiveLimits)
     max_python_bytes: int = 8 * 1024 * 1024
-    # Caps the binaries list so a wheel with thousands of objects cannot produce an
-    # unbounded single JSONL line that no line-at-a-time consumer can read.
+    # Caps the *record's* binaries[] list so a wheel with thousands of objects cannot
+    # produce an unbounded single JSONL line that no line-at-a-time consumer can read.
+    # Every object read is still evaluated by linkage and the rules regardless of this
+    # cap; it only bounds what gets serialised. See "A cap bounds the record, not the
+    # evaluation" in DECISIONS.md.
     max_binaries_per_record: int = 256
 
     @classmethod
@@ -62,6 +65,9 @@ def scan_wheel(path: str | Path, context: ScanContext, sha256: str | None = None
     except Exception as exc:  # noqa: BLE001 - never lose a wheel to an unexpected failure
         evidence = _unreadable(path, digest, f"unexpected {type(exc).__name__}")
 
+    # Linkage, the rules and the verdict all run over the full, untruncated
+    # `evidence.binaries` that was actually read. The cap only ever slices the
+    # `binaries[]` array `build_record` serialises, below.
     linkage = resolve_linkage(context.ruleset, evidence)
     findings = apply_rules(context.ruleset, evidence, linkage)
     verdict = classify(context.ruleset, findings, linkage)
@@ -71,6 +77,7 @@ def scan_wheel(path: str | Path, context: ScanContext, sha256: str | None = None
         verdict,
         context.ruleset,
         evidence_level=context.evidence_level,
+        max_binaries=context.max_binaries_per_record,
     )
 
 
@@ -104,7 +111,13 @@ def _collect(path: Path, context: ScanContext, digest: str) -> Evidence:
             size_bytes=archive.size_bytes,
             artifacts=inventory,
             metadata=metadata,
-            binaries=binaries[: context.max_binaries_per_record],
+            # Untruncated. Every object here was already decompressed and read in
+            # full, and linkage and the rules must see all of it: a cap that dropped
+            # objects here before the rules ran let a wheel with more than
+            # `max_binaries_per_record` native objects read clean regardless of what
+            # the dropped objects actually held (#55). `build_record` is where the
+            # cap applies, to the *serialised* list alone.
+            binaries=binaries,
             py_sites=sites,
             errors=tuple(sorted(set(all_errors), key=ScanError.sort_key)),
         )
@@ -134,5 +147,10 @@ def _unreadable_record(
     findings = apply_rules(context.ruleset, evidence, linkage)
     verdict = classify(context.ruleset, findings, linkage)
     return build_record(
-        evidence, findings, verdict, context.ruleset, evidence_level=context.evidence_level
+        evidence,
+        findings,
+        verdict,
+        context.ruleset,
+        evidence_level=context.evidence_level,
+        max_binaries=context.max_binaries_per_record,
     )

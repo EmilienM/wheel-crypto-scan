@@ -230,6 +230,27 @@ def _match_no_source(rule, match, ruleset, evidence, linkage, index) -> Iterator
     )
 
 
+def _match_binaries_truncated(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    """Fires when the record's `binaries[]` lists fewer objects than were evaluated.
+
+    `evidence.binaries` is the full, untruncated set by the time a rule sees it (#55):
+    every object it holds was already read and already fed to linkage and every other
+    matcher here. What this rule reports is narrower than that -- only that the
+    *serialised* list a human reads back out of the JSON is not the complete set, so
+    `len(evidence.binaries)` in the location names the true count `binaries[]` itself
+    cannot show.
+    """
+    if not evidence.artifacts.binaries_truncated:
+        return
+    yield Hit(
+        subject=None,
+        location=Location(
+            path=evidence.filename,
+            evidence=f"{len(evidence.binaries)} native objects evaluated, binaries[] is capped",
+        ),
+    )
+
+
 def _match_record_mismatch(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     meta = evidence.metadata
     if meta is None:
@@ -599,6 +620,7 @@ _MATCHERS = {
     "requires_dist": _match_requires_dist,
     "wheel_generator": _match_wheel_generator,
     "no_source": _match_no_source,
+    "binaries_truncated": _match_binaries_truncated,
     "record_mismatch": _match_record_mismatch,
     "scan_error": _match_scan_error,
     "sbom_component": _match_sbom_component,

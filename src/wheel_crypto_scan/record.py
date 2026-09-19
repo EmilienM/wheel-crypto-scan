@@ -33,10 +33,20 @@ def build_record(
     *,
     evidence_level: str = "standard",
     tool_version: str = __version__,
+    max_binaries: int | None = None,
 ) -> dict[str, Any]:
-    """Build the JSON-ready record for one wheel."""
+    """Build the JSON-ready record for one wheel.
+
+    `evidence.binaries` is expected to be the *full* set of objects that were actually
+    read: `findings` and `verdict` were computed over all of it, not a truncated view.
+    `max_binaries`, when given, caps only the `binaries[]` array built here, so the
+    record stays bounded without the cap ever having withheld evidence from a rule.
+    A finding's `locations[].path` can therefore legitimately name an object that this
+    cap left out of `binaries[]` -- see SCHEMA.md.
+    """
     if evidence_level not in EVIDENCE_LEVELS:
         raise ValueError(f"unknown evidence level: {evidence_level!r}")
+    binaries = evidence.binaries if max_binaries is None else evidence.binaries[:max_binaries]
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {
@@ -51,7 +61,7 @@ def build_record(
         },
         "wheel": _wheel_block(evidence),
         "artifacts": _artifacts_block(evidence.artifacts),
-        "binaries": [_binary_block(binary, evidence_level) for binary in evidence.binaries],
+        "binaries": [_binary_block(binary, evidence_level) for binary in binaries],
         "findings": [_finding_block(finding) for finding in findings],
         "verdict": _verdict_block(verdict),
         "errors": [_error_block(error) for error in evidence.errors],
