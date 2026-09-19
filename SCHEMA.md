@@ -66,8 +66,16 @@ missing key.
 `skipped` (`{path, reason}` for members refused by a limit).
 
 `py_files_unparsed` counts source files that would not parse. `binaries_truncated` is
-true when the binary and extension lists were capped, so a wheel with thousands of
-objects cannot produce an unbounded record.
+true when the wheel has more native objects than fit in the `extensions` list above
+and the top-level `binaries[]` array, so a wheel with thousands of objects cannot
+produce an unbounded record. **It means the listing is incomplete, never that the
+evaluation was.** Every object the archive holds is decompressed, read and fed to
+linkage and every rule regardless of this cap; only the arrays a consumer reads back
+out of the JSON are capped, to the same prefix (sorted by path). A finding's
+`locations[].path` can therefore legitimately name an object that is not present in
+`binaries[]` -- it was still evaluated, just not listed. `findings[]` where
+`rule_id == "WHEEL_BINARIES_TRUNCATED"` names how many objects were evaluated in
+total when this happens.
 
 `source_available` is `false` when the wheel ships no readable Python at all: bytecode
 without source, or source that would not parse. **When it is false, the absence of Python
@@ -143,7 +151,7 @@ One entry per **rule and subject**, not per occurrence.
 | `verdict` | The class this finding pushes the wheel into, or `null` for informational findings. |
 | `occurrences` | Number of **distinct locations**. Two calls on one line count once. |
 | `truncated` | The `locations` list was capped; `occurrences` still holds the full count. |
-| `locations[]` | `{path, line, evidence}`. `line` is `null` for non-source findings. `evidence` is the literal matched text, printable ASCII, capped. |
+| `locations[]` | `{path, line, evidence}`. `line` is `null` for non-source findings. `evidence` is the literal matched text, printable ASCII, capped. A `path` naming a native object is not guaranteed to appear in `binaries[]`: `artifacts.binaries_truncated` can leave it out of that list while the object, and this finding, were still produced from reading it in full. |
 
 ## `verdict`
 

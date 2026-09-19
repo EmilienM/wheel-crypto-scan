@@ -270,7 +270,7 @@
         },
         "binaries_truncated": {
           "type": "boolean",
-          "description": "True when the binaries and extensions lists were capped, so a wheel with thousands of objects cannot produce an unbounded record."
+          "description": "True when the wheel has more native objects than fit in the binaries and extensions lists, so those listings are capped. Every object is still fully evaluated by linkage and the rules regardless of this cap; only the listing is capped, never the evaluation."
         }
       }
     },

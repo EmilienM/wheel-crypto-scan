@@ -732,3 +732,81 @@ a record-size question rather than a resource-exhaustion one, so left open rathe
 given a cap purpose-built for this one source.
 
 Tracked in [#54](https://github.com/EmilienM/wheel-crypto-scan/issues/54).
+
+## A cap bounds the record, not the evaluation
+
+**Accepted, and it changes verdicts.**
+
+`max_binaries_per_record` exists for the same reason the three per-binary limits in "A
+cap bounds the record, it does not pick the evidence" do: one wheel must not produce an
+unbounded JSON line. It was applied in the one place that also decides what a rule can
+see. `_collect` sliced the binaries list to the cap before building the `Evidence` that
+`resolve_linkage`, `apply_rules` and `classify` all run over, so every object past the
+256th was fully decompressed and read -- the cost was paid in full -- and then thrown
+away before anything downstream ever looked at it.
+
+```
+256 filler .so + one static-OpenSSL .so, sorting 257th (last)  -> NO_CRYPTO_DETECTED
+same wheel, crypto object moved to sort 256th (last kept)      -> CONDITIONAL, BIN_STATIC_OPENSSL
+```
+
+Same object, same wheel, different verdict, purely because of where its filename sorts
+relative to a limit that exists to bound JSON size and was never meant to decide which
+evidence a rule gets to see. `artifacts.binaries_truncated` was already set correctly
+in this case; nothing in the ruleset or `engine._MATCHERS` read it, so it changed
+nothing about the verdict. This is the same class of bug as the one `#51` fixed for
+`max_strings_per_binary`, `max_symbols_per_binary` and `max_rust_crates_per_binary`,
+one layer up: there the cap picked which *matches inside an object* a rule could see;
+here it picked which *objects* existed at all as far as the rules were concerned.
+
+**The fix.** `_collect` now hands `Evidence` the full, untruncated tuple of binaries
+`scan_binaries` read. `resolve_linkage`, `apply_rules` and `classify` see all of it, so
+the verdict no longer depends on sort order relative to a display limit. The cap moved
+to the one place it always should have applied: `build_record`, which now takes
+`max_binaries` and slices `evidence.binaries` there, after findings and the verdict are
+already computed, so only the *serialised* `binaries[]` array is bounded. `build_inventory`
+was untouched -- it was already being called with the full list and already computes
+`binaries_truncated` correctly; only `Evidence` was getting the truncated view.
+
+**What it costs.** A finding's `locations[].path` can now legitimately name an object
+that is not present in the record's `binaries[]` array: the object was evaluated, a
+rule matched something in it, and the cap left it out of the display list anyway.
+`SCHEMA.md` says so under both `artifacts.binaries_truncated` and `findings[].locations[]`
+rather than leaving it to be discovered. This was already possible in principle before
+this fix wherever `binaries[]` disagreed with what `errors[]` or `artifacts.extensions`
+named, so it is a wider instance of an existing shape, not a new one.
+
+`ANALYZER_VERSION` moves: any already-scanned wheel with more than
+`max_binaries_per_record` native objects can produce a different verdict now, and the
+cache has no other way to know that.
+
+**Whether `binaries_truncated` should also be a finding.** Fixing evaluation removes
+the correctness bug -- a wheel is never again read clean because of where a filename
+sorts -- but a human reading one JSON line still cannot tell "156 objects, all listed"
+from "156 listed out of 400" without cross-referencing `artifacts.binaries_truncated`
+against nothing else in the record. That gap is real, if smaller than the one this
+entry mainly fixes, and it is what `WHEEL_BINARIES_TRUNCATED` closes: a
+`kind = "binaries_truncated"` rule, informational (`severity = "info"`, no verdict,
+`needs_human_review = false`), that fires whenever the flag is set and names how many
+objects were actually evaluated. It follows the same shape as `WHEEL_RECORD_UNREADABLE`
+and the rest of the informational `scan_error` rules: a fact that is not on its own a
+reason to look, recorded so it is not only discoverable by a consumer who already knew
+to look for `artifacts.binaries_truncated` specifically. It was implemented rather than
+left as a follow-up because the marginal cost was one small matcher function and one
+rule entry, once the evaluation-side fix already made `evidence.binaries` the correct,
+full count to report at the point the rule runs.
+
+**What was rejected.** Giving `WHEEL_BINARIES_TRUNCATED` a verdict, or
+`needs_human_review = true`. Both were considered and dropped: once evaluation sees
+everything, the verdict already reflects the whole wheel, and treating an ordinary
+side effect of a display cap as something a human must act on would put every large
+Rust or CUDA wheel back on a triage list for a reason that has nothing to do with
+crypto. That mirrors why `BIN_PARTIAL_ROUTINE` carries no verdict for an ordinal
+import: the evidence gap it names is real but does not, on its own, ask for a person.
+
+Revisit if a consumer needs to reconstruct the *full* per-object list rather than just
+knowing it is incomplete -- that is a different feature (streaming or paginating
+`binaries[]`, or a `--max-binaries-per-record` raised at scan time) and not something
+this fix or `WHEEL_BINARIES_TRUNCATED` attempts.
+
+Tracked in [#55](https://github.com/EmilienM/wheel-crypto-scan/issues/55).

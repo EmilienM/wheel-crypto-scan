@@ -488,6 +488,91 @@ def test_a_wheel_with_thousands_of_objects_produces_a_bounded_record(
     assert record["artifacts"]["binaries_truncated"] is True
 
 
+# --- M9: a cap on the record must not cap what a rule sees ------------------
+
+
+def _crypto_past_the_cap_wheel(tmp_path: Path, filler_count: int = 256):
+    """`filler_count` filler `.so` objects plus one static-OpenSSL object that sorts
+    last by path, so it lands at index `filler_count` (the `filler_count + 1`th
+    object)."""
+    tiny = ElfBuilder(needed=("libc.so.6",)).build()
+    crypto = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("EVP_DigestInit_ex", True),),
+        rodata=b"\x00OpenSSL 3.0.14 4 Jun 2024\x00",
+    ).build()
+    files = {f"pkg/_ext{i:04d}.so": tiny for i in range(filler_count)}
+    files["pkg/_zzz_crypto.so"] = crypto  # sorts last, past a 256-object cap
+    return build_wheel(
+        tmp_path / f"crypto257-1.0-{MANYLINUX}.whl",
+        name="crypto257",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+
+
+def test_an_object_past_the_binaries_cap_is_still_evaluated(context, tmp_path: Path) -> None:
+    """#55: 256 filler objects plus one crypto object that sorts 257th used to read
+    clean, because `Evidence.binaries` was truncated to the cap before linkage and the
+    rules ever ran. They must see every object that was actually read, not just the
+    ones that fit in the record's `binaries[]` list."""
+    wheel = _crypto_past_the_cap_wheel(tmp_path)
+    record = scan_wheel(wheel, context)
+
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+    assert record["verdict"]["needs_human_review"] is True
+    assert "BIN_STATIC_OPENSSL" in record["verdict"]["rule_ids"]
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
+
+
+def test_the_binaries_cap_still_bounds_the_serialised_record(context, tmp_path: Path) -> None:
+    """The other half of the fix: evaluation is complete, but `binaries[]` itself
+    still stops at `max_binaries_per_record` -- the record must not grow unbounded
+    just because evaluation no longer does."""
+    wheel = _crypto_past_the_cap_wheel(tmp_path)
+    record = scan_wheel(wheel, context)
+
+    assert len(record["binaries"]) == context.max_binaries_per_record
+    assert record["artifacts"]["binaries_truncated"] is True
+    # The crypto object sorted last, past the cap, so it is evaluated (previous test)
+    # but is not one of the objects the record actually lists.
+    assert all(binary["path"] != "pkg/_zzz_crypto.so" for binary in record["binaries"])
+    # Its finding's location still names it: a finding location is not guaranteed to
+    # appear in binaries[] once the record is capped. See SCHEMA.md.
+    symbol_finding = next(
+        f for f in record["findings"] if f["rule_id"] == "BIN_OPENSSL_SYMBOLS_DEFINED"
+    )
+    assert symbol_finding["locations"][0]["path"] == "pkg/_zzz_crypto.so"
+
+
+def test_binaries_truncated_becomes_a_finding_naming_the_full_count(
+    context, tmp_path: Path
+) -> None:
+    """The transparency half of the fix (option 2): a human reading one JSON line must
+    be able to see that `binaries[]` is a prefix, without knowing in advance to check
+    `artifacts.binaries_truncated`."""
+    wheel = _crypto_past_the_cap_wheel(tmp_path)
+    record = scan_wheel(wheel, context)
+
+    truncated = [f for f in record["findings"] if f["rule_id"] == "WHEEL_BINARIES_TRUNCATED"]
+    assert len(truncated) == 1
+    assert truncated[0]["verdict"] is None
+    assert truncated[0]["needs_human_review"] is False
+    assert "257" in truncated[0]["locations"][0]["evidence"]
+
+
+def test_binaries_truncated_finding_does_not_fire_under_the_cap(context, tmp_path: Path) -> None:
+    """The negative half of the same guard: a wheel that never hits the cap must not
+    carry a WHEEL_BINARIES_TRUNCATED finding, or the rule is not actually reading the
+    flag."""
+    wheel = _crypto_past_the_cap_wheel(tmp_path, filler_count=10)
+    record = scan_wheel(wheel, context)
+
+    assert record["artifacts"]["binaries_truncated"] is False
+    assert not any(f["rule_id"] == "WHEEL_BINARIES_TRUNCATED" for f in record["findings"])
+
+
 # --- L6: dedup and sort must agree -------------------------------------------
 
 

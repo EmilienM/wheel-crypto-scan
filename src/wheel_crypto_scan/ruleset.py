@@ -43,6 +43,7 @@ MATCHER_KINDS = frozenset(
         "linkage",
         "opaque_binary",
         "partial_binary",
+        "binaries_truncated",
         "py_import",
         "py_call",
         "py_attr",
