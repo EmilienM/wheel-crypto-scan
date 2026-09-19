@@ -810,3 +810,339 @@ knowing it is incomplete -- that is a different feature (streaming or paginating
 this fix or `WHEEL_BINARIES_TRUNCATED` attempts.
 
 Tracked in [#55](https://github.com/EmilienM/wheel-crypto-scan/issues/55).
+
+## Sections are found by type, not by a name nobody checks
+
+**Accepted, and it changes records.**
+
+`_find_section` compared `section.name` against `.dynamic`, `.dynsym` and `.symtab`, but
+the ELF *loader* never reads section names or the section header table at all: it walks
+`PT_DYNAMIC` and the tags it points at. A name-based lookup trusted a label nothing
+downstream of the compiler checks.
+
+```
+honest: EVP_DigestInit_ex, SSL_new imported, libc.so.6 in DT_NEEDED
+.dynsym renamed .dynsyx in .shstrtab, same bytes otherwise  -> NO_CRYPTO_DETECTED,
+                                            needs_human_review: false, partial_analysis: false
+```
+
+Renaming `.dynamic` too empties `needed` as well, and the object still loads and runs
+through `ctypes` exactly as before: nothing about what the loader does changed, only
+what one label in `.shstrtab` said.
+
+**The fix has two parts, because two different shapes produced the same silence.**
+
+`.dynamic`, `.dynsym` and `.symtab` are now found by `sh_type` (`SHT_DYNAMIC`,
+`SHT_DYNSYM`, `SHT_SYMTAB`) rather than by name. `pyelftools` already builds the right
+wrapper class -- `DynamicSection`, `SymbolTableSection` -- from `sh_type` alone; the name
+only ever became the object's `.name` attribute, which this reader was the only thing
+reading. `.go.buildinfo`, `.note.go.buildid` and `.comment` stay name-based: they are
+plain `SHT_PROGBITS`/`SHT_NOTE` sections with no type of their own, so a name is the
+only signal there is, and the issue that reported this explicitly left them out of
+scope.
+
+The second shape is not a renamed label but no section header table at all:
+`e_shoff == 0` is a loadable object's own right, since the dynamic linker never reads
+one. That reads worse than a header that would not parse: `_unparsed` still scans the
+whole file for strings when the ELF header itself is unreadable, but an empty section
+list fed nothing to `_collect_string_bytes`, so a statically-linked `cryptography`
+extension with no section headers lost even its OpenSSL version banner -- its only
+evidence -- with no error and `partial_analysis: false`. `e_shnum == 0` (with
+`e_shoff == 0`) is caught right after the section list is built, before
+`.dynamic`/`.dynsym`/`.symtab` are even looked for, and falls back to the same
+whole-file strings pass `_unparsed` uses, tagged with a new cause.
+
+**`elf_section_table_absent` is a new token, not a reuse of `elf_sections_unread`.**
+`elf_sections_unread` already means "a section header could not be read", a failure at
+a section this reader tried and failed to look at; here there is no section list to try
+at all, so `.dynamic`, `.dynsym` and `.symtab` are not merely unread but unavailable,
+and `needed`, `soname`, `rpath`, `runpath`, the symbol split and `stripped` follow suit.
+Reusing `elf_sections_unread` would have blurred a fact a consumer can currently rely
+on: that cause fires only when the reader tried and failed at specific section indices.
+This one always fires as a single, whole-object fact, closer in shape to
+`elf_dynamic_unread` and `elf_dynsym_unread` combined than to a section-read failure,
+and it records an error the same way those two do, rather than the way
+`pe_no_import_directory` does: an object that carries structural information but chose
+not to declare a table (as PE's absent import directory legitimately can) is a
+different fact from an ELF `.so` shipping with no section headers at all, which every
+real toolchain still emits for a dynamically-loaded library.
+
+**Review found the first version of this fix still trusted two things it should not
+have, both closed before merge.**
+
+**First: "the first section of a matching type wins" let a decoy hide the real table,**
+the exact failure this issue exists to close, one level down. Reproduced on a real,
+loadable `/usr/lib64/libcrypto.so.3`: two 64-byte decoy section headers spliced in
+*before* the real `.dynsym` and `.dynamic` (`sh_name = 0`, `sh_size = 0`, `sh_link`
+pointing at `.shstrtab` rather than a real string table, every other `sh_link` and
+`e_shstrndx` past the insertion point shifted by one to stay valid), `e_shnum` bumped.
+The object still loads and runs. Before this second pass: `needed = ()`, `soname =
+None`, 0 symbols, `partial_analysis: false`, 0 errors, where `main` correctly read
+`needed = ('libc.so.6', 'libz.so.1')`, a soname, and 6043 dynsyms -- end to end through
+`scan_wheel`, `main` read `CONDITIONAL` and this branch read `NO_CRYPTO_DETECTED`. The
+existing symbol/string cross-check (`binfmt.symtab`, "A symbol table is checked
+against the string table, not taken at its word") does not help here: it is sound only
+over the string table the *chosen* section's `sh_link` actually names, and the decoy's
+`sh_link` points at `.shstrtab` instead of `.dynstr`, which disarms it entirely rather
+than tripping it. That disarm property is not incidental to this one fixture -- it is
+its own attack surface, `sh_link` itself never being checked against anything, and
+closing it is its own finding below rather than a footnote to this one.
+
+`_find_section_by_type` no longer returns a single answer when more than one section
+shares the type it is looking for; it reports the ambiguity, and the caller trusts
+neither candidate. `needed`, `soname`, `rpath`, `runpath`, the symbol split and
+`stripped` all read empty, the same shape as "nothing of that type exists" -- but
+tagged `partial_analysis: true` with a new cause, `elf_section_type_ambiguous`, so an
+object carrying two `SHT_DYNSYM` sections never reads as one carrying none. A test now
+covers both orderings: `append_duplicate_dynsym_section` puts the decoy after the real
+section (the shape the first version of this fix tested, which stayed safe only
+because "first wins" happened to favour the real one), and
+`insert_bogus_section_before` puts it ahead of the real one -- the shape that was
+actually unguarded, and the one this measurement reproduced on a real object. Both now
+read `elf_section_type_ambiguous`.
+
+**Second: a forged `sh_type` on a legitimately-named section used to read as fully
+absent, which is worse than `main`.** One four-byte edit -- `.dynsym`'s `sh_type`
+changed from 11 (`SHT_DYNSYM`) to 1 (`SHT_PROGBITS`), the name `.dynsym` left
+untouched -- and the object still loads. On `main`, the name-based lookup still finds
+the section; `pyelftools` builds the wrong wrapper class for the forged type,
+`num_symbols()` fails, and `main` correctly sets `partial_analysis: true` with
+`elf_dynsym_unread` -- but `_symbol_bytes` reads the raw symbol bytes by `sh_offset`
+and `sh_size` directly rather than through the wrapper, so `main` still recovered 2
+symbols on a synthetic object and 64 on a real `libcrypto.so.3`, alongside the partial
+flag. The first version of this fix's type-based lookup for `SHT_DYNSYM` found nothing
+-- the forged section no longer matches -- and treated that the same as a genuinely
+absent one: `partial_analysis: false`, 0 errors, 0 symbols. Strictly worse than `main`:
+where `main` was conservative (partial, some evidence), this branch was confidently
+wrong (clean, no evidence, no flag).
+
+`_type_mismatch` closes it: a name-based lookup checks whether a section still called
+`.dynamic`, `.dynsym` or `.symtab` exists whose declared `sh_type` does not match what
+that name is supposed to mean. If it does, that is a section that exists and cannot be
+trusted, not one that is absent, and it is folded into the same cause a read failure on
+that section already carries -- `elf_dynamic_unread`, `elf_dynsym_unread` or
+`elf_symtab_unread` -- rather than given a token of its own: the fact ("this section
+could not be read") is the same fact a raw exception on it already names, whichever way
+it fell short. This does not go as far as `main`'s raw-byte recovery; the requirement
+is only that the shape can never read `partial_analysis: false` with zero evidence,
+which folding it into the existing partial cause satisfies without a second reader for
+the symbol table's raw bytes.
+
+**Third, found in review of the second pass: the mismatch check ran only when the
+type-based lookup found nothing, so one decoy of the target type disabled it
+entirely -- the first bug's shape, through a third door.** `elif dynamic is None and
+_type_mismatch(...)` reads as "check by name only once type-based lookup has drawn a
+blank", but one harmless decoy `SHT_DYNSYM` section (the same construction as the first
+finding's decoy, `sh_link` pointing at `.shstrtab`) is enough to make the type-based
+lookup succeed *unambiguously* -- exactly one candidate of that type -- so `dynsym is
+None` was `False` and `_type_mismatch` was never even called. Combine that decoy with
+forging the real, correctly-named `.dynsym`'s own `sh_type` away, and the real section
+is invisible from both directions at once: not found by type (its type no longer
+matches), and not checked by name (the gate that would have caught it never ran because
+something else satisfied the type-based lookup first).
+
+```
+honest:       partial=False needed=('libc.so.6',) syms=['EVP_DigestInit_ex','SSL_new']
+              linkage={'openssl':'unknown'} verdict=OPAQUE      needs_human_review=True
+decoy+forge:  partial=False needed=('libc.so.6',) syms=[]       errors=0
+  (pre-fix)   linkage={'openssl':'none'}    verdict=NO_CRYPTO_DETECTED needs_human_review=False
+```
+
+The `#56` headline failure, verbatim, reached through the very check meant to close a
+narrower version of it. `main` (name-based lookup, no decoy to satisfy) still catches
+this exact byte pattern: `partial_analysis: true`, `['elf_dynsym_unread']`, 2 symbols
+recovered by the raw-byte path -- so this was a regression against `main`, not merely a
+gap this fix left open.
+
+The fix drops the `X is None and` conjunct at all three call sites: the mismatch check
+now runs unconditionally, every time, regardless of what the type-based lookup found
+elsewhere. It costs nothing on an honest object -- `_type_mismatch` is `False` whenever
+the name-based and type-based lookups agree, which is every fixture already in the
+suite -- and it only starts firing for exactly the shape that was unguarded: a section
+found by name whose type does not match, irrespective of whether some *other* section
+happened to satisfy the type-based lookup in its place. Tests now cover a decoy plus a
+forged real section for all three of `.dynamic`, `.dynsym` and `.symtab`.
+
+**Fourth, found checking whether the third fix's own building block could be
+defeated the same way: `_type_mismatch` found "the section named X" with
+`_find_section`, which is "first match in section order wins" -- the identical
+hazard `_find_section_by_type` was rebuilt to stop guessing about, just applied to
+name instead of type.** A decoy that reuses the real section's own *name* --
+`.dynsym`, say -- rather than its type, sorts first, is correctly typed (that is the
+whole trick), and reports no mismatch, so a same-named real section sitting behind it
+with its own forged `sh_type` went unseen from both directions again: not found by
+type (wrong type) and not caught by the mismatch check (ambiguous by name rather than
+by type, which nothing was checking). Reproduced and confirmed on the actual reader:
+
+```
+honest:            partial=False needed=('libc.so.6',) syms=['EVP_DigestInit_ex','SSL_new']
+same-name decoy
+  + real forged:    partial=False needed=('libc.so.6',) syms=[]           errors=0
+```
+
+The `#56` headline failure a fourth time, through the building block meant to close
+the third occurrence of it. `_type_mismatch` now treats more than one section sharing
+`name` the same way `_find_section_by_type` treats more than one sharing `sh_type`:
+untrusted, folded into the same partial cause. `insert_bogus_section_before` grew a
+`same_name` option to build this fixture (reusing the target's own `sh_name` offset
+instead of the empty string), and `patch_section_header` grew an `occurrence` parameter
+to reach the second, real section behind the decoy rather than the decoy itself. Tests
+cover all three of `.dynamic`, `.dynsym` and `.symtab` for this shape too.
+
+**It costs the linkage answer, on purpose.** `elf_section_table_absent` and
+`elf_section_type_ambiguous` are not in `[linkage_policy] exclude_reasons`. The three
+causes already excluded --
+`elf_symtab_unread`, `elf_go_buildinfo_unread`, `pe_no_import_directory` -- each leave
+every field `linkage` reads intact: `.symtab` and `.go.buildinfo` feed nothing `linkage`
+touches, and an absent PE import directory is a declaration the object really did make.
+None of that holds for either new cause. `needed`, the imported/defined split and
+`matched_strings` are what `linkage` reads, and a sectionless or ambiguous object has
+answered none of them -- `needed` is not "no dependencies", it is "we could not ask" or
+"we cannot tell which answer is real". Excluding either would read `openssl_linkage:
+none` off an object that told us nothing, the same failure `DECISIONS.md`'s "A symbol
+table is checked against the string table, not taken at its word" entry already
+measured for a lying `nsyms`. The reused tokens -- a forged `sh_type` folding into
+`elf_dynamic_unread`, `elf_dynsym_unread` or `elf_symtab_unread` -- were already costing
+the linkage answer (two of the three) or already excluded for an unrelated reason
+(`elf_symtab_unread`, which never fed `linkage` in the first place); reusing them
+changes nothing about that table.
+
+**What was rejected.** Reading `PT_DYNAMIC` and the program headers directly -- the
+issue's option 3 -- as the primary or a fallback mechanism. It is the more complete fix,
+the loader's own path, immune to a section header table that is present but lies in some
+way types 1 and 2 do not cover. It is also materially more work, a second parser for
+information this reader already gets from section headers in the common case, and the
+issue that reported this said as much. Options 1 and 2, plus closing the two gaps
+review found in them (ambiguous candidates, a forged `sh_type` on a still-named
+section), close every shape that was actually measured without it, so it stayed out.
+
+**What it costs.** Records change for a renamed section (now read), for a sectionless
+object (now `partial_analysis: true` with the whole-file strings pass, where it used to
+be a silent, complete-looking read), for an object with more than one section of a
+type this reader looks for (now `partial_analysis: true` with
+`elf_section_type_ambiguous` instead of whichever candidate sorted first), for a
+section found by name whose `sh_type` was forged (now folded into the existing partial
+cause for that section instead of reading as absent), for a decoy of the target type
+sitting beside a real section forged away from that type (now caught by the same
+mismatch check the second case introduced, since it is no longer gated on the
+type-based lookup having found nothing), for a decoy sharing the real section's
+*name* rather than its type (now caught the same way, since `_type_mismatch` no longer
+trusts the first same-named section it finds either), and for a decoy string table
+`.dynsym` or `.dynamic`'s `sh_link` names without corroborating `.dynamic`'s own
+`DT_STRTAB` (now folded into `elf_dynsym_unread`/`elf_dynamic_unread` the same way,
+and cascading to cost `.dynsym` too whenever `.dynamic` itself could not be read),
+so `ANALYZER_VERSION` moves relative to `main`. This branch itself is unreleased, so
+every extraction change accumulated across every round of this entry -- including
+this one -- is covered by the single bump already made; there is no reason to bump it
+again per round within one unmerged branch.
+
+**Fifth, found in a further review pass: `sh_link` itself was never validated at
+all, the same underlying pattern -- an attacker-controlled label winning a lookup so
+the check meant to catch a mismatch never runs -- reached through a different field
+than the previous four.** `_symbol_bytes` resolved `.dynsym`'s string table with
+`elf.get_section(section["sh_link"])` and nothing else: no check that the resolved
+section is even a string table, and no reconciliation against `.dynamic`'s own
+`DT_STRTAB` tag, which `read_elf` already parses. `sh_link` is a section-header field
+the loader never reads either -- `.dynamic` and `.dynsym` both resolve names through
+`PT_DYNAMIC`'s `DT_STRTAB` tag, never through any section's `sh_link` -- so trusting
+it outright is the identical hazard the previous four findings close for `.dynamic`,
+`.dynsym` and `.symtab` themselves, one level further down, in the one place after
+all of that where a section is still picked by a raw index with no check at all.
+
+Reproduced directly against the actual reader, and independently on real, unmodified
+loadable objects (`/usr/lib64/libcrypto.so.3`, a real CPython `_hashlib` extension):
+append `N` NUL bytes plus a new `SHT_STRTAB` section header pointing at them, then
+repoint `.dynsym`'s `sh_link` at that index. Every symbol name index resolves to `""`
+against an all-NUL table -- `names.find(b"\x00", st_name)` finds a terminator at
+`st_name` itself, so the empty slice is a name *resolved*, not one flagged unresolved
+-- and `""` fails `patterns.symbol_groups_for` the same way any name nothing claims
+does. `libcrypto.so.3`'s 64 crypto symbols, and a real `_hashlib` extension's 24,
+both went to zero, `partial_analysis: false`, no error, both objects still loading
+and running unmodified otherwise.
+
+`.dynamic`'s own `sh_link` has the identical hole and is worse: it can *fabricate*
+evidence, not just erase it. `.dynamic` resolves `DT_NEEDED`/`DT_SONAME` strings
+through the same unchecked `sh_link`, so a decoy that happens to spell a real
+dependency name at the byte offset a real `DT_NEEDED` tag points at reports a
+dependency the object never declares -- an invented name, not a truncated one, which
+is the fabrication direction of "A name reported is a name read in full" rather than
+the truncation direction that invariant was written against.
+
+The fix reconciles both against data this reader already has in hand. `.dynamic`'s
+own `sh_link`, once `.dynamic` is read, is checked against its own `DT_STRTAB` tag;
+`.dynsym`'s `sh_link` is checked against that same address, threaded through as
+`dt_strtab_addr`. `DT_STRTAB`'s `d_ptr` needs no string resolution itself -- it is a
+raw pointer value in the tag -- so it is available to check against even when the
+string table it names cannot be trusted. A resolved section corroborates only when
+its `sh_type` is `SHT_STRTAB` *and* its `sh_addr` matches `DT_STRTAB`'s `d_ptr`; either
+mismatched, or no `DT_STRTAB` to compare against at all (`.dynamic` itself unreadable
+or missing the tag), fails closed rather than trusting `sh_link` unwitnessed. On
+failure the string table is treated as unresolved -- `_symbol_bytes` returns `b""` for
+`.dynsym`'s names, which the *existing* `unresolved` counter already turns into
+`elf_dynsym_unread`, and `.dynamic`'s own `needed`/`soname`/`rpath`/`runpath` are reset
+to empty under `elf_dynamic_unread` the same way an exception on `.dynamic` already
+does. No new `partial_reasons` token: both fold into causes that already mean "this
+table's contents could not be trusted."
+
+This cascades, correctly: an object whose `.dynamic` cannot be read or corroborated
+has no `DT_STRTAB` to hand `.dynsym` either, so `.dynsym`'s string table is untrusted
+too even when `.dynsym`'s own `sh_link` is perfectly honest. Several existing
+fixtures that exercise a broken or ambiguous `.dynamic` now also carry
+`elf_dynsym_unread` for exactly this reason, and their assertions were updated to
+expect it -- a deliberate tightening, not a regression: the alternative is trusting a
+symbol table's string resolution with no witness for it, which is the same "reads
+clean because nothing checks" shape as the rest of this entry.
+
+**What it costs.** No change to the honest path: `ElfBuilder`'s own fixtures, and
+every real object this was tested against, have `.dynstr`'s `sh_addr` and
+`DT_STRTAB`'s `d_ptr` agree (both are conventionally 0 in this suite's synthetic
+objects, and correctly non-zero and matching on the two real ones this was verified
+against), so `_validated_strtab` returns the same section `_symbol_bytes` always used.
+The added cost is one more section-header fetch and a bounded scan of `.dynamic`'s own
+tags for `DT_STRTAB` -- both O(1) against the object, not against symbol count -- so
+the hot path this module is written around, hundreds of thousands of dynamic symbols
+in one object, reads exactly as many bytes as before.
+
+**What was rejected, again.** Full program-header-based virtual-address-to-file-offset
+translation, to also catch a decoy that is correctly typed *and* correctly addressed
+but whose `sh_offset` alone is forged to point at fabricated bytes at the same virtual
+address. Closing that needs `PT_LOAD` segment parsing this issue's chain has
+repeatedly and deliberately deferred as "option 3" -- see below, grouped with the
+other shapes only program headers would close.
+
+**Whether ambiguity detection can false-positive on a real wheel.** No real toolchain
+this reader's own test corpus or review turned up emits two `SHT_DYNSYM` or
+`SHT_DYNAMIC` sections in one object; the shape is adversarial or hand-crafted in every
+example measured here, never something `gcc`, `rustc`, `go build` or `objcopy` produce
+on their own. `elf_symtab_unread`-style tokens already accept the same tradeoff for a
+single section that fails to read, so treating an ambiguous one the same way -- opaque
+rather than guessed at -- is the conservative direction this file already takes
+throughout, not a new risk class. Revisit if a real, non-adversarial wheel is found
+carrying more than one section of the same type nonetheless: the fix would then need a
+second signal beyond `sh_type` to break the tie (position, `sh_link` validity, `.dynamic`
+tag content), which is a larger change than this token.
+
+Revisit also if a real wheel is found carrying a section header table whose contents
+lie in some way neither ambiguity detection nor the name/type mismatch check catches --
+for example a forged `sh_type` that happens to collide with a *different* legitimate
+section's type rather than a generic one like `SHT_PROGBITS` -- which is exactly the
+class of gap option 3 would close structurally and this does not attempt to.
+
+**Accepted residual, grouped with the two above: `sh_addr` matching while `sh_offset`
+alone is forged.** A decoy resolved through `sh_link` that is correctly typed
+`SHT_STRTAB` *and* whose `sh_addr` correctly matches `.dynamic`'s own `DT_STRTAB` --
+but whose `sh_offset` (the file position, as opposed to the virtual address `sh_addr`
+declares) alone points at fabricated bytes -- still reads clean. `sh_addr` and
+`sh_offset` are two different claims a section makes about itself, and this reader
+now checks one against `.dynamic`'s independent testimony (`DT_STRTAB`) without a way
+to check the other: nothing outside `PT_LOAD` segment contents corroborates that a
+given virtual address really lives at a given file offset. Closing it needs the same
+program-header-based virtual-address-to-file-offset translation the other two
+residuals need -- reading `PT_LOAD` segments to translate an address independently of
+any section at all -- which is squarely "option 3", the scope this issue's chain has
+repeatedly and deliberately deferred rather than one more targeted check like the
+five closed above. Do not chase this by adding a sixth targeted field comparison; the
+next real gap in this family is answered by option 3 as a whole, not by another
+field.
+
+Tracked in [#56](https://github.com/EmilienM/wheel-crypto-scan/issues/56).
