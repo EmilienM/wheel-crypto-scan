@@ -3,7 +3,8 @@
 Static analyser that reports crypto-relevant **evidence** inside Python wheels so consumers
 of a package index can see per-wheel FIPS risk. It gathers evidence; it does not decide FIPS
 compatibility. Read `README.md` for what it detects, `SCHEMA.md` for the output contract, and
-`DECISIONS.md` for the design calls that cost something and were made anyway.
+`DECISIONS.md` for the design calls that cost something and were made anyway, including
+the holes left open on purpose and the measurement behind each one.
 
 ## Invariants
 
@@ -64,6 +65,15 @@ These are design decisions, not accidents. Do not change one without saying so e
   them is worth a verdict lives in `ruleset.toml`, matched through `kind = "scan_error"`
   or `kind = "partial_binary"`. A token named by a rule is validated at load time, so a
   typo is a load error rather than a rule that silently matches nothing.
+- **A prefilter lives beside the matcher it mirrors.** A reader that restates "could
+  this match" in cheaper terms -- over raw bytes, before decoding -- puts the cheap
+  version in `ruleset.py` next to the real one, with a test that fails when the real one
+  grows an arm. A prefilter that quietly stops matching what the matcher matches loses
+  evidence and fails nothing: `BinaryPatterns.symbol_locator` is the worked example.
+- **A pass over a whole object belongs in C.** Every such pass runs once per slice of a
+  universal binary, up to `_MAX_FAT_SLICES`, over regions the slices are free to share.
+  A Python loop over a 2 MiB string table was 19 seconds across one object; the same
+  check as one compiled regex is 1.2. `tests/test_hardening.py` is where that is held.
 - **Keep `record.py` and `data/schema.json` in step,** and update `SCHEMA.md` with them. A
   test fails on drift.
 - **Dependencies are `pyelftools` and `packaging`.** Ask before adding a third.
