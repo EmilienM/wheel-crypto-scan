@@ -254,3 +254,135 @@ causes cost it an answer, across all three readers rather than in this one. Trac
 in [#40](https://github.com/EmilienM/wheel-crypto-scan/issues/40).
 
 Tracked in [#34](https://github.com/EmilienM/wheel-crypto-scan/issues/34).
+
+## Linkage reads a second split over the same vocabulary
+
+**Accepted. It changes the field most consumers filter on.**
+
+`resolve_linkage` decided "we could not tell" from `is_opaque` and the binary-stage
+errors, and never from `partial_analysis`. So an object a reader had explicitly marked
+as not read in full, but that recorded no error, still contributed a definite posture.
+The everyday case is a stripped macOS extension:
+
+```
+partial_reasons: ['macho_symtab_incomplete']
+openssl_linkage: none
+```
+
+One field says the symbol table was not read; the next says there is no OpenSSL in the
+object, which is a claim the first says we cannot make. `is_opaque` does not rescue it,
+because `needed` is non-empty for every loadable dylib and every `.pyd`. The verdict was
+already `OPAQUE` through `BIN_PARTIAL_FORMAT`, so what was wrong was the condition rather
+than the headline -- and the condition is the field `verdict.conditions` exists to carry.
+
+**Why it is not one boolean.** `partial_analysis` is true for linker conventions too.
+Counting the tuple wholesale would turn every ordinal import into
+`openssl_linkage: unknown`, which is exactly the noise [#29](https://github.com/EmilienM/wheel-crypto-scan/issues/29)
+removed from the verdict, arriving again through a different field.
+
+**So there are two lists over one vocabulary, and they differ on purpose.**
+`[linkage_policy] exclude_reasons` in `ruleset.toml` names the causes that leave every
+field linkage reads -- `needed`, `vendored_path`, the imported-versus-defined split,
+`matched_strings` -- intact. A `partial_binary` rule with no verdict names the causes
+not worth one. They are not the same question and their answers are not the same set:
+`elf_symtab_unread` is worth a verdict and costs linkage nothing, because `.symtab`
+drives `stripped` and `symbol_counts.symtab` while the split comes from `.dynsym` alone.
+A test asserts the two lists differ, so if they ever coincide the mechanism is a rename
+and should be one.
+
+It is named `linkage_policy` and not `linkage` because three things here are already
+called linkage: the resolved posture per library, the matcher kind that reads those
+postures, and this, which is about neither.
+
+**One containment holds, and the loader refuses a ruleset that breaks it.** Every cause
+a verdict-less rule claims must be exempt here too. A cause recorded without a verdict
+has promised the wheel is not on its own worth a human's time; letting it cost the
+linkage answer puts it straight back on the triage list through
+`BIN_OPENSSL_LINKAGE_UNKNOWN`, which carries `OPAQUE`. Asserting that over the shipped
+ruleset alone left every `--ruleset` user outside the guard, so it is a `RulesetError`
+rather than a test.
+
+**Absence of the table derives it, rather than emptying it.** An empty default is
+conservative read on its own and self-contradicting read in composition: a custom
+ruleset keeping `BIN_PARTIAL_ROUTINE` and omitting `[linkage_policy]` would report
+`openssl_linkage: unknown` for an ordinary ordinal import, which is both the noise
+removed when the split was drawn for verdicts and the contradiction the check above
+refuses. Omitting the table now yields exactly the verdict-less causes; the explicit
+table is the override that widens them.
+
+**The awkward one is `pe_ordinal_export`, and it is on the list because the containment
+puts it there, not because the argument for it is good.** An import bound by ordinal
+keeps the DLL name in `needed`, which is the first thing a posture is read off -- but
+only when that name is a soname this ruleset knows, and that is the case which answers
+definitely anyway. The branch needing the rescue is the other one, where an object calls
+a library it neither ships nor declares, and an ordinal import erases exactly the
+imported symbol `_binary_posture` reads there:
+
+```
+EVP_DigestInit_ex imported by name from an unrecognised DLL -> unknown, a finding
+the same import bound by ordinal                            -> none, no verdict
+```
+
+Kept, because costing the answer for every ordinal import is the noise removed when the
+split was drawn for verdicts, and a test now pins the shape given up so it is a known
+hole rather than an assumed non-hole. An export bound by ordinal is a *definition* we could not match, and
+a definition is how `static` is recognised. The backstop offered for it -- that a
+statically linked OpenSSL leaves its version banner in read-only data, which
+`matched_strings` reads and no ordinal export touches -- is real but not guaranteed. A
+build that drops `OPENSSL_VERSION_TEXT` has no banner to find, and `strings_truncated`
+can cut one that is there without setting `partial_analysis` at all, so the fallback is
+best effort rather than a backstop.
+Measured on one synthesised `.pyd` exporting `PyInit__ext`, `EVP_DigestInit_ex` and
+`SSL_new`, with no banner in it:
+
+```
+honest                     -> openssl_linkage: static   BIN_STATIC_OPENSSL
+NumberOfNames = 0          -> openssl_linkage: none     BIN_PARTIAL_ROUTINE only
+NumberOfNames = 1 (of 3)   -> openssl_linkage: none     BIN_PARTIAL_ROUTINE only
+```
+
+One edited field and a statically linked OpenSSL reads clean. That is not a regression
+introduced here -- it is what the tree already does -- and it is not fixed here either,
+because the fix is to re-rate the cause out of the verdict-less rule, which reverses a
+decision made with measurement behind it. What this change does is make the two halves
+inseparable: the loader now refuses a ruleset that costs the linkage answer for a cause
+it records without a verdict, so whoever re-rates it cannot do half of it. Tracked
+separately, with the reproduction, against the PE reader work.
+
+`pe_no_import_directory` is exempt on plainer grounds. It fires when the optional header
+points at no import directory, or when the walk finished and named no DLL: both are an
+absence the reader observed, not a read it fell short of. A walk that fell short carries
+`pe_import_incomplete`, which is not exempt, and the two are separate non-`elif`
+conditions so the exemption cannot swallow a failed read.
+
+**Two fields are still outside all of this.** `strings_truncated` and
+`symbols_truncated` never set `partial_analysis`, so no amount of policy over
+`partial_reasons` reaches them and a binary whose strings pass was cut still contributes
+a definite posture. That is the same shape as this entry, one field over, and it is
+tracked separately rather than widened into here.
+
+**A partial read that names no cause costs the answer too.** `partial_analysis` true
+with an empty `partial_reasons` is the shape `engine` singles out as the most serious
+there is -- no reader produces it, so the evidence was built by hand. Reading the empty
+tuple as "nothing excluded, so nothing was lost" made `linkage` the one consumer of that
+field that quietly downgraded it.
+
+**What it costs.** Every stripped macOS wheel moves from `openssl_linkage: none` to
+`unknown` and picks up a `BIN_OPENSSL_LINKAGE_UNKNOWN` finding. That is a lot of wheels,
+and the honest reading is that we never could answer for them. Their verdict class does
+not move: `BIN_PARTIAL_FORMAT` already had them at `OPAQUE`. What moves is that
+`select(.verdict.conditions.openssl_linkage == "none")` stops quietly including wheels
+whose symbol tables nobody read -- a filter the README does not itself suggest today,
+and a stronger `none` is what would make it worth suggesting.
+
+**Only the libraries reported unconditionally are affected,** which is `openssl` alone
+today. The signal reaches `_aggregate` already gated on `always_report`, so an object
+that did not answer does not list every crypto library in the ruleset as `unknown`. A
+false `none` does its damage in the field consumers filter on, and that field is the one
+that is always present.
+
+**Whose answer loses.** Only the wheel's. `_aggregate` consults this signal exclusively
+when nothing in the wheel answered definitely, so one unreadable object still cannot
+erase what the readable ones said.
+
+Tracked in [#40](https://github.com/EmilienM/wheel-crypto-scan/issues/40).

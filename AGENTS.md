@@ -19,8 +19,10 @@ These are design decisions, not accidents. Do not change one without saying so e
   evidence of absence, and a test asserts every recordable failure maps to a rule. One
   carve-out, in `DECISIONS.md`: a `partial_reasons` cause that is a linker convention
   rather than a failure is recorded without a verdict. Today that is the two ordinal
-  causes, and only because the dependency name survives them. Adding to that list is
-  changing this invariant.
+  causes, and only because the dependency name survives them -- when it is a name the
+  ruleset knows, which `DECISIONS.md` now measures rather than assumes. Adding to that
+  list is changing this invariant. That list is also the floor of the linkage exemptions
+  below, and the ruleset loader enforces the containment.
 - **A structure that does not parse costs that structure, never the evidence already
   gathered.** A reader that cannot read its own header still returns the strings, cargo
   paths and Go markers it found, and still marks the object `partial_analysis`. The
@@ -44,7 +46,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 
 | Path | Role |
 |---|---|
-| `data/ruleset.toml` | All policy: packages, symbols, strings, crates, libraries, verdicts |
+| `data/ruleset.toml` | All policy: packages, symbols, strings, crates, libraries, verdicts, linkage |
 | `engine.py`, `ruleset.py` | Rule dispatch and matchers |
 | `layers/` | Evidence gathering: wheel metadata, Python AST, binaries, archive inventory |
 | `binfmt/` | ELF, Mach-O, PE, Go and Rust readers, the shared strings pass, the shared symbol-table cross-check, the fallback |
@@ -76,6 +78,13 @@ These are design decisions, not accidents. Do not change one without saying so e
   version in `ruleset.py` next to the real one, with a test that fails when the real one
   grows an arm. A prefilter that quietly stops matching what the matcher matches loses
   evidence and fails nothing: `BinaryPatterns.symbol_locator` is the worked example.
+- **One vocabulary can carry more than one split, and they must not be assumed equal.**
+  `PARTIAL_REASONS` is read twice: a `partial_binary` rule with no verdict says which
+  causes are not worth one, and `[linkage_policy] exclude_reasons` says which leave a
+  linkage posture answerable. They differ, and the one containment between them is
+  refused at load time rather than left to a test over the shipped ruleset. Reusing a
+  list because it looks like the same question is how a field gets an answer nothing
+  decided.
 - **A shared check states what it assumes.** `binfmt.symtab` is only sound over a string
   table the caller read through, and extracting it from the one reader that guaranteed
   that into one that did not left a live hole. Moving a check to where two callers can

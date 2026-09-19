@@ -15,6 +15,14 @@ from wheel_crypto_scan.evidence import (
     FORMAT_ELF,
     FORMAT_MACHO,
     FORMAT_PE,
+    PARTIAL_ELF_GO_BUILDINFO_UNREAD,
+    PARTIAL_ELF_SYMTAB_UNREAD,
+    PARTIAL_MACHO_SYMTAB_INCOMPLETE,
+    PARTIAL_PE_DELAY_LOAD,
+    PARTIAL_PE_NO_IMPORT_DIRECTORY,
+    PARTIAL_PE_ORDINAL_EXPORT,
+    PARTIAL_PE_ORDINAL_IMPORT,
+    PARTIAL_REASONS,
     STAGE_BINARY,
     ArtifactInventory,
     BinaryEvidence,
@@ -33,7 +41,7 @@ from wheel_crypto_scan.linkage import (
     LINKAGE_UNKNOWN,
     resolve_linkage,
 )
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset import LinkagePolicy, load_ruleset
 
 OPENSSL_BANNER = StringMatch(group="openssl_banner", value="OpenSSL 3.0.14 4 Jun 2024")
 
@@ -298,6 +306,158 @@ def test_real_evidence_beats_an_opaque_sibling(ruleset) -> None:
         binary("pkg/_opaque.so", stripped=True),
     )
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+# --- a partial read is not a definite posture -------------------------------
+
+
+def test_a_binary_not_read_in_full_costs_the_answer(ruleset) -> None:
+    """The case the record used to answer twice, each time differently.
+
+    A stripped macOS extension: `LC_SYMTAB` was not read, so the imported/defined
+    split is missing, and every loadable dylib links `libSystem`, so `is_opaque` is
+    false and the errors are empty. Nothing else in the wheel said anything, so
+    `openssl_linkage` used to read `none` beside a `partial_reasons` saying we could
+    not look.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.dylib",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib",),
+            partial_analysis=True,
+            partial_reasons=(PARTIAL_MACHO_SYMTAB_INCOMPLETE,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_linker_convention_still_leaves_a_definite_posture(ruleset) -> None:
+    """Why the tuple is not simply counted wholesale.
+
+    `WS2_32` is normally bound by ordinal, so this is the ordinary shape of a Windows
+    extension that touches sockets. Counting every cause would have made every one of
+    them `unknown`, which is the noise removed when the same split was drawn for
+    verdicts.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.pyd",
+            format=FORMAT_PE,
+            needed=("python311.dll", "WS2_32.dll"),
+            symtab_count=4,
+            partial_analysis=True,
+            partial_reasons=(PARTIAL_PE_ORDINAL_IMPORT,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
+
+
+def test_one_serious_cause_beside_a_routine_one_still_costs_the_answer(ruleset) -> None:
+    """Any cause not on the list is enough; the excluded ones do not vote it down."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.pyd",
+            format=FORMAT_PE,
+            needed=("python311.dll",),
+            symtab_count=4,
+            partial_analysis=True,
+            partial_reasons=(PARTIAL_PE_DELAY_LOAD, PARTIAL_PE_ORDINAL_IMPORT),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_real_evidence_beats_a_partially_read_sibling(ruleset) -> None:
+    """Same rule as for an opaque sibling: `unknown` never outvotes an observation."""
+    evidence = wheel(
+        binary("pkg/_ext.so", needed=("libcrypto.so.3",)),
+        binary(
+            "pkg/_other.dylib",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib",),
+            partial_analysis=True,
+            partial_reasons=(PARTIAL_MACHO_SYMTAB_INCOMPLETE,),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_cause_the_policy_does_not_name_costs_the_answer(ruleset) -> None:
+    """Excluding rather than including: a token added later is serious by default.
+
+    Written against the whole vocabulary rather than one token, so a cause added to
+    `PARTIAL_REASONS` and forgotten here is still covered. The excluded ones are
+    asserted to be exactly the five the ruleset names, so widening that list has to
+    be done on purpose.
+    """
+    excluded = ruleset.linkage_policy.exclude_reasons
+    assert excluded == frozenset(
+        {
+            PARTIAL_PE_ORDINAL_IMPORT,
+            PARTIAL_PE_ORDINAL_EXPORT,
+            PARTIAL_ELF_SYMTAB_UNREAD,
+            PARTIAL_ELF_GO_BUILDINFO_UNREAD,
+            PARTIAL_PE_NO_IMPORT_DIRECTORY,
+        }
+    )
+    for reason in sorted(PARTIAL_REASONS):
+        evidence = wheel(
+            binary(
+                "pkg/_ext.so",
+                needed=("libc.so.6",),
+                partial_analysis=True,
+                partial_reasons=(reason,),
+            )
+        )
+        posture = resolve_linkage(ruleset, evidence)["openssl"]
+        expected = LINKAGE_NONE if reason in excluded else LINKAGE_UNKNOWN
+        assert posture == expected, reason
+
+
+def test_an_empty_policy_reads_every_cause_as_serious() -> None:
+    """The dataclass default excludes nothing; `[linkage_policy]`'s absence is derived."""
+    assert LinkagePolicy().costs_an_answer((PARTIAL_PE_ORDINAL_IMPORT,))
+    assert not LinkagePolicy().costs_an_answer(())
+
+
+def test_a_partial_read_that_names_no_cause_costs_the_answer(ruleset) -> None:
+    """The two consumers of one field must not read it in opposite directions.
+
+    `engine._match_partial_binary` singles this shape out as the most serious there
+    is: no reader produces it, so the evidence was built by hand. Reading the empty
+    tuple as "nothing excluded, so nothing costs us anything" made `linkage` the one
+    consumer that quietly downgraded it.
+    """
+    evidence = wheel(
+        binary("pkg/_ext.so", needed=("libc.so.6",), partial_analysis=True, partial_reasons=())
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_an_unanswered_object_costs_only_the_libraries_always_reported(ruleset) -> None:
+    """The gate that keeps `verdict.conditions` from growing a key per crypto library.
+
+    `_aggregate` is handed `unanswered and library.always_report`, and without the
+    second half a wheel whose one object was not read in full reports every library in
+    the ruleset as `unknown` -- a dozen keys, none of them backed by any evidence that
+    the library is anywhere near this wheel. Deleting that clause left the whole suite
+    green, which is how a documented promise turns out to be a coincidence.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.dylib",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib",),
+            partial_analysis=True,
+            partial_reasons=(PARTIAL_MACHO_SYMTAB_INCOMPLETE,),
+        )
+    )
+    resolved = resolve_linkage(ruleset, evidence)
+    assert resolved["openssl"] == LINKAGE_UNKNOWN
+    reported = {name for name, library in ruleset.libraries.items() if library.always_report}
+    assert set(resolved) == reported, "a library with no evidence gained a posture"
+    assert "libsodium" not in resolved
 
 
 # --- other libraries --------------------------------------------------------
