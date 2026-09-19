@@ -574,3 +574,45 @@ def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
     stream = io.BytesIO(data)
     ev, _ = read_pe(stream, "demo/_ext.pyd", PATTERNS, vendored=False, max_strings_bytes=8)
     assert ev.strings_truncated is True
+
+
+def test_a_long_mangled_export_name_is_read_rather_than_given_up_on() -> None:
+    """The cap was three bytes short of a real wheel, and falling short is not benign.
+
+    A name the reader cannot terminate is reported as unresolvable, which drops its
+    slot out of the named set. So the object records both `pe_export_incomplete` and
+    `pe_ordinal_export`, and since an ordinal export carries `OPAQUE` that put duckdb's
+    extension -- 3547 of its 3548 exports read correctly -- on the triage list over a
+    1027-byte MSVC-mangled C++ name.
+    """
+    long_name = "??0ScalarFunction@duckdb@@QEAA@V?$basic_string@" + "D" * 1200 + "@Z"
+    assert len(long_name) > 1024
+    data = PEBuilder(
+        dll_name="_ext.pyd",
+        imports=(PEImport("python311.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("PyInit__ext"), PEExport(long_name)),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_reasons == ()
+    # Three named things: one import thunk and two export slots. The long one is in
+    # the count, which is what says its name resolved.
+    assert ev.symtab_count == 3
+
+
+def test_a_name_past_the_cap_is_still_a_name_we_did_not_read() -> None:
+    """The bound is generous, not absent: past it the slot is still given up.
+
+    Raising a limit is how a limit quietly stops being one, so the behaviour on the
+    far side of it is pinned rather than assumed.
+    """
+    from wheel_crypto_scan.binfmt.pe import _MAX_NAME_BYTES
+
+    data = PEBuilder(
+        dll_name="_ext.pyd",
+        imports=(PEImport("python311.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("PyInit__ext"), PEExport("Z" * (_MAX_NAME_BYTES + 16))),
+    ).build()
+    ev, errors = _read(data)
+    assert PE_PARSE_ERROR in {error.kind for error in errors}
+    assert "pe_export_incomplete" in ev.partial_reasons

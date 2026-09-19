@@ -27,6 +27,7 @@ from helpers.binfmt import (
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import errors
+from wheel_crypto_scan.binfmt import pe
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import SbomComponent
 from wheel_crypto_scan.ruleset import load_ruleset
@@ -358,6 +359,67 @@ def test_a_pe_that_declares_a_giant_export_table_does_not_allocate(context, tmp_
     # The import directory that was really there is still evidence, and the object
     # stays partial because its exports were not read.
     assert record["binaries"][0]["needed"] == ["libcrypto-3-x64.dll"]
+    assert record["binaries"][0]["partial_analysis"] is True
+
+
+def test_a_pe_aiming_every_name_at_one_long_string_stays_bounded(context, tmp_path: Path) -> None:
+    """The per-name bound multiplies with the name count, and neither factor bounds it.
+
+    Nothing stops every export name pointer aiming at the same long string, so the cost
+    is names times bytes: `_MAX_EXPORT_NAMES` is 262,144 and the per-name bound is
+    8 KiB, which is two gigabytes of names out of an object that fits in a mail
+    attachment. Measured on the reader with a 64 KiB per-name bound and no whole-object
+    budget: 4096 names cost 16 s and 269 MB, growing linearly, so the reachable ceiling
+    was minutes and gigabytes.
+
+    What makes it expensive is `sanitize`, a per-character pass in Python, so it is the
+    bytes resolved that have to be bounded rather than the lookups. `_MAX_NAME_TOTAL_BYTES`
+    is that bound, and this test is here because raising a limit is how a limit quietly
+    stops being one: the two tests beside this one exist for the same reason.
+    """
+    long_name = "EVP_x" + "A" * (pe._MAX_NAME_BYTES - 100)
+    names = 8192
+    exports = tuple(PEExport(f"n{index:06d}") for index in range(names - 1))
+    payload = bytearray(
+        PEBuilder(
+            imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+            exports=exports + (PEExport(long_name),),
+            dll_name="_ext.pyd",
+        ).build()
+    )
+    # Re-aim every name pointer at the one long name, which no builder flag expresses.
+    headers = pe._read_headers(bytes(payload))
+    image = pe._Image(raw=bytes(payload), sections=headers.sections)
+    rva, _size = headers.directories[0]
+    directory = image.read(rva, pe._EXPORT_DIRECTORY_SIZE)
+    name_count, pointers_rva = (
+        struct.unpack_from("<I", directory, 24)[0],
+        struct.unpack_from("<I", directory, 32)[0],
+    )
+    base = image.locate(pointers_rva)[0]
+    (target,) = struct.unpack_from("<I", bytes(payload), base + (name_count - 1) * 4)
+    for index in range(name_count):
+        struct.pack_into("<I", payload, base + index * 4, target)
+
+    wheel = build_wheel(
+        tmp_path / f"penames-1.0-{WINDOWS}.whl",
+        name="penames",
+        version="1.0",
+        tags=(WINDOWS,),
+        files={"penames/_ext.pyd": bytes(payload)},
+    )
+
+    tracemalloc.start()
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    assert peak < 128 * 1024 * 1024, f"the walk peaked at {peak / 1024**2:.0f} MiB"
+    # Bounded, not abandoned: the names it could afford are read, and the read that
+    # stopped short says so rather than reporting an object with no exports.
     assert record["binaries"][0]["partial_analysis"] is True
 
 
