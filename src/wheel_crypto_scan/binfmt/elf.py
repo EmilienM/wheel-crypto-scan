@@ -366,6 +366,13 @@ def read_elf(
         errors.append(_error(path, ELF_PARSE_ERROR, "failed to read a section's bytes"))
         reasons.add(evidence.PARTIAL_ELF_SECTION_DATA_UNREAD)
     strings_found = scan_strings(raw_bytes, patterns, max_strings_bytes)
+    # The bound this reader applies is to the concatenation, not to the file, so an
+    # object is short of evidence here when an eligible section had no room left rather
+    # than when the object is large. `elf_section_data_unread` is a different fact: a
+    # section whose bytes would not read at all, which records an error where this
+    # records none.
+    if sections_truncated:
+        reasons.add(evidence.PARTIAL_STRINGS_BYTES_UNREAD)
 
     buildinfo_section = _find_section(sections, ".go.buildinfo")
     buildinfo_bytes: bytes | None = None
@@ -416,6 +423,12 @@ def _collect_string_bytes(
     code (so `.rodata`-like sections, not `.text`), plus `.comment` unconditionally:
     compilers and linkers do not always flag it `SHF_ALLOC`, but it is exactly where
     a static OpenSSL leaves its version banner.
+
+    `truncated` is what the caller turns into `strings_bytes_unread`, so it says what
+    was actually dropped rather than what was declared. `sh_size` is a field the object
+    fills in about itself: a section claiming a gigabyte and decompressing to forty
+    bytes costs nothing and used to set this anyway, which was free while nothing read
+    it and is a wheel on the triage list now that something does.
     """
     buf = bytearray()
     truncated = False
@@ -437,9 +450,6 @@ def _collect_string_bytes(
         if remaining <= 0:
             truncated = True
             break
-        # Check the declared size before asking for the bytes, not after.
-        if section["sh_size"] > remaining:
-            truncated = True
         try:
             data = section.data()
         except Exception:

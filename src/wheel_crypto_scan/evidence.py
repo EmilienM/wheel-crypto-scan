@@ -22,9 +22,10 @@ FORMAT_PE = "pe"
 FORMAT_UNKNOWN = "unknown"
 
 # Why one object was not read in full. `BinaryEvidence.partial_analysis` is a single
-# boolean with a dozen causes behind it, and five of them record no `ScanError` at all,
+# boolean with a score of causes behind it, and six of them record no `ScanError` at
+# all,
 # so a record could read `partial_analysis: true, errors: []` with no way to tell which
-# applied. Two of those five are the common case rather than an exotic one: a stripped
+# applied. Two of those six are the common case rather than an exotic one: a stripped
 # Mach-O, which is every release macOS wheel, and an ordinal-only PE import, because
 # `WS2_32` is normally bound by ordinal. Both read identically to "we could parse
 # nothing at all".
@@ -100,6 +101,19 @@ PARTIAL_PE_DELAY_LOAD = "pe_delay_load"
 # because the lie and the check are the same in ELF and Mach-O, and the one cause a
 # consumer is most likely to want to filter an index on.
 PARTIAL_SYMTAB_UNDERSTATES_ROWS = "symtab_understates_rows"
+# Bytes the strings pass never saw, because the reader's budget ran out before the
+# object did. Records no error. Format-independent, because every reader bounds what it
+# pulls into memory and each one can run short.
+#
+# It is not the same thing as `strings_truncated`, which is also set when a *recording*
+# cap was hit -- more group matches or more cargo paths than the limits keep. A
+# recording cap is not a partial read at all: the object was read, and what was capped
+# is what got written down, so it is not a member of the class this vocabulary
+# enumerates. This token is the other case, where nothing was found in a region because
+# nothing was looked at. A `cryptography` 42 extension has its version banner and
+# nothing else, so a budget stopping short of the banner is the difference between
+# `static` and a clean bill.
+PARTIAL_STRINGS_BYTES_UNREAD = "strings_bytes_unread"
 
 PARTIAL_REASONS: frozenset[str] = frozenset(
     {
@@ -124,6 +138,7 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_PE_ORDINAL_EXPORT,
         PARTIAL_PE_DELAY_LOAD,
         PARTIAL_SYMTAB_UNDERSTATES_ROWS,
+        PARTIAL_STRINGS_BYTES_UNREAD,
     }
 )
 
@@ -220,7 +235,13 @@ class BinaryEvidence:
     matched_strings: tuple[StringMatch, ...] = ()
     rust_crates: tuple[RustCrate, ...] = ()
     go: GoBuildInfo | None = None
+    # A recording cap, and deliberately not a `partial_reasons` cause: see
+    # `strings_truncated` below.
     symbols_truncated: bool = False
+    # More matches than the limits keep. A recording cap, never a partial read: the
+    # object was read, and what was capped is what got written down, so neither of
+    # these two fields is a cause and neither should become one. Bytes that went
+    # unread are a different fact and carry `strings_bytes_unread`.
     strings_truncated: bool = False
     # Set when part of the object was not read: a format with no structural reader; a
     # ELF whose header, section headers, `.dynamic`, symbol tables, section data or

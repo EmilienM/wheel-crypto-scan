@@ -22,6 +22,7 @@ mislabels the record.
 
 from __future__ import annotations
 
+from .. import evidence
 from ..evidence import BinaryEvidence, ScanError
 from ..ruleset import BinaryPatterns
 from .golang import build_go_info
@@ -80,6 +81,11 @@ def read_strings_only(
         go=go,
         strings_truncated=truncated or strings_found.truncated,
         partial_analysis=True,
-        partial_reasons=(reason,),
+        # `reason` alone would say the object has no structural reader and not that a
+        # region of it went unread, and those are different things to a consumer
+        # deciding whether a clean strings pass means anything.
+        partial_reasons=tuple(
+            sorted({reason} | ({evidence.PARTIAL_STRINGS_BYTES_UNREAD} if truncated else set()))
+        ),
     )
     return result, ()

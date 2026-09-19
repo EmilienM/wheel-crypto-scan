@@ -92,9 +92,9 @@ architectures disagree; `machine`, `bits` and `endian` describe the first slice 
 | `matched_strings[]` | `{group, value}` from read-only data. Version banners land here. |
 | `symbol_counts` | `{dynsym, symtab}`, and `symtab` means something different per format: `.symtab` entries in ELF, `LC_SYMTAB` entries in Mach-O, and in PE the things the object named — one per import thunk and one per export slot — because PE has no symbol table of its own to count. |
 | `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. ELF reads the declared count; Mach-O reads what the table yielded, so a `nsyms` of zero over rows the object does carry is a table we could not use and sets `partial_analysis` instead of this. Never set for PE, whose own symbol table is debug information every linker drops, so there is no absence that could mean this; `symbol_counts.symtab == 0` is how a PE says it named nothing. Normal for release wheels; recorded, not a finding. |
-| `truncated` | `{symbols, strings}` — evidence was capped. |
+| `truncated` | `{symbols, strings}` — more matches were found than the limits keep, so what is recorded is a prefix of what was found. This is **not** the same as the byte budget running out, which is `partial_reasons: ["strings_bytes_unread"]`; an object can have either, both or neither. A cap can drop crypto evidence that sorts late, which is a known gap rather than a safe one — see `DECISIONS.md`. |
 | `partial_analysis` | Part of the object was not read. **This is the field to filter on.** |
-| `partial_reasons` | Sorted, deduplicated tokens saying *which* causes applied, empty exactly when `partial_analysis` is false. Five record no entry in `errors`; exactly one of those is also routine rather than a failure and carries no verdict, which is a different thing and is marked in the table below. New values may appear without a `schema_version` bump. |
+| `partial_reasons` | Sorted, deduplicated tokens saying *which* causes applied, empty exactly when `partial_analysis` is false. Six record no entry in `errors`; exactly one of those is also routine rather than a failure and carries no verdict, which is a different thing and is marked in the table below. New values may appear without a `schema_version` bump. |
 
 A PE with genuinely no imports — a resource-only or satellite DLL — therefore always
 reads as `partial_analysis: true`, because naming at least one dependency is part of
@@ -106,7 +106,7 @@ Each reason:
 
 | Token | Cause |
 |---|---|
-| `no_structural_reader` | This tool has no reader for the format, so the object was scanned for strings alone. |
+| `no_structural_reader` | This tool has no reader for the format, so the object was scanned for strings alone; records no error, because not parsing a format nobody claimed to parse is not a failure. |
 | `elf_header_unread` | The ELF header itself would not parse. |
 | `elf_section_table_truncated` | The ELF header parsed but the section header table it points at does not fit the object. |
 | `elf_sections_unread` | A section header could not be read. A section we cannot name is one we cannot use, so anything derived from the section list may be missing rather than absent: `needed`, `soname`, `rpath`, `runpath`, the symbol counts and the strings alike. |
@@ -126,6 +126,7 @@ Each reason:
 | `pe_ordinal_import` | An import named by ordinal alone, so its function has no name to match; routine on Windows, and records no error. Reported by `BIN_PARTIAL_ROUTINE` with no verdict, because the DLL it names survives in `needed`. Does not cost the linkage answer. |
 | `pe_ordinal_export` | An export the name table never points at: a definition with no name; records no error. What is lost is a definition, and a definition is how a statically linked copy is recognised, so this is a failure to read rather than a convention: `BIN_PARTIAL_FORMAT` claims it and the wheel is `OPAQUE`. An understated `NumberOfNames` surfaces here, PE having no string table to check the count against. |
 | `pe_delay_load` | A delay-load import directory, which this reader does not parse, so the libraries it names are undeclared dependencies; records no error. |
+| `strings_bytes_unread` | The reader's byte budget ran out before the object did, so a region of it was never looked at and found nothing there for that reason; records no error. Emitted by every reader, each bounding what it pulls in: `binfmt.elf` bounds the concatenated read-only sections, the other three a prefix of the object. An extension whose only crypto evidence is an OpenSSL version banner past the budget reads exactly like one with no OpenSSL in it. |
 | `symtab_understates_rows` | A symbol table declared fewer entries than the string table it points into holds names for, so symbols the object carries were never looked at. The object is not corrupt: every structural check passes and the count is simply not the truth. Emitted by the ELF and Mach-O readers alike, beside that format's own cause, because the lie and the check are the same in both. |
 
 ## `findings`

@@ -15,11 +15,13 @@ absence, and the strings are often the only evidence there is. That is the outco
 required; how each reader reaches it is its own business, and `binfmt.pe` writes its
 failure records out field by field where the other two call `binfmt.fallback`.
 
-`max_strings_bytes` bounds how much of an object is pulled into memory. For ELF and
-Mach-O that bounds the strings pass alone, because their structural reads go through
-the stream. For PE it bounds the structural read too: that reader resolves every
-directory inside the same buffer, so a directory lying past it is unread and is
-reported as unread.
+`max_strings_bytes` bounds how much of an object is pulled into memory, and reaching
+that bound is itself recorded: a region nothing looked at is why an object can carry a
+version banner and report none, so every reader names `strings_bytes_unread` when its
+own cut bites. For ELF and Mach-O that bounds the strings pass alone, because their
+structural reads go through the stream. For PE it bounds the structural read too: that
+reader resolves every directory inside the same buffer, so a directory lying past it is
+unread and is reported as unread.
 """
 
 from __future__ import annotations

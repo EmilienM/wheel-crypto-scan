@@ -425,11 +425,11 @@ absence the reader observed, not a read it fell short of. A walk that fell short
 `pe_import_incomplete`, which is not exempt, and the two are separate non-`elif`
 conditions so the exemption cannot swallow a failed read.
 
-**Two fields are still outside all of this.** `strings_truncated` and
-`symbols_truncated` never set `partial_analysis`, so no amount of policy over
-`partial_reasons` reaches them and a binary whose strings pass was cut still contributes
-a definite posture. That is the same shape as this entry, one field over, and it is
-tracked separately rather than widened into here.
+**Two fields used to be outside all of this,** and both still are: `strings_bytes_unread`
+now carries the *reading gap* into `partial_reasons`, but `strings_truncated` and
+`symbols_truncated` themselves stay fields, because a recording cap is not a partial
+read. "A recording cap is not a partial read", below, says why, and says what the caps
+cost instead.
 
 **A partial read that names no cause costs the answer too.** `partial_analysis` true
 with an empty `partial_reasons` is the shape `engine` singles out as the most serious
@@ -456,3 +456,83 @@ when nothing in the wheel answered definitely, so one unreadable object still ca
 erase what the readable ones said.
 
 Tracked in [#40](https://github.com/EmilienM/wheel-crypto-scan/issues/40).
+
+## A recording cap is not a partial read
+
+**Accepted. One of the two halves of `truncated` became a cause; the other stayed a
+field.**
+
+`strings_truncated` was set by three different things at once, and `partial_analysis`
+by none of them. So an object whose strings pass never reached the end of it still
+contributed a definite posture, and the record said both at once:
+
+```
+strings_truncated: true
+partial_analysis:  false   partial_reasons: []
+openssl_linkage:   none    NO_CRYPTO_DETECTED   needs_human_review: false
+```
+
+Measured on one `.pyd` carrying an OpenSSL version banner in its last 26 bytes: scanned
+whole it is `static` and `CONDITIONAL`; with the byte budget stopping short of the
+banner, the same object is clean. The banner is not a nice-to-have. `cryptography` 42
+and later compiles OpenSSL in, with no library file, no dependency and no exported
+symbol, so the banner is the *entire* evidence, and `MAX_STRINGS_BYTES` is 64 MiB
+against wheels that ship objects many times that.
+
+**Only the reading gap got a token, and the reason is definitional rather than a
+judgement about worth.** `partial_analysis` means part of the object was not read. A
+*recording* cap -- more group matches than `max_strings_per_binary`, more crates than
+`max_rust_crates_per_binary`, more symbols than `max_symbols_per_binary` -- is not that:
+the object was read, and what was capped is what got written down. It is not a member of
+the class `PARTIAL_REASONS` enumerates, so the vocabulary is not being asked to hold a
+policy. `symbols_truncated` is a recording cap in that sense and gets the same answer.
+
+The alternative was rejected on a harder ground than taste. Minting a cap token as a
+fact and then exempting it in the ruleset needs a verdict-less `partial_binary` rule,
+which the load-time floor then forces into `[linkage_policy] exclude_reasons` -- a
+*second* carve-out on the "unreadable means `OPAQUE`" invariant, which `AGENTS.md` says
+is a change to the invariant itself. One carve-out is what that document permits.
+
+**What the caps do instead is worse, and it is not fixed here.** Writing this entry's
+first draft claimed a recording cap "cannot produce a record that reads clean, because
+it only fires once that many matches are in hand". That is false, and the counterexample
+is four lines:
+
+```
+ring alone                 -> NON_APPROVED_CRYPTO  needs_human_review: true
+ring + 130 earlier crates  -> NO_CRYPTO_DETECTED   needs_human_review: false
+                              strings_truncated: true, partial_analysis: false
+```
+
+`find_rust_crates` sorts by `(name, version)` and cuts at 128, so a Rust wheel carrying
+three hundred crates drops everything past the 128th name, and every crypto crate the
+ruleset names -- `openssl`, `ring`, `rustls`, `sha1`, `sha2`, `pbkdf2` -- is in the o-to-s
+range where `anyhow`-class names crowd it out. The string and symbol caps do the same one
+step down: `StringMatch.sort_key` is `(group, value)` and `openssl_banner` is tenth of
+thirteen group names, so seventy `mbedtls_` runs take the banner with them.
+
+That is the same failure this entry is about, arriving through a cap rather than a
+budget, and it does not want a `partial_reasons` token -- it wants the caps to stop
+dropping evidence a rule could match. Tracked separately, because it is a change to what
+the extractors keep rather than to what the record says.
+
+**What it costs, and the threshold is not the same in every format.** For Mach-O, PE and
+the fallback the budget is measured against the object, so an object over 64 MiB is now
+`OPAQUE`. For ELF it is measured against the concatenation of eligible read-only
+sections, not the file, so a gigabyte `.so` that is mostly `.text` is untouched while a
+smaller one carrying a large `.nv_fatbin` is not. That distinction matters here rather
+than being a footnote: CUDA and PyTorch wheels, which is where the size is, ship
+overwhelmingly as manylinux ELF.
+
+Either way the honest statement is that these were never objects we had read. The
+threshold is one constant and the verdict one line of `ruleset.toml`, so the lever is
+short if the triage list becomes unreadable -- but the safe default for a new cause is
+the strict rule, which is what the ruleset already says and what this takes.
+
+Revisit if a real wheel is found on the triage list for this and nothing else.
+
+**What it does not cover.** An object inside the budget whose evidence sits in a region
+no reader hands to the strings pass at all -- `binfmt.elf` passes the read-only sections
+rather than the file -- is a different question and not this one.
+
+Tracked in [#48](https://github.com/EmilienM/wheel-crypto-scan/issues/48).

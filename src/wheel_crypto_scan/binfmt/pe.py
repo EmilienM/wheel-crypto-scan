@@ -262,7 +262,14 @@ def read_pe(
     raw = stream.read(min(size, max_strings_bytes))
 
     strings_found = scan_strings(raw, patterns, max_strings_bytes)
-    strings_truncated = size > max_strings_bytes or strings_found.truncated
+    # The reading gap, kept apart from the recording caps `strings_truncated` also
+    # covers: a region nothing looked at is why an object can carry a banner and not
+    # report it, and that has to reach `partial_reasons` rather than a field no policy
+    # reads. This reader bounds its structural read by the same buffer, so a truncated
+    # read is also a directory it may not have reached.
+    bytes_unread = size > max_strings_bytes
+    strings_truncated = bytes_unread or strings_found.truncated
+    unread_reasons = (evidence.PARTIAL_STRINGS_BYTES_UNREAD,) if bytes_unread else ()
     go = build_go_info(None, strings_found.text, patterns)
 
     errors: list[ScanError] = []
@@ -282,7 +289,7 @@ def read_pe(
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
-            partial_reasons=(evidence.PARTIAL_PE_HEADER_UNREAD,),
+            partial_reasons=tuple(sorted({evidence.PARTIAL_PE_HEADER_UNREAD, *unread_reasons})),
         ), (_error(path, str(bad)),)
     except Exception:
         return BinaryEvidence(
@@ -294,7 +301,7 @@ def read_pe(
             go=go,
             strings_truncated=strings_truncated,
             partial_analysis=True,
-            partial_reasons=(evidence.PARTIAL_PE_HEADER_UNREAD,),
+            partial_reasons=tuple(sorted({evidence.PARTIAL_PE_HEADER_UNREAD, *unread_reasons})),
         ), (_error(path, "failed to parse the pe headers"),)
 
     image = _Image(raw=raw, sections=headers.sections)
@@ -358,7 +365,7 @@ def read_pe(
     # there, and reporting only the first would be the conflation this array exists to
     # remove, one level down. `imports` comes back with `complete=False` and no DLLs
     # when the directory lies past the buffer, which is exactly that case.
-    reasons: set[str] = set()
+    reasons: set[str] = set(unread_reasons)
     if not headers.sections_complete:
         reasons.add(evidence.PARTIAL_PE_SECTION_TABLE_TRUNCATED)
     if not import_rva or (imports is not None and not imports.dlls):
