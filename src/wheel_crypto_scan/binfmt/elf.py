@@ -13,12 +13,18 @@ Parsing uses `pyelftools` and never raises past `read_elf`: every failure become
 corrupt `.dynamic` section should not also cost us the strings we already pulled out
 of `.rodata`.
 
-One thing this reader still believes: `.dynsym`'s declared size. An object whose
-`sh_size` covers fewer entries than it carries is read in full by its own account while
-the rest go unlooked-at, and `stripped` is read off that same count. `binfmt.macho`
-stopped taking the Mach-O spelling of that at face value in #34, cross-checking the
-count against the string table every name must appear in, and `.dynstr` is the same
-place for the same reason. The check has not been brought over here. Tracked in #38.
+`.dynsym`'s declared size is not believed, and neither is `.dynstr`'s. An object whose
+`sh_size` covers fewer entries than it carries would be read in full by its own account
+while the rest went unlooked-at, so the names read are cross-checked against `.dynstr`,
+which is the one place every symbol name must appear. That check is only sound over a
+string table we read through, so an index past its end, or into a run it never closes,
+is a name we could not resolve rather than whatever bytes happen to be there.
+`binfmt.symtab` holds the cross-check, shared with `binfmt.macho`, which makes both of
+the same checks of `nsyms` and `strsize`.
+
+`.symtab`'s size is still believed. It drives `stripped` and `symbol_counts.symtab` and
+nothing else -- the imported-versus-defined split this reader exists to draw comes from
+`.dynsym` alone -- so a lie there costs a field that is recorded rather than a finding.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from ..ruleset import BinaryPatterns
 from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
+from .symtab import holds_a_name_not_read
 
 _SHF_ALLOC = 0x2
 _SHF_EXECINSTR = 0x4
@@ -112,33 +119,62 @@ _SYM_LAYOUT = {64: (24, 0, 6), 32: (16, 0, 14)}
 _SHN_UNDEF = 0
 
 
-def _iter_symbols(elf, section) -> Iterator[tuple[str, bool]]:
-    """Yield (name, is_undefined) for a symbol table, reading it in two passes total.
+def _symbol_bytes(elf, section) -> tuple[bytes, bytes]:
+    """A symbol table and its string table, each read once, in that order.
 
-    pyelftools' `get_symbol()` seeks per symbol, alternating between the table and its
-    string table. On a member too large to hold in memory those seeks run backwards
-    through a zip stream, and a backwards seek costs a fresh decompression. A real
-    example: pandoc ships a 400 MiB object with 497,040 dynamic symbols, which never
-    finished. Reading both sections once turns that into two forward reads.
+    pyelftools' `get_symbol()` seeks per symbol, alternating between the two. On a
+    member too large to hold in memory those seeks run backwards through a zip stream,
+    and a backwards seek costs a fresh decompression. A real example: pandoc ships a
+    400 MiB object with 497,040 dynamic symbols, which never finished. Reading each
+    section once turns that into two forward reads -- and the caller holds both, so
+    nothing reads either of them twice.
+
+    In file order, not in the order the caller wants them: the linker usually puts
+    `.dynsym` first, but this suite's own fixtures do not, and neither do some
+    `objcopy` reorderings. Reading the later one first is a backwards seek, which
+    through a zip member is one more full decompression pass. `binfmt.macho` sorts its
+    two regions for the same reason.
+    """
+    strtab = elf.get_section(section["sh_link"])
+    if strtab is not None and strtab["sh_offset"] < section["sh_offset"]:
+        names = strtab.data()
+        return section.data(), names
+    data = section.data()
+    return data, strtab.data() if strtab is not None else b""
+
+
+def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, bool]]:
+    """Yield (name, is_undefined, name_resolved) for a symbol table already in hand.
+
+    `names` has to be the same bytes the caller cross-checks against, or the two are
+    asking about different string tables: `_symbol_bytes` returns both together for
+    that reason.
+
+    Every entry is reported, including the ones with nothing usable in them. An index
+    past the end of the string table, or into a run that never terminates, is the
+    difference between "no crypto here" and "we could not read the names", and only the
+    caller can tell those apart. `name` is empty for index 0, which is how ELF spells
+    "this entry has no name", and for a name that sanitises away to nothing.
     """
     entry_size, name_offset, shndx_offset = _SYM_LAYOUT[elf.elfclass]
-    data = section.data()
-    strtab = elf.get_section(section["sh_link"])
-    names = strtab.data() if strtab is not None else b""
     end = "<" if elf.little_endian else ">"
     u32 = struct.Struct(end + "I")
     u16 = struct.Struct(end + "H")
 
     for base in range(0, len(data) - entry_size + 1, entry_size):
         st_name = u32.unpack_from(data, base + name_offset)[0]
-        if st_name == 0 or st_name >= len(names):
+        undefined = u16.unpack_from(data, base + shndx_offset)[0] == _SHN_UNDEF
+        if st_name == 0:
+            yield "", undefined, True
             continue
         stop = names.find(b"\x00", st_name)
-        raw = names[st_name:stop] if stop != -1 else names[st_name:]
-        name = sanitize(raw.decode("utf-8", "replace"))
-        if not name:
+        if st_name >= len(names) or stop == -1:
+            # Past the end, or a run the table never closes. Taking the bytes that are
+            # there would put a name in the record that the object does not carry: a
+            # `.dynstr` cut to 24 bytes reported `EVP_DigestI` as an imported symbol.
+            yield "", undefined, False
             continue
-        yield name, u16.unpack_from(data, base + shndx_offset)[0] == _SHN_UNDEF
+        yield sanitize(names[st_name:stop].decode("utf-8", "replace")), undefined, True
 
 
 def _find_section(sections: Sequence[Section], name: str) -> Section | None:
@@ -263,13 +299,47 @@ def read_elf(
             reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
             dynsym_count = 0
         try:
-            for name, undefined in _iter_symbols(elf, dynsym):
-                groups = patterns.symbol_groups_for(name)
+            # Only the crypto names, which is all the cross-check below compares
+            # against: remembering every name costs 24 MiB on a half-million-symbol
+            # table, for a question only ever asked about the handful a group claims.
+            read_crypto: set[str] = set()
+            unresolved = 0
+            table, dynstr = _symbol_bytes(elf, dynsym)
+            for name, undefined, resolved in _iter_symbols(elf, table, dynstr):
+                if not resolved:
+                    unresolved += 1
+                    continue
+                groups = patterns.symbol_groups_for(name) if name else ()
                 if not groups:
                     continue
+                read_crypto.add(name)
                 binding = evidence.BINDING_IMPORTED if undefined else evidence.BINDING_DEFINED
                 for group in groups:
                     symbol_matches.add(SymbolMatch(name=name, group=group, binding=binding))
+            # Both sizes are fields the object fills in about itself, and reading
+            # exactly what they declare is not reading what the object carries. The same
+            # two checks `binfmt.macho` makes of `nsyms` and `strsize`, in the same
+            # order: a string table we could not read through is reported as that, and
+            # the cross-check over one is worth nothing.
+            #
+            # A crypto name in `.dynstr` that no entry we read resolved to is a symbol
+            # this object has and did not declare. Absence of evidence is not evidence
+            # of absence, and here the evidence is present and pointed away from.
+            if unresolved:
+                errors.append(
+                    _error(path, ELF_PARSE_ERROR, ".dynsym names strings .dynstr does not hold")
+                )
+                reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
+            elif holds_a_name_not_read(dynstr, patterns, read_crypto):
+                errors.append(
+                    _error(
+                        path,
+                        ELF_PARSE_ERROR,
+                        ".dynsym declares fewer entries than .dynstr holds names for",
+                    )
+                )
+                reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
+                reasons.add(evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS)
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic symbol table"))
             reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)

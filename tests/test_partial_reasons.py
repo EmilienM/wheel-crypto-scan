@@ -154,6 +154,26 @@ _REACHABILITY: dict[str, bytes] = {
         dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
         dynamic_strtab_broken=True,
     ).build(),
+    # The one cause both readers name the same way: a count that understates the rows,
+    # told once with `sh_size` and once with `nsyms`.
+    "elf dynsym understates rows": patch_section_header(
+        ElfBuilder(
+            needed=("libcrypto.so.3",),
+            dynsyms=(
+                DynSym("PyInit__ext", defined=True),
+                DynSym("EVP_DigestInit_ex", defined=False),
+            ),
+        ).build(),
+        ".dynsym",
+        "sh_size",
+        24,
+    ),
+    "macho symtab understates rows": MachOBuilder(
+        id_dylib="_ext.so",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+        declared_nsyms=0,
+    ).build(),
     "macho fat slice unread": build_fat(
         [
             MachOBuilder(

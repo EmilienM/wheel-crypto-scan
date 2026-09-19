@@ -570,14 +570,17 @@ def test_a_string_table_pointed_outside_the_object_is_an_error() -> None:
 def test_a_string_table_running_off_the_end_of_the_object_does_not_raise() -> None:
     """The tables are written nlist first, so the last six bytes are the string table's.
 
-    What survives is a name cut short. Recording `EVP_DigestIn` as an imported symbol is
-    noisy in the direction that cannot hide anything, the same way the ELF reader is, and
-    the object is flagged partial either way.
+    What survives is a name cut short, and a name cut short is not a name this object
+    carries. Recording `EVP_DigestIn` used to look like the safe direction -- noisy,
+    but unable to hide anything -- and it is not safe: the record then asserts a symbol
+    that does not exist, in the field the whole tool turns on, and asserts it as read.
+    A run the table never closes is a name we could not resolve, which is what the flag
+    and the error below say instead.
     """
     data = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
     ev, errors = _read(data[:-6], path="short.dylib")
     assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
-    assert ev.matched_symbols == (_symbol("EVP_DigestIn", evidence.BINDING_IMPORTED),)
+    assert ev.matched_symbols == ()
     assert ev.partial_analysis is True
 
 
@@ -883,7 +886,9 @@ def test_a_count_of_zero_over_rows_full_of_symbols_is_not_a_clean_read() -> None
     data = MachOBuilder(id_dylib="libfoo.dylib", symbols=_HIDDEN, declared_nsyms=0).build()
     ev, errors = _read(data)
     assert ev.partial_analysis is True
-    assert list(ev.partial_reasons) == ["macho_symtab_incomplete"]
+    # Both: the format's own cause, and the one a consumer can filter an index on
+    # without caring which format told the lie.
+    assert list(ev.partial_reasons) == ["macho_symtab_incomplete", "symtab_understates_rows"]
     assert [e.message for e in errors] == [
         "mach-o symbol table declares fewer entries than it has names"
     ]

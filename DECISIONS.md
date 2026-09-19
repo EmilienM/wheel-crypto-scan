@@ -143,9 +143,9 @@ Tracked in [#29](https://github.com/EmilienM/wheel-crypto-scan/issues/29).
 
 **Accepted. It reverses an earlier decision and it changes verdicts.**
 
-`LC_SYMTAB` says where the symbol table is and how many entries it has. Reading exactly
-that many is not the same as reading every symbol the object carries, and the difference
-is a way to look clean:
+`LC_SYMTAB` says where the symbol table is and how many entries it has, and `.dynsym`'s
+`sh_size` says the same thing in ELF. Reading exactly that many is not the same as
+reading every symbol the object carries, and the difference is a way to look clean:
 
 ```
 honest: 2 crypto imports        -> OPAQUE
@@ -197,6 +197,40 @@ knowingly, and tracked in [#39](https://github.com/EmilienM/wheel-crypto-scan/is
 Neither is the older blind spot: a crypto symbol whose name is not in the string table at
 all, because it resolves through `LC_DYLD_EXPORTS_TRIE` or chained fixups, which this
 reader does not parse and says so.
+
+**Both readers make the check, from one place.** `.dynstr` is what `.dynsym` points into
+for exactly the reason the string table is what `LC_SYMTAB` points into, and the same
+object shape works on both: `sh_size` covering one entry of four hid two OpenSSL imports
+and read `NO_CRYPTO_DETECTED`. `binfmt.symtab` holds the walk, because a security check
+that exists twice is a security check that drifts. What the readers keep is what only
+they know: Mach-O inverts Darwin's ABI underscore before matching and ELF must not, or an
+honest `_EVP_DigestInit_ex` reads as a hidden `EVP_DigestInit_ex`. Cost on ELF matches
+Mach-O: 497,040 dynamic symbols in a 29 MiB object go from 1.7s to 2.0s, memory
+unchanged, and no object among 6,502 real ELF binaries on a Fedora host is flagged.
+
+**The cross-check is only sound over a string table we read through,** which is the
+sibling guard and was missing on the ELF side. Shrink `.dynstr` instead of `.dynsym` and
+every row survives, every count survives, and the names simply stop being reachable: a
+statically linked extension read `NO_CRYPTO_DETECTED` while carrying two OpenSSL
+imports. Worse, the bytes left over were reported as symbols -- a `.dynstr` cut to 24
+bytes put `EVP_DigestI` in `matched_symbols`, a name the object does not carry, in the
+field the whole tool turns on. Both readers now treat an index past the end, or a run
+the table never closes, as a name they could not resolve.
+
+**Both name the cause the same way.** A count that understates its rows is the one
+failure that is about neither format, so beside `elf_dynsym_unread` or
+`macho_symtab_incomplete` it also emits `symtab_understates_rows`. Which wheels in an
+index understated their symbol table is a supply-chain question rather than a build
+quirk, and answering it should not mean substring-matching an error message that no
+contract pins.
+
+**Two tables are still believed.** ELF's `.symtab` drives `stripped` and
+`symbol_counts.symtab` and nothing else -- the imported-versus-defined split comes from
+`.dynsym` alone -- so a lie there costs a field that is recorded rather than a finding.
+PE has no analogue to bring the check to: its imports have no declared count at all, and
+its exports have one with no string table to check it against, because export names are
+individually addressed rather than pooled. `NumberOfNames = 0` over a real name table
+therefore still reads clean, which is tracked in [#42](https://github.com/EmilienM/wheel-crypto-scan/issues/42).
 
 **Errors say which way it fell short.** A table that fell short records an error naming
 the cause, instead of every case claiming the object "could not be read in full" when
