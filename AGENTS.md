@@ -26,6 +26,12 @@ These are design decisions, not accidents. Do not change one without saying so e
   paths and Go markers it found, and still marks the object `partial_analysis`. The
   strings are often the only evidence there is: `cryptography` 42 and later compiles
   OpenSSL into the extension, with no library file and no dependency to name.
+- **A name reported is a name read in full.** Never put bytes in `matched_symbols` that
+  the object did not spell out: an index past the end of a string table, or into a run it
+  never closes, is a name we could not resolve, not a short name. Recording what was
+  reachable looks like the safe direction and is not -- it asserts a symbol that does not
+  exist, in the field the whole tool turns on. Both binary readers had this and both were
+  wrong; a test asserted the fabricated name was intended.
 - **`partial_analysis` and `partial_reasons` never disagree.** The tuple is non-empty
   exactly when the boolean is true, asserted across every reader. Filter on the boolean;
   read the tuple to find out what to do about it.
@@ -70,6 +76,10 @@ These are design decisions, not accidents. Do not change one without saying so e
   version in `ruleset.py` next to the real one, with a test that fails when the real one
   grows an arm. A prefilter that quietly stops matching what the matcher matches loses
   evidence and fails nothing: `BinaryPatterns.symbol_locator` is the worked example.
+- **A shared check states what it assumes.** `binfmt.symtab` is only sound over a string
+  table the caller read through, and extracting it from the one reader that guaranteed
+  that into one that did not left a live hole. Moving a check to where two callers can
+  use it moves its preconditions out of sight, so they go in its docstring.
 - **A pass over a whole object belongs in C.** Every such pass runs once per slice of a
   universal binary, up to `_MAX_FAT_SLICES`, over regions the slices are free to share.
   A Python loop over a 2 MiB string table was 19 seconds across one object; the same
