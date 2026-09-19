@@ -47,6 +47,7 @@ from .. import evidence
 from ..errors import MACHO_PARSE_ERROR
 from ..evidence import BinaryEvidence, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
+from .caps import cap
 from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
@@ -420,8 +421,7 @@ def read_macho(
         if soname is None:
             soname = slice_evidence.soname
 
-    ordered = tuple(sorted(merged, key=lambda match: match.sort_key()))
-    limit = patterns.limits.max_symbols_per_binary
+    ordered, symbols_truncated = cap(merged, patterns.limits.max_symbols_per_binary)
 
     found = scan_strings(raw, patterns, max_strings_bytes)
     go = build_go_info(None, found.text, patterns)
@@ -448,11 +448,11 @@ def read_macho(
         # format: no Mach-O sets `dynsym_count`, so keying on it alone called every
         # Mach-O opaque however much of it was read.
         symtab_count=symtab_count,
-        matched_symbols=ordered[:limit],
+        matched_symbols=ordered,
         matched_strings=found.matched_strings,
         rust_crates=found.rust_crates,
         go=go,
-        symbols_truncated=len(ordered) > limit,
+        symbols_truncated=symbols_truncated,
         strings_truncated=truncated_read or found.truncated,
         partial_analysis=bool(partial),
         partial_reasons=tuple(sorted(partial)),

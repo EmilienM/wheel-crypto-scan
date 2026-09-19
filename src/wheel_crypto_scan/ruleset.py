@@ -402,6 +402,12 @@ class BinaryPatterns:
     go_boring_group: str
     go_stock_group: str
     limits: Limits
+    # Crate names the ruleset has an entry for. The extractor stays free of policy --
+    # it does not know what they mean -- but a cap that did not know which crates are
+    # claimed dropped them alphabetically, and a Rust wheel carrying `ring` behind a
+    # hundred and twenty-eight earlier names read as carrying nothing. Required, like
+    # every other member here: a default is a guard that can stop guarding silently.
+    rust_crate_names: frozenset[str]
     _exact_index: Mapping[str, tuple[str, ...]] = field(repr=False, default_factory=dict)
     _prefix_probe: re.Pattern[str] | None = field(repr=False, default=None)
     _string_index: Mapping[str, StringGroup] = field(repr=False, default_factory=dict)
@@ -537,6 +543,7 @@ class Ruleset:
                 _prefix_probe=probe,
                 _string_index=MappingProxyType({group.name: group for group in string_groups}),
                 symbol_locator=locator,
+                rust_crate_names=frozenset(self.rust_crates),
             ),
             python=PythonPatterns(
                 py_modules=tuple(sorted(self.python_modules)),
@@ -609,6 +616,34 @@ def routine_reasons(rules: Iterable[Rule]) -> frozenset[str]:
         ),
         frozenset(),
     )
+
+
+def _check_limits_leave_room_for_every_key(
+    limits: Limits,
+    symbol_groups: Mapping[str, Any],
+    string_groups: Mapping[str, Any],
+    crates: Mapping[str, Any],
+) -> None:
+    """Refuse limits too small to hold one of everything the ruleset can match.
+
+    `binfmt.caps` keeps one of every key before filling the remainder, so no kind of
+    evidence is crowded out -- while there is room for one of each. Below that the
+    choice among keys is the alphabet again, and `SCHEMA.md` states the guarantee
+    without conditions. Nobody sets a limit to change what is detected, so a value that
+    silently does is a mistake rather than a decision.
+    """
+    wanted = (
+        ("max_strings_per_binary", limits.max_strings_per_binary, len(string_groups)),
+        # Two bindings per group, because that pair is a symbol's key.
+        ("max_symbols_per_binary", limits.max_symbols_per_binary, 2 * len(symbol_groups)),
+        ("max_rust_crates_per_binary", limits.max_rust_crates_per_binary, len(crates)),
+    )
+    for name, limit, needed in wanted:
+        if limit < needed:
+            raise RulesetError(
+                f"[limits]: {name} is {limit}, below the {needed} keys this ruleset can "
+                "match; a cap that small chooses which evidence survives by sort order"
+            )
 
 
 def _parse_linkage_policy(data: Mapping[str, Any] | None, rules: Iterable[Rule]) -> LinkagePolicy:
@@ -934,10 +969,12 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         _require(entry, "why", "[[ctypes_library]]")
         ctypes_substrings.update(_require(entry, "substrings", "[[ctypes_library]]"))
 
+    limits = Limits(**dict(data.get("limits", {})))
+    _check_limits_leave_room_for_every_key(limits, symbol_groups, string_groups, crates)
     return Ruleset(
         version=str(version),
         precedence=precedence,
-        limits=Limits(**dict(data.get("limits", {}))),
+        limits=limits,
         conventions=_parse_conventions(_require(data, "conventions", source)),
         linkage_policy=_parse_linkage_policy(data.get("linkage_policy"), rules),
         rules=rules,

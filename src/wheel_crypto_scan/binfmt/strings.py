@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 
 from ..evidence import RustCrate, StringMatch
 from ..ruleset import BinaryPatterns, StringGroup
+from .caps import cap
 from .rust import find_rust_crates
 
 # Printable characters only, so a corrupt string table entry can never smuggle control
@@ -86,7 +87,8 @@ def match_string_groups(
     separators `extract_printable` left behind), not just the substring the group's
     pattern matched: a banner like "OpenSSL 3.0.14 4 Jun 2024" is far more useful
     evidence than the "OpenSSL 3." fragment that triggered the match. Results are
-    deduplicated, then sorted, then capped, so truncation is stable.
+    deduplicated, then sorted, then capped a group at a time, so truncation is stable
+    and cannot silence a group outright.
     """
     text = extracted.text
     found: set[StringMatch] = set()
@@ -97,9 +99,7 @@ def match_string_groups(
             end = text.find("\n", m.end())
             end = len(text) if end == -1 else end
             found.add(StringMatch(group=group.name, value=text[start:end]))
-    ordered = tuple(sorted(found, key=lambda match: match.sort_key()))
-    truncated = len(ordered) > max_matches
-    return ordered[:max_matches], truncated
+    return cap(found, max_matches)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,14 +112,17 @@ class StringsPass:
 
     `truncated` covers only what happened inside this pass, and **it must never reach
     `partial_reasons`.** Everything behind it is a *recording* cap -- more group matches
-    or more crates than the limits keep -- which can only fire once that many matches
-    are already in hand, so it costs precision about an object already flagged and can
-    never produce a record that reads clean. Whether bytes went unread is the caller's
-    question, because the caller is what bounded them: every reader here hands this
-    function a buffer it has already cut to `max_strings_bytes`, so the cut is a fact
-    only the reader holds. `binfmt.elf` cuts a concatenation of sections, the other
-    three a prefix of the object, and each names `strings_bytes_unread` off its own
-    flag rather than off anything in here.
+    or more crates than the limits keep -- and a recording cap is not a partial read:
+    the object was read, and what was capped is what got written down. What a cap costs
+    is bounded by `binfmt.caps`, which keeps a representative of every key before it
+    fills the remainder, so a cap can no longer silence a group or a named crate
+    outright.
+
+    Whether bytes went unread is the caller's question, because the caller is what
+    bounded them: every reader here hands this function a buffer it has already cut to
+    `max_strings_bytes`, so the cut is a fact only the reader holds. `binfmt.elf` cuts a
+    concatenation of sections, the other three a prefix of the object, and each names
+    `strings_bytes_unread` off its own flag rather than off anything in here.
     """
 
     matched_strings: tuple[StringMatch, ...]
@@ -152,7 +155,10 @@ def scan_strings(raw: bytes, patterns: BinaryPatterns, max_bytes: int) -> String
         for match in string_matches
     )
     rust_crates, rust_truncated = find_rust_crates(
-        extracted.text, patterns.cargo_path_regex, patterns.limits.max_rust_crates_per_binary
+        extracted.text,
+        patterns.cargo_path_regex,
+        patterns.limits.max_rust_crates_per_binary,
+        claimed=patterns.rust_crate_names,
     )
     return StringsPass(
         matched_strings=matched_strings,

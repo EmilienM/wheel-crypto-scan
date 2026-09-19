@@ -40,6 +40,7 @@ from .. import evidence
 from ..errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
+from .caps import cap
 from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
@@ -355,9 +356,7 @@ def read_elf(
             symtab_count = 0
     stripped = symtab is None or symtab_count == 0
 
-    ordered_symbols = tuple(sorted(symbol_matches, key=lambda match: match.sort_key()))
-    symbols_truncated = len(ordered_symbols) > patterns.limits.max_symbols_per_binary
-    matched_symbols = ordered_symbols[: patterns.limits.max_symbols_per_binary]
+    matched_symbols, symbols_truncated = cap(symbol_matches, patterns.limits.max_symbols_per_binary)
 
     raw_bytes, sections_truncated, sections_unread = _collect_string_bytes(
         sections, max_strings_bytes

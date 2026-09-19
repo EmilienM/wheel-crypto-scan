@@ -512,9 +512,9 @@ step down: `StringMatch.sort_key` is `(group, value)` and `openssl_banner` is te
 thirteen group names, so seventy `mbedtls_` runs take the banner with them.
 
 That is the same failure this entry is about, arriving through a cap rather than a
-budget, and it does not want a `partial_reasons` token -- it wants the caps to stop
-dropping evidence a rule could match. Tracked separately, because it is a change to what
-the extractors keep rather than to what the record says.
+budget, and it did not want a `partial_reasons` token -- it wanted the caps to stop
+dropping evidence a rule could match. Fixed in "A cap bounds the record, it does not
+pick the evidence", below.
 
 **What it costs, and the threshold is not the same in every format.** For Mach-O, PE and
 the fallback the budget is measured against the object, so an object over 64 MiB is now
@@ -536,3 +536,81 @@ no reader hands to the strings pass at all -- `binfmt.elf` passes the read-only 
 rather than the file -- is a different question and not this one.
 
 Tracked in [#48](https://github.com/EmilienM/wheel-crypto-scan/issues/48).
+
+## A cap bounds the record, it does not pick the evidence
+
+**Accepted, and it changes records.**
+
+Three per-binary limits exist so one object cannot produce an unbounded JSON line:
+`max_strings_per_binary`, `max_symbols_per_binary`, `max_rust_crates_per_binary`. None
+of them exists to decide which evidence survives, and all three did, because each sorted
+its matches and cut at the limit. The sort key has nothing to do with what a match is
+worth, and the crypto names this ruleset claims sit in the middle of every one of those
+orderings.
+
+```
+ring alone                 -> NON_APPROVED_CRYPTO  needs_human_review: true, findings: 1
+ring + 130 earlier crates  -> NO_CRYPTO_DETECTED   needs_human_review: false, findings: 0
+
+banner alone                 -> openssl_linkage: static
+banner + 70 mbedtls_ runs    -> openssl_linkage: none
+
+defined EVP_DigestInit_ex alone -> openssl_linkage: static
++ 70 defined crypto_box_*       -> openssl_linkage: none
+```
+
+The first is the one that matters: `partial_analysis` false, no findings, nothing in the
+record saying anything was dropped except a `truncated.strings` flag whose meaning is
+"we found more than we keep". A Rust wheel with three hundred crates is ordinary, and
+every crypto crate named -- `openssl`, `ring`, `rustls`, `sha1`, `sha2`, `pbkdf2` -- is
+in the o-to-s range where a hundred and twenty-eight `anyhow`-class names get in first.
+The other two are the shape of a static mbedTLS beside a static OpenSSL, and of PyNaCl's
+extension, which exports hundreds of `crypto_*` names.
+
+**The fix is to notice how little the rules key on.** `binary_string` and `linkage` read
+a string's `group`. `dynamic_symbol` and `linkage` read a symbol's `group` and its
+`binding`. `rust_crate` reads a crate's `name`. So a cap that keeps one representative of
+every key before filling the remainder answers every question the record is read for, and
+costs at most one entry per key: thirteen strings, twenty symbols -- ten groups times
+two bindings -- and one version of each named crate. `binfmt.caps` holds the walk and
+each type says what makes it interchangeable through a `cap_key`, so the fact is stated
+once beside the class it is a fact about rather than three times in three readers.
+
+The crate list is the one that needs more than a key. A string or a symbol only reaches
+a cap because a group matched it, so every entry is evidence; a crate list is also an
+inventory, most of it named by nothing, so the helper takes a `pin` and an unclaimed
+crate cannot take the room a claimed one needs. The first attempt gave crates their own
+cap instead, and the second implementation had already drifted before review: it kept
+every *version* of a claimed crate, so a hundred and thirty-three `openssl` versions
+evicted `ring` -- the same bug one path down.
+
+**The binding is part of the symbol key, not decoration.** Keying on the group alone
+keeps whichever `EVP_*` sorts first, and if that one is imported then a defined one gets
+dropped -- which is `unknown` where the object is `static`, a quieter version of the same
+bug. A test pins it.
+
+**What it does not promise.** A second banner from a group already represented still
+goes, and so does a particular version of a crate already named. What cannot go is the
+last evidence of a group nothing else speaks for. The caps stay, because bounding the
+record is a real requirement and this does not weaken it: the limit is still the limit.
+
+The guarantee has one condition, and it is now refused at load time rather than
+documented: there has to be room for one of every key. `parse_ruleset` rejects a
+`max_strings_per_binary` below the string group count, a `max_symbols_per_binary` below
+twice the symbol group count, or a `max_rust_crates_per_binary` below the number of
+crates named. Below any of those the choice among keys is the alphabet again, and
+`SCHEMA.md` states the guarantee without conditions.
+
+**What it costs.** Records change for any object that was over a limit, which is why
+`ANALYZER_VERSION` moves. Nothing grows: the cap is honoured exactly, and `truncated`
+still says a sample was taken.
+
+**How it was found.** Not by a test. A sentence in the entry above asserted that a cap
+"cannot produce a record that reads clean", and review went and built the object that
+does. The admission test `AGENTS.md` names for the carve-out list works on a claim as
+well as on a list.
+
+Revisit if a ruleset ever wants limits below its own key counts, which the loader now
+refuses: the question then is whether to drop the guarantee or raise the limit.
+
+Tracked in [#51](https://github.com/EmilienM/wheel-crypto-scan/issues/51).
