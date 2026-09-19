@@ -88,6 +88,56 @@ DEFAULTABLE_TABLES = frozenset(ROUTED_KINDS) - {"crypto_distribution"}
 
 _VERSION_SUFFIX = re.compile(r"\.\d+$")
 
+# Bytes `binfmt.strings.sanitize` removes, so a name can carry any number of them
+# between its characters without changing the name the matcher is shown. `\x00` is
+# excluded: it ends a name rather than sitting inside one. Possessive, because the
+# literal on either side is printable and so can never be inside this run -- without
+# that, a name padded with a megabyte of control bytes is a backtracking bomb.
+_SANITIZED_AWAY = rb"[^\x00\x20-\x7e]*+"
+
+
+def _symbol_locator(names: Iterable[str]) -> re.Pattern[bytes] | None:
+    """One byte regex finding anywhere a name a symbol group claims could be hiding.
+
+    For a reader that has a whole string table and no idea which parts of it are
+    symbol names: decoding and sanitising every run costs far more than the question
+    is worth, and doing it in Python is how a 2 MiB string table of two-byte runs
+    turns into eighteen seconds across a universal binary's slices.
+
+    It locates, it does not decide. A hit means "look here properly", and the caller
+    still forms the real name and asks `symbol_groups_for`. So it over-approximates
+    freely -- it matches a prefix anywhere in a run, not just where a name starts --
+    and must never under-approximate, which is why it lives here, next to the two arms
+    of `SymbolGroup.matches` it is built from. A third arm has to be added here too.
+
+    Every character is separated by the bytes `sanitize` would strip, so a name cannot
+    be hidden from its own matcher by padding it with control bytes.
+
+    Built as a trie rather than a flat alternation, which is a third of the scanning
+    cost and two thirds of the pattern: `re` retries every branch of an alternation at
+    every position, and the names a ruleset claims share long prefixes by construction.
+    A branch stops at the first name that ends there, because anything longer through
+    that node is found by the shorter name anyway.
+    """
+    root: dict[int | None, Any] = {}
+    for name in sorted(set(names)):
+        node = root
+        for byte in name.encode("utf-8", "replace"):
+            node = node.setdefault(byte, {})
+        node[None] = None
+    return re.compile(_locator_branch(root)) if root else None
+
+
+def _locator_branch(node: Mapping[int | None, Any]) -> bytes:
+    """One trie node as a regex, terminal nodes pruning everything below them."""
+    if None in node:
+        return b""
+    branches = []
+    for byte, below in sorted((key, value) for key, value in node.items() if key is not None):
+        tail = _locator_branch(below)
+        branches.append(re.escape(bytes([byte])) + (_SANITIZED_AWAY + tail if tail else b""))
+    return branches[0] if len(branches) == 1 else b"(?:" + b"|".join(branches) + b")"
+
 
 def _require(mapping: Mapping[str, Any], key: str, where: str) -> Any:
     try:
@@ -329,6 +379,9 @@ class BinaryPatterns:
     _exact_index: Mapping[str, tuple[str, ...]] = field(repr=False, default_factory=dict)
     _prefix_probe: re.Pattern[str] | None = field(repr=False, default=None)
     _string_index: Mapping[str, StringGroup] = field(repr=False, default_factory=dict)
+    # One byte regex finding every place a name a symbol group claims could be hiding
+    # in an undecoded blob. `None` when no group names anything.
+    symbol_locator: re.Pattern[bytes] | None = field(repr=False, default=None)
 
     def symbol_groups_for(self, symbol: str) -> tuple[str, ...]:
         """Group names claiming this symbol, sorted. Empty when nothing claims it."""
@@ -432,6 +485,7 @@ class Ruleset:
             if prefixes
             else None
         )
+        locator = _symbol_locator(prefixes | set(exact_index))
 
         targets: set[str] = set()
         attributes: set[str] = set()
@@ -455,6 +509,7 @@ class Ruleset:
                 ),
                 _prefix_probe=probe,
                 _string_index=MappingProxyType({group.name: group for group in string_groups}),
+                symbol_locator=locator,
             ),
             python=PythonPatterns(
                 py_modules=tuple(sorted(self.python_modules)),

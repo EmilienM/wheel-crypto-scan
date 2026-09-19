@@ -15,17 +15,18 @@ the ELF path and does not make the read a partial one.
 
 Also not read, and a real blind spot: `LC_DYLD_INFO`, `LC_DYLD_CHAINED_FIXUPS` and
 `LC_DYLD_EXPORTS_TRIE`, which on modern macOS are the authoritative import and export
-tables. `LC_SYMTAB` is normally kept beside them, but an object that carries one with
-`nsyms == 0` is read here as a complete read of an empty table, so its imports are
-missed rather than reported as unread.
+tables. `LC_SYMTAB` is normally kept beside them, and an object carrying one that
+declares nothing is reported as unread rather than clean. What is still missed is a
+symbol reachable only through those tables, whose name is nowhere in the string table
+either.
 
 `partial_analysis` survives for three cases: a `LC_SYMTAB` that could not be read in
-full, whether it is absent, unreachable, names nothing we could resolve, or holds
-nothing but debug records, so the imported/defined split is missing or incomplete; a
-slice of a fat binary that could not be read, or that the fat header placed outside the
-object, so one architecture is unknown rather than clean; and a header or set of load
-commands that would not parse at all, which costs the structural read but not the
-strings already found.
+full, whether it is absent, unreachable, names nothing we could resolve, holds nothing
+but debug records, or declares fewer entries than it carries names for, so the
+imported/defined split is missing or incomplete; a slice of a fat binary that could not
+be read, or that the fat header placed outside the object, so one architecture is
+unknown rather than clean; and a header or set of load commands that would not parse at
+all, which costs the structural read but not the strings already found.
 
 A universal binary is read slice by slice and merged into one record, in both the
 `FAT_MAGIC` and `FAT_MAGIC_64` forms, which differ only in the width of the arch table's
@@ -82,6 +83,10 @@ _SYMTAB_COMMAND_SIZE = 24
 _N_STAB = 0xE0
 _N_TYPE = 0x0E
 _N_UNDF = 0x00
+# An indirect symbol is an alias: its `n_value` is a string-table index naming the
+# symbol it redirects to, the one place a name is referenced by something other than an
+# entry's own `n_strx`.
+_N_INDR = 0x0A
 
 # nlist is n_strx(4) n_type(1) n_sect(1) n_desc(2) n_value(4), nlist_64 the same with an
 # 8-byte n_value. Only the first three fields are read, so the size is the only
@@ -125,6 +130,39 @@ class _Unreadable(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class _SymbolRead:
+    """What one `LC_SYMTAB` yielded, and how far short of its own promise it fell."""
+
+    matches: frozenset[SymbolMatch]
+    entries: int
+    # How many entries resolved to a name that is a symbol rather than a debug record.
+    # Zero means the table declared nothing we could check, which is what `stripped`
+    # reports and is not the same as a table we failed on.
+    named: int
+    # Why the table was there and could not be used, or `None` when nothing about it
+    # was left unexplained. A cause carries a message and records an error.
+    shortfall: str | None
+
+    @property
+    def complete(self) -> bool:
+        """Every name this object carries was read, and the caller may say so."""
+        return self.shortfall is None and bool(self.named)
+
+    @property
+    def stripped(self) -> bool:
+        """The table was read and offered no symbol name, which is what `strip` leaves.
+
+        Derived here rather than by the caller so it cannot disagree with `complete`:
+        exactly one of `shortfall`, `complete` and `stripped` holds for any table, and
+        "this object names no symbols" is a claim only a table with nothing left
+        unexplained can support. Read off what the table yielded rather than off
+        `nsyms`, which is a field the object fills in about itself: a count of zero
+        over rows holding names is a cause, and a cause is not a stripped object.
+        """
+        return self.shortfall is None and not self.named
+
+
+@dataclass(frozen=True, slots=True)
 class _SliceHeader:
     """One slice's header and load commands, before its symbol table is reached."""
 
@@ -151,8 +189,10 @@ class _SliceEvidence:
     matches: frozenset[SymbolMatch]
     symtab_count: int
     stripped: bool
-    has_symtab: bool
     symbols_complete: bool
+    # The message saying why the table fell short, or `None` when it declared no entries
+    # at all, which is not a failure and records no error.
+    symbols_shortfall: str | None
     symbols_failed: bool
 
 
@@ -334,16 +374,15 @@ def read_macho(
     errors.extend(_error(path, why) for why in header_reasons)
     if any(slice_evidence.symbols_failed for slice_evidence in read):
         errors.append(_error(path, "failed to read the mach-o symbol table"))
-    # A slice with no `LC_SYMTAB` at all is incomplete but not an error: that is what
-    # `strip` leaves behind and it is normal for a release wheel. Only a table that
-    # was there and could not be read in full earns a message.
-    if any(
-        slice_evidence.has_symtab
-        and not slice_evidence.symbols_failed
-        and not slice_evidence.symbols_complete
+    # A table declaring no entries is incomplete but not an error: it tells us what an
+    # absent `LC_SYMTAB` tells us, which is what `strip` leaves behind and normal for a
+    # release wheel, and that has always been recorded without a message. A table that
+    # declared entries and could not be used earns one, saying which way it fell short.
+    errors.extend(
+        _error(path, slice_evidence.symbols_shortfall)
         for slice_evidence in read
-    ):
-        errors.append(_error(path, "mach-o symbol table could not be read in full"))
+        if slice_evidence.symbols_shortfall is not None
+    )
 
     # Every architecture has to have been read, and read in full, before this object
     # can claim it was examined. An unread slice is an unread object.
@@ -510,13 +549,16 @@ def _read_slice_symbols(
     """Read one slice's symbol table, once its header has already been parsed."""
     matches: set[SymbolMatch] = set()
     symtab_count = 0
-    # Absent until proven otherwise: the flag this drives must never be cleared by a
-    # table we failed to read.
+    # An absent `LC_SYMTAB` is a stripped object and an incomplete read, the same two
+    # answers `_SymbolRead` gives for a table that declared no entries. A read that
+    # raised is neither: a table we failed on supports no claim about the object.
+    stripped = header.symtab is None
     symbols_complete = False
+    symbols_shortfall: str | None = None
     symbols_failed = False
     if header.symtab is not None:
         try:
-            matches, symtab_count, symbols_complete = _read_symbols(
+            read = _read_symbols(
                 stream,
                 raw,
                 header.symtab,
@@ -528,6 +570,10 @@ def _read_slice_symbols(
             )
         except Exception:
             symbols_failed = True
+        else:
+            matches, symtab_count = set(read.matches), read.entries
+            stripped, symbols_complete = read.stripped, read.complete
+            symbols_shortfall = read.shortfall
 
     return _SliceEvidence(
         cputype=header.cputype,
@@ -538,9 +584,9 @@ def _read_slice_symbols(
         rpath=header.rpath,
         matches=frozenset(matches),
         symtab_count=symtab_count,
-        stripped=header.symtab is None or header.symtab.nsyms == 0,
-        has_symtab=header.symtab is not None,
+        stripped=stripped,
         symbols_complete=symbols_complete,
+        symbols_shortfall=symbols_shortfall,
         symbols_failed=symbols_failed,
     )
 
@@ -618,8 +664,11 @@ def _read_symbols(
     end: int,
     is64: bool,
     big_endian: bool,
-) -> tuple[set[SymbolMatch], int, bool]:
-    """Return this slice's matches, its entry count, and whether it was read in full.
+) -> _SymbolRead:
+    """Return the matches, the entry count, completeness, and why it fell short.
+
+    The last element is a message when the table could not be read, and `None` when it
+    simply declared nothing -- which is not a failure and records no error.
 
     The matches come back uncapped and unordered. A universal binary merges the
     slices before sorting and capping, so capping here would let which symbols
@@ -647,52 +696,148 @@ def _read_symbols(
         table = _region(stream, raw, sym_start, sym_length)
 
     matches: set[SymbolMatch] = set()
+    # Only the crypto names read, which is what the cross-check below compares against.
+    # Remembering every name instead cost 24 MiB on a half-million-symbol table, for a
+    # question that is only ever asked about the handful the ruleset claims.
+    read_crypto: set[str] = set()
     named = 0
     unresolved = 0
-    for name, undefined, resolved, debug in _iter_symbols(table, strings, entry_size, big_endian):
+    for name, undefined, resolved, debug, alias in _iter_symbols(
+        table, strings, entry_size, big_endian
+    ):
         if not resolved:
             unresolved += 1
             continue
+        if alias is not None:
+            # An alias names its target through `n_value`, so the target is a name no
+            # entry's own index points at and the cross-check below would otherwise
+            # find it left over in the string table.
+            #
+            # It goes through the matcher rather than straight into `read_crypto`, for
+            # the same reason the debug rows below do not: a name counted as read has
+            # to be a name the matcher saw, or one `N_INDR` row aliasing the symbol it
+            # hides is enough to account for the name and silence the check. It is also
+            # evidence in its own right -- the object reaches that symbol through the
+            # indirection -- and `imported`, because an alias resolves to code this
+            # object does not carry under that name.
+            aliased = sanitize(_strip_abi_prefix(alias.decode("utf-8", "replace")))
+            groups = patterns.symbol_groups_for(aliased) if aliased else ()
+            if groups:
+                read_crypto.add(aliased)
+                for group in groups:
+                    matches.add(
+                        SymbolMatch(name=aliased, group=group, binding=evidence.BINDING_IMPORTED)
+                    )
         if not name:
             continue
         # A debug entry describes a source file or a line number. Its N_TYPE bits are
         # not a section index, so reading one as a symbol turns a stabs record into a
         # claim that this object defines the code.
         #
-        # It does not count toward `named` either, which is the subtler half. That
-        # counter feeds `complete`, and `complete` means "this object declared symbols,
-        # we read all of them, and none was crypto". A stabs record's name is readable
-        # -- it is a source path -- but it is not a symbol this object declares, so a
-        # table holding nothing else has declared nothing and we have checked nothing.
-        # Counting it made one crafted debug record the difference between `OPAQUE` and
-        # a clean verdict, which is one of the cheap ways to look clean that the comment
-        # below `complete` enumerates.
+        # It counts as neither named nor read, and both halves matter.
+        #
+        # Not named, because `complete` means "this object declared symbols, we read all
+        # of them, and none was crypto", and a table of nothing but debug records
+        # declared nothing. Counting it made one crafted record the difference between
+        # `OPAQUE` and a clean verdict.
+        #
+        # Not read, because the name never reaches the group matching below. Treating it
+        # as read let an object launder a hidden symbol: put the crypto name on a stabs
+        # row inside the declared window and the real undefined row outside it, and the
+        # cross-check found nothing left over.
         if debug:
             continue
         named += 1
         groups = patterns.symbol_groups_for(name)
         if not groups:
             continue
+        read_crypto.add(name)
         binding = evidence.BINDING_IMPORTED if undefined else evidence.BINDING_DEFINED
         for group in groups:
             matches.add(SymbolMatch(name=name, group=group, binding=binding))
 
     # "We read every name and none of them was crypto" has to be earned, because it is
-    # indistinguishable in the record from "this object has no crypto". An entry naming
-    # a string we could not resolve, and a table whose entries name nothing readable at
-    # all, are both unread symbols: a hidden string table, indices past its end, indices
-    # all left at zero, and a table of nothing but debug records are the cheap ways to
-    # make a wheel look clean, and each of them lands here.
-    complete = (
-        len(table) == sym_wanted
-        and len(strings) == symtab.strsize
-        and not unresolved
-        # `bool(strings)` is implied by `bool(named)`, which needs an entry that resolved
-        # a name out of them. Kept as the statement of what is required rather than of
-        # what happens to be sufficient.
-        and (not symtab.nsyms or (bool(strings) and bool(named)))
-    )
-    return matches, len(table) // entry_size, complete
+    # indistinguishable in the record from "this object has no crypto". A hidden string
+    # table, indices past its end, indices all left at zero, a table of nothing but
+    # debug records, and a count that understates the rows are the cheap ways to make a
+    # wheel look clean, and each of them lands here.
+    #
+    # `shortfall` is the one place that decision is made: `None` means nothing about
+    # this table was left unexplained, and only then may the caller read "no symbols" or
+    # "no crypto" off it. Anything else carries a message and records an error.
+    #
+    # Ordered so the cheapest question is asked first, and so the string-table walk --
+    # the only one that costs a pass over the object -- is skipped for a table already
+    # known to have fallen short.
+    count = len(table) // entry_size
+    truncated = len(table) != sym_wanted or len(strings) != symtab.strsize
+    if truncated:
+        shortfall = "mach-o symbol table is truncated"
+    elif unresolved:
+        shortfall = "mach-o symbol table names strings it does not hold"
+    elif _holds_a_name_not_read(strings, patterns, read_crypto):
+        shortfall = "mach-o symbol table declares fewer entries than it has names"
+    elif not named and symtab.nsyms:
+        # Rows were declared and not one of them is a symbol this object names. The
+        # table was there and we could not use it, which is not what `strip` leaves
+        # behind, so it records an error: dropping it would let `linkage` read the
+        # object as declaring no OpenSSL rather than as not saying.
+        shortfall = "mach-o symbol table declares entries but names no symbol"
+    else:
+        # An honest read, or `nsyms == 0`, which says what an absent `LC_SYMTAB` says
+        # and records no error either. `_SymbolRead` tells the two apart by `named`:
+        # one is a complete read, the other a stripped object.
+        shortfall = None
+    return _SymbolRead(frozenset(matches), count, named, shortfall)
+
+
+def _holds_a_name_not_read(strings: bytes, patterns: BinaryPatterns, read: set[str]) -> bool:
+    """Does the string table hold a symbol-group name no entry we read resolved to?
+
+    The declaration itself can lie, and reading exactly what it declares is not the same
+    as reading every symbol the object carries: a table of five rows that says
+    `nsyms = 1` is read in full by its own account while four names go unlooked-at.
+
+    Nothing structural says how many rows there really are -- what sits between the
+    symbol table and the string table is `LC_DYSYMTAB`'s business, and assuming the two
+    are adjacent is wrong for real LINKEDIT layouts. The string table is the one place
+    every name must appear, though, so a name in it that a symbol group claims and that
+    no entry we read resolved to is a symbol this object carries and did not declare.
+
+    Two limits, both deliberate. It asks whether a *crypto* name went unread, not
+    whether any name did, so padding and ordinary unreferenced strings do not make every
+    object partial. And it forms names the way the table is laid out, from one NUL to
+    the next: `n_strx` may point at any byte, so a name that is the tail of a longer
+    string is reachable and is not formed here. `DECISIONS.md` and #39 record why closing
+    that costs more than it is worth -- every Rust or C++ symbol with a crypto name
+    mangled inside it would read as an object hiding one.
+
+    `patterns.symbol_locator` does the scanning in C and this loop only visits the runs
+    it lands in, each of them once. Walking every run in Python instead put a 2 MiB
+    string table of two-byte runs at eighteen seconds across a universal binary's
+    slices, for an object a few megabytes long.
+    """
+    locator = patterns.symbol_locator
+    if locator is None:
+        return False
+    start = 0
+    stop = strings.find(b"\x00")
+    if stop == -1:
+        stop = len(strings)
+    position = 0
+    while (hit := locator.search(strings, position)) is not None:
+        while hit.start() >= stop:
+            start = stop + 1
+            stop = strings.find(b"\x00", start)
+            if stop == -1:
+                stop = len(strings)
+        chunk = strings[start:stop]
+        name = sanitize(_strip_abi_prefix(chunk.decode("utf-8", "replace")))
+        if name and name not in read and patterns.symbol_groups_for(name):
+            return True
+        # This run has been judged; the next hit inside it would say nothing new.
+        position = stop + 1
+    return False
 
 
 def _available(start: int, wanted: int, end: int) -> int:
@@ -733,8 +878,8 @@ def _region(stream, raw: bytes, start: int, length: int) -> bytes:
 
 def _iter_symbols(
     table: bytes, strings: bytes, entry_size: int, big_endian: bool
-) -> Iterator[tuple[str, bool, bool, bool]]:
-    """Yield (name, is_undefined, name_resolved, is_debug) for every entry in the table.
+) -> Iterator[tuple[str, bool, bool, bool, bytes | None]]:
+    """Yield (name, is_undefined, name_resolved, is_debug, alias) for each table entry.
 
     Every entry is reported, including the ones with nothing usable in them: an entry
     whose `n_strx` points past the end of the string table is the difference between
@@ -742,18 +887,28 @@ def _iter_symbols(
     those two apart. `name` is empty for index 0, which is how nlist spells "this entry
     has no name", and for an entry whose name sanitises away to nothing.
     """
-    head = struct.Struct((">" if big_endian else "<") + "IBB")
+    order = ">" if big_endian else "<"
+    head = struct.Struct(order + "IBB")
+    value = struct.Struct(order + ("Q" if entry_size == _NLIST_SIZE[True] else "I"))
     for base in range(0, len(table) - entry_size + 1, entry_size):
         n_strx, n_type, _n_sect = head.unpack_from(table, base)
         undefined = (n_type & _N_TYPE) == _N_UNDF
         debug = bool(n_type & _N_STAB)
         if n_strx >= len(strings):
-            yield "", undefined, False, debug
+            yield "", undefined, False, debug, None
             continue
         stop = strings.find(b"\x00", n_strx)
-        text = strings[n_strx:stop] if stop != -1 else strings[n_strx:]
-        name = sanitize(_strip_abi_prefix(text.decode("utf-8", "replace")))
-        yield name, undefined, True, debug
+        raw_name = strings[n_strx:stop] if stop != -1 else strings[n_strx:]
+        name = sanitize(_strip_abi_prefix(raw_name.decode("utf-8", "replace")))
+        # An alias names its target through `n_value`, so that target is a string no
+        # entry's own index points at. Yielded so the caller can count it as read.
+        alias: bytes | None = None
+        if not debug and (n_type & _N_TYPE) == _N_INDR:
+            (target,) = value.unpack_from(table, base + 8)
+            if target < len(strings):
+                cut = strings.find(b"\x00", target)
+                alias = strings[target:cut] if cut != -1 else strings[target:]
+        yield name, undefined, True, debug, alias
 
 
 def _read_cstring(body: bytes, offset: int) -> str | None:

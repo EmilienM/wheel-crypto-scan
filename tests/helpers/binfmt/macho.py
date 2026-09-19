@@ -24,6 +24,7 @@ SYMTAB_COMMAND_SIZE = 24
 
 N_UNDF = 0x00
 N_SECT = 0x0E
+N_INDR = 0x0A
 N_EXT = 0x01
 N_SO = 0x64  # a stabs source-file entry, i.e. debug information rather than a symbol
 
@@ -54,6 +55,10 @@ class MachOSym:
     defined: bool
     stab: bool = False
     strx: int | None = None
+    # An alias: written as `N_INDR`, whose `n_value` is the string-table index of the
+    # symbol it redirects to rather than an address. That target is the one name in the
+    # table no entry's own `n_strx` points at.
+    indirect_to: str | None = None
 
 
 @dataclass
@@ -161,17 +166,27 @@ class MachOBuilder:
             offsets.append(len(strtab))
             strtab.extend(sym.name.encode("utf-8", "surrogateescape") + b"\x00")
 
+        targets = {}
+        for sym in self.symbols:
+            if sym.indirect_to is not None and sym.indirect_to not in targets:
+                targets[sym.indirect_to] = len(strtab)
+                strtab.extend(sym.indirect_to.encode("utf-8", "surrogateescape") + b"\x00")
+
         table = bytearray()
         for sym, offset in zip(self.symbols, offsets, strict=True):
+            n_value = 0
             if sym.stab:
                 n_type, n_sect = N_SO, 1
+            elif sym.indirect_to is not None:
+                n_type, n_sect = N_INDR | N_EXT, 0
+                n_value = targets[sym.indirect_to]
             elif sym.defined:
                 n_type, n_sect = N_SECT | N_EXT, 1
             else:
                 n_type, n_sect = N_UNDF | N_EXT, 0
             layout = "IBBHQ" if self.is64 else "IBBHI"
             n_strx = offset if sym.strx is None else sym.strx
-            table += struct.pack(end + layout, n_strx, n_type, n_sect, 0, 0)
+            table += struct.pack(end + layout, n_strx, n_type, n_sect, 0, n_value)
         return bytes(table), bytes(strtab)
 
     def table_offsets(self) -> tuple[int, int]:

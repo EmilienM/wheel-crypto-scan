@@ -217,8 +217,13 @@ def test_debug_entries_are_not_read_as_definitions() -> None:
     # the table has declared nothing. Asserted on *this* fixture because its name is one
     # the ruleset matches: a guard that only fires on a name nobody would choose is not
     # a guard.
+    #
+    # It reports as an undeclared name rather than an empty table, which is the more
+    # accurate of the two: the name is in the string table and no entry claimed it.
     assert ev.partial_analysis is True
-    assert [e.message for e in errors] == ["mach-o symbol table could not be read in full"]
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
 
 
 def test_a_table_of_nothing_but_debug_records_has_declared_nothing() -> None:
@@ -236,7 +241,9 @@ def test_a_table_of_nothing_but_debug_records_has_declared_nothing() -> None:
     ev, errors = _read(stabs_only)
     assert ev.partial_analysis is True
     assert list(ev.partial_reasons) == ["macho_symtab_incomplete"]
-    assert [e.message for e in errors] == ["mach-o symbol table could not be read in full"]
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares entries but names no symbol"
+    ]
     # `symtab_count` still counts the row: `SCHEMA.md` defines it as `LC_SYMTAB`
     # entries, and a debug record is one. `is_opaque` therefore still reads false, and
     # that is fine -- what closes the hole is the partial flag above, which fires a rule
@@ -401,23 +408,48 @@ def test_an_object_without_a_symbol_table_stays_partial() -> None:
     assert ev.partial_analysis is True
 
 
-def test_an_empty_symbol_table_is_still_a_complete_read() -> None:
+def test_an_empty_symbol_table_has_declared_nothing() -> None:
+    """`nsyms = 0` used to be exempt from `complete`, and that was the hole.
+
+    A table declaring nothing tells us exactly what an absent `LC_SYMTAB` tells us, and
+    an absent one has always been incomplete. The exemption let an object carry rows
+    full of crypto imports, declare none of them, and read clean.
+
+    No error, though: like an absent table, declaring nothing is what `strip` leaves
+    behind rather than something that went wrong.
+    """
     data = MachOBuilder(id_dylib="libfoo.dylib", with_symtab=True).build()
     ev, errors = _read(data)
     assert errors == ()
     assert ev.symtab_count == 0
-    assert ev.partial_analysis is False
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["macho_symtab_incomplete"]
 
 
 def test_an_object_with_no_symbol_names_to_offer_is_recorded_as_stripped() -> None:
-    """`stripped` is "no symbol table worth the name", which Mach-O can say two ways."""
+    """`stripped` is "no symbol table worth the name", which Mach-O can say two ways.
+
+    It is read off the table rather than off `nsyms`, which is the point of the two
+    cases below it: a count of zero over rows holding crypto names is a table we could
+    not use, and "we could not use it" is not "this object has no symbols". `stripped`
+    is recorded rather than treated as a finding, so a cause must not be able to set it.
+    """
     no_command = MachOBuilder(id_dylib="libfoo.dylib").build()
     no_entries = MachOBuilder(id_dylib="libfoo.dylib", with_symtab=True).build()
     carries_symbols = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
+    only_debug = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(MachOSym("/src/foo.c", defined=True, stab=True),)
+    ).build()
+    undeclared = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,), declared_nsyms=0
+    ).build()
 
     assert _read(no_command)[0].stripped is True
     assert _read(no_entries)[0].stripped is True
     assert _read(carries_symbols)[0].stripped is False
+    # Both of these declare a table we could not take at its word.
+    assert _read(only_debug)[0].stripped is False
+    assert _read(undeclared)[0].stripped is False
 
 
 def test_a_symbol_table_that_claims_more_than_exists_is_an_error() -> None:
@@ -830,4 +862,209 @@ def test_one_hidden_index_beside_a_readable_symbol_is_still_incomplete() -> None
     ev, errors = _read(data)
     assert ev.partial_analysis is True
     assert list(ev.partial_reasons) == ["macho_symtab_incomplete"]
-    assert [e.message for e in errors] == ["mach-o symbol table could not be read in full"]
+    assert [e.message for e in errors] == ["mach-o symbol table names strings it does not hold"]
+
+
+# --- the declaration itself can lie ------------------------------------------
+
+_HIDDEN = (
+    MachOSym("_EVP_DigestInit_ex", defined=False),
+    MachOSym("_SSL_new", defined=False),
+)
+
+
+def test_a_count_of_zero_over_rows_full_of_symbols_is_not_a_clean_read() -> None:
+    """Reading what the object declares is not reading what the object carries.
+
+    The rows are there, the string table is there, and `nsyms` says none of it counts.
+    Every name is found in the string table and none was looked at, which is the
+    difference between "we checked and found nothing" and "we were told not to check".
+    """
+    data = MachOBuilder(id_dylib="libfoo.dylib", symbols=_HIDDEN, declared_nsyms=0).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["macho_symtab_incomplete"]
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
+    assert ev.matched_symbols == ()
+
+
+def test_a_count_that_stops_short_of_the_rows_is_not_a_clean_read() -> None:
+    """The sharper one: it does not use the zero short-circuit.
+
+    Declare one entry over three, put something harmless first, and the two crypto
+    imports behind it are never read. `named` is one, nothing is unresolvable, both
+    lengths match -- every structural check passes.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_PyInit__ext", defined=True),) + _HIDDEN,
+        declared_nsyms=1,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
+
+
+def test_an_honest_table_costs_nothing_and_stays_complete() -> None:
+    """The cross-check must not fire on an object that declared what it carries."""
+    data = MachOBuilder(id_dylib="libfoo.dylib", symbols=_HIDDEN).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert [m.name for m in ev.matched_symbols] == ["EVP_DigestInit_ex", "SSL_new"]
+
+
+def test_the_walk_does_not_stop_at_the_first_name_it_recognises() -> None:
+    """A declared crypto symbol is a name the locator lands on and nothing is wrong with.
+
+    The walk has to carry on past it. Stopping there reads the whole check as "is the
+    first recognisable name accounted for", and any object that honestly declares one
+    crypto import can hide as many more as it likes behind it.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(
+            MachOSym("_PyInit__ext", defined=True),
+            MachOSym("_EVP_DigestInit_ex", defined=False),
+            MachOSym("_SSL_new", defined=False),
+        ),
+        declared_nsyms=2,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
+    # The one it did declare is still evidence.
+    assert [m.name for m in ev.matched_symbols] == ["EVP_DigestInit_ex"]
+
+
+def test_a_hidden_name_claimed_only_by_an_exact_rule_is_still_found() -> None:
+    """The locator has to carry both arms of the matcher, not just the prefix one.
+
+    `SSL_new` is claimed by a group's exact set; no prefix reaches it. Paired with
+    `EVP_DigestInit_ex` it proves nothing, because the walk stops at the first hidden
+    name and the prefix arm gets there first.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_PyInit__ext", defined=True), MachOSym("_SSL_new", defined=False)),
+        declared_nsyms=1,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
+
+
+def test_a_control_byte_cannot_hide_a_name_from_its_own_matcher() -> None:
+    """`sanitize` strips the byte, so the name the matcher is shown is the crypto one.
+
+    A locator reading raw bytes would look straight past `_EV\x81P_DigestInit_ex`, and
+    an object would hide a symbol from the check by writing a name this reader itself
+    resolves to `EVP_DigestInit_ex`. One stripped byte is the whole cost.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(
+            MachOSym("_PyInit__ext", defined=True),
+            MachOSym("_EV\udc81P_DigestInit_ex", defined=False),
+        ),
+        declared_nsyms=1,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
+
+
+def test_a_name_the_ruleset_does_not_claim_is_not_a_hidden_symbol() -> None:
+    """The check asks whether a *crypto* name went unread, not whether any name did.
+
+    A string table holding padding, or names of things the ruleset says nothing about,
+    is the ordinary case and must not make every object partial.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_PyInit__ext", defined=True), MachOSym("_helper", defined=True)),
+        declared_nsyms=1,
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_analysis is False
+
+
+def test_a_debug_row_cannot_launder_a_hidden_symbol() -> None:
+    """Counting a debug record as read was a way to hide a real one.
+
+    Put the crypto name on a stabs row inside the declared window and the real undefined
+    row outside it: the name then looks accounted for, and the cross-check finds nothing
+    left over. It is not accounted for -- a debug record's name never reaches the group
+    matching -- so it is recorded as read by nothing.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(
+            MachOSym("_PyInit__ext", defined=True),
+            MachOSym("_EVP_DigestInit_ex", defined=True, stab=True),
+            MachOSym("_EVP_DigestInit_ex", defined=False),
+        ),
+        declared_nsyms=2,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
+    assert ev.matched_symbols == ()
+
+
+def test_an_alias_target_is_read_rather_than_merely_accounted_for() -> None:
+    """`N_INDR` names its target through `n_value`, not through any entry's `n_strx`.
+
+    Without reading it the target is a string nothing appears to reference, and an
+    honest object with a renamed or vendored crypto symbol would read as one hiding it.
+
+    Reading it has to mean matching it. The evidence below is the half that proves the
+    name went through the matcher rather than into the set of names to stop asking
+    about, which is the distinction the next test turns on.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_local_alias", defined=True, indirect_to="_EVP_DigestInit_ex"),),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    # `imported`: an alias resolves to code this object does not carry under that name.
+    assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
+
+
+def test_an_alias_row_cannot_launder_a_hidden_symbol() -> None:
+    """The `N_INDR` spelling of the debug-row trick, and one row is the whole cost.
+
+    Alias a name inside the declared window to the crypto symbol hidden outside it. If
+    the target were merely remembered as read, the cross-check would find nothing left
+    over in the string table and the object would read clean. It goes through the
+    matcher instead, so either the name is evidence or it is unaccounted for -- here it
+    is both, because the hidden row is what the alias points at.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(
+            MachOSym("_local_alias", defined=True, indirect_to="_EVP_DigestInit_ex"),
+            MachOSym("_EVP_DigestInit_ex", defined=False),
+        ),
+        declared_nsyms=1,
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)

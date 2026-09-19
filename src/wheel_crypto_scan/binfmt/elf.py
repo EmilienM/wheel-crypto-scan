@@ -12,6 +12,13 @@ Parsing uses `pyelftools` and never raises past `read_elf`: every failure become
 `ScanError` and whatever evidence was already gathered is still returned, because a
 corrupt `.dynamic` section should not also cost us the strings we already pulled out
 of `.rodata`.
+
+One thing this reader still believes: `.dynsym`'s declared size. An object whose
+`sh_size` covers fewer entries than it carries is read in full by its own account while
+the rest go unlooked-at, and `stripped` is read off that same count. `binfmt.macho`
+stopped taking the Mach-O spelling of that at face value in #34, cross-checking the
+count against the string table every name must appear in, and `.dynstr` is the same
+place for the same reason. The check has not been brought over here. Tracked in #38.
 """
 
 from __future__ import annotations
