@@ -21,6 +21,7 @@ from helpers.binfmt import (
     EM_X86_64,
     DynSym,
     ElfBuilder,
+    patch_section_header,
     patch_u16,
 )
 from wheel_crypto_scan import evidence
@@ -413,7 +414,7 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
 
     from elftools.elf.elffile import ELFFile
 
-    from wheel_crypto_scan.binfmt.elf import _iter_symbols
+    from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes
 
     for elfclass, big_endian in ((64, False), (32, False), (64, True), (32, True)):
         symbols = tuple(DynSym(f"sym_{i:03d}", defined=(i % 3 == 0)) for i in range(60)) + (
@@ -429,7 +430,8 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
         expected = [
             (s.name, s["st_shndx"] == "SHN_UNDEF") for s in section.iter_symbols() if s.name
         ]
-        actual = list(_iter_symbols(elf, section))
+        read = _iter_symbols(elf, *_symbol_bytes(elf, section))
+        actual = [(name, undefined) for name, undefined, resolved in read if resolved and name]
         assert actual == expected, f"mismatch for elfclass={elfclass} big_endian={big_endian}"
 
 
@@ -468,6 +470,45 @@ def test_a_large_symbol_table_does_not_thrash_a_streamed_member(tmp_path) -> Non
     # The cost must scale with the number of sections, not the number of symbols.
     # Before the fix this was one full decompression per symbol.
     assert member.reopens < 50, f"re-decompressed {member.reopens} times"
+
+
+def test_the_symbol_tables_are_read_in_the_order_they_sit_in_the_file(tmp_path) -> None:
+    """Whichever of `.dynsym` and `.dynstr` comes first is read first.
+
+    Reading the later one first is a backwards seek, and through a zip member past its
+    retained window that is one more full decompression of everything before it. The
+    linker usually puts `.dynsym` first; this suite's own builder does not, and neither
+    do some `objcopy` reorderings, so the reader sorts rather than assuming.
+
+    The count below is exact on purpose. Taking the sections in a fixed order instead
+    costs exactly one more, and a bound loose enough not to notice that is a bound that
+    would not have caught it.
+    """
+    import io
+    import zipfile
+
+    from wheel_crypto_scan.binfmt.elf import read_elf
+    from wheel_crypto_scan.ruleset import load_ruleset
+    from wheel_crypto_scan.wheelfile import SeekableZipMember
+
+    symbols = tuple(DynSym(f"filler_{i:05d}", defined=True) for i in range(4000))
+    symbols += (DynSym("EVP_DigestInit_ex", defined=False),)
+    blob = ElfBuilder(dynsyms=symbols, needed=("libcrypto.so.3",), rodata=b"x" * 200000).build()
+
+    archive_path = tmp_path / "ordered.zip"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(zipfile.ZipInfo("lib/o.so", date_time=(1980, 1, 1, 0, 0, 0)), blob)
+
+    patterns = load_ruleset().compile_patterns().binary
+    with zipfile.ZipFile(archive_path) as archive:
+        member = SeekableZipMember(archive, "lib/o.so", len(blob), 0)
+        stream = io.BufferedReader(member)
+        found, errors = read_elf(stream, "lib/o.so", patterns, vendored=False)
+        stream.close()
+
+    assert errors == ()
+    assert any(s.name == "EVP_DigestInit_ex" for s in found.matched_symbols)
+    assert member.reopens == 10, f"re-decompressed {member.reopens} times, expected 10"
 
 
 # --- the shared strings pass keeps feeding the reader's own inputs ------------
@@ -631,3 +672,137 @@ def test_a_readable_object_is_still_not_partial() -> None:
     assert errors == ()
     assert ev.partial_analysis is False
     assert ev.partial_reasons == ()
+
+
+# --- the declaration itself can lie ------------------------------------------
+
+_HIDDEN = (
+    DynSym("PyInit__ext", defined=True),
+    DynSym("EVP_DigestInit_ex", defined=False),
+    DynSym("SSL_new", defined=False),
+)
+
+
+def test_a_dynsym_size_that_stops_short_of_the_rows_is_not_a_clean_read() -> None:
+    """`sh_size` is a field the object fills in about itself.
+
+    Cover one entry of four and the two OpenSSL imports behind it are never read.
+    Nothing is malformed: pyelftools reads the declared table without complaint, every
+    index resolves, and the object comes out saying it has no crypto in it. `.dynstr`
+    still holds both names, which is what gives it away.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    ev, errors = _read(patch_section_header(honest, ".dynsym", "sh_size", 24))
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is True
+    # Both: the format's own cause, and the one a consumer can filter an index on
+    # without caring which format told the lie.
+    assert list(ev.partial_reasons) == ["elf_dynsym_unread", "symtab_understates_rows"]
+    assert [e.message for e in errors] == [
+        ".dynsym declares fewer entries than .dynstr holds names for"
+    ]
+
+
+def test_a_dynsym_size_of_zero_over_rows_full_of_symbols_is_not_a_clean_read() -> None:
+    """The blunt version, and the one that also empties `symbol_counts.dynsym`."""
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    ev, errors = _read(patch_section_header(honest, ".dynsym", "sh_size", 0))
+    assert ev.dynsym_count == 0
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        ".dynsym declares fewer entries than .dynstr holds names for"
+    ]
+
+
+def test_evidence_already_read_survives_the_rows_that_were_hidden() -> None:
+    """A count that lies costs the rows behind it, never the ones in front of it.
+
+    Three entries of 24 bytes covers the null entry, `PyInit__ext` and
+    `EVP_DigestInit_ex`, leaving `SSL_new` unread. The OpenSSL import that *was*
+    declared is evidence and has to survive, or the check trades one silent hole for
+    another. The `sh_size = 24` case above cannot hold this: it covers the null entry
+    alone, so an empty `matched_symbols` passes there whatever the code does.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    ev, errors = _read(patch_section_header(honest, ".dynsym", "sh_size", 72))
+    assert [m.name for m in ev.matched_symbols] == ["EVP_DigestInit_ex"]
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        ".dynsym declares fewer entries than .dynstr holds names for"
+    ]
+
+
+def test_a_dynstr_that_does_not_hold_the_names_dynsym_points_at_is_not_a_clean_read() -> None:
+    """The same lie, one field over: shrink `.dynstr` instead of `.dynsym`.
+
+    Every row stays, `symbol_counts.dynsym` stays at four, and pyelftools reads the
+    table without complaint -- the names simply are not reachable any more. Without a
+    check on the indices this is a statically linked extension, with no `DT_NEEDED` to
+    make it opaque, reporting `NO_CRYPTO_DETECTED` while carrying two OpenSSL imports.
+    """
+    honest = ElfBuilder(dynsyms=_HIDDEN).build()
+    for size in (0, 8, 16):
+        ev, errors = _read(patch_section_header(honest, ".dynstr", "sh_size", size))
+        assert ev.dynsym_count == 4, size
+        assert ev.matched_symbols == (), size
+        assert ev.partial_analysis is True, size
+        assert [e.message for e in errors] == [".dynsym names strings .dynstr does not hold"]
+
+
+def test_a_name_cut_short_by_dynstr_is_not_reported_as_a_symbol() -> None:
+    """A run `.dynstr` never closes is a name we could not resolve, not a short name.
+
+    Cut to 24 bytes, the bytes reachable from `EVP_DigestInit_ex`'s index are
+    `EVP_DigestI`, which a rule claims by prefix. Reporting it would put a symbol in
+    the record that the object does not carry, in the field the whole tool turns on.
+    """
+    honest = ElfBuilder(dynsyms=_HIDDEN).build()
+    ev, errors = _read(patch_section_header(honest, ".dynstr", "sh_size", 24))
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [".dynsym names strings .dynstr does not hold"]
+
+
+def test_an_honest_dynsym_costs_nothing_and_stays_complete() -> None:
+    """The cross-check must not fire on an object that declared what it carries."""
+    ev, errors = _read(ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build())
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert [m.name for m in ev.matched_symbols] == ["EVP_DigestInit_ex", "SSL_new"]
+
+
+def test_a_name_the_ruleset_does_not_claim_is_not_a_hidden_symbol() -> None:
+    """The check asks whether a *crypto* name went unread, not whether any name did.
+
+    `.dynstr` holds section and version strings as well as symbol names, and an object
+    is free to carry any of them without declaring a symbol for it.
+    """
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True), DynSym("helper", defined=True)),
+    ).build()
+    ev, errors = _read(patch_section_header(honest, ".dynsym", "sh_size", 24))
+    assert errors == ()
+    assert ev.partial_analysis is False
+
+
+def test_a_leading_underscore_is_a_name_here_not_an_abi_prefix() -> None:
+    """Darwin adds an underscore to every C symbol; ELF does not, and neither does this.
+
+    `binfmt.macho` inverts that prefix before matching, and the cross-check it shares
+    with this reader has to invert exactly what the reader inverts. Stripping it here
+    would read `_EVP_DigestInit_ex` as the OpenSSL entry point, which this object does
+    not have and never declared -- an honest wheel reported as one hiding a symbol.
+    """
+    ev, errors = _read(
+        ElfBuilder(
+            needed=("libc.so.6",),
+            dynsyms=(
+                DynSym("PyInit__ext", defined=True),
+                DynSym("_EVP_DigestInit_ex", defined=False),
+            ),
+        ).build()
+    )
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.matched_symbols == ()

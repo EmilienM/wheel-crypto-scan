@@ -49,6 +49,7 @@ from ..ruleset import BinaryPatterns
 from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
+from .symtab import holds_a_name_not_read
 
 _MH_MAGIC_32 = 0xFEEDFACE
 _MH_CIGAM_32 = 0xCEFAEDFE
@@ -142,6 +143,11 @@ class _SymbolRead:
     # Why the table was there and could not be used, or `None` when nothing about it
     # was left unexplained. A cause carries a message and records an error.
     shortfall: str | None
+    # One cause is not about this format: a count that understates the rows is the same
+    # lie ELF tells with `sh_size`, so it carries a token both readers emit and a
+    # consumer can filter an index on. Carried rather than inferred from `shortfall`,
+    # because matching on a message is how a message becomes a contract.
+    understated: bool = False
 
     @property
     def complete(self) -> bool:
@@ -193,6 +199,9 @@ class _SliceEvidence:
     # The message saying why the table fell short, or `None` when it declared no entries
     # at all, which is not a failure and records no error.
     symbols_shortfall: str | None
+    # The shortfall was a count that understates the rows, which is a cause both readers
+    # name the same way.
+    symbols_understated: bool
     symbols_failed: bool
 
 
@@ -391,6 +400,8 @@ def read_macho(
         partial.add(evidence.PARTIAL_MACHO_FAT_SLICE_UNREAD)
     if not all(slice_evidence.symbols_complete for slice_evidence in read):
         partial.add(evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE)
+    if any(slice_evidence.symbols_understated for slice_evidence in read):
+        partial.add(evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS)
 
     first = read[0]
     merged: set[SymbolMatch] = set()
@@ -555,6 +566,7 @@ def _read_slice_symbols(
     stripped = header.symtab is None
     symbols_complete = False
     symbols_shortfall: str | None = None
+    symbols_understated = False
     symbols_failed = False
     if header.symtab is not None:
         try:
@@ -573,7 +585,7 @@ def _read_slice_symbols(
         else:
             matches, symtab_count = set(read.matches), read.entries
             stripped, symbols_complete = read.stripped, read.complete
-            symbols_shortfall = read.shortfall
+            symbols_shortfall, symbols_understated = read.shortfall, read.understated
 
     return _SliceEvidence(
         cputype=header.cputype,
@@ -587,6 +599,7 @@ def _read_slice_symbols(
         stripped=stripped,
         symbols_complete=symbols_complete,
         symbols_shortfall=symbols_shortfall,
+        symbols_understated=symbols_understated,
         symbols_failed=symbols_failed,
     )
 
@@ -771,12 +784,14 @@ def _read_symbols(
     # known to have fallen short.
     count = len(table) // entry_size
     truncated = len(table) != sym_wanted or len(strings) != symtab.strsize
+    understated = False
     if truncated:
         shortfall = "mach-o symbol table is truncated"
     elif unresolved:
         shortfall = "mach-o symbol table names strings it does not hold"
-    elif _holds_a_name_not_read(strings, patterns, read_crypto):
+    elif holds_a_name_not_read(strings, patterns, read_crypto, normalise=_strip_abi_prefix):
         shortfall = "mach-o symbol table declares fewer entries than it has names"
+        understated = True
     elif not named and symtab.nsyms:
         # Rows were declared and not one of them is a symbol this object names. The
         # table was there and we could not use it, which is not what `strip` leaves
@@ -788,56 +803,7 @@ def _read_symbols(
         # and records no error either. `_SymbolRead` tells the two apart by `named`:
         # one is a complete read, the other a stripped object.
         shortfall = None
-    return _SymbolRead(frozenset(matches), count, named, shortfall)
-
-
-def _holds_a_name_not_read(strings: bytes, patterns: BinaryPatterns, read: set[str]) -> bool:
-    """Does the string table hold a symbol-group name no entry we read resolved to?
-
-    The declaration itself can lie, and reading exactly what it declares is not the same
-    as reading every symbol the object carries: a table of five rows that says
-    `nsyms = 1` is read in full by its own account while four names go unlooked-at.
-
-    Nothing structural says how many rows there really are -- what sits between the
-    symbol table and the string table is `LC_DYSYMTAB`'s business, and assuming the two
-    are adjacent is wrong for real LINKEDIT layouts. The string table is the one place
-    every name must appear, though, so a name in it that a symbol group claims and that
-    no entry we read resolved to is a symbol this object carries and did not declare.
-
-    Two limits, both deliberate. It asks whether a *crypto* name went unread, not
-    whether any name did, so padding and ordinary unreferenced strings do not make every
-    object partial. And it forms names the way the table is laid out, from one NUL to
-    the next: `n_strx` may point at any byte, so a name that is the tail of a longer
-    string is reachable and is not formed here. `DECISIONS.md` and #39 record why closing
-    that costs more than it is worth -- every Rust or C++ symbol with a crypto name
-    mangled inside it would read as an object hiding one.
-
-    `patterns.symbol_locator` does the scanning in C and this loop only visits the runs
-    it lands in, each of them once. Walking every run in Python instead put a 2 MiB
-    string table of two-byte runs at eighteen seconds across a universal binary's
-    slices, for an object a few megabytes long.
-    """
-    locator = patterns.symbol_locator
-    if locator is None:
-        return False
-    start = 0
-    stop = strings.find(b"\x00")
-    if stop == -1:
-        stop = len(strings)
-    position = 0
-    while (hit := locator.search(strings, position)) is not None:
-        while hit.start() >= stop:
-            start = stop + 1
-            stop = strings.find(b"\x00", start)
-            if stop == -1:
-                stop = len(strings)
-        chunk = strings[start:stop]
-        name = sanitize(_strip_abi_prefix(chunk.decode("utf-8", "replace")))
-        if name and name not in read and patterns.symbol_groups_for(name):
-            return True
-        # This run has been judged; the next hit inside it would say nothing new.
-        position = stop + 1
-    return False
+    return _SymbolRead(frozenset(matches), count, named, shortfall, understated)
 
 
 def _available(start: int, wanted: int, end: int) -> int:
@@ -898,16 +864,21 @@ def _iter_symbols(
             yield "", undefined, False, debug, None
             continue
         stop = strings.find(b"\x00", n_strx)
-        raw_name = strings[n_strx:stop] if stop != -1 else strings[n_strx:]
-        name = sanitize(_strip_abi_prefix(raw_name.decode("utf-8", "replace")))
+        if stop == -1:
+            # A run the table never closes. Taking the bytes that are there would put a
+            # name in the record the object does not carry: a string table cut mid-name
+            # would report `EVP_Dig` as an imported symbol, and report it as read.
+            yield "", undefined, False, debug, None
+            continue
+        name = sanitize(_strip_abi_prefix(strings[n_strx:stop].decode("utf-8", "replace")))
         # An alias names its target through `n_value`, so that target is a string no
         # entry's own index points at. Yielded so the caller can count it as read.
         alias: bytes | None = None
         if not debug and (n_type & _N_TYPE) == _N_INDR:
             (target,) = value.unpack_from(table, base + 8)
-            if target < len(strings):
-                cut = strings.find(b"\x00", target)
-                alias = strings[target:cut] if cut != -1 else strings[target:]
+            cut = strings.find(b"\x00", target) if target < len(strings) else -1
+            if cut != -1:
+                alias = strings[target:cut]
         yield name, undefined, True, debug, alias
 
 

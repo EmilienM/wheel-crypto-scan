@@ -53,7 +53,9 @@ PARTIAL_ELF_SECTION_DATA_UNREAD = "elf_section_data_unread"
 # `.dynamic` would not resolve, so `needed`, `soname`, `rpath` and `runpath` are empty
 # because they could not be read, not because the object declares none.
 PARTIAL_ELF_DYNAMIC_UNREAD = "elf_dynamic_unread"
-# `.dynsym` would not read, so the imported-versus-defined split is missing or partial.
+# `.dynsym` would not read, named strings `.dynstr` does not hold, or declared fewer
+# entries than `.dynstr` holds names for, so the imported-versus-defined split is
+# missing or partial.
 PARTIAL_ELF_DYNSYM_UNREAD = "elf_dynsym_unread"
 # `.symtab` would not read, so `stripped` and `symbol_counts.symtab` describe a table we
 # failed on rather than one the object does not have.
@@ -92,6 +94,12 @@ PARTIAL_PE_ORDINAL_EXPORT = "pe_ordinal_export"
 # A delay-load import directory, which this reader does not parse, so the libraries it
 # names are undeclared dependencies. Records no error.
 PARTIAL_PE_DELAY_LOAD = "pe_delay_load"
+# A symbol table declared fewer entries than the string table it points into holds names
+# for, so symbols the object carries were never looked at. Not a corrupt object: every
+# structural check passes, and the count is simply not the truth. Format-independent,
+# because the lie and the check are the same in ELF and Mach-O, and the one cause a
+# consumer is most likely to want to filter an index on.
+PARTIAL_SYMTAB_UNDERSTATES_ROWS = "symtab_understates_rows"
 
 PARTIAL_REASONS: frozenset[str] = frozenset(
     {
@@ -115,6 +123,7 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_PE_ORDINAL_IMPORT,
         PARTIAL_PE_ORDINAL_EXPORT,
         PARTIAL_PE_DELAY_LOAD,
+        PARTIAL_SYMTAB_UNDERSTATES_ROWS,
     }
 )
 
