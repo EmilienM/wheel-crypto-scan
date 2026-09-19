@@ -558,12 +558,14 @@ def test_every_reason_is_claimed_by_some_rule() -> None:
 
 
 def test_a_routine_cause_still_leaves_the_dependency_name_in_the_record() -> None:
-    """Why the two ordinal causes are routine and `pe_delay_load` is not.
+    """Why the ordinal import is routine and `pe_delay_load` is not.
 
     An ordinal import loses a function name inside a DLL the record still names, so a
     crypto dependency bound that way is caught by the same rule that catches any other
     `needed` entry. A delay-load directory loses the dependency name itself, and
-    nothing downstream recovers it, so it stays with the strict rule.
+    nothing downstream recovers it, so it stays with the strict rule. The ordinal
+    export was once on this side of the line and is not: it names no dependency for
+    this argument to be about.
     """
     data = PEBuilder(
         imports=(PEImport("libcrypto-3-x64.dll", ordinals=(1,)),),
@@ -603,6 +605,60 @@ def test_an_ordinal_import_from_an_unrecognised_dll_answers_nothing() -> None:
     ).build()
     assert "BIN_OPENSSL_LINKAGE_UNKNOWN" in _findings_all(named)
     assert _findings_all(by_ordinal) == {"BIN_PARTIAL_ROUTINE"}
+
+
+def test_an_understated_export_name_count_does_not_read_clean() -> None:
+    """The shape that made an ordinal export a failure rather than a convention.
+
+    `NumberOfNames` is a count the object keeps about itself, and PE has no string
+    table to check it against. Understate it and the names stop being walked, every
+    address slot becomes one no name points at, and `unnamed` fires -- so the cause
+    is recorded. What used to happen next is the whole of the problem: the cause was
+    claimed by the verdict-less rule, so a statically linked OpenSSL came back with no
+    verdict, `openssl_linkage: none` and `needs_human_review: false`.
+
+    Three counts, one object, no OpenSSL banner in it to fall back on.
+    """
+
+    ruleset = load_ruleset()
+
+    def build(**declared):
+        return PEBuilder(
+            dll_name="_ext.pyd",
+            imports=(PEImport("python311.dll", names=("Py_Initialize",)),),
+            exports=(
+                PEExport("PyInit__ext"),
+                PEExport("EVP_DigestInit_ex"),
+                PEExport("SSL_new"),
+            ),
+            **declared,
+        ).build()
+
+    def linkage_of(data: bytes):
+        ev, _ = read_binary(io.BytesIO(data), "demo/_ext.pyd", PATTERNS, vendored=False)
+        return resolve_linkage(
+            ruleset,
+            Evidence(
+                filename="demo-1.0-win_amd64.whl",
+                sha256="0" * 64,
+                size_bytes=1,
+                artifacts=ArtifactInventory(),
+                binaries=(ev,),
+            ),
+        )
+
+    assert "BIN_STATIC_OPENSSL" in _findings_all(build())
+    # The harm was never which rule fired. It was the three fields a consumer reads.
+    rule = ruleset.rule("BIN_PARTIAL_FORMAT")
+    assert rule.verdict == "OPAQUE"
+    assert rule.needs_human_review is True
+    for declared in ({"declared_name_count": 0}, {"declared_name_count": 1}):
+        data = build(**declared)
+        found = _findings_all(data)
+        assert "BIN_PARTIAL_FORMAT" in found, declared
+        assert "BIN_PARTIAL_ROUTINE" not in found, declared
+        assert "BIN_OPENSSL_LINKAGE_UNKNOWN" in found, declared
+        assert linkage_of(data)["openssl"] == "unknown", declared
 
 
 def test_a_delay_load_directory_is_not_treated_as_routine() -> None:
@@ -645,6 +701,25 @@ def test_the_documented_linkage_exemptions_are_the_ones_the_ruleset_claims() -> 
     for token in sorted(evidence.PARTIAL_REASONS):
         row = next(ln for ln in documented if ln.startswith(f"| `{token}` |"))
         assert ("Does not cost the linkage answer" in row) is (token in excluded), token
+
+
+def test_exactly_one_cause_is_recorded_without_a_verdict() -> None:
+    """`AGENTS.md` and `README.md` both state this count in prose and no test read it.
+
+    A second routine cause could be added, `SCHEMA.md` updated, the linkage exact-set
+    literal updated, and the whole suite stays green while the two files an agent reads
+    first say "one cause" and "one carve-out". The linkage exemptions already have a pin
+    of this shape in `tests/test_linkage.py`; this is the one the verdict side was
+    missing.
+
+    Changing this number means changing an invariant, so it should take editing a test
+    that says where the prose lives.
+    """
+    routine = routine_reasons(load_ruleset().rules)
+    assert routine == frozenset({evidence.PARTIAL_PE_ORDINAL_IMPORT}), (
+        "the carve-out list changed; AGENTS.md's invariant and README.md's "
+        "'One carve-out' paragraph both state its membership in prose"
+    )
 
 
 def test_the_two_splits_over_one_vocabulary_are_not_the_same_list() -> None:

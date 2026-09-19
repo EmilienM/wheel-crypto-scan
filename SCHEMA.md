@@ -35,7 +35,7 @@ timestamps, hostnames or user names appear in any field.
 | `binaries` | array | Per-object native evidence. |
 | `findings` | array | Rules that matched. |
 | `verdict` | object | The classification. |
-| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes are routine rather than failures, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording an error. A cause that carries no verdict is marked in the reason table below; every other cause still makes the wheel `OPAQUE`. |
+| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes record no error, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording one. Recording no error is not the same as carrying no verdict: only the latter is marked in the reason table below, and every other cause still makes the wheel `OPAQUE`. |
 
 ## `tool`
 
@@ -94,7 +94,7 @@ architectures disagree; `machine`, `bits` and `endian` describe the first slice 
 | `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. ELF reads the declared count; Mach-O reads what the table yielded, so a `nsyms` of zero over rows the object does carry is a table we could not use and sets `partial_analysis` instead of this. Never set for PE, whose own symbol table is debug information every linker drops, so there is no absence that could mean this; `symbol_counts.symtab == 0` is how a PE says it named nothing. Normal for release wheels; recorded, not a finding. |
 | `truncated` | `{symbols, strings}` — evidence was capped. |
 | `partial_analysis` | Part of the object was not read. **This is the field to filter on.** |
-| `partial_reasons` | Sorted, deduplicated tokens saying *which* causes applied, empty exactly when `partial_analysis` is false. Several are routine rather than failures and record no entry in `errors`. New values may appear without a `schema_version` bump. |
+| `partial_reasons` | Sorted, deduplicated tokens saying *which* causes applied, empty exactly when `partial_analysis` is false. Five record no entry in `errors`; exactly one of those is also routine rather than a failure and carries no verdict, which is a different thing and is marked in the table below. New values may appear without a `schema_version` bump. |
 
 A PE with genuinely no imports — a resource-only or satellite DLL — therefore always
 reads as `partial_analysis: true`, because naming at least one dependency is part of
@@ -124,7 +124,7 @@ Each reason:
 | `pe_import_incomplete` | An import directory that was there and could not be walked in full. |
 | `pe_export_incomplete` | An export directory that was there and could not be read in full. |
 | `pe_ordinal_import` | An import named by ordinal alone, so its function has no name to match; routine on Windows, and records no error. Reported by `BIN_PARTIAL_ROUTINE` with no verdict, because the DLL it names survives in `needed`. Does not cost the linkage answer. |
-| `pe_ordinal_export` | An export the name table never points at: a definition with no name; records no error. Reported by `BIN_PARTIAL_ROUTINE` with no verdict, because what is lost is one name rather than the object's dependencies. Does not cost the linkage answer, which follows from the absent verdict rather than from an argument of its own; `DECISIONS.md` records what that costs. |
+| `pe_ordinal_export` | An export the name table never points at: a definition with no name; records no error. What is lost is a definition, and a definition is how a statically linked copy is recognised, so this is a failure to read rather than a convention: `BIN_PARTIAL_FORMAT` claims it and the wheel is `OPAQUE`. An understated `NumberOfNames` surfaces here, PE having no string table to check the count against. |
 | `pe_delay_load` | A delay-load import directory, which this reader does not parse, so the libraries it names are undeclared dependencies; records no error. |
 | `symtab_understates_rows` | A symbol table declared fewer entries than the string table it points into holds names for, so symbols the object carries were never looked at. The object is not corrupt: every structural check passes and the count is simply not the truth. Emitted by the ELF and Mach-O readers alike, beside that format's own cause, because the lie and the check are the same in both. |
 

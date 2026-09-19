@@ -91,7 +91,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "7"
+    assert ruleset.version == "8"
     assert len(ruleset.rules) > 20
 
 
@@ -218,13 +218,15 @@ def test_a_verdict_less_complement_rule_claims_every_cause_it_does_not_exclude()
 
 
 def test_every_always_report_library_can_be_recognised_without_its_symbols() -> None:
-    """The premise under `pe_ordinal_export`'s exemption, held by a test rather than luck.
+    """A library reported whatever the evidence needs a way to be seen without symbols.
 
-    An export bound by ordinal costs a definition, and a definition is how `static` is
-    recognised. What is left is the string group, so a library reported whatever the
-    evidence needs one -- otherwise the exemption silently stops having a backstop the
-    day a second library gets `always_report`. It is a weaker premise than it sounds:
-    an object can carry the static copy and no banner. `DECISIONS.md` says so.
+    `static` is read off a defined symbol or a string, and the symbol half is the one
+    that goes missing: stripped, understated, bound by ordinal, past a cap. A library
+    with `always_report` set is one whose posture is in every record, so `none` for it
+    is an assertion the tool makes about every wheel, and it should not rest on the
+    fragile half alone. It is a weaker premise than it sounds -- an object can carry
+    the static copy and no banner -- which is why the ordinal export that used to lean
+    on it no longer does.
     """
     libraries = load_ruleset().libraries.values()
     reported = [library for library in libraries if library.always_report]

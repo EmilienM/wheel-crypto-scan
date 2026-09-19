@@ -388,18 +388,21 @@ def test_a_cause_the_policy_does_not_name_costs_the_answer(ruleset) -> None:
 
     Written against the whole vocabulary rather than one token, so a cause added to
     `PARTIAL_REASONS` and forgotten here is still covered. The excluded ones are
-    asserted to be exactly the five the ruleset names, so widening that list has to
+    asserted to be exactly the four the ruleset names, so widening that list has to
     be done on purpose.
     """
     excluded = ruleset.linkage_policy.exclude_reasons
     assert excluded == frozenset(
         {
             PARTIAL_PE_ORDINAL_IMPORT,
-            PARTIAL_PE_ORDINAL_EXPORT,
             PARTIAL_ELF_SYMTAB_UNREAD,
             PARTIAL_ELF_GO_BUILDINFO_UNREAD,
             PARTIAL_PE_NO_IMPORT_DIRECTORY,
         }
+    )
+    assert PARTIAL_PE_ORDINAL_EXPORT not in excluded, (
+        "an export with no name is a definition we could not read, and a definition is "
+        "how `static` is recognised"
     )
     for reason in sorted(PARTIAL_REASONS):
         evidence = wheel(

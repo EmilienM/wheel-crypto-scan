@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "7"
+ruleset_version = "8"
 
 
 # ---------------------------------------------------------------------------
@@ -162,15 +162,6 @@ exclude_reasons = [
     # exists to remove and WS2_32 is bound this way on every socket-using extension.
     # A test pins the shape that is given up.
     "pe_ordinal_import",
-    # The weakest entry here, and it is on the list because the ruleset records it
-    # without a verdict rather than because the argument for it is strong. An export
-    # with no name is a definition we could not match, and a definition is how
-    # `static` is recognised; the banner in `matched_strings` is a backstop only when
-    # the object carries one, and `strings_truncated` can cut it without setting
-    # `partial_analysis` at all. DECISIONS.md has the measurement and the issues. The
-    # load time check above is what makes re-rating it a single coherent change rather
-    # than two that can be made apart.
-    "pe_ordinal_export",
     # `.symtab` drives `stripped` and `symbol_counts.symtab` and nothing else. The
     # imported-versus-defined split linkage turns on comes from `.dynsym` alone, which
     # has a cause of its own and is not on this list.
@@ -1568,10 +1559,10 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "Binary format only partially readable"
-why = "Part of this object was not read, so some dependency or symbol evidence is missing for it, and the object's partial_reasons names which causes applied. Recorded so a wheel can never look clean merely because we read less of it. The two ordinal causes are handled by BIN_PARTIAL_ROUTINE instead; everything else lands here, including any cause added later."
+why = "Part of this object was not read, so some dependency or symbol evidence is missing for it, and the object's partial_reasons names which causes applied. Recorded so a wheel can never look clean merely because we read less of it. Only an ordinal import is handled by BIN_PARTIAL_ROUTINE instead; everything else lands here, including an ordinal export and any cause added later."
 [rule.match]
 kind = "partial_binary"
-exclude_reasons = ["pe_ordinal_import", "pe_ordinal_export"]
+exclude_reasons = ["pe_ordinal_import"]
 
 [[rule]]
 id = "BIN_PARTIAL_ROUTINE"
@@ -1581,10 +1572,10 @@ severity = "info"
 confidence = "high"
 needs_human_review = false
 title = "Binary declares something this tool cannot name, by design"
-why = "This object was not read in full, but the cause is a convention rather than a failure: an import or an export bound by ordinal has no name to match. WS2_32 is normally bound by ordinal, so this is the ordinary shape of a Windows extension that touches sockets, and treating it as opacity put every such wheel on the OPAQUE triage list. What is lost is a function name inside a DLL the record still names, so a crypto dependency bound this way is still caught by its DT_NEEDED equivalent. Recorded without a verdict: the evidence really is incomplete, so the record says so, but it is not on its own a reason for a human to look."
+why = "This object was not read in full, but the cause is a convention rather than a failure: an import bound by ordinal has no function name to match. WS2_32 is normally bound by ordinal, so this is the ordinary shape of a Windows extension that touches sockets, and treating it as opacity put every such wheel on the OPAQUE triage list. What is lost is a function name inside a DLL the record still names, so a crypto dependency bound this way is still caught by its DT_NEEDED equivalent. Recorded without a verdict: the evidence really is incomplete, so the record says so, but it is not on its own a reason for a human to look. An ordinal export is not this: it names a definition rather than a dependency, so BIN_PARTIAL_FORMAT claims it."
 [rule.match]
 kind = "partial_binary"
-reasons = ["pe_ordinal_import", "pe_ordinal_export"]
+reasons = ["pe_ordinal_import"]
 
 [[rule]]
 id = "BIN_UNPARSEABLE"
