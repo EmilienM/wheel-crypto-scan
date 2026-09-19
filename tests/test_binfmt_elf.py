@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import os
+import struct
 
 import pytest
 
@@ -19,15 +20,26 @@ from helpers.binfmt import (
     E_SHNUM_OFFSET,
     EM_S390,
     EM_X86_64,
+    SHT_DYNAMIC,
+    SHT_DYNSYM,
+    SHT_PROGBITS,
+    SHT_SYMTAB,
     DynSym,
     ElfBuilder,
+    append_duplicate_dynsym_section,
+    append_strtab_decoy,
+    insert_bogus_section_before,
+    patch_header_field,
     patch_section_header,
     patch_u16,
 )
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt.elf import read_elf
+from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
+from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
 
 PATTERNS = load_ruleset().compile_patterns().binary
 
@@ -256,6 +268,17 @@ def test_corrupt_section_table_does_not_raise() -> None:
 
 
 def test_dynamic_section_with_unresolvable_string_table_does_not_raise() -> None:
+    """`.dynamic` failing to read costs `.dynsym`'s symbols too, and that is correct.
+
+    `.dynsym`'s own `sh_link` is only trusted when it corroborates `.dynamic`'s own
+    `DT_STRTAB` tag (#56 round 4): a decoy `SHT_STRTAB` section is otherwise
+    indistinguishable from the real `.dynstr`. When `.dynamic` itself could not be
+    read at all, there is no `DT_STRTAB` to corroborate against, so `.dynsym`'s
+    string table is untrusted too -- fail closed, not "structurally unrelated, so
+    unaffected". This was a deliberate behaviour change, not a regression: the
+    alternative is exactly the hole that let a decoy string table erase real crypto
+    symbols with nothing in the record to say so.
+    """
     data = ElfBuilder(
         needed=("libcrypto.so.3",),
         dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),),
@@ -266,10 +289,14 @@ def test_dynamic_section_with_unresolvable_string_table_does_not_raise() -> None
     # The dynamic tags could not be resolved, so needed/soname fall back to empty...
     assert ev.needed == ()
     assert ev.soname is None
-    # ...but .dynsym and .rodata, which do not depend on .dynamic, still come through.
-    assert ev.matched_symbols == (
-        evidence.SymbolMatch(name="EVP_DigestInit_ex", group="openssl", binding="imported"),
-    )
+    # ...and .dynsym's names are now also untrusted, with nothing to corroborate its
+    # string table against; the record says so rather than reading them as absent.
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is True
+    assert set(ev.partial_reasons) == {
+        evidence.PARTIAL_ELF_SECTIONS_UNREAD,
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    }
     assert ev.matched_strings == ()  # no banner was given to this fixture
     assert any(err.kind == ELF_PARSE_ERROR for err in errors)
 
@@ -430,7 +457,10 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
         expected = [
             (s.name, s["st_shndx"] == "SHN_UNDEF") for s in section.iter_symbols() if s.name
         ]
-        read = _iter_symbols(elf, *_symbol_bytes(elf, section))
+        # `ElfBuilder` always writes DT_STRTAB and every section's sh_addr as 0, so 0
+        # is the value that corroborates `.dynstr` here -- this test is about the fast
+        # reader agreeing with pyelftools, not about the sh_link/DT_STRTAB check.
+        read = _iter_symbols(elf, *_symbol_bytes(elf, section, 0))
         actual = [(name, undefined) for name, undefined, resolved in read if resolved and name]
         assert actual == expected, f"mismatch for elfclass={elfclass} big_endian={big_endian}"
 
@@ -655,10 +685,16 @@ def test_an_unresolvable_dynamic_section_no_longer_reads_as_a_complete_read() ->
         dynamic_strtab_broken=True,
     ).build()
     ev, errors = _read(data)
-    assert [e.kind for e in errors] == [ELF_PARSE_ERROR]
+    assert [e.kind for e in errors] == [ELF_PARSE_ERROR, ELF_PARSE_ERROR]
     assert ev.needed == ()
     assert ev.partial_analysis is True
-    assert list(ev.partial_reasons) == ["elf_sections_unread"]
+    # `elf_dynsym_unread` joins `elf_sections_unread` now: `.dynsym`'s own string table
+    # has nothing to corroborate against once `.dynamic` could not be read, so it is
+    # untrusted too rather than read through regardless (#56 round 4).
+    assert set(ev.partial_reasons) == {
+        evidence.PARTIAL_ELF_SECTIONS_UNREAD,
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    }
 
 
 def test_a_readable_object_is_still_not_partial() -> None:
@@ -806,3 +842,417 @@ def test_a_leading_underscore_is_a_name_here_not_an_abi_prefix() -> None:
     assert errors == ()
     assert ev.partial_analysis is False
     assert ev.matched_symbols == ()
+
+
+# --- sections are found by type, not by a name nobody checks (#56) -----------
+#
+# The dynamic linker never reads section names or the section header table at all --
+# it walks `PT_DYNAMIC` and the tags it points at -- so a name-based lookup trusted a
+# label the loader itself never checks. Renaming `.dynsym` (or `.dynamic`, or
+# `.symtab`) in `.shstrtab` produced a loadable object a name-based reader treated as
+# carrying none of them: no error, `partial_analysis: false`, every symbol and
+# dependency gone from the record.
+
+
+def test_a_renamed_dynsym_is_still_found_by_type() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    renamed = honest.replace(b".dynsym\x00", b".dynsyx\x00")
+    ev, errors = _read(renamed)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.needed == ("libc.so.6",)
+    assert {m.name for m in ev.matched_symbols} == {"EVP_DigestInit_ex", "SSL_new"}
+    assert all(m.binding == evidence.BINDING_IMPORTED for m in ev.matched_symbols)
+
+
+def test_renaming_dynamic_too_still_populates_needed() -> None:
+    """`.dynamic` is found by `sh_type` the same way, so both renames close together."""
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    renamed = honest.replace(b".dynsym\x00", b".dynsyx\x00").replace(
+        b".dynamic\x00", b".dynamix\x00"
+    )
+    ev, errors = _read(renamed)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.needed == ("libc.so.6",)
+    assert {m.name for m in ev.matched_symbols} == {"EVP_DigestInit_ex", "SSL_new"}
+
+
+def test_a_renamed_symtab_still_reports_stripped_status() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN, with_symtab=True).build()
+    renamed = honest.replace(b".symtab\x00", b".symtax\x00")
+    ev, errors = _read(renamed)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.stripped is False
+    assert ev.symtab_count == len(_HIDDEN) + 1  # the mandatory null entry, plus three
+
+
+def test_multiple_dynsym_sections_after_the_real_one_are_ambiguous_not_clean() -> None:
+    """More than one `SHT_DYNSYM` section is unusual but not forbidden.
+
+    Picking "the first in section order" would be exactly the shape #56 exists to
+    close, one level down: a decoy could be crafted to sort first and hide the real
+    section. Instead neither is trusted, and the object reads as ambiguous rather than
+    as one carrying no symbols at all.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    ev, errors = _read(append_duplicate_dynsym_section(honest))
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS]
+    assert ev.dynsym_count == 0
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_a_decoy_dynsym_section_spliced_in_before_the_real_one_no_longer_reads_clean() -> None:
+    """The shape a "first match wins" rule would get wrong: a decoy earlier in the
+    section list than the real `.dynsym`, so a naive type-based lookup would pick the
+    decoy and read the object as carrying nothing -- exactly the "renamed and now
+    reads clean" failure #56 exists to close, reintroduced one level down. Ambiguity
+    detection has to be order-independent to close it.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    spliced = insert_bogus_section_before(honest, ".dynsym", SHT_DYNSYM)
+    ev, errors = _read(spliced)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS]
+    assert ev.dynsym_count == 0
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_an_ambiguous_dynamic_section_costs_needed_too() -> None:
+    """The same ambiguity handling applies to `.dynamic`, not just `.dynsym`.
+
+    It also costs `.dynsym`'s symbols: an ambiguous `.dynamic` means no `DT_STRTAB` to
+    corroborate `.dynsym`'s own `sh_link` against (#56 round 4), so that string table
+    is untrusted too rather than read through regardless.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    spliced = insert_bogus_section_before(honest, ".dynamic", SHT_DYNAMIC)
+    ev, errors = _read(spliced)
+    assert ev.partial_analysis is True
+    assert set(ev.partial_reasons) == {
+        evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS,
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    }
+    assert ev.needed == ()
+    assert ev.soname is None
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_an_ambiguous_symtab_section_costs_stripped_too() -> None:
+    """The same ambiguity handling applies to `.symtab`, not just `.dynsym`."""
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN, with_symtab=True).build()
+    spliced = insert_bogus_section_before(honest, ".symtab", SHT_SYMTAB)
+    ev, errors = _read(spliced)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS]
+    assert ev.symtab_count == 0
+    assert ev.stripped is True
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_a_forged_dynsym_type_with_the_name_left_intact_does_not_read_as_absent() -> None:
+    """A section still called `.dynsym`, whose `sh_type` was changed away from
+    `SHT_DYNSYM` alone, is a section that exists and cannot be trusted, not a section
+    that is genuinely absent. A type-based lookup that finds nothing here has to check
+    whether a name-based match with a mismatched type exists before reading the object
+    as carrying no dynamic symbol table at all.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    forged = patch_section_header(honest, ".dynsym", "sh_type", SHT_PROGBITS)
+    ev, errors = _read(forged)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
+    assert ev.dynsym_count == 0
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+    assert any("SHT_DYNSYM" in e.message for e in errors)
+
+
+def test_a_forged_dynamic_type_with_the_name_left_intact_does_not_read_as_absent() -> None:
+    """Also costs `.dynsym`: no readable `.dynamic` means no `DT_STRTAB` to
+    corroborate `.dynsym`'s `sh_link` against either (#56 round 4)."""
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    forged = patch_section_header(honest, ".dynamic", "sh_type", SHT_PROGBITS)
+    ev, errors = _read(forged)
+    assert ev.partial_analysis is True
+    assert set(ev.partial_reasons) == {
+        evidence.PARTIAL_ELF_DYNAMIC_UNREAD,
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    }
+    assert ev.needed == ()
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_a_forged_symtab_type_with_the_name_left_intact_does_not_read_as_absent() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN, with_symtab=True).build()
+    forged = patch_section_header(honest, ".symtab", "sh_type", SHT_PROGBITS)
+    ev, errors = _read(forged)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SYMTAB_UNREAD]
+    assert ev.symtab_count == 0
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+# --- a decoy of the target type must not disable the name/type-mismatch check ------
+#
+# The mismatch check used to run only when the type-based lookup found nothing
+# (`dynsym is None and _type_mismatch(...)`). One harmless decoy `SHT_DYNSYM` section
+# is enough to satisfy the type-based lookup on its own -- unambiguously, since there
+# is exactly one candidate of that type -- so `dynsym is None` was False and the
+# mismatch check was never even consulted. The REAL section, still correctly named but
+# with its own `sh_type` forged away, then went completely unseen: not found by type
+# (wrong type) and not checked by name (the gate never fired). The check now runs
+# unconditionally, regardless of what the type-based lookup found elsewhere.
+
+
+def test_a_decoy_dynsym_does_not_disable_the_check_on_the_real_forged_one() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    with_decoy = append_duplicate_dynsym_section(honest)
+    decoy_and_forged = patch_section_header(with_decoy, ".dynsym", "sh_type", SHT_PROGBITS)
+    ev, errors = _read(decoy_and_forged)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+    # `.dynamic` was untouched by this attack, so `needed` still reads correctly --
+    # only `.dynsym`'s evidence is what this shape costs.
+    assert ev.needed == ("libc.so.6",)
+
+
+def test_a_decoy_dynamic_does_not_disable_the_check_on_the_real_forged_one() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    with_decoy = insert_bogus_section_before(honest, ".dynamic", SHT_DYNAMIC)
+    decoy_and_forged = patch_section_header(with_decoy, ".dynamic", "sh_type", SHT_PROGBITS)
+    ev, errors = _read(decoy_and_forged)
+    assert ev.partial_analysis is True
+    assert set(ev.partial_reasons) == {
+        evidence.PARTIAL_ELF_DYNAMIC_UNREAD,
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    }
+    assert ev.needed == ()
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_a_decoy_symtab_does_not_disable_the_check_on_the_real_forged_one() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN, with_symtab=True).build()
+    with_decoy = insert_bogus_section_before(honest, ".symtab", SHT_SYMTAB)
+    decoy_and_forged = patch_section_header(with_decoy, ".symtab", "sh_type", SHT_PROGBITS)
+    ev, errors = _read(decoy_and_forged)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SYMTAB_UNREAD]
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+# --- a same-named decoy must not disable the name/type-mismatch check either -------
+#
+# `_type_mismatch` finds "the section named X" the same way `_find_section` always
+# has: the first match in section order. A decoy that reuses the real section's own
+# *name* rather than its type sorts first, is read as correctly typed (it is -- that
+# is the whole trick), and reports no mismatch, leaving a same-named real section
+# sitting behind it -- still carrying its own forged `sh_type` -- completely unseen:
+# not found by type (wrong type) and not caught by the mismatch check (a differently
+# ambiguous, but equally untrustworthy, name match). Ambiguous by name is now treated
+# the same as ambiguous by type: neither is trusted.
+
+
+def test_a_same_named_decoy_dynsym_does_not_disable_the_check_either() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    with_decoy = insert_bogus_section_before(honest, ".dynsym", SHT_DYNSYM, same_name=True)
+    decoy_and_forged = patch_section_header(
+        with_decoy, ".dynsym", "sh_type", SHT_PROGBITS, occurrence=2
+    )
+    ev, errors = _read(decoy_and_forged)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+    assert ev.needed == ("libc.so.6",)
+
+
+def test_a_same_named_decoy_dynamic_does_not_disable_the_check_either() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    with_decoy = insert_bogus_section_before(honest, ".dynamic", SHT_DYNAMIC, same_name=True)
+    decoy_and_forged = patch_section_header(
+        with_decoy, ".dynamic", "sh_type", SHT_PROGBITS, occurrence=2
+    )
+    ev, errors = _read(decoy_and_forged)
+    assert ev.partial_analysis is True
+    assert set(ev.partial_reasons) == {
+        evidence.PARTIAL_ELF_DYNAMIC_UNREAD,
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    }
+    assert ev.needed == ()
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_a_same_named_decoy_symtab_does_not_disable_the_check_either() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN, with_symtab=True).build()
+    with_decoy = insert_bogus_section_before(honest, ".symtab", SHT_SYMTAB, same_name=True)
+    decoy_and_forged = patch_section_header(
+        with_decoy, ".symtab", "sh_type", SHT_PROGBITS, occurrence=2
+    )
+    ev, errors = _read(decoy_and_forged)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SYMTAB_UNREAD]
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_extended_section_numbering_is_not_mistaken_for_sectionless() -> None:
+    """`e_shnum == 0` with a real `e_shoff` is the legal extended-numbering encoding --
+    the true count lives in the first section's `sh_size` -- not `e_shoff == 0`, which
+    is what actually means "no section header table". Confusing the two would treat a
+    normal, if unusually large, object as though it had none at all.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    (real_shnum,) = struct.unpack_from("<H", honest, E_SHNUM_OFFSET[64])
+    extended = patch_section_header(honest, "", "sh_size", real_shnum)
+    extended = patch_header_field(extended, "e_shnum", 0)
+    ev, errors = _read(extended)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.needed == ("libc.so.6",)
+    assert {m.name for m in ev.matched_symbols} == {"EVP_DigestInit_ex", "SSL_new"}
+
+
+def test_a_malformed_section_found_by_type_still_degrades_normally() -> None:
+    """A type-based lookup changes how a section is found, not what a corrupt one does.
+
+    Renamed first, so the section is reachable only through `sh_type`, then its
+    `sh_offset` is pushed past the object: a `BytesIO` seek out there does not raise,
+    it just returns nothing to read, so this reaches the *existing* cross-check
+    degrade path (`.dynstr` still holds names nothing read resolved to) rather than a
+    raw exception -- the same shape `test_a_dynsym_size_that_stops_short_of_the_rows_
+    is_not_a_clean_read` already covers for a lying `sh_size`. The point here is only
+    that a type-based lookup does not change it.
+    """
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    renamed = honest.replace(b".dynsym\x00", b".dynsyx\x00")
+    corrupt = patch_section_header(renamed, ".dynsyx", "sh_offset", 1 << 30)
+    ev, errors = _read(corrupt)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+        evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS,
+    ]
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+def test_a_section_header_table_entirely_absent_falls_back_to_whole_file_strings() -> None:
+    """`e_shoff == 0`: no section header table at all, which a loadable object may have.
+
+    `.dynamic`, `.dynsym` and `.symtab` cannot be found by type or by name when there
+    is no section list to search, so every field derived from one is genuinely empty
+    rather than merely unread -- but the strings pass still runs, over the whole file,
+    the same fallback a header that would not parse already gets. Worse than that
+    fallback used to be silent: no error, no `partial_analysis`, and the string pass
+    itself found nothing because it had no section list to filter to either.
+    """
+    built = ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024").build()
+    sectionless = patch_header_field(patch_header_field(built, "e_shnum", 0), "e_shoff", 0)
+    ev, errors = _read(sectionless)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SECTION_TABLE_ABSENT]
+    assert len(errors) == 1
+    assert errors[0].kind == ELF_PARSE_ERROR
+    assert ev.needed == ()
+    assert ev.matched_symbols == ()
+    assert ev.matched_strings == (
+        evidence.StringMatch(group="openssl_banner", value="OpenSSL 3.0.14 4 Jun 2024"),
+    )
+
+
+def test_a_renamed_dynsym_no_longer_reads_completely_clean() -> None:
+    """The reproduction end to end: on `main` this used to classify as clean.
+
+    `needed` and `matched_symbols` come back right on their own (proved above); this
+    pins that the verdict downstream of them changes too, since a rule keys on the
+    symbol group, not merely on the field being non-empty.
+    """
+    ruleset = load_ruleset()
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    renamed = honest.replace(b".dynsym\x00", b".dynsyx\x00")
+    binary_ev, _ = _read(renamed, path="pkg/_ext.so")
+    wheel_evidence = evidence.Evidence(
+        filename="demo-1.0-linux_x86_64.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=evidence.ArtifactInventory(),
+        binaries=(binary_ev,),
+    )
+    linkage = resolve_linkage(ruleset, wheel_evidence)
+    findings = apply_rules(ruleset, wheel_evidence, linkage)
+    verdict = classify(ruleset, findings, linkage)
+    assert verdict.headline != NO_CRYPTO_DETECTED
+
+
+# --- sh_link is only trusted when it corroborates .dynamic's own DT_STRTAB (#56 rd 4)
+#
+# The dynamic linker resolves `.dynamic` and `.dynsym`'s names through `DT_STRTAB`
+# from `PT_DYNAMIC`, never through any section's `sh_link`. A decoy `SHT_STRTAB`
+# section -- correctly typed, so pyelftools accepts it without complaint -- planted
+# purely to be read through `sh_link` used to be trusted outright: an all-NUL decoy
+# resolves every symbol name to `""`, which is not flagged unresolved, so a real
+# `libcrypto.so.3` read completely clean instead of carrying its 64 crypto symbols.
+# `.dynamic`'s own `sh_link` has the same hole and is worse: it can fabricate a
+# `DT_NEEDED` entry the object never declared, not merely erase one.
+
+
+def test_a_decoy_string_table_erases_dynsym_symbols_without_corroboration() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    with_decoy, decoy_index = append_strtab_decoy(honest, b"\x00" * 64)
+    repointed = patch_section_header(with_decoy, ".dynsym", "sh_link", decoy_index)
+    ev, errors = _read(repointed)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_ELF_DYNSYM_UNREAD in ev.partial_reasons
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+    # `.dynamic`'s own sh_link is untouched, so `needed` still reads correctly: only
+    # `.dynsym`'s evidence is what this shape costs.
+    assert ev.needed == ("libc.so.6",)
+
+
+def test_a_decoy_string_table_erases_dynamic_tags_without_corroboration() -> None:
+    honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
+    with_decoy, decoy_index = append_strtab_decoy(honest, b"\x00" * 64)
+    repointed = patch_section_header(with_decoy, ".dynamic", "sh_link", decoy_index)
+    ev, errors = _read(repointed)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_ELF_DYNAMIC_UNREAD in ev.partial_reasons
+    assert ev.needed == ()
+    assert ev.soname is None
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+    # `.dynsym`'s own sh_link is untouched and DT_STRTAB's `d_ptr` (read directly off
+    # the tag, not through .dynamic's sh_link) still names the real .dynstr, so the
+    # symbol split is unaffected by this attack on .dynamic alone.
+    assert {m.name for m in ev.matched_symbols} == {"EVP_DigestInit_ex", "SSL_new"}
+
+
+def test_a_decoy_string_table_cannot_fabricate_a_needed_dependency() -> None:
+    """`.dynamic`'s sh_link hole is worse than `.dynsym`'s: it can invent evidence.
+
+    `libz.so.1` is the real dependency; its `DT_NEEDED` tag's string-table offset is
+    fixed by the builder. The decoy spells `libc.so.6` -- a name the object never
+    declares -- at that exact offset, so a reader that trusted the decoy would report
+    a dependency that does not exist. `.dynamic`'s reads must fail closed instead.
+    """
+    real_needed = "libz.so.1"
+    fabricated = "libc.so.6"
+    assert len(real_needed) == len(fabricated)  # same offset lines up in the decoy
+    honest = ElfBuilder(needed=(real_needed,), dynsyms=_HIDDEN).build()
+    decoy_dynstr = b"\x00" + fabricated.encode("ascii") + b"\x00"
+    with_decoy, decoy_index = append_strtab_decoy(honest, decoy_dynstr)
+    repointed = patch_section_header(with_decoy, ".dynamic", "sh_link", decoy_index)
+    ev, errors = _read(repointed)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_ELF_DYNAMIC_UNREAD in ev.partial_reasons
+    assert fabricated not in ev.needed
+    assert ev.needed == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errors)

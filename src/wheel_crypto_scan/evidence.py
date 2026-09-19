@@ -43,6 +43,26 @@ PARTIAL_NO_STRUCTURAL_READER = "no_structural_reader"
 PARTIAL_ELF_HEADER_UNREAD = "elf_header_unread"
 # The ELF header parsed; the section header table it points at does not fit the object.
 PARTIAL_ELF_SECTION_TABLE_TRUNCATED = "elf_section_table_truncated"
+# The ELF header parsed and there is no section header table at all to read, which is a
+# loadable object's own right: the dynamic linker never reads section headers, only
+# `PT_DYNAMIC` and the tags it points at. This is `e_shoff == 0`, never `e_shnum == 0`
+# on its own: the latter is the legal extended-numbering encoding, where the real count
+# sits in the first section's `sh_size`, and an object using it has a section header
+# table like any other. `.dynamic`, `.dynsym` and `.symtab` cannot even be looked for,
+# not merely read short, so `needed`, `soname`, `rpath`, `runpath`, the symbol split and
+# `stripped` are all unavailable rather than empty. The whole file is scanned for
+# strings instead of the allocated sections this reader otherwise filters to, the same
+# fallback a header that would not parse gets.
+PARTIAL_ELF_SECTION_TABLE_ABSENT = "elf_section_table_absent"
+# More than one section shares the type this reader looked for (`SHT_DYNAMIC`,
+# `SHT_DYNSYM` or `SHT_SYMTAB`), so which one is the real `.dynamic`, `.dynsym` or
+# `.symtab` cannot be told from the type alone. None of the candidates is trusted:
+# picking the first in section order, the way a name-based lookup already did for two
+# sections sharing a name, would let a decoy inserted ahead of the real section hide it
+# again, the exact failure this reader exists to close. `needed`, `soname`, `rpath`,
+# `runpath`, the symbol split and `stripped` read as though nothing of that type
+# existed, not as whatever the first candidate happened to say.
+PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS = "elf_section_type_ambiguous"
 # A section header could not be read. A section we cannot name is a section we cannot
 # use, so anything derived from the section list may be missing rather than absent:
 # `needed`, `soname`, `rpath`, `runpath`, the symbol counts and the strings alike.
@@ -51,15 +71,20 @@ PARTIAL_ELF_SECTIONS_UNREAD = "elf_sections_unread"
 # object holds. On its own this used to be silent, which made a wheel whose only
 # evidence was a `.rodata` banner able to come back with no findings at all.
 PARTIAL_ELF_SECTION_DATA_UNREAD = "elf_section_data_unread"
-# `.dynamic` would not resolve, so `needed`, `soname`, `rpath` and `runpath` are empty
-# because they could not be read, not because the object declares none.
+# `.dynamic` would not resolve, or a section named `.dynamic` exists whose declared
+# `sh_type` is not `SHT_DYNAMIC` and so cannot be trusted as one, so `needed`, `soname`,
+# `rpath` and `runpath` are empty because they could not be read, not because the
+# object declares none.
 PARTIAL_ELF_DYNAMIC_UNREAD = "elf_dynamic_unread"
-# `.dynsym` would not read, named strings `.dynstr` does not hold, or declared fewer
-# entries than `.dynstr` holds names for, so the imported-versus-defined split is
-# missing or partial.
+# `.dynsym` would not read, named strings `.dynstr` does not hold, declared fewer
+# entries than `.dynstr` holds names for, or a section named `.dynsym` exists whose
+# declared `sh_type` is not `SHT_DYNSYM` and so cannot be trusted as one, so the
+# imported-versus-defined split is missing or partial.
 PARTIAL_ELF_DYNSYM_UNREAD = "elf_dynsym_unread"
-# `.symtab` would not read, so `stripped` and `symbol_counts.symtab` describe a table we
-# failed on rather than one the object does not have.
+# `.symtab` would not read, or a section named `.symtab` exists whose declared
+# `sh_type` is not `SHT_SYMTAB` and so cannot be trusted as one, so `stripped` and
+# `symbol_counts.symtab` describe a table we failed on rather than one the object does
+# not have.
 PARTIAL_ELF_SYMTAB_UNREAD = "elf_symtab_unread"
 # `.go.buildinfo` would not read, so Go toolchain provenance is missing.
 PARTIAL_ELF_GO_BUILDINFO_UNREAD = "elf_go_buildinfo_unread"
@@ -120,11 +145,13 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_NO_STRUCTURAL_READER,
         PARTIAL_ELF_HEADER_UNREAD,
         PARTIAL_ELF_SECTION_TABLE_TRUNCATED,
+        PARTIAL_ELF_SECTION_TABLE_ABSENT,
         PARTIAL_ELF_SECTIONS_UNREAD,
         PARTIAL_ELF_SECTION_DATA_UNREAD,
         PARTIAL_ELF_DYNAMIC_UNREAD,
         PARTIAL_ELF_DYNSYM_UNREAD,
         PARTIAL_ELF_SYMTAB_UNREAD,
+        PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS,
         PARTIAL_ELF_GO_BUILDINFO_UNREAD,
         PARTIAL_MACHO_HEADER_UNREAD,
         PARTIAL_MACHO_SYMTAB_INCOMPLETE,

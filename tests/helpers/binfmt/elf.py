@@ -430,35 +430,51 @@ def patch_u16(data: bytes, offset: int, value: int, *, big_endian: bool = False)
 
 # Section header fields a test can rewrite after the fact, by byte offset within the
 # header. Only the ones a fixture has a reason to lie about.
-_SH_FIELDS = {"sh_flags": (0x08, "<Q"), "sh_offset": (0x18, "<Q"), "sh_size": (0x20, "<Q")}
+_SH_FIELDS = {
+    "sh_type": (0x04, "<I"),
+    "sh_flags": (0x08, "<Q"),
+    "sh_addr": (0x10, "<Q"),
+    "sh_offset": (0x18, "<Q"),
+    "sh_size": (0x20, "<Q"),
+    "sh_link": (0x28, "<I"),
+}
 
 SHF_COMPRESSED = 0x800
 
 
 def patch_section_header(
-    data: bytes, name: str, field: str, value: int, *, bitwise_or: bool = False
+    data: bytes, name: str, field: str, value: int, *, bitwise_or: bool = False, occurrence: int = 1
 ):
     """Rewrite one field of one named section header in a built 64-bit ELF.
 
     The builder only emits well-formed objects, which is the point of it. A test that
     needs a section whose bytes cannot be read has to corrupt one afterwards, and doing
     that by name rather than by offset keeps the test readable.
+
+    `occurrence` is 1-based and picks which section to patch when more than one shares
+    `name` -- `insert_bogus_section_before(..., same_name=True)` is the fixture that
+    creates that shape, and the decoy it inserts always sorts before the real section,
+    so `occurrence=2` reaches the real one.
     """
     buf = bytearray(data)
     (shoff,) = struct.unpack_from("<Q", buf, 0x28)
     shentsize, shnum, shstrndx = struct.unpack_from("<HHH", buf, 0x3A)
     (names_at,) = struct.unpack_from("<Q", buf, shoff + shstrndx * shentsize + 0x18)
     offset, fmt = _SH_FIELDS[field]
+    seen = 0
     for index in range(shnum):
         header = shoff + index * shentsize
         (name_offset,) = struct.unpack_from("<I", buf, header)
         end = buf.index(b"\x00", names_at + name_offset)
         if bytes(buf[names_at + name_offset : end]).decode() != name:
             continue
+        seen += 1
+        if seen != occurrence:
+            continue
         (current,) = struct.unpack_from(fmt, buf, header + offset)
         struct.pack_into(fmt, buf, header + offset, current | value if bitwise_or else value)
         return bytes(buf)
-    raise AssertionError(f"no section named {name}")
+    raise AssertionError(f"no section named {name} (occurrence {occurrence})")
 
 
 def patch_header_field(data: bytes, field: str, value: int) -> bytes:
@@ -466,4 +482,149 @@ def patch_header_field(data: bytes, field: str, value: int) -> bytes:
     offset, fmt = {"e_shoff": (0x28, "<Q"), "e_shnum": (0x3C, "<H")}[field]
     buf = bytearray(data)
     struct.pack_into(fmt, buf, offset, value)
+    return bytes(buf)
+
+
+def insert_bogus_section_before(
+    data: bytes, name: str, sh_type: int, *, same_name: bool = False
+) -> bytes:
+    """Insert a second, empty section of `sh_type` immediately before the one named `name`.
+
+    Unlike appending at the end of the table, this splices a decoy in *ahead* of the
+    real section in section order -- the shape a lookup that picks "the first match"
+    would get wrong, and the one `append_duplicate_dynsym_section` cannot reach.  Every
+    `sh_link` and `e_shstrndx` naming an index at or past the insertion point is bumped
+    by one first, so every other cross-reference in the file still points at the
+    section it used to: real toolchains never emit two sections of the same type, but a
+    hand-crafted object that does is not otherwise malformed, and this fixture should
+    not be either. `sh_link` points at `.shstrtab` (post-bump), always a valid
+    `SHT_STRTAB`, so the decoy is harmless if it is read by mistake. Only defined for a
+    built 64-bit ELF, like `patch_section_header`.
+
+    `same_name` reuses `name`'s own `sh_name` offset for the decoy too, so the object
+    ends up with two sections literally called `.dynsym` (or whichever name), rather
+    than one named that and one named the empty string. This is the shape a name-based
+    lookup's "first match wins" gets wrong the same way a type-based one did: a
+    same-*named* decoy sorting first hides a same-named real section behind it just as
+    effectively as a same-*typed* one hides a real section of that type.
+    """
+    buf = bytearray(data)
+    (shoff,) = struct.unpack_from("<Q", buf, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", buf, 0x3A)
+    (names_at,) = struct.unpack_from("<Q", buf, shoff + shstrndx * shentsize + 0x18)
+    target_index = None
+    target_name_offset = 0
+    for index in range(shnum):
+        header = shoff + index * shentsize
+        (name_offset,) = struct.unpack_from("<I", buf, header)
+        end = buf.index(b"\x00", names_at + name_offset)
+        if bytes(buf[names_at + name_offset : end]).decode() == name:
+            target_index = index
+            target_name_offset = name_offset
+            break
+    if target_index is None:
+        raise AssertionError(f"no section named {name}")
+
+    # Bump every sh_link naming an index at or past the insertion point, read while
+    # indices are still in their pre-insertion numbering: two sections that shift
+    # together keep referring to each other correctly with no further adjustment.
+    for index in range(shnum):
+        header = shoff + index * shentsize
+        (link,) = struct.unpack_from("<I", buf, header + 40)
+        if link >= target_index:
+            struct.pack_into("<I", buf, header + 40, link + 1)
+    new_shstrndx = shstrndx + 1 if shstrndx >= target_index else shstrndx
+
+    bogus = struct.pack(
+        "<IIQQQQIIQQ",
+        target_name_offset if same_name else 0,  # offset 0 is always the empty string
+        sh_type,
+        0,  # sh_flags
+        0,  # sh_addr
+        0,  # sh_offset
+        0,  # sh_size: zero entries
+        new_shstrndx,  # sh_link: .shstrtab, always a valid SHT_STRTAB
+        0,  # sh_info
+        8,  # sh_addralign
+        _SYM_SIZE[64],  # sh_entsize: nonzero, so num_symbols() cannot divide by zero
+    )
+    insert_at = shoff + target_index * shentsize
+    buf[insert_at:insert_at] = bogus
+    struct.pack_into("<H", buf, 0x3C, shnum + 1)
+    struct.pack_into("<H", buf, 0x3E, new_shstrndx)
+    return bytes(buf)
+
+
+def append_strtab_decoy(data: bytes, content: bytes, *, sh_addr: int = 0x1000) -> tuple[bytes, int]:
+    """Append a new `SHT_STRTAB` section holding `content`, and return its index.
+
+    `ElfBuilder` writes every section's `sh_addr`, and `DT_STRTAB`'s own `d_ptr`, as
+    0, so `sh_addr` defaults away from that: a decoy has to be pointed at deliberately
+    (`patch_section_header(..., "sh_link", index)` on the section under test) to be
+    read at all, and this default alone is enough to fail the corroboration check
+    #56 round 4 added, which only trusts a same-address `SHT_STRTAB`.
+
+    `content` is inserted as raw bytes just ahead of the section header table, which
+    only pushes the table itself later in the file -- no existing section's own
+    `sh_offset` is before that point, so nothing else needs to move -- and the new
+    section is appended as the last header, the same append-only shape
+    `append_duplicate_dynsym_section` already uses.
+    """
+    buf = bytearray(data)
+    (shoff,) = struct.unpack_from("<Q", buf, 0x28)
+    shentsize, shnum, _shstrndx = struct.unpack_from("<HHH", buf, 0x3A)
+    new_index = shnum
+    header = struct.pack(
+        "<IIQQQQIIQQ",
+        0,  # sh_name: offset 0 is always the empty string
+        SHT_STRTAB,
+        0,  # sh_flags
+        sh_addr,
+        shoff,  # sh_offset: right where `content` is about to be inserted
+        len(content),
+        0,  # sh_link
+        0,  # sh_info
+        1,  # sh_addralign
+        0,  # sh_entsize
+    )
+    buf[shoff:shoff] = content
+    new_shoff = shoff + len(content)
+    insert_at = new_shoff + shnum * shentsize
+    buf[insert_at:insert_at] = header
+    struct.pack_into("<Q", buf, 0x28, new_shoff)
+    struct.pack_into("<H", buf, 0x3C, shnum + 1)
+    return bytes(buf), new_index
+
+
+def append_duplicate_dynsym_section(data: bytes) -> bytes:
+    """Append a second, empty `SHT_DYNSYM` section header after every other one.
+
+    Two sections sharing a type is unusual but not forbidden, and a lookup keyed on
+    `sh_type` has to pick one deterministically rather than raise. This second one is
+    harmless if it were picked by mistake instead of the real `.dynsym` -- zero
+    entries, and `sh_link` points at `.shstrtab`, which is always a valid `SHT_STRTAB`
+    -- so a test can tell which section actually won without either choice raising.
+    Appending after the existing table, rather than splicing it in, needs no `sh_link`
+    or `e_shstrndx` of any other header to shift. Only defined for a built 64-bit ELF,
+    like `patch_section_header`.
+    """
+    buf = bytearray(data)
+    (shoff,) = struct.unpack_from("<Q", buf, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", buf, 0x3A)
+    header = struct.pack(
+        "<IIQQQQIIQQ",
+        0,  # sh_name: offset 0 is always the empty string
+        SHT_DYNSYM,
+        0,  # sh_flags
+        0,  # sh_addr
+        0,  # sh_offset
+        0,  # sh_size: zero entries
+        shstrndx,  # sh_link: .shstrtab, always a valid SHT_STRTAB
+        0,  # sh_info
+        8,  # sh_addralign
+        _SYM_SIZE[64],  # sh_entsize: nonzero, so num_symbols() cannot divide by zero
+    )
+    insert_at = shoff + shnum * shentsize
+    buf[insert_at:insert_at] = header
+    struct.pack_into("<H", buf, 0x3C, shnum + 1)
     return bytes(buf)

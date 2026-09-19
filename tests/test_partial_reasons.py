@@ -31,6 +31,7 @@ from helpers.binfmt import (
     PEBuilder,
     PEExport,
     PEImport,
+    append_duplicate_dynsym_section,
     build_fat,
     patch_header_field,
     patch_section_header,
@@ -125,6 +126,21 @@ _REACHABILITY: dict[str, bytes] = {
         dll_name="_ext.pyd",
         delay_import_directory=True,
     ).build(),
+    # `e_shoff == 0`: a loadable object with no section header table at all, not a
+    # table that failed to read. #56.
+    "elf section table absent": patch_header_field(
+        patch_header_field(
+            ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build(), "e_shnum", 0
+        ),
+        "e_shoff",
+        0,
+    ),
+    # Two `SHT_DYNSYM` sections: which one is real cannot be told from the type alone.
+    "elf section type ambiguous": append_duplicate_dynsym_section(
+        ElfBuilder(
+            needed=("libc.so.6",), dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),)
+        ).build()
+    ),
     # `.dynamic` whose bytes lie outside the object: the handler the motivating case
     # for this field was described by, reached without a monkeypatch.
     "elf dynamic section unreadable": patch_section_header(
@@ -568,10 +584,12 @@ class _Exploding:
 GO_BUILDINFO = b"\xff Go buildinf:" + bytes([8, 2]) + b"\x00" * 16 + b"\x08go1.22.3"
 
 _UNREADABLE_SECTION = {
-    ".dynamic": evidence.PARTIAL_ELF_DYNAMIC_UNREAD,
-    ".dynsym": evidence.PARTIAL_ELF_DYNSYM_UNREAD,
-    ".symtab": evidence.PARTIAL_ELF_SYMTAB_UNREAD,
-    ".go.buildinfo": evidence.PARTIAL_ELF_GO_BUILDINFO_UNREAD,
+    # Exploding `.dynamic` also costs `.dynsym`: no readable `DT_STRTAB` to
+    # corroborate `.dynsym`'s own `sh_link` against (#56 round 4).
+    ".dynamic": (evidence.PARTIAL_ELF_DYNAMIC_UNREAD, evidence.PARTIAL_ELF_DYNSYM_UNREAD),
+    ".dynsym": (evidence.PARTIAL_ELF_DYNSYM_UNREAD,),
+    ".symtab": (evidence.PARTIAL_ELF_SYMTAB_UNREAD,),
+    ".go.buildinfo": (evidence.PARTIAL_ELF_GO_BUILDINFO_UNREAD,),
 }
 
 
@@ -584,9 +602,28 @@ def _readable_elf() -> bytes:
     ).build()
 
 
+# `.dynamic`, `.dynsym` and `.symtab` are found by `sh_type` now, not by name (#56), so
+# exploding them has to patch that lookup instead of `_find_section`. `.go.buildinfo`
+# is still name-based, out of scope for that issue, and stays on the original helper.
+_TYPE_LOOKUP_NAMES = {".dynamic": "SHT_DYNAMIC", ".dynsym": "SHT_DYNSYM", ".symtab": "SHT_SYMTAB"}
+
+
 def _explode(monkeypatch, section_name: str, methods: frozenset[str] | None = None) -> None:
-    real = elf_module._find_section
     which = methods or frozenset({"data", "num_symbols", "iter_tags"})
+    sh_type = _TYPE_LOOKUP_NAMES.get(section_name)
+    if sh_type is not None:
+        real_by_type = elf_module._find_section_by_type
+
+        def patched_by_type(sections, type_name):
+            section, ambiguous = real_by_type(sections, type_name)
+            if type_name == sh_type and section is not None:
+                return _Exploding(section, which), ambiguous
+            return section, ambiguous
+
+        monkeypatch.setattr(elf_module, "_find_section_by_type", patched_by_type)
+        return
+
+    real = elf_module._find_section
 
     def patched(sections, name):
         found = real(sections, name)
@@ -606,14 +643,14 @@ def test_both_dynsym_reads_name_the_same_cause(monkeypatch, method) -> None:
     assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
 
 
-@pytest.mark.parametrize(("section", "reason"), sorted(_UNREADABLE_SECTION.items()))
-def test_each_unread_elf_section_names_the_evidence_it_cost(monkeypatch, section, reason) -> None:
+@pytest.mark.parametrize(("section", "reasons"), sorted(_UNREADABLE_SECTION.items()))
+def test_each_unread_elf_section_names_the_evidence_it_cost(monkeypatch, section, reasons) -> None:
     """Which area failed is what a consumer needs: they invalidate different fields."""
     _explode(monkeypatch, section)
     ev, errors = read_elf(io.BytesIO(_readable_elf()), "m.so", PATTERNS, vendored=False)
     assert errors != ()
     assert ev.partial_analysis is True
-    assert list(ev.partial_reasons) == [reason]
+    assert list(ev.partial_reasons) == sorted(reasons)
     assert bool(ev.partial_reasons) is ev.partial_analysis
 
 
@@ -625,9 +662,21 @@ def test_each_unread_elf_section_names_the_evidence_it_cost(monkeypatch, section
 _BYTE_REACHABLE = {
     "elf header unread": [evidence.PARTIAL_ELF_HEADER_UNREAD],
     "elf section table truncated": [evidence.PARTIAL_ELF_SECTION_TABLE_TRUNCATED],
-    "elf section header unreadable": [evidence.PARTIAL_ELF_SECTIONS_UNREAD],
+    "elf section table absent": [evidence.PARTIAL_ELF_SECTION_TABLE_ABSENT],
+    "elf section type ambiguous": [evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS],
+    # `.dynamic`'s own sh_link is broken here, so `.dynsym`'s string table has no
+    # `DT_STRTAB` to corroborate against either (#56 round 4) -- this fixture costs
+    # both, not just the section list.
+    "elf section header unreadable": [
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+        evidence.PARTIAL_ELF_SECTIONS_UNREAD,
+    ],
     "elf section count unreadable": [evidence.PARTIAL_ELF_SECTIONS_UNREAD],
-    "elf dynamic section unreadable": [evidence.PARTIAL_ELF_DYNAMIC_UNREAD],
+    # Same cascade: `.dynamic` unreadable costs `.dynsym`'s corroboration too.
+    "elf dynamic section unreadable": [
+        evidence.PARTIAL_ELF_DYNAMIC_UNREAD,
+        evidence.PARTIAL_ELF_DYNSYM_UNREAD,
+    ],
     "elf section data unreadable": [evidence.PARTIAL_ELF_SECTION_DATA_UNREAD],
     "macho header unread": [evidence.PARTIAL_MACHO_HEADER_UNREAD],
     "macho stripped": [evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE],

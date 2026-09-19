@@ -13,6 +13,45 @@ Parsing uses `pyelftools` and never raises past `read_elf`: every failure become
 corrupt `.dynamic` section should not also cost us the strings we already pulled out
 of `.rodata`.
 
+`.dynamic`, `.dynsym` and `.symtab` are found by section *type* (`SHT_DYNAMIC`,
+`SHT_DYNSYM`, `SHT_SYMTAB`), not by name. The dynamic linker never reads section names
+or the section header table at all -- it walks `PT_DYNAMIC` and the tags it points
+at -- so a name is not what makes an object loadable, and a name-based lookup trusted a
+label the loader itself never checks: renaming `.dynsym` to anything else in
+`.shstrtab` left every dynamic symbol unread while the object still ran. `pyelftools`
+already builds the right wrapper class from `sh_type` regardless of what a section is
+called, so this is a lookup change, not a parsing change. `.go.buildinfo`,
+`.note.go.buildid` and `.comment` stay name-based: they are plain `SHT_PROGBITS` or
+`SHT_NOTE` sections with no type of their own, so name is the only signal there is.
+
+Two shapes a type-based lookup can be handed are not treated as a clean single answer.
+More than one section can share a type -- unusual, but not forbidden -- and picking the
+first in section order, the way a name-based lookup already did for two sections
+sharing a name, would let a decoy of the real section's type, inserted ahead of it,
+hide the real one just as effectively as a rename did: `_find_section_by_type` reports
+the ambiguity instead of guessing, and none of the candidates is trusted. And a section
+can still be found *by name* -- `.dynamic`, `.dynsym`, `.symtab` -- while its `sh_type`
+does not match what that name is supposed to mean: a forged `sh_type` alone, name left
+untouched, used to make a name-based lookup pick the wrong wrapper class and (usually)
+fail loudly, so treating "not found by type" as "absent" here would have made a
+disguised section read as a clean one instead. `_type_mismatch` catches this and folds
+it into the same partial cause a read failure on that section already carries, rather
+than reading as though the section were never there. The check runs unconditionally,
+never gated on the type-based lookup having come back empty: a single decoy of the
+target type is enough to satisfy that lookup on its own, and a mismatch check that only
+ran when nothing else had already answered would go uncalled for exactly the object
+this exists to catch -- the real, still-correctly-named section, forged away from its
+type, sitting beside an unrelated decoy that happens to carry the type being searched
+for.
+
+An object with no section header table at all (`e_shoff == 0`) is a third, different
+failure from either: there is nothing to look up by type or by name, so `.dynamic`,
+`.dynsym` and `.symtab` are unavailable rather than merely unread, and the whole file is
+scanned for strings the way a header that would not parse already is. This is not the
+same thing as `e_shnum == 0` on its own, which is the legal extended-numbering encoding
+-- the real count lives in the first section's `sh_size` -- and such an object still has
+a section header table to read.
+
 `.dynsym`'s declared size is not believed, and neither is `.dynstr`'s. An object whose
 `sh_size` covers fewer entries than it carries would be read in full by its own account
 while the rest went unlooked-at, so the names read are cross-checked against `.dynstr`,
@@ -120,7 +159,52 @@ _SYM_LAYOUT = {64: (24, 0, 6), 32: (16, 0, 14)}
 _SHN_UNDEF = 0
 
 
-def _symbol_bytes(elf, section) -> tuple[bytes, bytes]:
+def _validated_strtab(elf, sh_link: int, dt_strtab_addr: int | None) -> Section | None:
+    """The section `sh_link` names, only when it corroborates `.dynamic`'s own `DT_STRTAB`.
+
+    `sh_link` is a section-header field the loader never reads: `.dynamic` and
+    `.dynsym` both resolve names through `PT_DYNAMIC`'s `DT_STRTAB` tag, never through
+    any section's `sh_link`. Trusting `sh_link` on its own is the same hazard
+    `_find_section_by_type` and `_type_mismatch` already close for `.dynamic`,
+    `.dynsym` and `.symtab` themselves, one level down: a section that is correctly
+    typed `SHT_STRTAB` but is not the real `.dynstr` -- a decoy planted purely to be
+    read through `sh_link`, with `sh_offset` pointing at fabricated or all-NUL bytes --
+    is caught by neither. Appending `N` NUL bytes plus a header pointing at them, then
+    repointing `.dynsym`'s `sh_link` there, resolves every symbol name to `""`: an
+    empty name is not flagged unresolved, so the object read completely clean while a
+    real `libcrypto.so.3` carried 64 crypto symbols. `.dynamic`'s own `sh_link` has the
+    same hole and is worse: a decoy that happens to spell a real dependency name
+    fabricates a `DT_NEEDED` entry the object never declared, rather than merely
+    erasing one.
+
+    `DT_STRTAB`'s `d_ptr` is data this reader already has in hand from reading
+    `.dynamic` -- it needs no string resolution itself, so it is available even when
+    the string table it points at cannot be trusted -- and this reconciles the two
+    rather than parsing anything new: the resolved section's declared virtual address
+    has to match what `.dynamic` independently says the real string table's address
+    is. `dt_strtab_addr` is `None` when `.dynamic` itself could not be read or carries
+    no `DT_STRTAB` tag at all, and there is then nothing to corroborate against --
+    treated the same as a mismatch, fail closed, rather than trusting `sh_link`
+    unwitnessed.
+
+    Left open: `sh_addr` matching while `sh_offset` alone is forged, which would need
+    program-header-based virtual-address-to-file-offset translation to close and is
+    exactly the scope this issue's chain has repeatedly deferred. See `DECISIONS.md`.
+    """
+    if dt_strtab_addr is None:
+        return None
+    try:
+        section = elf.get_section(sh_link)
+    except Exception:
+        return None
+    if section is None or section["sh_type"] != "SHT_STRTAB":
+        return None
+    if section["sh_addr"] != dt_strtab_addr:
+        return None
+    return section
+
+
+def _symbol_bytes(elf, section, dt_strtab_addr: int | None) -> tuple[bytes, bytes]:
     """A symbol table and its string table, each read once, in that order.
 
     pyelftools' `get_symbol()` seeks per symbol, alternating between the two. On a
@@ -135,8 +219,14 @@ def _symbol_bytes(elf, section) -> tuple[bytes, bytes]:
     `objcopy` reorderings. Reading the later one first is a backwards seek, which
     through a zip member is one more full decompression pass. `binfmt.macho` sorts its
     two regions for the same reason.
+
+    `dt_strtab_addr` is threaded through from `.dynamic`, and `_validated_strtab`
+    reads `None` for it as "nothing to corroborate against" rather than "anything
+    goes": an object whose `.dynamic` could not be read has no witness for `.dynsym`'s
+    string table either, so this falls back to no names found, the same as any other
+    unresolved `sh_link` -- never to trusting whatever `sh_link` names outright.
     """
-    strtab = elf.get_section(section["sh_link"])
+    strtab = _validated_strtab(elf, section["sh_link"], dt_strtab_addr)
     if strtab is not None and strtab["sh_offset"] < section["sh_offset"]:
         names = strtab.data()
         return section.data(), names
@@ -183,6 +273,61 @@ def _find_section(sections: Sequence[Section], name: str) -> Section | None:
         if section.name == name:
             return section
     return None
+
+
+def _find_section_by_type(sections: Sequence[Section], sh_type: str) -> tuple[Section | None, bool]:
+    """The section of `sh_type`, and whether more than one candidate exists.
+
+    `sh_type` is what the dynamic linker actually keys on -- `pyelftools` builds the
+    matching wrapper class (`DynamicSection`, `SymbolTableSection`) from it regardless
+    of what `.shstrtab` calls the section, so a rename that fools a name-based lookup
+    does not fool this one.
+
+    Returns `(None, False)` when nothing matches, `(section, False)` when exactly one
+    does, and `(None, True)` when more than one does. Picking the first match in
+    section order -- the rule a name-based lookup already applied to two sections
+    sharing a name -- would let a decoy of the real section's type, spliced in ahead of
+    it, silently win: exactly the "renamed and now reads clean" shape this module
+    exists to close, one level down. An ambiguous count is therefore never trusted;
+    the caller reads the second return value and folds it into `partial_reasons`
+    instead of guessing which candidate is real.
+    """
+    matches = [section for section in sections if section["sh_type"] == sh_type]
+    if len(matches) > 1:
+        return None, True
+    return (matches[0] if matches else None), False
+
+
+def _type_mismatch(sections: Sequence[Section], name: str, sh_type: str) -> bool:
+    """True when a section named `name` exists but cannot be trusted to be `sh_type`.
+
+    A type-based lookup that finds nothing is not always the same fact as a section
+    that is genuinely absent: `.shstrtab` can still call something `.dynsym` while its
+    four-byte `sh_type` field alone has been changed to something else, which makes a
+    type-based lookup miss it the same way a rename made a name-based one miss the
+    section entirely. The object is not clean; it carries a section claiming to be one
+    this reader cannot trust as one, and the caller folds that into the same cause a
+    section of this kind that failed to read already carries.
+
+    Called unconditionally by `read_elf`, not only when the type-based lookup for
+    `sh_type` came back empty: an unrelated section of the right type -- a decoy, or
+    a real one belonging to a different, coincidentally-absent purpose -- can satisfy
+    that lookup on its own, and a caller that only asked this question after finding
+    nothing would never ask it at all in that case, leaving the real, still-named
+    section invisible from both directions.
+
+    More than one section can share `name` too, and picking the first the way
+    `_find_section` always has is the identical hazard `_find_section_by_type` was
+    changed to stop guessing about: a correctly-typed decoy sharing the real section's
+    *name* -- rather than its type -- would sort first, report no mismatch, and hide a
+    same-named real section sitting right behind it, still carrying its own forged
+    `sh_type`. Ambiguous by name is therefore also untrusted, the same as ambiguous by
+    type.
+    """
+    matches = [section for section in sections if section.name == name]
+    if len(matches) > 1:
+        return True
+    return bool(matches) and matches[0]["sh_type"] != sh_type
 
 
 def read_elf(
@@ -270,11 +415,58 @@ def read_elf(
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read an elf section header"))
             reasons.add(evidence.PARTIAL_ELF_SECTIONS_UNREAD)
 
-    dynamic = _find_section(sections, ".dynamic")
+    # `num_sections` came back zero with no exception on either read above: not a
+    # section list we failed on, but a section header table that was never there.
+    # `elf.num_sections()` already resolves the legal extended-numbering encoding
+    # (`e_shnum == 0`, the real count in the first section's `sh_size`) to that real,
+    # nonzero count, so reaching zero here means `e_shoff == 0` -- there truly is no
+    # table, not merely a count of zero declared in the ordinary field. The dynamic
+    # linker does not need one -- it loads this object from `PT_DYNAMIC` alone -- so
+    # this is a loadable object, not a corrupt one, and it is a different fact from
+    # `elf_sections_unread`: there is no `.dynamic`, `.dynsym` or `.symtab` to even
+    # look for, by type or by name, so nothing past this point can produce anything
+    # but empty defaults. Falling through would report that emptiness as a complete
+    # read the same way a renamed section used to.
+    if num_sections == 0 and not reasons:
+        result, _ = read_strings_only(
+            stream,
+            path,
+            patterns,
+            vendored=vendored,
+            fmt=evidence.FORMAT_ELF,
+            max_strings_bytes=max_strings_bytes,
+            reason=evidence.PARTIAL_ELF_SECTION_TABLE_ABSENT,
+        )
+        result = replace(
+            result,
+            machine=machine,
+            bits=bits,
+            endian=endian,
+            elf_type=elf_type,
+        )
+        errors.append(_error(path, ELF_PARSE_ERROR, "elf has no section header table to read"))
+        return result, tuple(sorted(set(errors), key=lambda err: err.sort_key()))
+
+    dynamic, dynamic_ambiguous = _find_section_by_type(sections, "SHT_DYNAMIC")
+    if dynamic_ambiguous:
+        errors.append(
+            _error(
+                path,
+                ELF_PARSE_ERROR,
+                "more than one SHT_DYNAMIC section, which is real cannot be told",
+            )
+        )
+        reasons.add(evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS)
+    elif _type_mismatch(sections, ".dynamic", "SHT_DYNAMIC"):
+        errors.append(
+            _error(path, ELF_PARSE_ERROR, ".dynamic exists but its sh_type is not SHT_DYNAMIC")
+        )
+        reasons.add(evidence.PARTIAL_ELF_DYNAMIC_UNREAD)
     needed: tuple[str, ...] = ()
     soname: str | None = None
     rpath: tuple[str, ...] = ()
     runpath: tuple[str, ...] = ()
+    dt_strtab_addr: int | None = None
     if dynamic is not None:
         try:
             needed = tuple(sorted(sanitize(tag.needed) for tag in dynamic.iter_tags("DT_NEEDED")))
@@ -284,12 +476,45 @@ def read_elf(
             runpath = tuple(
                 sorted(sanitize(tag.runpath) for tag in dynamic.iter_tags("DT_RUNPATH"))
             )
+            # `DT_NEEDED`/`DT_SONAME`/`DT_RPATH`/`DT_RUNPATH` above were just resolved
+            # through whatever `.dynamic`'s own `sh_link` names, which pyelftools
+            # accepted at face value the same way `_symbol_bytes` used to: a decoy
+            # `SHT_STRTAB` planted there does not merely erase a name, it can
+            # fabricate one -- a decoy spelling a real dependency name reports a
+            # `DT_NEEDED` entry the object never declared. `d_ptr` needs no string
+            # resolution itself, so it is available to check against regardless of
+            # whether the strings above can be trusted.
+            dt_strtab_addr, _ = dynamic.get_table_offset("DT_STRTAB")
+            if _validated_strtab(elf, dynamic["sh_link"], dt_strtab_addr) is None:
+                errors.append(
+                    _error(
+                        path,
+                        ELF_PARSE_ERROR,
+                        ".dynamic's sh_link does not corroborate its own DT_STRTAB",
+                    )
+                )
+                reasons.add(evidence.PARTIAL_ELF_DYNAMIC_UNREAD)
+                needed, soname, rpath, runpath = (), None, (), ()
         except Exception:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic section"))
             reasons.add(evidence.PARTIAL_ELF_DYNAMIC_UNREAD)
             needed, soname, rpath, runpath = (), None, (), ()
 
-    dynsym = _find_section(sections, ".dynsym")
+    dynsym, dynsym_ambiguous = _find_section_by_type(sections, "SHT_DYNSYM")
+    if dynsym_ambiguous:
+        errors.append(
+            _error(
+                path,
+                ELF_PARSE_ERROR,
+                "more than one SHT_DYNSYM section, which is real cannot be told",
+            )
+        )
+        reasons.add(evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS)
+    elif _type_mismatch(sections, ".dynsym", "SHT_DYNSYM"):
+        errors.append(
+            _error(path, ELF_PARSE_ERROR, ".dynsym exists but its sh_type is not SHT_DYNSYM")
+        )
+        reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
     dynsym_count = 0
     symbol_matches: set[SymbolMatch] = set()
     if dynsym is not None:
@@ -305,7 +530,7 @@ def read_elf(
             # table, for a question only ever asked about the handful a group claims.
             read_crypto: set[str] = set()
             unresolved = 0
-            table, dynstr = _symbol_bytes(elf, dynsym)
+            table, dynstr = _symbol_bytes(elf, dynsym, dt_strtab_addr)
             for name, undefined, resolved in _iter_symbols(elf, table, dynstr):
                 if not resolved:
                     unresolved += 1
@@ -345,7 +570,21 @@ def read_elf(
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the dynamic symbol table"))
             reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
 
-    symtab = _find_section(sections, ".symtab")
+    symtab, symtab_ambiguous = _find_section_by_type(sections, "SHT_SYMTAB")
+    if symtab_ambiguous:
+        errors.append(
+            _error(
+                path,
+                ELF_PARSE_ERROR,
+                "more than one SHT_SYMTAB section, which is real cannot be told",
+            )
+        )
+        reasons.add(evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS)
+    elif _type_mismatch(sections, ".symtab", "SHT_SYMTAB"):
+        errors.append(
+            _error(path, ELF_PARSE_ERROR, ".symtab exists but its sh_type is not SHT_SYMTAB")
+        )
+        reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
     symtab_count = 0
     if symtab is not None:
         try:
