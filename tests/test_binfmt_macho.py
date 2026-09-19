@@ -211,9 +211,54 @@ def test_debug_entries_are_not_read_as_definitions() -> None:
         symbols=(MachOSym("_EVP_DigestInit_ex", defined=True, stab=True),),
     ).build()
     ev, errors = _read(data)
-    assert errors == ()
     assert ev.matched_symbols == ()
     assert ev.symtab_count == 1  # it was read, and then skipped on purpose
+    # And a crypto-sounding debug name is still not a symbol this object declares, so
+    # the table has declared nothing. Asserted on *this* fixture because its name is one
+    # the ruleset matches: a guard that only fires on a name nobody would choose is not
+    # a guard.
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == ["mach-o symbol table could not be read in full"]
+
+
+def test_a_table_of_nothing_but_debug_records_has_declared_nothing() -> None:
+    """The fourth cheap way to look clean, alongside the three `complete` already names.
+
+    A debug record's name is readable, so it used to count toward "we read every name
+    here". But it is not a symbol the object declares, so a table holding nothing else
+    has declared nothing and we have checked nothing. One crafted entry was the whole
+    difference between `OPAQUE` and a clean verdict on an object that told us nothing.
+    """
+    stabs_only = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("/src/foo.c", defined=True, stab=True),),
+    ).build()
+    ev, errors = _read(stabs_only)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["macho_symtab_incomplete"]
+    assert [e.message for e in errors] == ["mach-o symbol table could not be read in full"]
+    # `symtab_count` still counts the row: `SCHEMA.md` defines it as `LC_SYMTAB`
+    # entries, and a debug record is one. `is_opaque` therefore still reads false, and
+    # that is fine -- what closes the hole is the partial flag above, which fires a rule
+    # whose verdict is `OPAQUE` regardless.
+    assert ev.symtab_count == 1
+    assert ev.is_opaque is False
+
+
+def test_a_debug_record_beside_real_symbols_changes_nothing() -> None:
+    """The common case: an unstripped dylib carries a debug map and its symbols."""
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(
+            MachOSym("/src/foo.c", defined=True, stab=True),
+            MachOSym("_PyInit__ext", defined=True),
+        ),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.symtab_count == 2
+    assert ev.is_opaque is False
 
 
 def test_only_symbols_the_ruleset_claims_are_recorded() -> None:
@@ -766,3 +811,23 @@ def test_a_byte_swapped_fat_header_is_defensive_not_supported() -> None:
         assert [m.value for m in ev.matched_strings] == [banner.decode()]
         records.append((list(ev.partial_reasons), [e.message for e in errors]))
     assert records[0] == records[1]
+
+
+def test_one_hidden_index_beside_a_readable_symbol_is_still_incomplete() -> None:
+    """`not unresolved` in `complete`, which nothing exercised on its own.
+
+    Every other fixture hides *every* name, so `named` being zero already cleared the
+    flag and this clause never had to. One entry pointing past the string table is
+    enough: the object named something we could not read.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(
+            MachOSym("_PyInit__ext", defined=True),
+            MachOSym("_EVP_DigestInit_ex", defined=False, strx=0xFFFF),
+        ),
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["macho_symtab_incomplete"]
+    assert [e.message for e in errors] == ["mach-o symbol table could not be read in full"]

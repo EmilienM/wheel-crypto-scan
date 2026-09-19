@@ -35,7 +35,7 @@ timestamps, hostnames or user names appear in any field.
 | `binaries` | array | Per-object native evidence. |
 | `findings` | array | Rules that matched. |
 | `verdict` | object | The classification. |
-| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes are routine rather than failures, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording an error. The three that a linker produces on purpose (`pe_ordinal_import`, `pe_ordinal_export`, `pe_delay_load`) are reported by `BIN_PARTIAL_ROUTINE` and carry no verdict; every other cause still makes the wheel `OPAQUE`. |
+| `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes are routine rather than failures, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording an error. A cause that carries no verdict is marked in the reason table below; every other cause still makes the wheel `OPAQUE`. |
 
 ## `tool`
 
@@ -116,15 +116,15 @@ Each reason:
 | `elf_symtab_unread` | `.symtab` would not read, so `stripped` and `symbol_counts.symtab` describe a table we failed on rather than one the object does not have. |
 | `elf_go_buildinfo_unread` | `.go.buildinfo` would not read, so Go toolchain provenance is missing. |
 | `macho_header_unread` | The Mach-O header, or a fat header, would not parse. |
-| `macho_symtab_incomplete` | LC_SYMTAB was absent, unreachable or named nothing resolvable, so the imported-versus-defined split is missing; routine, and records no error. |
+| `macho_symtab_incomplete` | `LC_SYMTAB` was absent, unreachable, named nothing resolvable, or held nothing but debug records, so the imported-versus-defined split is missing. An absent table is routine and records no error; the other three record one. `stripped` and `symbol_counts.symtab` then describe a table we could not use rather than one the object does not have. |
 | `macho_fat_slice_unread` | A slice of a universal binary could not be read, or its header named one it did not describe. |
 | `pe_header_unread` | The PE header chain would not parse. |
 | `pe_section_table_truncated` | The section table was cut short, so an address may resolve to the wrong bytes. |
 | `pe_no_import_directory` | No import directory, or one naming no DLL, so the object declared no dependency; records no error. |
 | `pe_import_incomplete` | An import directory that was there and could not be walked in full. |
 | `pe_export_incomplete` | An export directory that was there and could not be read in full. |
-| `pe_ordinal_import` | An import named by ordinal alone, so its function has no name to match; routine on Windows, and records no error. |
-| `pe_ordinal_export` | An export the name table never points at: a definition with no name; records no error. |
+| `pe_ordinal_import` | An import named by ordinal alone, so its function has no name to match; routine on Windows, and records no error. Reported by `BIN_PARTIAL_ROUTINE` with no verdict, because the DLL it names survives in `needed`. |
+| `pe_ordinal_export` | An export the name table never points at: a definition with no name; records no error. Reported by `BIN_PARTIAL_ROUTINE` with no verdict, because the DLL it names survives in `needed`. |
 | `pe_delay_load` | A delay-load import directory, which this reader does not parse, so the libraries it names are undeclared dependencies; records no error. |
 
 ## `findings`

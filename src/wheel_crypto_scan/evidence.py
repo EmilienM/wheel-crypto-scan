@@ -62,9 +62,11 @@ PARTIAL_ELF_SYMTAB_UNREAD = "elf_symtab_unread"
 PARTIAL_ELF_GO_BUILDINFO_UNREAD = "elf_go_buildinfo_unread"
 # The Mach-O header, or a fat header, would not parse.
 PARTIAL_MACHO_HEADER_UNREAD = "macho_header_unread"
-# `LC_SYMTAB` was absent, unreachable, or named nothing we could resolve, so the
-# imported-versus-defined split is missing or incomplete. Records no error: this is
-# what `strip` leaves behind and it is normal for a release wheel.
+# `LC_SYMTAB` was absent, unreachable, named nothing we could resolve, or held nothing
+# but debug records, so the imported-versus-defined split is missing or incomplete. An
+# absent table records no error: that is what `strip` leaves behind and it is normal for
+# a release wheel. The other three record one, because the table was there and we could
+# not use it.
 PARTIAL_MACHO_SYMTAB_INCOMPLETE = "macho_symtab_incomplete"
 # A slice of a universal binary could not be read, or its header named one it did not
 # describe, so an architecture is unknown rather than clean.
