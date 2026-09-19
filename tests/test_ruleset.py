@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import fields
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from wheel_crypto_scan.ruleset import (
     ENTRY_TABLES,
     MATCHER_KINDS,
     ROUTED_KINDS,
+    SymbolGroup,
     load_ruleset,
     parse_ruleset,
 )
@@ -437,6 +439,41 @@ def test_symbol_group_results_are_sorted() -> None:
     data["symbol_group"].insert(0, {"name": "zzz", "prefixes": ["EVP_"], "exact": [], "why": "x"})
     patterns = parse_ruleset(data).compile_patterns().binary
     assert patterns.symbol_groups_for("EVP_DigestInit_ex") == ("openssl", "zzz")
+
+
+def test_the_locator_finds_every_name_the_symbol_matcher_claims() -> None:
+    """The locator is a filter, and a filter that drops a match loses evidence silently.
+
+    `binfmt.macho` uses it to decide which runs of a string table are worth decoding at
+    all, so a name it misses is a symbol that never reaches `symbol_groups_for` and an
+    object that hides one reads clean. Over the shipped ruleset rather than a minimal
+    one, because the names that matter are the ones the tool actually claims.
+    """
+    patterns = load_ruleset().compile_patterns().binary
+    assert patterns.symbol_locator is not None
+    names = [name for group in patterns.symbol_groups for name in sorted(group.exact)]
+    names += [
+        prefix + tail
+        for group in patterns.symbol_groups
+        for prefix in group.prefixes
+        for tail in ("", "Init_ex", "9")
+    ]
+    for name in names:
+        assert patterns.symbol_groups_for(name), name
+        # As written, with a Darwin underscore, and with a byte `sanitize` removes.
+        for raw in (name.encode(), b"_" + name.encode(), name.encode().replace(b"_", b"\x81_", 1)):
+            assert patterns.symbol_locator.search(raw), raw
+
+
+def test_the_locator_is_told_when_the_symbol_matcher_grows_an_arm() -> None:
+    """`could this name match` is spelled twice: as a matcher and as a byte locator.
+
+    They agree today because `SymbolGroup.matches` is exactly "exact, or prefix", and
+    `_symbol_locator` is built from those two fields. A third field would be claimed by
+    the matcher and invisible to the locator, and nothing else in the suite would say
+    so: the failure is a hidden symbol going unfound, not an error.
+    """
+    assert {field.name for field in fields(SymbolGroup)} == {"name", "prefixes", "exact"}
 
 
 def test_string_group_exposes_a_compiled_pattern() -> None:

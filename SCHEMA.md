@@ -91,7 +91,7 @@ architectures disagree; `machine`, `bits` and `endian` describe the first slice 
 | `matched_symbols[].binding` | **`imported`** = the code lives elsewhere; **`defined`** = this object carries it. This is the distinction the whole tool turns on. |
 | `matched_strings[]` | `{group, value}` from read-only data. Version banners land here. |
 | `symbol_counts` | `{dynsym, symtab}`, and `symtab` means something different per format: `.symtab` entries in ELF, `LC_SYMTAB` entries in Mach-O, and in PE the things the object named — one per import thunk and one per export slot — because PE has no symbol table of its own to count. |
-| `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. Never set for PE, whose own symbol table is debug information every linker drops, so there is no absence that could mean this; `symbol_counts.symtab == 0` is how a PE says it named nothing. Normal for release wheels; recorded, not a finding. |
+| `stripped` | No `.symtab`, or a Mach-O with no `LC_SYMTAB` entries. ELF reads the declared count; Mach-O reads what the table yielded, so a `nsyms` of zero over rows the object does carry is a table we could not use and sets `partial_analysis` instead of this. Never set for PE, whose own symbol table is debug information every linker drops, so there is no absence that could mean this; `symbol_counts.symtab == 0` is how a PE says it named nothing. Normal for release wheels; recorded, not a finding. |
 | `truncated` | `{symbols, strings}` — evidence was capped. |
 | `partial_analysis` | Part of the object was not read. **This is the field to filter on.** |
 | `partial_reasons` | Sorted, deduplicated tokens saying *which* causes applied, empty exactly when `partial_analysis` is false. Several are routine rather than failures and record no entry in `errors`. New values may appear without a `schema_version` bump. |
@@ -116,7 +116,7 @@ Each reason:
 | `elf_symtab_unread` | `.symtab` would not read, so `stripped` and `symbol_counts.symtab` describe a table we failed on rather than one the object does not have. |
 | `elf_go_buildinfo_unread` | `.go.buildinfo` would not read, so Go toolchain provenance is missing. |
 | `macho_header_unread` | The Mach-O header, or a fat header, would not parse. |
-| `macho_symtab_incomplete` | `LC_SYMTAB` was absent, unreachable, named nothing resolvable, or held nothing but debug records, so the imported-versus-defined split is missing. An absent table is routine and records no error; the other three record one. `stripped` and `symbol_counts.symtab` then describe a table we could not use rather than one the object does not have. |
+| `macho_symtab_incomplete` | `LC_SYMTAB` was absent, declared no entries, or declared entries this reader could not take at their word: unreachable, naming strings it does not hold, holding nothing but debug records, or declaring fewer entries than the string table holds names for. It records an error unless the table left nothing unexplained -- an absent `LC_SYMTAB`, or one declaring no entries over a string table holding no name it failed to account for -- and that error says which way it fell short. `stripped` and `symbol_counts.symtab` then describe a table we could not use rather than one the object does not have. |
 | `macho_fat_slice_unread` | A slice of a universal binary could not be read, or its header named one it did not describe. |
 | `pe_header_unread` | The PE header chain would not parse. |
 | `pe_section_table_truncated` | The section table was cut short, so an address may resolve to the wrong bytes. |

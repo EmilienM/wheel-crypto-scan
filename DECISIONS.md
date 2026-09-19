@@ -138,3 +138,85 @@ token the strict rule excludes is claimed by name somewhere else.
 Revisit if a crypto library is found being imported by ordinal in a real wheel.
 
 Tracked in [#29](https://github.com/EmilienM/wheel-crypto-scan/issues/29).
+
+## A symbol table is checked against the string table, not taken at its word
+
+**Accepted. It reverses an earlier decision and it changes verdicts.**
+
+`LC_SYMTAB` says where the symbol table is and how many entries it has. Reading exactly
+that many is not the same as reading every symbol the object carries, and the difference
+is a way to look clean:
+
+```
+honest: 2 crypto imports        -> OPAQUE
+nsyms=0 over the same rows      -> NO_CRYPTO_DETECTED
+nsyms=1 over 3, benign first    -> NO_CRYPTO_DETECTED
+```
+
+Both liars have `_EVP_DigestInit_ex` and `_SSL_new` physically present with a full string
+table. Every structural check passed: the declared window was entirely there, no index
+was unresolvable, and something in it resolved to a name.
+
+**`nsyms == 0` was explicitly exempt,** on the reasoning that a table declaring nothing
+has nothing to fail at. That was wrong in the same way counting a debug record was wrong:
+it tells us exactly what an absent `LC_SYMTAB` tells us, and an absent one has always
+been incomplete. The exemption is gone and a test that documented it now documents the
+opposite.
+
+**The count itself is cross-checked against the string table.** Nothing structural says
+how many rows there really are -- what sits between the symbol table and the string table
+is `LC_DYSYMTAB`'s business, and assuming they are adjacent is wrong for real LINKEDIT
+layouts. But the string table is the one place every name must appear. A name in it that
+matches a symbol group and that no entry we read named is a symbol the object carries and
+did not declare.
+
+**What it costs.** The string table is scanned by one regex in C, and only the runs it
+lands in are decoded, so an honest table pays one pass and runs the rule matcher on
+almost nothing. Splitting the table instead took peak memory from 1.0 MiB to 12.4 MiB on
+a 1.6 MiB object, which this module is written around not doing; walking it run by run
+in Python was worse on the axis that matters, putting a 2 MiB string table of two-byte
+runs at 19 seconds across a universal binary's slices, and 31 seconds if the runs held
+control bytes. Both are 1.2 seconds through the locator. Measured over the whole reader
+on 497,040 honest symbols in a 26 MiB object: 2.7s to 3.1s, and peak RSS 12.4 MiB to
+14.8 MiB, the extra being the crypto names read.
+
+**Two limits, both deliberate.** The check asks whether a *crypto* name went unread, not
+whether any name did, so padding and ordinary unreferenced strings do not make every
+object partial.
+
+And names are formed the way the table is laid out, from one NUL to the next. `n_strx`
+may point at any byte, so a name that is the tail of a longer string is reachable and is
+not formed here: `_not_EVP_DigestInit_ex` with a row pointing four bytes in resolves to
+the real name and reads clean. Closing that means matching at every offset the locator
+hits rather than at run starts, and the cost is not the scan, it is the false positives:
+every Rust or C++ object with a crypto name mangled inside a symbol -- `_ZN..EVP_..E`,
+or a SWIG `_wrap_EVP_DigestInit_ex` -- would read as an object hiding one, because the
+mangled name the rows do declare is not itself claimed by any group. Left open
+knowingly, and tracked in [#39](https://github.com/EmilienM/wheel-crypto-scan/issues/39).
+
+Neither is the older blind spot: a crypto symbol whose name is not in the string table at
+all, because it resolves through `LC_DYLD_EXPORTS_TRIE` or chained fixups, which this
+reader does not parse and says so.
+
+**Errors say which way it fell short.** A table that fell short records an error naming
+the cause, instead of every case claiming the object "could not be read in full" when
+every byte of it was read. Silence is reserved for a table that left nothing unexplained:
+an absent `LC_SYMTAB`, or one declaring no entries over a string table holding no name it
+failed to account for. Both are still incomplete, and neither is a clean bill.
+
+`stripped` follows the same line, read off what the table yielded rather than off
+`nsyms`. Exactly one of "fell short", "read in full" and "stripped" holds for any table,
+which is why the three are derived in one place: a count of zero over rows holding crypto
+names is a cause, and a cause must never be able to set a field documented as recorded
+rather than a finding.
+
+**What silence still costs, and it is not nothing.** `resolve_linkage` reads errors and
+`is_opaque`, not `partial_analysis`, so a Mach-O that declares no entries comes out
+`OPAQUE` with `openssl_linkage: none` -- one field saying we could not read it and
+another saying there is no OpenSSL here. The verdict is right and the condition is not.
+It is the same answer an absent `LC_SYMTAB` has always given, so this change neither
+introduced it nor made it worse, and fixing it means teaching `linkage` which partial
+causes cost it an answer, across all three readers rather than in this one. Tracked
+in [#40](https://github.com/EmilienM/wheel-crypto-scan/issues/40).
+
+Tracked in [#34](https://github.com/EmilienM/wheel-crypto-scan/issues/34).
