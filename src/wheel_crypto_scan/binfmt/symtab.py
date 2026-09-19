@@ -49,35 +49,26 @@ def holds_a_name_not_read(
 
     Two limits, both deliberate. It asks whether a *crypto* name went unread, not
     whether any name did, so padding and ordinary unreferenced strings do not make every
-    object partial. And names are formed the way the table is laid out, from one NUL to
-    the next: a name index may point at any byte, so a name that is the tail of a longer
-    string is reachable and is not formed here. `DECISIONS.md` and #39 record why closing
-    that costs more than it is worth -- every Rust or C++ symbol with a crypto name
-    mangled inside it would read as an object hiding one.
+    object partial. `n_strx` may point at any byte, so every locator hit is treated as a
+    candidate, from the hit offset to the next NUL, rather than only the run start.
+    This closes the tail-of-string hole without needing to infer undeclared rows.
 
-    `patterns.symbol_locator` does the scanning in C and this loop only visits the runs
-    it lands in, each of them once. Walking every run in Python instead put a 2 MiB
-    string table of two-byte runs at nineteen seconds across a universal binary's
-    slices, for an object a few megabytes long.
+    `patterns.symbol_locator` does the scanning in C and this loop only visits the hits it
+    lands on. Walking every run in Python instead put a 2 MiB string table of two-byte
+    runs at nineteen seconds across a universal binary's slices, for an object a few
+    megabytes long.
     """
     locator = patterns.symbol_locator
     if locator is None:
         return False
-    start = 0
-    stop = strings.find(b"\x00")
-    if stop == -1:
-        stop = len(strings)
     position = 0
     while (hit := locator.search(strings, position)) is not None:
-        while hit.start() >= stop:
-            start = stop + 1
-            stop = strings.find(b"\x00", start)
-            if stop == -1:
-                stop = len(strings)
-        raw = strings[start:stop].decode("utf-8", "replace")
+        stop = strings.find(b"\x00", hit.start())
+        if stop == -1:
+            stop = len(strings)
+        raw = strings[hit.start() : stop].decode("utf-8", "replace")
         name = sanitize(normalise(raw) if normalise is not None else raw)
         if name and name not in read and patterns.symbol_groups_for(name):
             return True
-        # This run has been judged; the next hit inside it would say nothing new.
-        position = stop + 1
+        position = hit.start() + 1
     return False

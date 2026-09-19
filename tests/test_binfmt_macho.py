@@ -967,6 +967,23 @@ def test_a_hidden_name_claimed_only_by_an_exact_rule_is_still_found() -> None:
     ]
 
 
+def test_a_symbol_name_can_start_at_the_tail_of_a_longer_string() -> None:
+    """`n_strx` can point inside a NUL-delimited string-table run."""
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(
+            MachOSym("_PyInit__ext", defined=True),
+            MachOSym("_not_EVP_DigestInit_ex", defined=False, strx=18),
+        ),
+        declared_nsyms=1,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
+
+
 def test_a_control_byte_cannot_hide_a_name_from_its_own_matcher() -> None:
     """`sanitize` strips the byte, so the name the matcher is shown is the crypto one.
 

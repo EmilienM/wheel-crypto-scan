@@ -184,15 +184,12 @@ on 497,040 honest symbols in a 26 MiB object: 2.7s to 3.1s, and peak RSS 12.4 Mi
 whether any name did, so padding and ordinary unreferenced strings do not make every
 object partial.
 
-And names are formed the way the table is laid out, from one NUL to the next. `n_strx`
-may point at any byte, so a name that is the tail of a longer string is reachable and is
-not formed here: `_not_EVP_DigestInit_ex` with a row pointing four bytes in resolves to
-the real name and reads clean. Closing that means matching at every offset the locator
-hits rather than at run starts, and the cost is not the scan, it is the false positives:
-every Rust or C++ object with a crypto name mangled inside a symbol -- `_ZN..EVP_..E`,
-or a SWIG `_wrap_EVP_DigestInit_ex` -- would read as an object hiding one, because the
-mangled name the rows do declare is not itself claimed by any group. Left open
-knowingly, and tracked in [#39](https://github.com/EmilienM/wheel-crypto-scan/issues/39).
+Names are formed from every locator hit to the next NUL, because `n_strx` may point at
+any byte: `_not_EVP_DigestInit_ex` with a row pointing four bytes in must not read clean.
+This can classify a Rust or C++ object with a crypto name embedded in a mangled or
+wrapper symbol as partial, but that is evidence of a reachable crypto name rather than
+a passing verdict. The candidate still has to be claimed by the ruleset, which keeps
+ordinary unreferenced strings out of this cross-check.
 
 Neither is the older blind spot: a crypto symbol whose name is not in the string table at
 all, because it resolves through `LC_DYLD_EXPORTS_TRIE` or chained fixups, which this
