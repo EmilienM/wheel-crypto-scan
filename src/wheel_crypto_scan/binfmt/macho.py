@@ -20,7 +20,8 @@ declares nothing is reported as unread rather than clean. What is still missed i
 symbol reachable only through those tables, whose name is nowhere in the string table
 either.
 
-`partial_analysis` survives for three cases: a `LC_SYMTAB` that could not be read in
+`partial_analysis` survives for four cases: a strings read that stopped before the end
+of the object, so a region of it was never looked at; a `LC_SYMTAB` that could not be read in
 full, whether it is absent, unreachable, names nothing we could resolve, holds nothing
 but debug records, or declares fewer entries than it carries names for, so the
 imported/defined split is missing or incomplete; a slice of a fat binary that could not
@@ -396,6 +397,8 @@ def read_macho(
     # Every architecture has to have been read, and read in full, before this object
     # can claim it was examined. An unread slice is an unread object.
     partial: set[str] = set()
+    if truncated_read:
+        partial.add(evidence.PARTIAL_STRINGS_BYTES_UNREAD)
     if unread or header_reasons:
         partial.add(evidence.PARTIAL_MACHO_FAT_SLICE_UNREAD)
     if not all(slice_evidence.symbols_complete for slice_evidence in read):

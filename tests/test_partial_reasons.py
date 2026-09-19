@@ -58,6 +58,15 @@ def _reasons(data: bytes) -> list[str]:
     return list(ev.partial_reasons)
 
 
+def _read_bounded(data: bytes, budget: int, path: str = "obj"):
+    """Read with a byte budget small enough to stop short of the object's end.
+
+    The real budget is 64 MiB, so a fixture that reached it by being large would be a
+    64 MiB fixture. Every reader takes the bound as an argument for exactly this.
+    """
+    return read_binary(io.BytesIO(data), path, PATTERNS, vendored=False, max_strings_bytes=budget)
+
+
 # --- the two fields can never disagree ---------------------------------------
 
 _CASES: dict[str, bytes] = {
@@ -294,6 +303,164 @@ def test_several_causes_are_all_reported() -> None:
     assert len(ev.partial_reasons) >= 2
 
 
+# --- a reading gap is a cause; a recording cap is not ------------------------
+
+# The last thing in the object, so a budget can be set to stop short of it. It is also
+# the entire crypto evidence a `cryptography` 42 extension carries: OpenSSL is compiled
+# in, so there is no library file, no dependency and no exported symbol to find.
+_BANNER = b"OpenSSL 3.0.14 4 Jun 2024\x00"
+_BANNER_AT_THE_END = PEBuilder(
+    dll_name="_ext.pyd",
+    imports=(PEImport("python311.dll", names=("Py_Initialize",)),),
+    exports=(PEExport("PyInit__ext"),),
+    trailing=b"\x00" * 4096 + _BANNER,
+).build()
+
+
+def test_a_budget_that_stops_short_of_the_banner_says_so() -> None:
+    """The object is the same object; only how much of it we read changed.
+
+    `strings_truncated` said so all along and nothing downstream could see it, because
+    it is not `partial_analysis` and no policy is written over it. So the record read
+    `partial_analysis: false, partial_reasons: []` beside a field saying the pass never
+    reached the end of the object.
+    """
+    whole, _ = _read_bounded(_BANNER_AT_THE_END, len(_BANNER_AT_THE_END))
+    assert whole.partial_reasons == ()
+    assert [m.group for m in whole.matched_strings] == ["openssl_banner"]
+
+    cut, _ = _read_bounded(_BANNER_AT_THE_END, len(_BANNER_AT_THE_END) - 2048)
+    assert cut.matched_strings == (), "the fixture must not keep the banner in reach"
+    assert cut.strings_truncated is True
+    assert cut.partial_analysis is True
+    assert evidence.PARTIAL_STRINGS_BYTES_UNREAD in cut.partial_reasons
+
+
+def test_the_object_whose_banner_was_cut_does_not_read_clean() -> None:
+    """The whole point of the cause, at the far end of the chain."""
+    cut, errors = _read_bounded(_BANNER_AT_THE_END, len(_BANNER_AT_THE_END) - 2048)
+    ruleset = load_ruleset()
+    e = Evidence(
+        filename="demo-1.0-win_amd64.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        binaries=(cut,),
+        errors=errors,
+    )
+    linkage = resolve_linkage(ruleset, e)
+    assert linkage["openssl"] == "unknown"
+    assert "BIN_PARTIAL_FORMAT" in {f.rule_id for f in apply_rules(ruleset, e, linkage)}
+
+
+# One object per reader, each with something for a budget to stop inside. Built here
+# rather than taken from `_CASES` because `binfmt.elf` bounds the sections it
+# concatenates rather than the file, so an object with no `.rodata` has nothing its
+# budget could run short of however small the budget is.
+_PER_READER: dict[str, bytes] = {
+    "elf": ElfBuilder(rodata=_BANNER * 8).build(),
+    # Mach-O and PE bound the object they read rather than the sections, so the whole
+    # file is what the budget is measured against.
+    "macho": MachOBuilder(id_dylib="libfoo.dylib").build(),
+    "pe": PEBuilder(
+        dll_name="_ext.pyd",
+        imports=(PEImport("python311.dll", names=("Py_Initialize",)),),
+        exports=(PEExport("PyInit__ext"),),
+        trailing=_BANNER * 8,
+    ).build(),
+    "unknown": b"\x00\x01\x02\x03" + _BANNER * 8,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_PER_READER))
+def test_every_reader_names_a_reading_gap(name) -> None:
+    """All four bound the bytes they pull in, so all four can run short of an object."""
+    data = _PER_READER[name]
+    # The boundary, not a comfortable margin: every reader compares `size >` its budget,
+    # so a budget of exactly the object's length must still read as complete.
+    exact, _ = _read_bounded(data, len(data))
+    assert evidence.PARTIAL_STRINGS_BYTES_UNREAD not in exact.partial_reasons, name
+    cut, _ = _read_bounded(data, 8)
+    assert evidence.PARTIAL_STRINGS_BYTES_UNREAD in cut.partial_reasons, name
+
+
+@pytest.mark.parametrize("name", sorted(_PER_READER))
+def test_a_recording_cap_is_not_a_reading_gap(name) -> None:
+    """A cap on what is *kept* is not a claim about what was *read*, in any reader.
+
+    `strings_truncated` is set by both, and only one of them is a partial read, so
+    wiring the token to the wrong one of `StringsPass`'s flags would be invisible in
+    three readers out of four if this were written against ELF alone.
+
+    What a cap costs instead is a separate matter and a worse one: it can drop crypto
+    evidence that sorts late. `DECISIONS.md` has the reproduction. This test pins only
+    that a cap is not spelled as a partial read, which is what the vocabulary means.
+    """
+    limit = PATTERNS.limits.max_strings_per_binary
+    banners = b"".join(b"OpenSSL 3.0.%d 4 Jun 2024\x00" % n for n in range(limit + 5))
+    data = {
+        "elf": lambda: ElfBuilder(rodata=banners).build(),
+        "macho": lambda: MachOBuilder(id_dylib="libfoo.dylib").build() + banners,
+        "pe": lambda: PEBuilder(
+            dll_name="_ext.pyd",
+            imports=(PEImport("python311.dll", names=("Py_Initialize",)),),
+            exports=(PEExport("PyInit__ext"),),
+            trailing=banners,
+        ).build(),
+        "unknown": lambda: b"\x00\x01\x02\x03" + banners,
+    }[name]()
+    ev, _ = _read(data)
+    assert ev.strings_truncated is True, f"{name}: the recording cap did not fire"
+    assert len(ev.matched_strings) == limit, name
+    assert evidence.PARTIAL_STRINGS_BYTES_UNREAD not in ev.partial_reasons, name
+
+
+def test_a_pe_whose_header_would_not_parse_still_names_the_unread_bytes() -> None:
+    """Both of `binfmt.pe`'s hand-built early returns, not just the one with a test.
+
+    That reader writes its failure records out field by field instead of calling
+    `binfmt.fallback`, so each exit is its own chance to forget a cause. The two are
+    symmetric code and only one of them was covered.
+    """
+    # `_Malformed` and the bare `except Exception` are reached by different objects:
+    # a header chain that parses into nonsense, and one that raises on the way.
+    for label, data in (
+        ("malformed", b"MZ" + b"\x00" * 60 + b"OpenSSL 3.0.14 4 Jun 2024\x00" * 4),
+        ("unreadable e_lfanew", b"MZ" + b"\x00" * 58 + b"\xff\xff\xff\xff" + b"pad" * 40),
+    ):
+        ev, _ = _read_bounded(data, 8, path="stub.pyd")
+        assert evidence.PARTIAL_PE_HEADER_UNREAD in ev.partial_reasons, label
+        assert evidence.PARTIAL_STRINGS_BYTES_UNREAD in ev.partial_reasons, label
+        assert list(ev.partial_reasons) == sorted(set(ev.partial_reasons)), label
+
+
+def test_every_cause_that_records_no_error_says_so_in_the_schema() -> None:
+    """The other marker `SCHEMA.md` carries per row, and the one nothing held.
+
+    The routine marker has a drift guard and this did not, which is how the new cause
+    arrived as the only no-error row not saying it. Derived by running the fixtures
+    rather than from a list, so a cause that starts or stops recording an error is
+    caught by the same test.
+    """
+    silent: set[str] = set()
+    noisy: set[str] = set()
+    for data in {**_CASES, **_REACHABILITY}.values():
+        ev, errors = _read(data)
+        (silent if not errors else noisy).update(ev.partial_reasons)
+    # A budget that cuts into the trailing run and nothing else, so the new cause is
+    # reached on its own: `binfmt.pe` resolves its directories inside this same buffer,
+    # so a deeper cut would take the export directory with it and record an error.
+    pe = _PER_READER["pe"]
+    ev, errors = _read_bounded(pe, len(pe) - len(_BANNER))
+    assert not errors and ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
+    silent.update(ev.partial_reasons)
+    assert silent, "no cause was reached without an error"
+    documented = Path("SCHEMA.md").read_text(encoding="utf-8").splitlines()
+    for token in sorted(silent - noisy):
+        row = next(ln for ln in documented if ln.startswith(f"| `{token}` |"))
+        assert "records no error" in row, token
+
+
 # --- the vocabulary must be live, and must be the same in all three places ----
 
 
@@ -325,6 +492,10 @@ def test_every_reason_is_reachable_from_some_object() -> None:
     for data in _REACHABILITY.values():
         ev, _ = _read(data)
         produced |= set(ev.partial_reasons)
+    # A budget rather than a fixture: reaching the real one by size would mean a 64 MiB
+    # object in the suite.
+    ev, _ = _read_bounded(_BANNER_AT_THE_END, len(_BANNER_AT_THE_END) - 2048)
+    produced |= set(ev.partial_reasons)
     # The handlers bytes cannot reach, run for real rather than named as literals: a
     # token asserted into this set could not fail the guard it exists for.
     with pytest.MonkeyPatch.context() as patch:

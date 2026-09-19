@@ -608,7 +608,10 @@ def test_a_table_straddling_the_end_of_the_string_read_is_not_re_read_from_the_s
     )
 
     assert errors == ()
-    assert ev.partial_analysis is False
+    # The strings read was cut short on purpose to set the straddle up, and that is now
+    # a cause of its own. It is the only one: the symbol table on the far side of the
+    # cut was still read in full, which is what this test is about.
+    assert ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
     assert ev.matched_symbols == (
         _symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),
         _symbol("EVP_EncryptInit_ex", evidence.BINDING_IMPORTED),

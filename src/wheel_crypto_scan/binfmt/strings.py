@@ -44,6 +44,10 @@ def sanitize(text: str) -> str:
 # all of them, and in `binfmt.pe` it bounds the structural read as well, because that
 # reader resolves every directory inside this same buffer. Defined once: four copies of
 # the number are four things that can drift apart.
+#
+# Reaching it is recorded. A region nothing looked at is why an object can carry a
+# version banner and report none, so every reader names `strings_bytes_unread` when its
+# own cut bites.
 MAX_STRINGS_BYTES = 64 * 1024 * 1024
 
 
@@ -106,8 +110,16 @@ class StringsPass:
     readers hand it to `binfmt.golang.build_go_info`, which reads its markers out of
     the same runs rather than paying for a second extraction.
 
-    `truncated` covers only what happened inside this pass. How `raw` was bounded in
-    the first place is the caller's business and the caller ORs it in.
+    `truncated` covers only what happened inside this pass, and **it must never reach
+    `partial_reasons`.** Everything behind it is a *recording* cap -- more group matches
+    or more crates than the limits keep -- which can only fire once that many matches
+    are already in hand, so it costs precision about an object already flagged and can
+    never produce a record that reads clean. Whether bytes went unread is the caller's
+    question, because the caller is what bounded them: every reader here hands this
+    function a buffer it has already cut to `max_strings_bytes`, so the cut is a fact
+    only the reader holds. `binfmt.elf` cuts a concatenation of sections, the other
+    three a prefix of the object, and each names `strings_bytes_unread` off its own
+    flag rather than off anything in here.
     """
 
     matched_strings: tuple[StringMatch, ...]
