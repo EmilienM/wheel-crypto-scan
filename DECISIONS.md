@@ -3315,6 +3315,129 @@ because it is a materially larger surface (many catch sites across three readers
 this fix's scope. Tracked separately in
 [#97](https://github.com/EmilienM/wheel-crypto-scan/issues/97).
 
+**#97's follow-up: binfmt's own parse-error kinds.** **Accepted, on a corrected audit.**
+The audit that entry asked for was run twice: the first pass claimed every recording
+site in all three readers was, or fell through to, a broad `except Exception`, and that
+none of the three had a genuinely narrow catch. Adversarial review checked this against
+the actual code and found both halves wrong. `elf.py` has nineteen sites that can record
+`elf_parse_error`, not ten, and thirteen of them are bare `if`/`elif` comparisons over
+data already fully in hand -- the same shape as #64's own excluded
+`DUPLICATE_MEMBER`/`SIZE_LIMIT_EXCEEDED`, not an `except` block at all. One of them,
+"more than one `SHT_DYNSYM` section, which is real cannot be told", is a purely
+structural check with no exception anywhere near it. `macho.py` has no recording site
+lexically inside a handler at all; every `macho_parse_error` is emitted from a flag or
+reason string a broad catch set earlier, which is still eventually traceable to a broad
+catch, but not the "narrows the message, still falls through" shape the first pass
+described. `pe.py`'s `except _Malformed` is a real, narrow, deterministic-only catch:
+`_Malformed` is raised at exactly seven points inside `_read_headers`, every one a pure
+comparison over `raw`, and grepping the whole file confirms no exception is ever wrapped
+into it -- a `MemoryError` or a flaky read cannot reach that branch. Corrected count: the
+*majority* of what records these three kinds is deterministic, not the minority the
+first pass claimed, and one of the three readers already has the "genuinely narrow,
+exception-type-specific catch" the "Revisit if" clause below used to say would trigger a
+revisit.
+
+None of that changes the conclusion, only its honesty. Each reader also has at least one
+real broad catch that can record the identical token for a transient reason
+(`elf.py:592`/`:702`, `macho.py:454`/`:697`/`:752`, `pe.py:360`), and `ScanError.kind` is
+the only granularity this vocabulary offers to tell a run's cause apart from another
+run's (see "What NOT to do" in #97 itself): a kind reachable through a broad catch
+*anywhere* belongs in `SCAN_ABORTED_KINDS` entirely, not the specific call that happened
+to raise on a given run, so all three still join it -- deliberately accepting that the
+deterministic majority rides along uncached too, which "What it costs" below now says
+plainly instead of denying it has a majority to ride along.
+
+**What changed.** `errors.SCAN_ABORTED_KINDS` gains `ELF_PARSE_ERROR`,
+`MACHO_PARSE_ERROR` and `PE_PARSE_ERROR`. `cli.py` needed no change: `_scan_path` and
+`_existing_records` already consult the set generically through `_scan_was_aborted`,
+which is the whole reason this follow-up is three lines of vocabulary rather than a
+second copy of the caching logic.
+
+**Reproduction, adapted per format.** A single transient `MemoryError` inside
+`elf.py`'s own `.dynamic` reading (patched onto `_validated_strtab`, which both the
+`.dynamic` and `.dynsym` blocks call): the first attempt records `elf_parse_error`,
+`needed: []` -- the `libsodium.so.23` dependency lost the same way DECISIONS.md's own
+#64 entry describes -- and comes out `OPAQUE`; the second is not served from cache and
+recovers `needed` and `libsodium_linkage: system`.
+`test_a_transient_elf_parse_failure_is_retried_not_cached` pins it, plus
+`test_resume_does_not_treat_an_aborted_elf_scan_as_already_done` for `--resume`. The
+same shape holds for `macho.py` (`_read_thin` patched, an `LC_LOAD_DYLIB` dependency
+lost then recovered: `test_a_transient_macho_parse_failure_is_retried_not_cached`) and
+`pe.py` (`_read_imports` patched, an imported DLL lost then recovered:
+`test_a_transient_pe_parse_failure_is_retried_not_cached`), all in `tests/test_cli.py`
+beside the #64 tests they extend.
+
+**What it costs.** No version bump, of either kind. `ANALYZER_VERSION` governs whether
+an unchanged wheel produces a different *record*; this change touches nothing in
+`scan_wheel`'s own output for a given attempt, only whether a record already produced
+gets cached or read back by `--resume` -- the same reasoning #64 gave for adding
+`MEMBER_READ_ERROR` to this set, and the same non-bump. `ruleset_version` does not move
+either: `data/ruleset.toml` is unchanged, `BIN_UNPARSEABLE` already matched these three
+kinds before this fix and still does.
+
+Two real costs the first draft of this entry did not record. First: a permanently
+malformed object -- the corrected audit above shows this is the common case, not the
+rare one -- is now re-read in full on every scan, forever, rather than cached after the
+first failure. Measured on a real ~13 MiB object with two `SHT_DYNSYM` sections (a
+purely structural `elf.py` check, no exception involved): 0.965s to fail once, then
+0.001s on every later run before this fix, 0.974s on every later run after it -- roughly
+a thousand-fold cost, paid every time, for a wheel whose bytes can only ever produce the
+same answer. This is the opposite of why `bad_zip` was accepted into this set: that
+kind aborts `_collect` before any real read happens, so re-failing it is cheap; these
+three are recorded *after* the strings pass (up to `MAX_STRINGS_BYTES`, 64 MiB per
+object) and the symbol-table walk already ran, so re-failing them is the most expensive
+thing this scanner does. It is also, for the `elf.py:657` "declares more bytes than the
+budget allows" site specifically, the identical shape `SIZE_LIMIT_EXCEEDED` is excluded
+from this set *for*, given the opposite treatment. The trade is accepted anyway, on the
+same principle #64 leads with: losing real evidence to a stale cache costs more than an
+expensive, correct re-scan, and there is no cheaper way to split a deterministic
+occurrence of one of these kinds from a transient one without a narrower token than
+`ScanError.kind` currently carries -- but it is a real, ongoing cost, not a free lunch.
+
+Second: this fix is prospective only. A cache entry already poisoned by a transient
+failure under pre-fix code is still served verbatim after this fix ships, because
+`cli._scan_path` returns a cache hit before `_scan_was_aborted` is ever consulted, and
+neither version bump above forces re-evaluation of it. Anyone who already hit this bug
+stays stuck until they clear their cache by hand or until an unrelated version bump
+forces re-evaluation for some other reason. Matches #64's own precedent for
+`MEMBER_READ_ERROR`, which has the same property and was accepted the same way; stated
+here rather than left implicit.
+
+**What was deferred.** `layers/python_ast.py` turns a `RecursionError` into
+`PYTHON_SYNTAX_ERROR`, which shares the non-determinism risk -- the interpreter's stack
+depth at scan time, not the wheel's bytes, decides whether it fires. It is a materially
+different problem from the three kinds above, though: `PYTHON_SYNTAX_ERROR` is also
+recorded for a null byte in the source and for a real `SyntaxError` from `ast.parse`,
+both genuinely deterministic given the same bytes, so the kind is mixed rather than
+uniformly one thing or the other the way `elf_parse_error` and its siblings turned out
+to be. Excluding the whole kind from caching the way this fix excludes the three
+`*_parse_error` kinds would mean re-scanning every source file with an ordinary,
+permanent syntax error on every run, for no benefit; the token alone cannot tell
+`RecursionError` apart from a real `SyntaxError` the way #97 itself says the token alone
+cannot be split within a kind. Left out of this fix, which #97's own title and scope
+name as the three `*_parse_error` kinds specifically. A correct fix needs either a
+narrower token for the `RecursionError` branches or some other way to carry which cause
+fired past the point `ScanError.kind` currently collapses it, which is a distinct,
+narrower piece of work.
+
+**Revisit if** `ScanError.kind` ever grows the ability to distinguish a deterministic
+structural defect from a transient interruption within one of these three kinds --
+`pe.py`'s narrow `except _Malformed` already proves a genuinely deterministic-only catch
+can exist for one shape of `pe_parse_error`, but the *token* it records is the same one
+a broad catch elsewhere in `pe.py` can also produce, and that collapse, not the absence
+of a narrow catch, is what keeps the whole kind in this set. Splitting the token itself
+-- a distinct kind for `_Malformed`'s deterministic shape, versus the broad-catch one --
+would let the deterministic majority measured above be cached again without losing the
+transient-safety this fix exists for; the same "revisit" clause above gives
+`MEMBER_READ_ERROR`, applied here to three kinds instead of one. Also revisit
+`PYTHON_SYNTAX_ERROR` once there is a way to
+split its `RecursionError` occurrences from its deterministic ones; until then it stays
+outside `SCAN_ABORTED_KINDS`, on the grounds that re-scanning a permanent syntax error
+forever costs more than an occasional `RecursionError` staying cached.
+
+Tracked in [#97](https://github.com/EmilienM/wheel-crypto-scan/issues/97), itself
+tracked from [#64](https://github.com/EmilienM/wheel-crypto-scan/issues/64).
+
 Tracked in [#64](https://github.com/EmilienM/wheel-crypto-scan/issues/64).
 
 ## `.exe` joins `_BINARY_SUFFIX`, and stops there

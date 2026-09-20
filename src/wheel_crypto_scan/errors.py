@@ -79,8 +79,7 @@ ERROR_KINDS: frozenset[str] = frozenset(
 # Archive- and member-stage kinds this scanner cannot yet prove are deterministic, so a
 # record carrying one is not a final answer for its wheel -- caching it, or treating it
 # as already done on `--resume`, risks serving a transient failure forever, the bug #64
-# was filed about. Not exhaustive: binfmt's own parse-error kinds share this risk one
-# layer down and are out of this set's scope for now (#97).
+# was filed about.
 #
 # `BAD_ZIP` and `UNEXPECTED_ERROR` abort `_collect` outright: nothing past the open
 # ever ran, from a catch (in `wheelfile.WheelArchive.__init__` and `scan.scan_wheel`
@@ -94,6 +93,22 @@ ERROR_KINDS: frozenset[str] = frozenset(
 # aborted" -- only two of them abort anything -- but "the code path that recorded
 # this could not have told a content defect from an outside interruption apart."
 #
+# `ELF_PARSE_ERROR`, `MACHO_PARSE_ERROR` and `PE_PARSE_ERROR` share the identical shape,
+# one layer below `MEMBER_READ_ERROR`: `binfmt/elf.py`, `binfmt/macho.py` and
+# `binfmt/pe.py` each record their kind from several sites. Most of those sites are, in
+# fact, deterministic -- plain comparisons over data already fully in hand, the same
+# shape as `DUPLICATE_MEMBER`/`SIZE_LIMIT_EXCEEDED` below, and `pe.py` even has a
+# genuinely narrow, exception-type-specific catch (`except _Malformed`, raised only from
+# pure comparisons, never wrapping another exception) -- but each reader ALSO has at
+# least one real `except Exception`-shaped site that can record the identical token for
+# a transient reason (`MemoryError`, a flaky read), and `ScanError.kind` is the only
+# granularity this vocabulary offers: it cannot tell which site produced a given record.
+# A kind reachable through a broad catch anywhere therefore belongs in this set
+# entirely, not just the specific call that happened to raise on a given run -- at the
+# real, accepted cost that the deterministic majority of occurrences also gets
+# needlessly re-scanned on every run, rather than the free lunch an earlier draft of
+# this comment claimed. See DECISIONS.md's #97 entry for the measurement. #97.
+#
 # `DUPLICATE_MEMBER`, `SIZE_LIMIT_EXCEEDED`, `COMPRESSION_RATIO_EXCEEDED` and
 # `BINARY_TOO_LARGE` are deliberately not in this set: each is a comparison or a dict
 # lookup over zip metadata already fully in hand (a filename seen twice, a size field
@@ -101,7 +116,16 @@ ERROR_KINDS: frozenset[str] = frozenset(
 # it, so the same wheel's bytes always produce the same one and caching it is safe.
 #
 # See DECISIONS.md, "A record produced without reading the wheel is never cached."
-SCAN_ABORTED_KINDS: frozenset[str] = frozenset({BAD_ZIP, UNEXPECTED_ERROR, MEMBER_READ_ERROR})
+SCAN_ABORTED_KINDS: frozenset[str] = frozenset(
+    {
+        BAD_ZIP,
+        UNEXPECTED_ERROR,
+        MEMBER_READ_ERROR,
+        ELF_PARSE_ERROR,
+        MACHO_PARSE_ERROR,
+        PE_PARSE_ERROR,
+    }
+)
 
 
 class RulesetError(Exception):

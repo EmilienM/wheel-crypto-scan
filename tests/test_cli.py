@@ -10,10 +10,11 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from helpers.binfmt import DynSym, ElfBuilder
+from helpers.binfmt import DynSym, ElfBuilder, MachOBuilder, MachOSym, PEBuilder, PEImport
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import TOOL_NAME, cli, scan
+from wheel_crypto_scan.binfmt import elf, macho, pe
 from wheel_crypto_scan.cache import RecordCache
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.layers import binaries as binaries_layer
@@ -23,6 +24,8 @@ from wheel_crypto_scan.scan import ScanContext
 WEAK_HASH_SOURCE = b"import hashlib\n\ndigest = hashlib.md5()\n"
 CLEAN_SOURCE = b"VALUES = [1, 2, 3]\n"
 MANYLINUX = "cp39-abi3-manylinux_2_28_x86_64"
+MACOSX = "cp312-cp312-macosx_11_0_arm64"
+WIN_AMD64 = "cp312-cp312-win_amd64"
 
 
 @pytest.fixture
@@ -386,6 +389,221 @@ def test_a_transient_member_read_failure_is_retried_not_cached(
     assert len(second["binaries"]) == 1
     assert second["verdict"]["conditions"]["libsodium_linkage"] == "system"
     assert second["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+# `ELF_PARSE_ERROR`, `MACHO_PARSE_ERROR` and `PE_PARSE_ERROR` share the identical risk,
+# one layer deeper still: `binfmt/elf.py`, `binfmt/macho.py` and `binfmt/pe.py` each
+# catch broadly around their own parsing and record one of these kinds, below where
+# `MEMBER_READ_ERROR` is produced. #97.
+
+
+def _flaky(monkeypatch: pytest.MonkeyPatch, module: object, name: str) -> dict[str, int]:
+    """Patches `module.name` to fail once with `MemoryError`, then behave normally.
+
+    A generalisation of `_flaky_collect` above, aimed one layer deeper: the transient
+    failure has to be injected inside the binfmt reader itself, not around it, because
+    `read_binary`'s own dispatch never sees an exception from `read_elf`/`read_macho`/
+    `read_pe` -- each of those already turns a parse failure into a `ScanError` and
+    returns normally rather than raising.
+    """
+    real = getattr(module, name)
+    calls = {"n": 0}
+
+    def flaky(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise MemoryError("simulated transient failure")
+        return real(*args, **kwargs)  # type: ignore[misc]
+
+    monkeypatch.setattr(module, name, flaky)
+    return calls
+
+
+def test_a_transient_elf_parse_failure_is_retried_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reproduction from #97: a transient `MemoryError` inside `elf.py`'s own
+    `.dynamic` reading (one layer below `MEMBER_READ_ERROR`) must not calcify a lost
+    `DT_NEEDED` entry into a permanent record. `_validated_strtab` is on the path both
+    `.dynamic`'s tags and `.dynsym`'s string table are read through, so one scan calls
+    it twice -- once for each -- and the first of those two calls is the one this test
+    makes fail, which is the `.dynamic` block (`read_elf` reads `.dynamic` before
+    `.dynsym`): its own `except Exception` is what actually records `elf_parse_error`
+    and loses `needed` here.
+    """
+    wheel = build_wheel(
+        tmp_path / f"fakesodium-1.0-{MANYLINUX}.whl",
+        name="fakesodium",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakesodium/_ext.abi3.so": ElfBuilder(
+                needed=("libsodium.so.23", "libc.so.6"),
+                dynsyms=(DynSym("some_internal_symbol", defined=True),),
+            ).build()
+        },
+    )
+    calls = _flaky(monkeypatch, elf, "_validated_strtab")
+    context = ScanContext.build(load_ruleset())
+    monkeypatch.setattr(cli, "_CONTEXT", context)
+    monkeypatch.setattr(
+        cli,
+        "_CACHE",
+        RecordCache(
+            root=tmp_path / "cache",
+            ruleset_version=context.ruleset.version,
+            evidence_level="standard",
+        ),
+    )
+
+    first = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 2, "one call for .dynamic (raises), one for .dynsym (recovers)"
+    assert [error["kind"] for error in first["errors"]] == ["elf_parse_error"]
+    assert len(first["binaries"]) == 1
+    assert first["binaries"][0]["needed"] == []
+    assert first["verdict"]["class"] == "OPAQUE"
+    assert "BIN_UNPARSEABLE" in first["verdict"]["rule_ids"]
+
+    second = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 4, "a cached record must not stop the second attempt from happening"
+    assert second["errors"] == []
+    assert second["binaries"][0]["needed"] == ["libc.so.6", "libsodium.so.23"]
+    assert second["verdict"]["conditions"]["libsodium_linkage"] == "system"
+
+
+def test_resume_does_not_treat_an_aborted_elf_scan_as_already_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors `test_resume_does_not_treat_an_aborted_scan_as_already_done` for
+    `elf_parse_error`: `--resume` must not read a record carrying it as a finished
+    answer either.
+    """
+    wheel = build_wheel(
+        tmp_path / f"fakesodium-1.0-{MANYLINUX}.whl",
+        name="fakesodium",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakesodium/_ext.abi3.so": ElfBuilder(
+                needed=("libsodium.so.23", "libc.so.6"),
+                dynsyms=(DynSym("some_internal_symbol", defined=True),),
+            ).build()
+        },
+    )
+    calls = _flaky(monkeypatch, elf, "_validated_strtab")
+    out = tmp_path / "out.jsonl"
+
+    main(["scan", str(wheel.parent), "-o", str(out), "--no-cache", "-q"])
+    first = read_records(out)
+    assert len(first) == 1
+    assert calls["n"] == 2, "one call for .dynamic (raises), one for .dynsym (recovers)"
+    assert [error["kind"] for error in first[0]["errors"]] == ["elf_parse_error"]
+
+    main(["scan", str(wheel.parent), "-o", str(out), "--no-cache", "--resume", "-q"])
+    second = read_records(out)
+    assert len(second) == 1
+    assert calls["n"] == 4, "resume must re-attempt a wheel whose only record is an aborted scan"
+    assert second[0]["errors"] == []
+    assert second[0]["verdict"]["conditions"]["libsodium_linkage"] == "system"
+
+
+def test_a_transient_macho_parse_failure_is_retried_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `macho_parse_error` sibling of the ELF reproduction above:
+    `_read_slice_header`'s own `except Exception` falls through to the identical broad
+    catch once `struct.error` and `_Unreadable` are ruled out, so a transient
+    `MemoryError` reading a slice's load commands must not calcify a lost `LC_LOAD_DYLIB`
+    dependency into a permanent record.
+    """
+    wheel = build_wheel(
+        tmp_path / f"fakecrypto-1.0-{MACOSX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MACOSX,),
+        files={
+            "fakecrypto/_ext.cpython-312-darwin.so": MachOBuilder(
+                load_dylibs=("/usr/lib/libSystem.B.dylib", "/usr/lib/libcrypto.3.dylib"),
+                symbols=(MachOSym("_EVP_DigestInit_ex", False),),
+            ).build()
+        },
+    )
+    calls = _flaky(monkeypatch, macho, "_read_thin")
+    context = ScanContext.build(load_ruleset())
+    monkeypatch.setattr(cli, "_CONTEXT", context)
+    monkeypatch.setattr(
+        cli,
+        "_CACHE",
+        RecordCache(
+            root=tmp_path / "cache",
+            ruleset_version=context.ruleset.version,
+            evidence_level="standard",
+        ),
+    )
+
+    first = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 1
+    assert [error["kind"] for error in first["errors"]] == ["macho_parse_error"]
+    assert len(first["binaries"]) == 1
+    assert first["binaries"][0]["needed"] == []
+    assert first["verdict"]["class"] == "OPAQUE"
+    assert "BIN_UNPARSEABLE" in first["verdict"]["rule_ids"]
+
+    second = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 2, "a cached record must not stop the second attempt from happening"
+    assert second["errors"] == []
+    assert second["binaries"][0]["needed"] == [
+        "/usr/lib/libSystem.B.dylib",
+        "/usr/lib/libcrypto.3.dylib",
+    ]
+    assert second["verdict"]["conditions"]["openssl_linkage"] == "system"
+
+
+def test_a_transient_pe_parse_failure_is_retried_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `pe_parse_error` sibling: `read_pe`'s own `except Exception` around the
+    import directory must not let a transient `MemoryError` calcify a lost DLL
+    dependency into a permanent record.
+    """
+    wheel = build_wheel(
+        tmp_path / f"fakecrypto-1.0-{WIN_AMD64}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(WIN_AMD64,),
+        files={
+            "fakecrypto/_ext.pyd": PEBuilder(
+                imports=(PEImport("libcrypto-3-x64.dll", names=("EVP_DigestInit_ex",)),),
+                dll_name="_ext.pyd",
+            ).build()
+        },
+    )
+    calls = _flaky(monkeypatch, pe, "_read_imports")
+    context = ScanContext.build(load_ruleset())
+    monkeypatch.setattr(cli, "_CONTEXT", context)
+    monkeypatch.setattr(
+        cli,
+        "_CACHE",
+        RecordCache(
+            root=tmp_path / "cache",
+            ruleset_version=context.ruleset.version,
+            evidence_level="standard",
+        ),
+    )
+
+    first = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 1
+    assert [error["kind"] for error in first["errors"]] == ["pe_parse_error"]
+    assert len(first["binaries"]) == 1
+    assert first["binaries"][0]["needed"] == []
+    assert first["verdict"]["class"] == "OPAQUE"
+    assert "BIN_UNPARSEABLE" in first["verdict"]["rule_ids"]
+
+    second = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 2, "a cached record must not stop the second attempt from happening"
+    assert second["errors"] == []
+    assert second["binaries"][0]["needed"] == ["libcrypto-3-x64.dll"]
+    assert second["verdict"]["conditions"]["openssl_linkage"] == "system"
 
 
 def test_resume_skips_a_malformed_line_instead_of_crashing_the_run(
