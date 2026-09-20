@@ -230,6 +230,21 @@ _REACHABILITY: dict[str, bytes] = {
         symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
         poison_cmdsize=0x10000,
     ).build(),
+    # #85: a second `LC_ID_DYLIB` -- an honest install name, and a decoy that
+    # last-wins would otherwise pick.
+    "macho load command ambiguous": MachOBuilder(
+        id_dylib="libfoo.dylib",
+        extra_id_dylibs=("decoy.dylib",),
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+    ).build(),
+    # #85's other field: a second `LC_SYMTAB`, honestly shaped but pointing at
+    # garbage, written after the real one -- the shape that actually demonstrates the
+    # pre-fix bug, since a last-wins reader keeps the one written last.
+    "macho symtab ambiguous": MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+        decoy_symtabs_after=1,
+    ).build(),
 }
 
 
@@ -713,6 +728,12 @@ _BYTE_REACHABLE = {
     "macho stripped": [evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE],
     "macho fat slice unread": [evidence.PARTIAL_MACHO_FAT_SLICE_UNREAD],
     "macho dylib name unread": [evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD],
+    # A real, complete symbol table keeps `macho_symtab_incomplete` from also firing,
+    # so this is the one macho ambiguity fixture that names exactly its own token; the
+    # LC_SYMTAB-ambiguous shape always carries `macho_symtab_incomplete` alongside it,
+    # because the table it discards reads as absent. See
+    # `test_a_second_symtab_also_costs_the_symtab_split` for that combination.
+    "macho load command ambiguous": [evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS],
     "pe header unread": [evidence.PARTIAL_PE_HEADER_UNREAD],
     "pe ordinal import": [evidence.PARTIAL_PE_ORDINAL_IMPORT],
     "unknown format": [evidence.PARTIAL_NO_STRUCTURAL_READER],

@@ -2832,3 +2832,178 @@ own -- at that point option 2 (splitting `Conventions`/`SonameInfo` out) is the 
 lever, not a bigger `max-module-lines`.
 
 Tracked in [#66](https://github.com/EmilienM/wheel-crypto-scan/issues/66).
+
+## More than one LC_ID_DYLIB or LC_SYMTAB is ambiguous, not last-wins
+
+**Accepted. The Mach-O counterpart of #56's `elf_section_type_ambiguous`, and it
+changes records.**
+
+`_read_thin`'s load-command walk set `soname = name` on every `LC_ID_DYLIB` it
+reached, and built a fresh `_Symtab` on every `LC_SYMTAB`, both unconditionally: a
+second command of either kind silently overwrote the first, and the walk never
+counted how many it had seen. `linkage._binary_posture` reads `soname` first, through
+`conventions.own_base`, to decide whether the object itself *is* a named library --
+the `vendored_path and own_base(...) in sonames` check that fires before `needed` is
+even consulted -- so a decoy `LC_ID_DYLIB` is load-bearing for the verdict, not
+cosmetic, and a decoy `LC_SYMTAB` is load-bearing for the imported/defined split the
+whole tool turns on.
+
+Reproduced on a wheel bundling `libcrypto` under a neutral member name, with the
+install name as the only signal tying the object to that identity and a second, decoy
+`LC_ID_DYLIB` appended:
+
+```
+honest LC_ID_DYLIB, single             -> openssl_linkage: bundled, needs_human_review: true
+honest LC_ID_DYLIB + decoy appended    -> openssl_linkage: none,    needs_human_review: false
+```
+
+The decoy is not merely ignored -- `own_base` reads whichever name the walk reached
+last, so the record actively misreports the object's own identity, and the wheel's
+`openssl_linkage` was left with nothing to say the object had told us anything
+questionable at all: `partial_analysis: false`, `errors: []`. Same shape as `main`
+before #56, reached through `LC_ID_DYLIB` instead of a section header.
+
+**The fix mirrors #56's treatment exactly: detect ambiguity, trust neither
+candidate, cost the answer.** `_read_thin` now counts how many `LC_ID_DYLIB` and how
+many `LC_SYMTAB` commands the walk actually reaches, regardless of whether each one's
+own body could otherwise be read. More than one of either resets the corresponding
+field to `None` after the walk finishes -- `soname`, or the `_Symtab` the walk had
+been building -- rather than leaving whichever one was assigned last. `soname` and
+the symbol table then read as though this slice itself never declared one: `own_base`
+falls back to the member's file name the same way it always has for an object that
+never declared `LC_ID_DYLIB` at all, and `_read_slice_symbols` takes an absent
+`_Symtab` down the same path a genuinely stripped object already takes, `stripped`
+included. That "read as absent, not as the decoy" rule is #56's own, applied here to
+load commands instead of section headers. It is a per-slice fact, not necessarily the
+record's final answer: `read_macho` still backfills `soname` from a later, unambiguous
+fat-binary slice when one exists (see "A genuine residual" below), so a nulled `soname`
+here can still surface a real name once the slices are merged.
+
+**One token, not two.** `elf_section_type_ambiguous` already covers three ELF section
+kinds (`SHT_DYNAMIC`, `SHT_DYNSYM`, `SHT_SYMTAB`) under one token, because the failure
+is the same shape regardless of which kind of section it lands on: more than one
+candidate of a kind the reader looks for, and no way to tell them apart from the kind
+alone. `LC_ID_DYLIB` and `LC_SYMTAB` are the identical shape one level up -- load
+commands instead of sections -- so `macho_load_command_ambiguous` covers both fields
+rather than minting `macho_id_dylib_ambiguous` and `macho_symtab_ambiguous`
+separately. Checked against #59's, #63's and #84's tokens first, per `AGENTS.md`'s
+"don't duplicate an existing cause": none of them are this. `macho_symtab_incomplete`
+comes closest, but its own entry ("A symbol table is checked against the string table,
+not taken at its word") is about a table this reader reached and could not take at its
+word for well-defined reasons -- unreachable, holding nothing but debug records,
+understating its own rows. Ambiguity is a different fact: the table's own contents are
+never even in question, because there is no way to tell which of two candidates is the
+real table before either is read. Folding it into `macho_symtab_incomplete` would ask
+one token to mean two different things a consumer might want to tell apart, the same
+reasoning that kept `elf_section_type_ambiguous` off `elf_dynsym_unread`.
+
+**Interaction, checked rather than assumed.** An ambiguous `LC_SYMTAB` still costs
+`macho_symtab_incomplete` too, because the discarded table is handed to
+`_read_slice_symbols` as `header.symtab is None`, the identical shape an absent
+`LC_SYMTAB` already takes -- silently, no second error, since that token's own silent
+case is exactly "nothing about this table was left unexplained beyond its absence."
+The two tokens naming the same object is not a contradiction: `macho_load_command_ambiguous`
+names *why* the table is gone, `macho_symtab_incomplete` names *what* is missing, the
+same division `symtab_understates_rows` already draws beside a format-specific cause.
+An ambiguous `LC_ID_DYLIB` costs nothing extra of the kind: `soname` has no sibling
+token the way the symbol table does.
+
+Checked against #84's walk-truncation shape directly: an ambiguous `LC_ID_DYLIB`
+combined with a later `cmdsize` that truncates the walk records both
+`macho_load_command_ambiguous` and `macho_load_command_walk_truncated` together,
+neither one swallowing the other, and evidence read *before* the poison command --
+including the first `LC_ID_DYLIB`, before ambiguity was even known -- survives exactly
+the way #84 already guarantees.
+
+**It costs the linkage answer, on purpose.** `macho_load_command_ambiguous` is not on
+`[linkage_policy] exclude_reasons`, the same call #56 made for
+`elf_section_type_ambiguous` and for the same reason: `soname` and the imported/defined
+split are both fields `linkage` reads, and an ambiguous object has answered neither --
+it is "we could not tell", not "there is nothing here." Excluding it would read
+`openssl_linkage: none` off an object that told us nothing, the exact failure this
+whole fix exists to close. The default `partial_binary` rule (`BIN_PARTIAL_FORMAT`)
+claims it automatically, the same way it claims every cause not named in its own
+`exclude_reasons = ["pe_ordinal_import"]`: no `ruleset.toml` change was needed for
+either list.
+
+**What was rejected.** A separate token per field (`macho_id_dylib_ambiguous` and
+`macho_symtab_ambiguous`), covered above. Folding the `LC_SYMTAB` half into
+`macho_symtab_incomplete`, covered above. Resyncing past a decoy by trusting
+whichever `LC_ID_DYLIB` or `LC_SYMTAB` sorts *first* rather than last: that is still
+picking one of two untrusted candidates, the identical hazard #56's first-pass fix
+made for ELF sections before review found a decoy could sit ahead of the real one
+too.
+
+**What it costs.** `ANALYZER_VERSION` moves: an object carrying more than one
+`LC_ID_DYLIB` or more than one `LC_SYMTAB` now reads `partial_analysis: true` with
+`soname` and/or the symbol split unresolved, where it used to silently report
+whichever candidate the walk reached last. `_read_thin`'s return type moved from a
+bare positional tuple to a `_ThinHeader` dataclass, the refactor both #59's and #84's
+own entries predicted the next per-command cause would force: seven positional
+elements was the second time that prediction came true, and a third silent element
+was the point past which naming each one stopped being optional.
+`max-module-lines` for `binfmt/macho.py` moved from 1100 to 1200 for the same reason
+#84 moved it from 1000 -- the docstring enumerating every `partial_analysis` cause
+grew by one more paragraph, and pylint counts prose the same as code.
+
+**Adversarial probes, beyond the reproduction above.** A third `LC_ID_DYLIB` is still
+ambiguous -- the check counts occurrences rather than comparing exactly two values, so
+it needs no third arm. Both orderings of a decoy `LC_SYMTAB` were built and checked:
+after the real one, the shape that actually demonstrates the pre-fix bug (a last-wins
+reader keeps the decoy's garbage offsets over the real table), and before it, the
+shape a last-wins reader would have gotten right by accident and that a
+first-wins-style fix would still get wrong -- both are refused identically, because
+counting occurrences does not care which one the walk reached last.
+
+**A genuine residual, found while probing the universal-binary merge and not closed
+here.** This fix is about ambiguity *within* one thin header's own load-command walk.
+It says nothing about two slices of a fat binary that each carry exactly one,
+internally unambiguous `LC_ID_DYLIB`, but *disagree with each other*: `read_macho`
+merges `soname` by "the first one any slice declared" (documented in this module's own
+docstring and in "A universal binary is one record, and its slices are merged",
+above), so a universal2 object whose x86_64 slice honestly declares `libcrypto.3.dylib`
+and whose arm64 slice honestly declares something else still reads `soname:
+"libcrypto.3.dylib"`, `partial_analysis: false`, with nothing in the record to say the
+two slices disagreed. Reproduced directly: a two-slice fat object built exactly this
+way returns `soname == "libcrypto.3.dylib"` and `partial_analysis is False` end to end
+through `read_macho`. This is not the shape #85 was filed for -- neither slice's own
+walk is ambiguous, so `macho_load_command_ambiguous` correctly does not fire for
+either -- and it is not new: it is the same "first one any slice declared" rule the
+universal-binary-merge entry above already documents and already accepted for
+`soname`, one adversarial probe closer to a concrete counterexample than that entry
+had before. Left open rather than folded into this fix, for the same reason that
+entry gives for not tracking which architecture said what: closing it needs `soname`
+to become a per-slice fact the merge can compare, which is a real, if smaller,
+instance of the same three-or-more-architectures gap that entry already tracks under
+#10.
+
+Revisit if a real wheel is found whose fat slices honestly disagree about
+`LC_ID_DYLIB` -- the probe above is synthetic, and #10's own entry records that no
+disagreement of any kind has been found in a real universal2 wheel yet.
+
+### A module-local line-count exemption instead of a third global bump
+
+**Corrected after review.** This fix's own docstring/dataclass growth pushed
+`binfmt/macho.py` over pylint's `max-module-lines`, and the first pass fixed it the way
+#84 had: raising the project-wide limit again (1100 -> 1200). That is the third such
+raise counting #84's own (1000 -> 1100), and each one silently gives every OTHER module
+in the project the same extra headroom, whether or not it has earned it the way
+`macho.py` has -- a documentation-heavy `partial_analysis` docstring that AGENTS.md's
+"every policy entry carries a why" rule asks for, not unchecked growth. Replaced with a
+module-local `# pylint: disable=too-many-lines` in `macho.py` itself, with the same
+justification comment moved there, and `max-module-lines` reverted to pylint's own
+default (1000) in `pyproject.toml`. `elf.py` (822 lines) and `pe.py` (812) were nowhere
+close to either limit, so nothing else was depending on the raised ceiling; reverting it
+costs nothing and stops the next module's growth from riding through unpoliced by
+accident.
+
+Revisit if a module OTHER than `binfmt/macho.py` needs the same exemption -- at that
+point the pattern is common enough that a project-wide policy (or a documented list of
+exempted modules) is worth the trade a global bump makes, rather than three modules
+each carrying their own disable comment for the same underlying reason.
+
+Tracked in [#85](https://github.com/EmilienM/wheel-crypto-scan/issues/85), mirroring
+[#56](https://github.com/EmilienM/wheel-crypto-scan/issues/56)'s ELF precedent, and
+building on the same load-command walk [#59](https://github.com/EmilienM/wheel-crypto-scan/issues/59),
+[#63](https://github.com/EmilienM/wheel-crypto-scan/issues/63) and
+[#84](https://github.com/EmilienM/wheel-crypto-scan/issues/84) already touched.

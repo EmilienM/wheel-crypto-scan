@@ -84,6 +84,11 @@ class MachOBuilder:
     cpusubtype: int = 0x80000003
     filetype: int = 6  # MH_DYLIB
     id_dylib: str | None = None
+    # #85: one or more further `LC_ID_DYLIB` commands, written immediately after the
+    # first one (if any). Real objects carry at most one; this is how a test builds
+    # the decoy shape -- `cmd` alone cannot tell the real one from a decoy, unlike a
+    # dylib-loading command's string.
+    extra_id_dylibs: tuple[str, ...] = ()
     load_dylibs: tuple[str, ...] = ()
     # `LC_LOAD_DYLIB`'s siblings: same `dylib_command` layout, different load-time
     # tolerance or timing (`weak`/`lazy`/`upward`), or the target's exports folded into
@@ -148,6 +153,16 @@ class MachOBuilder:
     declared_nsyms: int | None = None
     declared_stroff: int | None = None
     declared_strsize: int | None = None
+    # #85: one or more decoy `LC_SYMTAB` commands, honestly shaped -- a full
+    # `symtab_command` -- but pointing at garbage offsets, which is exactly what makes
+    # counting occurrences rather than trusting content the only sound check: content
+    # alone cannot tell a decoy from a table nobody has read yet. `_before` writes
+    # ahead of the real one (if `with_symtab` or `symbols` is set), the shape a
+    # last-wins reader would have gotten right by accident; `_after` writes behind it,
+    # the shape that actually demonstrates the pre-fix bug -- the decoy is the one a
+    # last-wins reader keeps.
+    decoy_symtabs_before: int = 0
+    decoy_symtabs_after: int = 0
     trailing: bytes = b""
 
     def build(self) -> bytes:
@@ -156,6 +171,9 @@ class MachOBuilder:
         ncmds = 0
         if self.id_dylib is not None:
             commands += self._dylib_command(LC_ID_DYLIB, self.id_dylib, end)
+            ncmds += 1
+        for name in self.extra_id_dylibs:
+            commands += self._dylib_command(LC_ID_DYLIB, name, end)
             ncmds += 1
         for name in self.load_dylibs:
             commands += self._dylib_command(LC_LOAD_DYLIB, name, end)
@@ -217,11 +235,21 @@ class MachOBuilder:
             commands += self._rpath_command(path, end)
             ncmds += 1
 
+        decoy_symtab = struct.pack(
+            end + "IIIIII", LC_SYMTAB, SYMTAB_COMMAND_SIZE, 0xDEAD, 0xBEEF, 0xDEAD, 0xBEEF
+        )
+        for _ in range(self.decoy_symtabs_before):
+            commands += decoy_symtab
+            ncmds += 1
+
         has_symtab = self.with_symtab or bool(self.symbols)
         symtab_command_at = len(commands)
         if has_symtab:
             # Reserved now, filled in once the offsets it has to name are known.
             commands += b"\x00" * SYMTAB_COMMAND_SIZE
+            ncmds += 1
+        for _ in range(self.decoy_symtabs_after):
+            commands += decoy_symtab
             ncmds += 1
         if self.dangling_command_bytes is not None:
             # After LC_SYMTAB too, so this is genuinely the last thing in the command
