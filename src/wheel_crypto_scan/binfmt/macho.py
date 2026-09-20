@@ -50,9 +50,12 @@ all, which costs the structural read but not the strings already found; a
 dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string could not be read, so
 a dependency, the object's own install name, or an rpath entry may be missing rather
 than absent; a load command's own `cmd`/`cmdsize` header that could not be
-trusted, which stops the walk rather than guessing where the next one starts, so
+trusted -- too short to hold itself, running past the commands, or (#90) not aligned
+to the ABI's own 8-byte (64-bit) or 4-byte (32-bit) boundary -- or `ncmds` itself
+undercounting how many commands the object actually carries (#90), which stops the
+walk rather than guessing where the next one starts, so
 every later command -- an honest `LC_LOAD_DYLIB` included -- is unaccounted for
-rather than absent (#84); and more than one `LC_ID_DYLIB` or more than one `LC_SYMTAB`
+rather than absent (#84, #90); and more than one `LC_ID_DYLIB` or more than one `LC_SYMTAB`
 command in the same object, which is not the same failure as either of the two above:
 the walk reaches every command and each one parses on its own, but there is no name to
 tell a real `LC_ID_DYLIB` or `LC_SYMTAB` from a decoy sharing its `cmd`, the way there
@@ -265,8 +268,11 @@ class _SliceHeader:
     # a dependency, the object's own install name, or an rpath entry was lost rather
     # than absent.
     load_command_string_unread: bool
-    # A command's own `cmd`/`cmdsize` header could not be trusted, so the walk
-    # stopped early: everything after is unaccounted for, not absent. #84.
+    # A command's own `cmd`/`cmdsize` header could not be trusted -- too short, running
+    # past the commands, or (#90) not aligned to the ABI's own 8-/4-byte boundary --
+    # or `ncmds` undercounted how many commands the object actually carries (#90): the
+    # walk stopped early either way, so everything after is unaccounted for, not
+    # absent. #84, #90.
     load_command_walk_truncated: bool
     # More than one LC_ID_DYLIB or more than one LC_SYMTAB was walked, so `soname` or
     # `symtab` above is already `None` for whichever field was ambiguous: neither
@@ -327,8 +333,8 @@ class _ThinHeader:
     symtab: _Symtab | None
     # A dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read. #59.
     load_command_string_unread: bool
-    # A command's own cmd/cmdsize header could not be trusted, so the walk stopped
-    # early. #84.
+    # A command's own cmd/cmdsize header could not be trusted, or ncmds undercounted
+    # the real command count, so the walk stopped early. #84, #90.
     load_command_walk_truncated: bool
     # More than one LC_ID_DYLIB or more than one LC_SYMTAB was walked; `soname` and/or
     # `symtab` above are already `None` for whichever field was ambiguous. #85.
@@ -521,7 +527,10 @@ def read_macho(
         message = "a dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read"
         errors.append(_error(path, message))
     if any(slice_evidence.load_command_walk_truncated for slice_evidence in read):
-        message = "a load command's cmd/cmdsize header could not be trusted, cutting the walk short"
+        message = (
+            "a load command's cmd/cmdsize header could not be trusted, or ncmds "
+            "undercounted the real command count, cutting the walk short"
+        )
         errors.append(_error(path, message))
     if any(slice_evidence.load_command_ambiguous for slice_evidence in read):
         message = "more than one LC_ID_DYLIB or LC_SYMTAB command in one object; neither is trusted"
@@ -811,6 +820,13 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
     # which one is real cannot be told from `cmd` alone. #85.
     id_dylib_seen = 0
     symtab_seen = 0
+    # The ABI's own alignment for `cmdsize`: a multiple of 8 on a 64-bit object, 4 on a
+    # 32-bit one. A `cmdsize` that lies about its extent (too small, or overrunning the
+    # commands) was already caught below (#84); one that stays inside the commands and
+    # is internally consistent by that check alone can still be a lie -- misaligned by
+    # a few bytes -- and every command after it is then read from the wrong offset,
+    # desyncing the walk without ever tripping either #84 break. #90.
+    cmdsize_alignment = 8 if is64 else 4
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(commands):
@@ -818,9 +834,11 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
             load_command_walk_truncated = True
             break
         cmd, cmdsize = struct.unpack_from(end + "II", commands, pos)
-        if cmdsize < 8 or pos + cmdsize > len(commands):
-            # `cmdsize` lies about its own extent, so `pos` past here is a guess,
-            # not a fact: stop rather than resync on a value that already lied. #84.
+        if cmdsize < 8 or pos + cmdsize > len(commands) or cmdsize % cmdsize_alignment != 0:
+            # `cmdsize` lies about its own extent -- too small, overrunning the
+            # commands, or (#90) not a multiple of the ABI's own alignment -- so `pos`
+            # past here is a guess, not a fact: stop rather than resync on a value that
+            # already lied. #84, #90.
             load_command_walk_truncated = True
             break
         body = commands[pos : pos + cmdsize]
@@ -855,6 +873,20 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
                 symoff, nsyms, stroff, strsize = struct.unpack_from(end + "IIII", body, 8)
                 symtab = _Symtab(symoff=symoff, nsyms=nsyms, stroff=stroff, strsize=strsize)
         pos += cmdsize
+    else:
+        # The loop ran out of `ncmds` without ever hitting one of the two breaks above
+        # -- every command it read parsed cleanly -- but that is not the same claim as
+        # "every command in the object was read". `ncmds` is the header's own count,
+        # and nothing before this checked it against how many bytes the walk actually
+        # consumed. Two different lies land here, not one: a header that understates
+        # `ncmds` stops the walk early exactly the way a lying `cmdsize` does, just one
+        # command short of the lie showing up in any single command's own header; and
+        # an aligned, individually-honest-looking `cmdsize` that overstates ITS OWN
+        # command's real size swallows a later command's bytes into its own padding
+        # without any single header ever failing a check -- this catches that shape
+        # too, not just an undercounted `ncmds`. #90.
+        if pos != len(commands):
+            load_command_walk_truncated = True
 
     # Neither candidate is trusted once there is more than one: picking whichever one
     # the walk reached last is the exact hazard #56 closed for ELF's section tables,

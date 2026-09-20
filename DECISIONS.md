@@ -2214,7 +2214,161 @@ that prediction came true. Also revisit `binfmt.macho.py`'s pylint `max-module-l
 override (1100, in `pyproject.toml`) if the module keeps growing at this rate --
 the docstring alone accounts for most of it.
 
-Tracked in [#84](https://github.com/EmilienM/wheel-crypto-scan/issues/84).
+### Extended in #90: a misaligned `cmdsize` and an understated `ncmds` close the two
+named gaps
+
+**Fixed. The follow-up the paragraph above named on purpose: "unclosed by this fix."**
+
+Both shapes desync the same walk without tripping either of #84's two `break`s, because
+both stay inside what those two checks look at. A `cmdsize` that is at least 8 and does
+not run past the end of the load commands passes #84's check outright even when it is not
+a multiple of the ABI's own alignment (8 bytes on a 64-bit object, 4 on a 32-bit one) --
+the walk advances `pos` by the lied-about amount and reads every later command from the
+wrong offset, silently, the same loss #84 closed for an overtly-lying `cmdsize`, just one
+the header shape check alone cannot see. And `ncmds` itself is never checked against how
+many bytes the walk actually consumed: a header that undercounts it makes the `for` loop
+exhaust its iterations with real command bytes still sitting unread in `commands`, with no
+single command's own header ever lying about itself for #84's checks to catch.
+
+```
+(i) cmdsize=12 on a 64-bit object (not a multiple of 8, but >= 8 and inside the commands)
+    -> before: needed drops the later LC_LOAD_DYLIB naming libcrypto entirely,
+               partial_analysis: false
+    -> after:  partial_analysis: true, macho_load_command_walk_truncated, error recorded
+
+(ii) ncmds says 3 (LC_ID_DYLIB, one LC_LOAD_DYLIB, LC_SYMTAB); the object carries a
+     fourth, honest LC_LOAD_DYLIB naming libcrypto after a complete, already-read
+     LC_SYMTAB
+    -> before: needed drops the fourth command entirely, partial_analysis: false
+    -> after:  partial_analysis: true, macho_load_command_walk_truncated, error recorded
+```
+
+**Same token, not two new ones.** Checked against AGENTS.md's "don't duplicate an
+existing cause, but don't force a fit that overstates what happened" before reusing
+`macho_load_command_walk_truncated` rather than minting
+`macho_load_command_cmdsize_misaligned` and `macho_load_command_ncmds_understated`. The
+token's own claim was never "a command's header failed one of two specific checks" --
+it is "the walk did not honestly account for all its bytes, so everything after the
+point of the lie is unaccounted for rather than absent," stated generically in the
+docstring `partial_analysis` enumerates from and in the field comments on
+`_ThinHeader`/`_SliceEvidence`, neither of which named #84's two checks as exhaustive.
+Both new shapes are that same claim by a different route: a misaligned `cmdsize` means
+the commands after it cannot be trusted, for the identical reason an overtly-overrunning
+one cannot; an understated `ncmds` means the walk stopped short of what the object
+really carries, for the identical reason a too-short `cmd`/`cmdsize` pair does. Applying
+this issue's own admission test --
+find a crypto object that reads clean because the cause is on a list that swallows it --
+finds nothing: neither shape is a linker convention like the ordinal-import carve-out;
+both are lies about the walk's own extent, and `macho_load_command_walk_truncated`'s
+`[linkage_policy] exclude_reasons` absence (it already costs the linkage answer) is
+therefore exactly the right posture for both, unchanged.
+
+**Where the checks live.** Both are one line, at the point named in #90's own issue text.
+The alignment check joins #84's existing header-shape check on the same `if`, ahead of
+reading the command's body:
+```python
+if cmdsize < 8 or pos + cmdsize > len(commands) or cmdsize % cmdsize_alignment != 0:
+    break
+```
+The post-loop check runs once, after the `for` loop, in the loop's own `else` clause --
+which Python only runs when the loop finished its full range without a `break`, exactly
+the "no command lied, but did the walk still cover the object" question this check asks:
+```python
+else:
+    if pos != len(commands):
+        load_command_walk_truncated = True
+```
+Despite the name this section opened with, this is not solely an `ncmds`-understated
+check: it catches any shape where the loop finishes clean but `pos` and `len(commands)`
+disagree, which also includes an aligned, individually-honest-looking `cmdsize` that
+overstates its OWN command's real size and swallows a later command's bytes into its
+own padding -- no single command's header fails a check, and `ncmds` may be entirely
+correct, but the walk still stops short of the object's real extent. Confirmed directly:
+patching an honest `cmdsize` of 40 up to 48 trips this check with the alignment check
+disabled.
+
+**Recovery, matching #84's own precedent rather than diverging from it.** #84 does not
+resync past the point of the lie -- once one command's shape cannot be trusted, nothing
+after it can be either, so the fix stops the walk and reports every later command as
+unaccounted for, not attempted-and-failed. Both #90 shapes follow the same choice for the
+same reason: a misaligned `cmdsize` means `pos + cmdsize` was never a trustworthy jump in
+the first place, so guessing a corrected offset would be resyncing on a value that already
+lied, the exact hazard #84's own entry rejected; an understated `ncmds` means the object
+never admitted the trailing bytes exist, so reading them anyway would report evidence the
+header itself disowns. Evidence read *before* either point survives untouched, the same
+"costs that structure, never the evidence already gathered" invariant #84 holds.
+
+**Interaction, checked rather than assumed.**
+- *Misalignment and #85's ambiguity check, together.* A misaligned `cmdsize` cannot
+  desync the walk into misreading later bytes as a decoy `LC_ID_DYLIB` or `LC_SYMTAB`
+  and firing `macho_load_command_ambiguous` for the wrong reason, because the new check
+  sits at the same point #84's does: the walk breaks the moment the lie is read, before
+  any byte past it is ever interpreted as a command of its own. Pinned directly:
+  `test_a_misaligned_cmdsize_desyncs_the_walk_rather_than_landing_clean` asserts
+  `macho_load_command_ambiguous` is absent from the reproduction's `partial_reasons`.
+- *The understated-`ncmds` check against #90's own companion misalignment check, on one
+  object.* They cannot both fire from the same walk (one requires a `break`, the other
+  requires the loop to finish without one), so the only way to see them together is two
+  slices of one fat object, each tripping a different #90 cause.
+  `test_misalignment_and_understated_ncmds_combine_without_contradiction` builds exactly
+  that and confirms `macho_load_command_walk_truncated` appears once, not duplicated or
+  contradicted, in the merged record -- the same de-duplication #85's own entry pins for
+  ambiguity alongside #84's truncation.
+- *#84's own two break conditions, as a regression guard.* Every existing #84 test
+  passes unmodified against this fix; nothing about either new check changes what the
+  two existing ones catch. One unrelated existing test, #63's
+  `test_sizeofcmds_exactly_at_the_cap_is_read_while_one_byte_over_is_refused`, DID need
+  a rewrite -- not because its own assertions changed, but because its fixture used dead
+  zero padding the new checks correctly flag; it now uses a real, `ncmds`-accounted
+  filler command instead, with every original assertion (including the untouched
+  over-cap half) intact.
+
+**A test-fixture gap this uncovered, fixed alongside it.** `MachOBuilder._dylib_command`
+and `_rpath_command` padded every command's name to a 4-byte boundary regardless of
+`is64`, which is honest for a 32-bit object but not for a 64-bit one -- the ABI's own
+8-byte requirement this fix now checks. Most 64-bit fixtures in this file landed on a
+`cmdsize` that was a multiple of 4 but not 8 purely by the length of the strings chosen
+(confirmed by running the suite with the new check added and nothing else: 34 of 111
+tests in `test_binfmt_macho.py` failed, 42 across the whole suite once the Mach-O
+fixture consumers in `test_acceptance.py`, `test_hardening.py` and
+`test_partial_reasons.py` are counted), so the helper itself was quietly building
+objects #90's own check would
+have flagged as malformed. Fixed at the source rather than by loosening the check:
+`_cmd_alignment`/`_cmdsize_pad` now pad to 8 bytes on a 64-bit object, 4 on a 32-bit
+one, and every "well-formed" fixture in this file is ABI-honest as a result, not just
+the ones #90 added. Two fixtures needed their own fix beyond the shared helper:
+`all_nonprintable_dylib_name` and `malformed_rpath_name_offset` pad with NUL bytes
+after an already-closed string, which is safe; `unterminated_dylib_name` pads with
+non-NUL filler instead, since a NUL pad would prematurely close the very run that
+fixture exists to leave open.
+
+**What it costs.** `ANALYZER_VERSION` moves again. An object whose `cmdsize` is
+internally consistent by #84's own two checks but not aligned to the ABI's own boundary,
+or whose header's `ncmds` undercounts the object's real command count, now reads
+`partial_analysis: true` and `openssl_linkage: unknown` instead of quietly losing every
+command the lie put out of reach. No `ruleset.toml` change: `BIN_PARTIAL_FORMAT` already
+claims every cause not named in its own `exclude_reasons`, and this cause was already on
+that claim before #90 widened what triggers it.
+
+**What was rejected.** Two new tokens, covered above. Resyncing past either lie by
+guessing a corrected `pos`, covered above under "Recovery." A separate check keyed to
+`is64` alone without also comparing against #84's existing bounds check -- rejected
+because the two questions ("is this cmdsize inside the object" and "is this cmdsize
+aligned") are independent facts about the same field, and folding the alignment check into
+a value clamp rather than a straight boolean would have to explain what an "aligned but
+still out of bounds" `cmdsize` should read as, a question the existing `or` chain answers
+for free.
+
+Revisit if a real wheel is found where a `cmdsize` misaligned by exactly one word is a
+known, benign quirk of some Mach-O producer rather than a sign of a genuinely malformed or
+adversarial object -- no such producer is known today, and the ABI documentation this
+check enforces states the alignment as a requirement, not a convention. Also revisit
+`_read_thin`'s docstring/comment growth again the same way #84's and #85's own entries
+already flag: three per-command causes on top of the original ambiguity split is close to
+the point a positional accounting stops being legible in prose at all.
+
+Tracked in [#84](https://github.com/EmilienM/wheel-crypto-scan/issues/84) and
+[#90](https://github.com/EmilienM/wheel-crypto-scan/issues/90).
 
 ## A symbol name is capped like PE's already are
 
