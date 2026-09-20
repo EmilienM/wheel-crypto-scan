@@ -541,6 +541,91 @@ def test_imported_symbols_without_a_bundled_copy_are_not_static(ruleset) -> None
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
 
 
+# --- system and static within one object (#60) ------------------------------
+#
+# `_binary_posture` used to test `needed` first and return as soon as it found a
+# system match, so an object that both declares `DT_NEEDED libssl.so.3` and defines
+# `EVP_DigestInit_ex` itself (or carries an OpenSSL banner) never reached the
+# defined/banner check at all: it read `system`, and the record then paired
+# `DERIVED_SYSTEM_OPENSSL_ONLY` ("every piece of OpenSSL evidence points at the
+# system library") with `BIN_OPENSSL_SYMBOLS_DEFINED` ("OpenSSL was compiled into
+# it") -- a record contradicting itself in the favourable direction. Both
+# observations are independently true, so the object's own posture is `mixed`,
+# the same value `_aggregate` already gives two objects that disagree.
+
+
+def test_a_needed_system_match_and_a_defined_symbol_together_are_mixed(ruleset) -> None:
+    """The reproduction from #60: one object, both signals, in the same record."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6", "libssl.so.3"),
+            matched_symbols=(
+                SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),
+                SymbolMatch("SSL_new", "openssl", BINDING_IMPORTED),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_needed_system_match_and_a_banner_together_are_mixed(ruleset) -> None:
+    """The banner-only shape of the same contradiction: a version script hid the
+    symbols, but the string is still there, and the `needed` entry still resolves
+    to the system library."""
+    evidence = wheel(
+        binary("pkg/_ext.so", needed=("libssl.so.3",), matched_strings=(OPENSSL_BANNER,))
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_merged_universal_binary_whose_slices_disagreed_is_now_mixed(ruleset) -> None:
+    """`DECISIONS.md`'s "A universal binary is one record, and its slices are
+    merged": an x86_64 slice linking the host OpenSSL and an arm64 slice with it
+    compiled in, reduced by the Mach-O reader into one `BinaryEvidence` whose
+    `needed` and `matched_symbols` are the union of both slices. This used to read
+    `system` because `needed` was tested first; #60 makes it `mixed`, matching
+    what reading the slices separately and letting `_aggregate` combine them would
+    have said all along.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libcrypto.3.dylib",),
+            matched_symbols=(
+                SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),
+                SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_needed_system_match_alone_is_still_system(ruleset) -> None:
+    """No defined symbol and no banner: the ordinary system case is unchanged."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libssl.so.3",),
+            matched_symbols=(SymbolMatch("SSL_new", "openssl", BINDING_IMPORTED),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_defined_symbol_alone_is_still_static(ruleset) -> None:
+    """No `needed` match at all: the ordinary static case is unchanged."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
+
+
 # --- aggregation across several binaries ------------------------------------
 
 

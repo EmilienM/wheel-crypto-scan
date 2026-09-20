@@ -387,6 +387,31 @@ def test_static_linkage_produces_its_own_finding(ruleset) -> None:
     assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in findings
 
 
+def test_system_and_static_evidence_in_one_object_never_reads_as_system_only(ruleset) -> None:
+    """#60: a `needed` match to the system library used to short-circuit before the
+    defined-symbol check ever ran, so a record could carry both
+    `DERIVED_SYSTEM_OPENSSL_ONLY` ("every piece of OpenSSL evidence points at the
+    system library") and `BIN_OPENSSL_SYMBOLS_DEFINED` ("OpenSSL was compiled into
+    it") at once -- a contradiction in the clean direction. The object's own posture
+    is `mixed`, not `system`, so the two findings can never appear together again,
+    and the `needed`-side finding still fires: neither observation is dropped.
+    """
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_ext.so",
+                needed=("libc.so.6", "libssl.so.3"),
+                matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+            ),
+        )
+    )
+    findings = ids(run(ruleset, evidence))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == "mixed"
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in findings
+    assert "BIN_OPENSSL_SYMBOLS_DEFINED" in findings
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in findings
+
+
 # --- python layer -----------------------------------------------------------
 
 
