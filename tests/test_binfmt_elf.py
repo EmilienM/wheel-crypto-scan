@@ -668,7 +668,13 @@ def test_a_compressed_rodata_under_the_budget_reads_normally() -> None:
 # corroborates: `ElfBuilder` always writes `DT_STRTAB`'s own `d_ptr`, and every
 # section's `sh_addr`, as 0.
 
-_DYNSTR_NAME = "EVP_DigestInit_ex"
+# 46 bytes, chosen (#95) so `_DYNSTR_PAYLOAD` below lands at exactly 48 bytes -- the
+# same 48 bytes `.dynsym` itself declares for one real `DynSym` here: index 0 is always
+# the reserved null entry, so one real symbol is two `Elf64_Sym` rows, 24 bytes each.
+# `_bounded_section_data` now checks `.dynsym`'s own declared size unconditionally too,
+# not only `.dynstr`'s, so an "exactly at the budget" test below has to sit at a
+# boundary both sections actually share, not just the string table's.
+_DYNSTR_NAME = "EVP_" + "x" * 42
 _DYNSTR_PAYLOAD = b"\x00" + _DYNSTR_NAME.encode("ascii") + b"\x00"
 
 
@@ -730,6 +736,251 @@ def test_a_compressed_dynstr_under_the_budget_resolves_normally() -> None:
     assert errs == ()
     assert ev.partial_analysis is False
     assert {m.name for m in ev.matched_symbols} == {_DYNSTR_NAME}
+
+
+# --- #95: an ordinary, uncompressed section is checked against the budget too -------
+#
+# `_bounded_section_data` only refused before `.data()` ran when the section was
+# `compressed` or `SHT_NOBITS` -- the two shapes #62 measured. An ordinary, honest,
+# uncompressed section (or `.dynsym`/`.dynstr` from a real symbol table) fell through
+# that `and` entirely and reached `.data()` unconditionally, so a large honest `.rodata`
+# or symbol table was read in full regardless of `max_strings_bytes`, with only the
+# *accumulated* buffer cut afterwards. `section.data_size` is `sh_size` itself for an
+# ordinary section (pyelftools sets `_decompressed_size = header['sh_size']` whenever
+# `compressed` is false), so the same check #62 already applies, without the narrowing,
+# closes this the same way -- for `.rodata`/`.comment`/`.go.buildinfo`, with the real,
+# honest prefix up to the budget kept (`keep_prefix=True`) rather than thrown away:
+# unlike a compressed section, reading `min(sh_size, max_bytes)` bytes of an ordinary
+# one costs nothing extra, an honest banner well inside the budget is real evidence
+# a refusal should not cost, and this is exactly what `_collect_string_bytes` already
+# did before this widened check started refusing the whole section outright. The
+# result reads as `strings_bytes_unread` -- the reader's own budget ran out before the
+# object did, not that the section could not be read -- the same token an oversized
+# object already gets when several smaller sections exhaust the budget between them.
+
+
+def test_an_ordinary_rodata_over_the_budget_keeps_its_in_budget_prefix() -> None:
+    """The uncompressed counterpart of the compressed `.rodata` test above: the section
+    is honest and file-backed, so its first `max_strings_bytes` are real content --
+    including the banner here, which sits at the very front -- and are kept rather
+    than discarded, even though the section as a whole is refused past that point.
+    """
+    payload = BANNER + b"\x00" + b"\x00" * (8192 - len(BANNER) - 1)
+    data = ElfBuilder(rodata=payload).build()
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert errs == ()
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
+    assert ev.strings_truncated is True
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_an_ordinary_rodata_over_the_budget_with_nothing_in_the_prefix_still_partial() -> None:
+    """Regression guard the other way: when the recoverable prefix holds nothing a
+    consumer cares about, the object is still correctly `partial_analysis` -- keeping
+    a prefix is not the same claim as the object being fully read.
+    """
+    payload = b"\x00" * 8192
+    data = ElfBuilder(rodata=payload).build()
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert errs == ()
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
+    assert ev.matched_strings == ()
+
+
+def test_a_short_read_past_the_budget_is_not_reported_as_truncated() -> None:
+    """`truncated` says what was actually dropped, not what `sh_size` declared.
+
+    A `sh_size` patched far past the object's real end (a malformed header, not an
+    honestly large section) makes `keep_prefix`'s bounded read come back shorter than
+    the budget with nothing left unread -- the recovered bytes are everything from
+    `sh_offset` to EOF. Reporting `strings_bytes_unread` here would be the same false
+    claim `AGENTS.md` and this function's own docstring rule out for the "declared vs.
+    actually dropped" distinction elsewhere in this reader.
+    """
+    payload = BANNER + b"\x00" + b"\x00" * 64
+    data = ElfBuilder(rodata=payload).build()
+    data = patch_section_header(data, ".rodata", "sh_size", 1024**3)  # 1 GiB, past EOF
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()
+    assert ev.strings_truncated is False
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_an_ordinary_rodata_declaring_exactly_the_remaining_budget_still_reads() -> None:
+    """Exactly `remaining`, not more than it, so the section is refused nothing -- the
+    same "more than, not at least" boundary #62's own tests draw for the compressed case.
+    """
+    payload = BANNER + b"\x00"
+    data = ElfBuilder(rodata=payload).build()
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=len(payload)
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert ev.strings_truncated is False
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_an_ordinary_rodata_under_the_budget_reads_normally() -> None:
+    """Regression guard: a section comfortably under budget is unaffected by widening
+    the check to the uncompressed case.
+    """
+    payload = BANNER + b"\x00"
+    data = ElfBuilder(rodata=payload).build()
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=len(payload) * 4
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def _ordinary_dynstr_decoy(honest: bytes, body: bytes) -> bytes:
+    """As `_compressed_dynstr_decoy` above, minus the compression: `body` is the
+    decoy `.dynstr`'s raw, uncompressed content.
+    """
+    with_decoy, decoy_index = append_strtab_decoy(honest, body, sh_addr=0)
+    return patch_section_header(with_decoy, ".dynsym", "sh_link", decoy_index)
+
+
+def test_an_ordinary_dynstr_declaring_more_than_the_budget_is_refused_not_inflated() -> None:
+    """As the compressed `.dynstr` test above, minus the compression: unfixed, this
+    honest, uncompressed 8 KiB `.dynstr` is read in full at any size and the symbol
+    resolves. Fixed, `sh_size` alone over budget refuses it before `.data()` runs, and
+    the entry that named it comes back unresolved instead -- the record has to say so
+    rather than read as a clean, complete table.
+    """
+    honest = ElfBuilder(dynsyms=(DynSym(_DYNSTR_NAME, defined=False),)).build()
+    payload = _DYNSTR_PAYLOAD + b"\x00" * (8192 - len(_DYNSTR_PAYLOAD))
+    repointed = _ordinary_dynstr_decoy(honest, payload)
+    ev, errs = read_elf(
+        io.BytesIO(repointed), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_ELF_DYNSYM_UNREAD in ev.partial_reasons
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errs)
+
+
+def test_an_ordinary_dynstr_declaring_exactly_the_budget_still_resolves() -> None:
+    """Boundary: exactly at the budget still resolves, one byte over does not."""
+    honest = ElfBuilder(dynsyms=(DynSym(_DYNSTR_NAME, defined=False),)).build()
+    repointed = _ordinary_dynstr_decoy(honest, _DYNSTR_PAYLOAD)
+    ev, errs = read_elf(
+        io.BytesIO(repointed),
+        "mod.so",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=len(_DYNSTR_PAYLOAD),
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert {m.name for m in ev.matched_symbols} == {_DYNSTR_NAME}
+
+
+def test_an_ordinary_dynstr_under_the_budget_resolves_normally() -> None:
+    """Regression guard: an honest, comfortably-under-budget `.dynstr` is unaffected."""
+    honest = ElfBuilder(dynsyms=(DynSym(_DYNSTR_NAME, defined=False),)).build()
+    repointed = _ordinary_dynstr_decoy(honest, _DYNSTR_PAYLOAD)
+    ev, errs = read_elf(
+        io.BytesIO(repointed),
+        "mod.so",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=len(_DYNSTR_PAYLOAD) * 4,
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert {m.name for m in ev.matched_symbols} == {_DYNSTR_NAME}
+
+
+# --- a refused .dynsym/.dynstr never reaches the understated/unresolved cross-check --
+#
+# `symtab_bytes_unread` (#95's own widened refusal) has to be checked BEFORE
+# `unresolved`/`holds_a_name_not_read`, the same ordering `binfmt.macho`'s own
+# `truncated` check already has ahead of its `unresolved`/understated pair. Without
+# that ordering, a `.dynsym` refused for budget (empty `table`, zero rows, `unresolved
+# == 0`) with an honest, in-budget `.dynstr` reaches `holds_a_name_not_read` and
+# fabricates `symtab_understates_rows` -- a specific, checkable claim that is false
+# here: the object's row count was never wrong, `.dynsym` was simply never read.
+
+
+def test_a_refused_dynsym_with_an_honest_dynstr_does_not_fabricate_understated_rows() -> None:
+    """`.dynsym` alone is over budget (many short-named padding entries); `.dynstr`,
+    built from the same short names, comfortably fits. Unfixed, `table` is empty so
+    `unresolved` stays 0, and `holds_a_name_not_read` finds `SSL_new` in `.dynstr`
+    unclaimed by any read row -- a real crypto name reported as an understated symbol
+    count, when the true fact is the table was refused, not that it lied.
+    """
+    padding = tuple(DynSym(f"n{i:03d}", defined=False) for i in range(100))
+    syms = (DynSym("SSL_new", defined=False),) + padding
+    data = ElfBuilder(dynsyms=syms).build()
+
+    ev, errs = read_elf(io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=600)
+
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_ELF_DYNSYM_UNREAD,)
+    assert evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS not in ev.partial_reasons
+    assert [e.message for e in errs] == [
+        ".dynsym or its string table declares more bytes than the budget allows"
+    ]
+    assert ev.matched_symbols == ()
+
+
+def test_a_refused_dynstr_with_an_honest_dynsym_does_not_fabricate_a_second_error() -> None:
+    """The companion, lower-severity shape: `.dynstr` alone is over budget (a large
+    uncompressed decoy), `.dynsym` is a single honest, in-budget entry. Unfixed, every
+    row in `table` fails to resolve against the empty `dynstr`, so `unresolved > 0` and
+    the first branch fires a second, redundant error on top of the correct budget one
+    -- `.dynstr` was never shown to lie about its own contents, only left unread.
+    """
+    honest = ElfBuilder(dynsyms=(DynSym("SSL_new", defined=False),)).build()
+    payload = b"\x00SSL_new\x00" + b"\x00" * (8192 - 10)
+    repointed = _ordinary_dynstr_decoy(honest, payload)
+
+    ev, errs = read_elf(
+        io.BytesIO(repointed), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_ELF_DYNSYM_UNREAD,)
+    assert [e.message for e in errs] == [
+        ".dynsym or its string table declares more bytes than the budget allows"
+    ]
+    assert ev.matched_symbols == ()
+
+
+def test_an_ordinary_go_buildinfo_over_the_budget_still_parses_its_recovered_prefix() -> None:
+    """The third call site sharing `_bounded_section_data`, for the uncompressed case:
+    an honest `.go.buildinfo` over budget is refused past the budget the same way
+    `.rodata` is, but -- unlike `.rodata`/`.comment` -- keeping the recovered prefix
+    here does not also drop `elf_go_buildinfo_unread`/the error: the section's own
+    declared size was not honoured, and that stays true regardless of whether the
+    version string happened to sit inside the part that was. The version itself is
+    real evidence recovered from the kept prefix, not discarded downstream the way an
+    outright refusal would have thrown it away.
+    """
+    payload = b"\xff Go buildinf:" + bytes([8, 2]) + b"\x00" * 16 + b"\x08go1.22.3"
+    payload = payload + b"\x00" * (8192 - len(payload))
+    data = ElfBuilder(go_buildinfo=payload).build()
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_ELF_GO_BUILDINFO_UNREAD in ev.partial_reasons
+    assert any(e.kind == ELF_PARSE_ERROR for e in errs)
+    assert ev.go is not None
+    assert ev.go.go_version == "go1.22.3"
 
 
 # --- a header that does not parse costs the header, not the strings ----------
