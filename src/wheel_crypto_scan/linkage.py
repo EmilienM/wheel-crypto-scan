@@ -242,6 +242,33 @@ def _binary_posture(
         return LINKAGE_MIXED
     if system:
         return LINKAGE_SYSTEM
+    if uncertain and static:
+        # A `needed` entry whose path/rpath shape looks vendored but that this
+        # incompletely-read wheel cannot confirm either way, and a real definition
+        # or banner in the same object, are both true at once. Returning `unknown`
+        # here -- as this function did before -- discarded the confirmed static
+        # evidence in favour of the unconfirmed one, the opposite of what
+        # "unreadable or uncertain must never read as NO_CRYPTO_DETECTED" asks for:
+        # a real fact should never be the one that goes missing.
+        #
+        # Reached only when `system` is false. That is not the same shape as the
+        # `system`-and-`static` branch above -- `system` does NOT win outright over
+        # `static`, they combine into `mixed` -- so this branch's ordering answers a
+        # different question: `uncertain` is exactly `needed_posture`'s
+        # `LINKAGE_UNKNOWN`, not one of the `_DEFINITE` postures a few lines up, and
+        # `_aggregate` already treats a non-definite posture as one that never
+        # outvotes a definite one already present (`len(definite) == 1: return
+        # definite[0]`, discarding `LINKAGE_UNKNOWN` outright, whatever else is
+        # true). This branch applies that same rule within one object.
+        #
+        # This branch's own position, below `if system:`, is not what makes a
+        # confirmed `system` win outright over `uncertain` -- that already happens
+        # two lines up, unconditionally, whether or not this branch exists at all
+        # (moving this branch above `if system and static:` changes nothing the
+        # test suite can observe). It sits here because `uncertain` and `static`
+        # are the only two facts left for this branch to combine once `system`
+        # has already been ruled out. See #87, extending #60.
+        return LINKAGE_MIXED
     if uncertain:
         return LINKAGE_UNKNOWN
 

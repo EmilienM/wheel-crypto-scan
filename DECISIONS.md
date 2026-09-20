@@ -1649,14 +1649,15 @@ this fix is what makes `_binary_posture` produce it directly instead of only via
 deciding what the `needed` loop found, and returns `LINKAGE_MIXED` when both `system` and
 that evidence are true, ahead of the plain `system` and `static` returns; the ordinary
 cases (`system` alone, `static` alone, neither) fall through to the same branches as
-before, and the `uncertain` (vendor-shaped-but-unconfirmed) case is untouched -- it still
-returns before the `static` check ever runs, so a `needed` entry that only *might* resolve
-inside the wheel still wins over a confirmed `defined`/banner match the way a confirmed
-`system` match no longer does after this fix. That is the same shape of gap #60 closes for
-`system`, left open for `uncertain` on purpose: extending the same precedent there was not
-part of this fix, and is worth its own follow-up rather than folding in here since
-`uncertain` already means "the record is not sure," where `system` meant "the record is
-sure, and wrong." `_aggregate` needed a small change too: a per-binary posture
+before, and the `uncertain` (vendor-shaped-but-unconfirmed) case is untouched by this
+fix -- at the time, it still returned before the `static` check ever ran, so a `needed`
+entry that only *might* resolve inside the wheel still won over a confirmed
+`defined`/banner match the way a confirmed `system` match no longer did after this fix.
+That was the same shape of gap #60 closes for `system`, left open for `uncertain` on
+purpose: extending the same precedent there was not part of this fix, and was left for
+its own follow-up rather than folded in here, since `uncertain` already means "the
+record is not sure," where `system` meant "the record is sure, and wrong." (#87 closes
+this follow-up; see below.) `_aggregate` needed a small change too: a per-binary posture
 of `mixed` did not exist before this fix, only `_aggregate`'s own combination of two
 *different* objects' definite postures, so `mixed` was not itself in `_DEFINITE` and a
 set containing only `{"mixed"}` fell through to `openssl_linkage: none` -- the linkage
@@ -1690,7 +1691,124 @@ Revisit if `BIN_OPENSSL_LINKAGE_UNKNOWN`'s `why` text needs to name this case ex
 or if a real wheel's `mixed` verdict is confusing enough in practice that the two ways to
 reach it need their own rule ids after all.
 
-Tracked in [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60).
+### Extended in #87: an `uncertain` needed match and a definition are mixed too
+
+**Fixed. The follow-up the paragraph above named on purpose: "left open for `uncertain`
+on purpose."**
+
+The gap #60 left standing was structural, not an oversight: `_binary_posture` still
+returned `LINKAGE_UNKNOWN` for the `uncertain` case -- a `needed` entry whose path or
+`RPATH`/`RUNPATH` shape looks vendor-directed but that an incompletely-read wheel cannot
+confirm either way (#57's `_looks_vendored`/`wheel_incompletely_read`) -- before the
+defined/banner check a few lines below it ever ran. An object with both an unconfirmed
+vendor-shaped `needed` entry and a confirmed static definition (or banner) read `unknown`
+regardless, silently discarding the confirmed evidence in favour of the unconfirmed one --
+the same shape of bug #60 fixed for `system`, this time for `uncertain`.
+
+```
+demo/_ext.so  needed: libcrypto.so.3, RUNPATH: $ORIGIN/../p.libs (names nothing shipped,
+              wheel incompletely read), defines EVP_DigestInit_ex
+-> before: openssl_linkage: unknown  (the confirmed static definition is discarded)
+-> after:  openssl_linkage: mixed
+same, with the OpenSSL banner instead of the symbol -> mixed
+```
+
+**The decision: `mixed`, extending the same reasoning, not a new rule.** Both facts are
+independently true and independently reportable, exactly as above: a `needed` entry whose
+shape cannot be ruled out either way, and a real symbol or banner the object genuinely
+carries. `unknown`-wins would suppress the confirmed evidence from `verdict.conditions.
+openssl_linkage` itself, the same objection that ruled out `static`-wins above. No ruleset
+change needed: `BIN_OPENSSL_LINKAGE_UNKNOWN` already matches `values = ["unknown",
+"mixed"]`. This widening of `mixed` is not free, though -- see "What it costs" below.
+
+**Precedence, now that three signals can be in play on one object.** `_binary_posture`
+gained one more branch: `if uncertain and static: return LINKAGE_MIXED`, placed after the
+`system`-and-`static` check and the plain `system` return, ahead of the existing
+`if uncertain: return LINKAGE_UNKNOWN`. This is *not* the same shape as the
+`system`-and-`static` branch above -- `system` does not win outright over `static`; the
+two combine into `mixed`, which is the entire point of #60, restated wrong once already in
+an earlier draft of this very entry and corrected here. What the ordering of the new
+branch actually encodes is different: `uncertain` is exactly `needed_posture`'s
+`LINKAGE_UNKNOWN`, not one of the `_DEFINITE` postures (`system`, `bundled`, `static`; see
+the comment above `_DEFINITE` in `linkage.py`), and `_aggregate` already treats a
+non-definite posture as one that never outvotes a definite one already present when
+combining different objects' answers (`len(definite) == 1: return definite[0]`, discarding
+`LINKAGE_UNKNOWN` outright, whatever else is true). That same rule already held within one
+object before this fix: once a `needed` entry confirms `system` for this object, an
+unconfirmed `uncertain` entry elsewhere on the same object gets no vote, the same way a
+non-definite posture gets none across objects in `_aggregate` -- delivered entirely by the
+pre-existing, unconditional `if system: return LINKAGE_SYSTEM` two lines up, not by where
+the new branch sits relative to it (moving the new branch above `if system and static:`
+changes nothing the test suite can observe, confirmed by mutation). The new branch's
+position only decides which of the two remaining facts, `uncertain` and `static`, it gets
+to combine once `system` is already ruled out; it does not decide `system`'s own priority.
+This says nothing about whether the *unconfirmed* entry itself is genuinely `system` or
+genuinely `bundled` -- the object's posture does not track that, and
+`DERIVED_SYSTEM_OPENSSL_ONLY`'s own `why` ("every piece of OpenSSL evidence points at the
+system library and none at a bundled or static copy") is not strictly true when a
+confirmed entry and a different, unconfirmed one coexist on the same object; that gap
+predates this fix (it is visible in the plain `system`-alone case too, #87 changes nothing
+about it) and is left as is here rather than folded in.
+
+The three-way case (`system`, `uncertain` and `static` all true on one object, from two
+different `needed` entries) collapses into the existing two-way `system`-and-`static`
+`mixed` before `uncertain` is ever consulted. That collapse is provable rather than merely
+observed: the two branches' conditions (`system and static`, `uncertain and static`) can
+only be true together when `system` is also true, and both branches return the same value,
+`mixed`, in that case -- so no test built from `resolve_linkage`'s output alone can tell
+which of the two branches fired, or whether the new branch runs before or after the
+`system` checks, for this specific shape; moving it above them, or deleting it outright,
+still reads `mixed` here because the `system`-and-`static` branch from #60 already does.
+`test_system_uncertain_and_static_together_still_read_mixed` is kept as a
+characterization pin of that convergence, not as a guard for this ordering decision -- the
+ordering itself is pinned by the two-signal reproduction tests instead
+(`test_an_uncertain_needed_match_and_a_defined_symbol_together_are_mixed` and its banner
+variant), where `system` is false and only the new branch can produce `mixed` at all;
+reverting the fix turns both of those red. The ordinary cases are unchanged: `uncertain`
+alone still reads `unknown`, `static` alone still reads `static`, and `system`-and-`static`
+together still reads `mixed` exactly as #60 left it.
+
+**What it costs.** `BIN_OPENSSL_LINKAGE_UNKNOWN` already fires for both `unknown` and
+`mixed`, and its `why` text already undersells this shape the same way it undersells the
+`system`-and-`static` one -- left as is for the same reason given above, so as not to split
+one `why` into two without also giving the two shapes their own rule ids, which is its own
+follow-up.
+
+This also widens `mixed` one object beyond the one it fires on. `_aggregate` promotes any
+wheel with an object whose own posture is `mixed` outright (`if LINKAGE_MIXED in postures:
+return LINKAGE_MIXED`, checked before the `_DEFINITE` count) -- a rule #60 added and this
+fix inherits rather than changes. A wheel with one object reading `bundled` (a
+hash-renamed `needed` entry, say) and a second, incompletely-read object that now reads
+`mixed` under this fix, used to aggregate to `bundled` at the wheel level: `unknown` was
+never in `_DEFINITE`, so it never outvoted `bundled` there either. After this fix the
+second object's own posture is `mixed` instead of `unknown`, and `mixed` anywhere in
+`postures` short-circuits `_aggregate` immediately, so the whole wheel now reads `mixed`,
+not `bundled`. That drops the wheel out of `SCHEMA.md`'s own `IN("bundled","static")`
+triage recipe, whose comment already notes it misses `mixed` wheels -- this fix adds one
+more way to land in that existing gap, not a new gap of its own, and the direction stays
+conservative: the wheel gains `BIN_OPENSSL_LINKAGE_UNKNOWN`/`OPAQUE` rather than losing
+anything silently. Worth naming plainly rather than leaving the earlier, incorrect
+"costs nothing new" claim standing.
+
+**What was rejected.** A three-way branch computing `system`, `uncertain` and `static`
+together explicitly -- rejected because the existing two branches already produce the
+right answer once ordered correctly (see "Precedence" above: the collapse is provable, not
+assumed), and adding a third would duplicate logic the
+`if system: return LINKAGE_SYSTEM` / `if system and static: return LINKAGE_MIXED` pair
+already covers. `uncertain`-wins over a confirmed `static` -- rejected for the reason
+#60 rejected `static`-wins over `system`: a confirmed fact must never be the one a
+weaker, unconfirmed fact displaces.
+
+Revisit if a real wheel is found where the three-way shape (`system` and `uncertain` from
+two different `needed` entries, plus `static`) reads confusingly, if
+`BIN_OPENSSL_LINKAGE_UNKNOWN`'s `why` text is reworded for the `system`-and-`static` case
+above (the same rewording would need to cover this shape too), or if
+`DERIVED_SYSTEM_OPENSSL_ONLY`'s `why` text needs correcting for the pre-existing gap named
+above (a confirmed entry does not actually rule out a *different*, unconfirmed one on the
+same object).
+
+Tracked in [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60) and
+[#87](https://github.com/EmilienM/wheel-crypto-scan/issues/87).
 
 ## An explicit usedforsecurity=True, and a non-constant flag, are not `NO_CRYPTO_DETECTED`
 

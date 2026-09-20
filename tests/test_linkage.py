@@ -627,6 +627,160 @@ def test_a_defined_symbol_alone_is_still_static(ruleset) -> None:
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
 
 
+# --- uncertain and static within one object (#87) ----------------------------
+#
+# `_binary_posture` returned `LINKAGE_UNKNOWN` for the `uncertain` case -- a `needed`
+# entry whose path/rpath shape looks vendored but that an incompletely-read wheel
+# cannot confirm either way (#57) -- before the defined/banner check a few lines
+# below it ever ran. An object with both an unconfirmed vendor-shaped `needed` entry
+# and a confirmed static definition (or banner) read `unknown` regardless, silently
+# discarding the confirmed evidence. This is #60's own fix, extended: `mixed`, not a
+# value that erases one of the two facts.
+
+
+def test_an_uncertain_needed_match_and_a_defined_symbol_together_are_mixed(ruleset) -> None:
+    """The reproduction from #87: an incompletely-read wheel (`errors` at
+    `STAGE_BINARY`), a `needed` entry whose `RUNPATH` looks vendor-shaped but names
+    nothing the wheel actually ships, and a real `EVP_DigestInit_ex` definition in
+    the same object.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto.so.3",),
+            runpath=("$ORIGIN/../p.libs",),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.so",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_an_uncertain_needed_match_and_a_banner_together_are_mixed(ruleset) -> None:
+    """Same shape, the banner-only variant: a version script hides the symbols but
+    the string survives it, same as #60's banner variant."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto.so.3",),
+            runpath=("$ORIGIN/../p.libs",),
+            matched_strings=(OPENSSL_BANNER,),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.so",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_an_uncertain_needed_match_alone_is_still_unknown(ruleset) -> None:
+    """No static evidence at all: the ordinary `uncertain` case (#57) is unchanged."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto.so.3",),
+            runpath=("$ORIGIN/../p.libs",),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.so",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_confirmed_system_match_beside_an_uncertain_one_stays_system(ruleset) -> None:
+    """Two `needed` entries on one object: a plain one that resolves to the system
+    library for certain, and a second whose own path is vendor-shaped (delocate's
+    convention, embedded in the string itself rather than via a shared `RUNPATH`)
+    that this incompletely-read wheel cannot confirm. `system` is a `_DEFINITE`
+    posture; `uncertain` is exactly `needed_posture`'s `LINKAGE_UNKNOWN`, which is
+    not, and `_aggregate` already treats a non-definite posture as one that never
+    outvotes a definite one present elsewhere (`len(definite) == 1: return
+    definite[0]`, discarding `LINKAGE_UNKNOWN`) -- the same rule applied here within
+    one object: the confirmed `system` match needs no vote from the unconfirmed
+    `uncertain` one, so this stays plain `system`, not a three-way `mixed`. See #87.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=(
+                "/usr/lib/libssl.3.dylib",
+                "@loader_path/.dylibs/libcrypto.3.dylib",
+            ),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.dylib",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_system_uncertain_and_static_together_still_read_mixed(ruleset) -> None:
+    """A characterization pin, not a guard for a specific ordering decision: the
+    same three signals as the test above, plus a confirmed static definition.
+
+    Whenever `system` and `uncertain` can both be true on one object, `system` and
+    `static` are also both true here, so #60's `if system and static: return
+    LINKAGE_MIXED` branch already answers `mixed` before `_binary_posture` ever
+    reaches the new `if uncertain and static` branch #87 added. That makes this
+    specific shape provably unable to distinguish the two branches, or their
+    relative order, from `resolve_linkage`'s output alone: deleting the `#87`
+    branch entirely, or moving it ahead of the `system` checks, both still leave
+    this test green, because #60's branch (or the reordered #87 branch) produces
+    the identical `mixed` either way. Confirmed by mutation during review.
+
+    The `#87` branch's own ordering is pinned by the two-signal reproduction tests
+    instead (`test_an_uncertain_needed_match_and_a_defined_symbol_together_are_mixed`
+    and its banner variant, above), where `system` is false and only the new branch
+    can produce `mixed` at all; reverting the fix turns those two red. This test
+    stays only to confirm the three-way shape reads sensibly, not to attribute the
+    answer to either branch.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=(
+                "/usr/lib/libssl.3.dylib",
+                "@loader_path/.dylibs/libcrypto.3.dylib",
+            ),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.dylib",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
 # --- aggregation across several binaries ------------------------------------
 
 
