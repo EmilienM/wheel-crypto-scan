@@ -8,6 +8,25 @@ same name defined means it carries one. Darwin's C ABI prefixes every C symbol w
 underscore, which is stripped back off so a Mach-O record names a symbol the way an ELF
 record names the same symbol.
 
+`LC_LOAD_DYLIB` is not the only load command the dynamic linker resolves as a real
+dependency at load time. `LC_LOAD_WEAK_DYLIB` (tolerates the library being absent),
+`LC_LAZY_LOAD_DYLIB` and `LC_LOAD_UPWARD_DYLIB` (both ordinary dependencies, only the
+load timing differs) share `LC_LOAD_DYLIB`'s `dylib_command` layout byte for byte and
+all three join `needed` the same way it does. `LC_REEXPORT_DYLIB` does too, for a
+different reason: it makes the target's exports part of this object's own API surface,
+the direct analogue of a PE forwarder (#54) -- a shim that re-exports libcrypto is
+itself an OpenSSL API surface in the sense `linkage._binary_posture` cares about, and
+`needed` is the field it reads first. #59 is what closed this: previously only
+`LC_LOAD_DYLIB` and `LC_ID_DYLIB` were read and the other four were silently skipped,
+so a weak, lazy, upward or re-exported libcrypto dropped out of `needed` without a
+trace and a re-exporting shim read clean. The same issue closed two narrower gaps in
+the same walk: a dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string
+offset could not be trusted -- outside the command's own body, below where a string
+could legitimately start, or a run the body never closes -- used to be skipped rather
+than flagged, and a non-ASCII byte inside an otherwise-readable name used to drop the
+whole name instead of being sanitized the way `binfmt.elf` and `binfmt.pe` already
+sanitize theirs.
+
 Still not read: the indirect symbol table and the two-level namespace ordinals in
 `LC_DYSYMTAB`, which would say which dependency each import is expected to resolve
 against. ELF offers no such attribution either, so leaving it out costs nothing against
@@ -20,14 +39,17 @@ declares nothing is reported as unread rather than clean. What is still missed i
 symbol reachable only through those tables, whose name is nowhere in the string table
 either.
 
-`partial_analysis` survives for four cases: a strings read that stopped before the end
+`partial_analysis` survives for five cases: a strings read that stopped before the end
 of the object, so a region of it was never looked at; a `LC_SYMTAB` that could not be read in
 full, whether it is absent, unreachable, names nothing we could resolve, holds nothing
 but debug records, or declares fewer entries than it carries names for, so the
 imported/defined split is missing or incomplete; a slice of a fat binary that could not
 be read, or that the fat header placed outside the object, so one architecture is
-unknown rather than clean; and a header or set of load commands that would not parse at
-all, which costs the structural read but not the strings already found.
+unknown rather than clean; a header or set of load commands that would not parse at
+all, which costs the structural read but not the strings already found; and a
+dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string could not be read, so
+a dependency, the object's own install name, or an rpath entry may be missing rather
+than absent.
 
 A universal binary is read slice by slice and merged into one record, in both the
 `FAT_MAGIC` and `FAT_MAGIC_64` forms, which differ only in the width of the arch table's
@@ -76,7 +98,37 @@ assert all(struct.calcsize(fmt) == size for size, fmt in _FAT_ARCH.values())
 _LC_SYMTAB = 0x02
 _LC_LOAD_DYLIB = 0x0C
 _LC_ID_DYLIB = 0x0D
+_LC_LAZY_LOAD_DYLIB = 0x20
+_LC_LOAD_WEAK_DYLIB = 0x80000018
 _LC_RPATH = 0x8000001C
+_LC_REEXPORT_DYLIB = 0x8000001F
+_LC_LOAD_UPWARD_DYLIB = 0x80000023
+
+# `dylib_command` -- offset, timestamp, current_version, compatibility_version -- is
+# the identical struct behind every one of these, differing only in what the dynamic
+# linker does with the name it holds. `LC_LOAD_DYLIB` is the ordinary case; the three
+# below are the same dependency with different load-time tolerance or timing (absent
+# is fine, resolved lazily, resolved after the things that depend on it); and
+# `LC_REEXPORT_DYLIB` folds the target's exports into this object's own surface, the
+# Mach-O analogue of a PE forwarder (#54). All five are read into `needed` the same
+# way: the loader treats every one of them as a real dependency it must resolve.
+_LC_DYLIB_DEPENDENCIES = frozenset(
+    {
+        _LC_LOAD_DYLIB,
+        _LC_LOAD_WEAK_DYLIB,
+        _LC_LAZY_LOAD_DYLIB,
+        _LC_LOAD_UPWARD_DYLIB,
+        _LC_REEXPORT_DYLIB,
+    }
+)
+
+# The fixed header every `dylib_command` or `rpath_command` carries before its string
+# can legitimately start. An offset inside that range names one of the fixed integer
+# fields, not something the object spells out, and trusting it would let a crafted
+# object announce a dependency or path it never named -- the decoy shape #56's ELF
+# work is the precedent for guarding against.
+_DYLIB_COMMAND_HEADER_SIZE = 24
+_RPATH_COMMAND_HEADER_SIZE = 12
 
 # `struct symtab_command` is cmd, cmdsize and the four offsets below.
 _SYMTAB_COMMAND_SIZE = 24
@@ -182,6 +234,10 @@ class _SliceHeader:
     needed: tuple[str, ...]
     rpath: tuple[str, ...]
     symtab: _Symtab | None
+    # A dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read, so
+    # a dependency, the object's own install name, or an rpath entry was lost rather
+    # than absent.
+    load_command_string_unread: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +250,7 @@ class _SliceEvidence:
     soname: str | None
     needed: tuple[str, ...]
     rpath: tuple[str, ...]
+    load_command_string_unread: bool
     matches: frozenset[SymbolMatch]
     symtab_count: int
     stripped: bool
@@ -394,6 +451,9 @@ def read_macho(
         for slice_evidence in read
         if slice_evidence.symbols_shortfall is not None
     )
+    if any(slice_evidence.load_command_string_unread for slice_evidence in read):
+        message = "a dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read"
+        errors.append(_error(path, message))
 
     # Every architecture has to have been read, and read in full, before this object
     # can claim it was examined. An unread slice is an unread object.
@@ -406,6 +466,8 @@ def read_macho(
         partial.add(evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE)
     if any(slice_evidence.symbols_understated for slice_evidence in read):
         partial.add(evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS)
+    if any(slice_evidence.load_command_string_unread for slice_evidence in read):
+        partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD)
 
     first = read[0]
     merged: set[SymbolMatch] = set()
@@ -537,7 +599,7 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
 
     try:
         stream.seek(slice_.offset)
-        cputype, soname, needed, rpath, symtab = _read_thin(
+        cputype, soname, needed, rpath, symtab, load_command_string_unread = _read_thin(
             stream, slice_.offset, slice_.size, is64, big_endian
         )
     except struct.error as bad:
@@ -554,6 +616,7 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
         needed=needed,
         rpath=rpath,
         symtab=symtab,
+        load_command_string_unread=load_command_string_unread,
     )
 
 
@@ -597,6 +660,7 @@ def _read_slice_symbols(
         soname=header.soname,
         needed=header.needed,
         rpath=header.rpath,
+        load_command_string_unread=header.load_command_string_unread,
         matches=frozenset(matches),
         symtab_count=symtab_count,
         stripped=stripped,
@@ -609,7 +673,7 @@ def _read_slice_symbols(
 
 def _read_thin(
     stream, base: int, slice_size: int, is64: bool, big_endian: bool
-) -> tuple[int, str | None, tuple[str, ...], tuple[str, ...], _Symtab | None]:
+) -> tuple[int, str | None, tuple[str, ...], tuple[str, ...], _Symtab | None, bool]:
     """Parse one thin Mach-O header and its load commands, from the current position."""
     end = ">" if big_endian else "<"
     if is64:
@@ -635,6 +699,7 @@ def _read_thin(
     needed: list[str] = []
     rpaths: list[str] = []
     symtab: _Symtab | None = None
+    load_command_string_unread = False
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(commands):
@@ -643,19 +708,29 @@ def _read_thin(
         if cmdsize < 8 or pos + cmdsize > len(commands):
             break
         body = commands[pos : pos + cmdsize]
-        if cmd in (_LC_LOAD_DYLIB, _LC_ID_DYLIB) and len(body) >= 12:
-            (name_offset,) = struct.unpack_from(end + "I", body, 8)
-            name = _read_cstring(body, name_offset)
+        if cmd in _LC_DYLIB_DEPENDENCIES or cmd == _LC_ID_DYLIB:
+            # `dylib_command` is identical across all six of these: cmd, cmdsize, then
+            # the `dylib` struct itself (name.offset, timestamp, current_version,
+            # compatibility_version). Only what the loader does with the name differs,
+            # which is a `ruleset`-shaped question this reader has no business asking.
+            name = _read_command_string(body, header_size=_DYLIB_COMMAND_HEADER_SIZE, end=end)
             if name is not None:
                 if cmd == _LC_ID_DYLIB:
                     soname = name
                 else:
                     needed.append(name)
-        elif cmd == _LC_RPATH and len(body) >= 12:
-            (path_offset,) = struct.unpack_from(end + "I", body, 8)
-            path = _read_cstring(body, path_offset)
+            else:
+                load_command_string_unread = True
+        elif cmd == _LC_RPATH:
+            # `linkage._looks_vendored` reads `rpath` to decide whether a
+            # `@rpath`-relative dependency resolves inside the wheel, so a lost rpath
+            # can misread a bundled library's posture the same way a lost dependency
+            # name can.
+            path = _read_command_string(body, header_size=_RPATH_COMMAND_HEADER_SIZE, end=end)
             if path is not None:
                 rpaths.append(path)
+            else:
+                load_command_string_unread = True
         elif cmd == _LC_SYMTAB and len(body) >= _SYMTAB_COMMAND_SIZE:
             symoff, nsyms, stroff, strsize = struct.unpack_from(end + "IIII", body, 8)
             symtab = _Symtab(symoff=symoff, nsyms=nsyms, stroff=stroff, strsize=strsize)
@@ -667,6 +742,7 @@ def _read_thin(
         tuple(sorted(set(needed))),
         tuple(sorted(set(rpaths))),
         symtab,
+        load_command_string_unread,
     )
 
 
@@ -885,13 +961,36 @@ def _iter_symbols(
         yield name, undefined, True, debug, alias
 
 
+def _read_command_string(body: bytes, *, header_size: int, end: str) -> str | None:
+    """The string a load command's `lc_str` offset field names, or `None` if unreadable.
+
+    `header_size` is the fixed part of the command (`_DYLIB_COMMAND_HEADER_SIZE` or
+    `_RPATH_COMMAND_HEADER_SIZE`): it must exist before the offset field is even there
+    to read, and it is the floor an honest offset can never fall below. The offset
+    field itself always sits at byte 8, right after `cmd` and `cmdsize`.
+    """
+    if len(body) < header_size:
+        return None
+    (offset,) = struct.unpack_from(end + "I", body, 8)
+    if offset < header_size:
+        return None
+    return _read_cstring(body, offset)
+
+
 def _read_cstring(body: bytes, offset: int) -> str | None:
+    """The NUL-terminated name at `offset`, sanitized.
+
+    `None` means the name could not be read in full: the offset is negative or past
+    the end of the command's own body, the run it starts never closes before the body
+    ends, or every byte it does contain sanitizes to nothing. A non-ASCII byte inside
+    an otherwise readable name is not that: `binfmt.elf` and `binfmt.pe` both decode
+    permissively and sanitize rather than reject a name over one bad byte.
+    """
     if offset < 0 or offset >= len(body):
         return None
     end = body.find(b"\x00", offset)
     if end == -1:
-        end = len(body)
-    try:
-        return sanitize(body[offset:end].decode("ascii"))
-    except UnicodeDecodeError:
+        # A run this command's own body never closes. The same failure
+        # `_iter_symbols` above already guards against for the symbol string table.
         return None
+    return sanitize(body[offset:end].decode("utf-8", "replace")) or None

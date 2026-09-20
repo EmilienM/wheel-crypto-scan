@@ -1,8 +1,9 @@
 """Deterministic, dependency-free Mach-O writers for `binfmt.macho` tests.
 
-Only the load commands `binfmt.macho` reads are emitted: `LC_ID_DYLIB`, `LC_LOAD_DYLIB`,
-`LC_RPATH` and `LC_SYMTAB`. No segments, no sections, no `LC_DYLD_INFO`. See
-`helpers.binfmt` for why these are real objects, not stubs.
+Only the load commands `binfmt.macho` reads are emitted: `LC_ID_DYLIB`, `LC_LOAD_DYLIB` and
+its `LC_LOAD_WEAK_DYLIB`, `LC_LAZY_LOAD_DYLIB`, `LC_LOAD_UPWARD_DYLIB` and
+`LC_REEXPORT_DYLIB` siblings, `LC_RPATH` and `LC_SYMTAB`. No segments, no sections, no
+`LC_DYLD_INFO`. See `helpers.binfmt` for why these are real objects, not stubs.
 """
 
 from __future__ import annotations
@@ -18,7 +19,11 @@ FAT_MAGIC_64 = 0xCAFEBABF
 LC_SYMTAB = 0x02
 LC_LOAD_DYLIB = 0x0C
 LC_ID_DYLIB = 0x0D
+LC_LAZY_LOAD_DYLIB = 0x20
+LC_LOAD_WEAK_DYLIB = 0x80000018
 LC_RPATH = 0x8000001C
+LC_REEXPORT_DYLIB = 0x8000001F
+LC_LOAD_UPWARD_DYLIB = 0x80000023
 
 SYMTAB_COMMAND_SIZE = 24
 
@@ -80,6 +85,41 @@ class MachOBuilder:
     filetype: int = 6  # MH_DYLIB
     id_dylib: str | None = None
     load_dylibs: tuple[str, ...] = ()
+    # `LC_LOAD_DYLIB`'s siblings: same `dylib_command` layout, different load-time
+    # tolerance or timing (`weak`/`lazy`/`upward`), or the target's exports folded into
+    # this object's own surface (`reexport`). #59.
+    weak_load_dylibs: tuple[str, ...] = ()
+    lazy_load_dylibs: tuple[str, ...] = ()
+    upward_load_dylibs: tuple[str, ...] = ()
+    reexport_dylibs: tuple[str, ...] = ()
+    # A dylib-loading (or LC_ID_DYLIB) command with no name payload at all, whose
+    # header still claims `name_offset` and, by default, a full 24-byte
+    # `dylib_command` header -- the shape of a command whose name offset falls
+    # outside its own body, or below where a name could legitimately start, without
+    # also having to construct a name string for it to point at or past.
+    # `malformed_dylib_cmdsize` shrinks the command below the header size instead
+    # (e.g. 8, cmd and cmdsize only), so `name_offset` is never even read.
+    malformed_dylib_cmd: int | None = None
+    malformed_dylib_cmdsize: int = 24
+    malformed_dylib_name_offset: int = 1000
+    # timestamp, current_version, compatibility_version: three attacker-controlled
+    # 32-bit fields with no structural meaning to this reader, which is exactly the
+    # room a name-offset floor check has to defend -- set to non-zero, printable
+    # bytes, an unguarded offset into this range reads a name the object never spelt
+    # out, rather than the empty string zero bytes there would produce.
+    malformed_dylib_header_fields: tuple[int, int, int] = (0, 0, 0)
+    # The `LC_RPATH` counterpart: `rpath_command`'s fixed header is 12 bytes, with no
+    # payload of its own.
+    malformed_rpath_name_offset: int | None = None
+    # A dylib-loading command whose name payload has real bytes but no terminating
+    # NUL and no padding -- the run `_read_cstring` must not take to the end of the
+    # command's body as if it were a complete name.
+    unterminated_dylib_name: str | None = None
+    # A dylib-loading command whose name payload is real, NUL-terminated bytes that
+    # `sanitize` strips to nothing -- the run closes, unlike `unterminated_dylib_name`,
+    # so this exercises `_read_cstring`'s `or None` on the sanitized result rather than
+    # its unterminated-run check.
+    all_nonprintable_dylib_name: bool = False
     rpaths: tuple[str, ...] = ()
     symbols: tuple[MachOSym, ...] = ()
     with_symtab: bool = False
@@ -98,6 +138,49 @@ class MachOBuilder:
             ncmds += 1
         for name in self.load_dylibs:
             commands += self._dylib_command(LC_LOAD_DYLIB, name, end)
+            ncmds += 1
+        for name in self.weak_load_dylibs:
+            commands += self._dylib_command(LC_LOAD_WEAK_DYLIB, name, end)
+            ncmds += 1
+        for name in self.lazy_load_dylibs:
+            commands += self._dylib_command(LC_LAZY_LOAD_DYLIB, name, end)
+            ncmds += 1
+        for name in self.upward_load_dylibs:
+            commands += self._dylib_command(LC_LOAD_UPWARD_DYLIB, name, end)
+            ncmds += 1
+        for name in self.reexport_dylibs:
+            commands += self._dylib_command(LC_REEXPORT_DYLIB, name, end)
+            ncmds += 1
+        if self.malformed_dylib_cmd is not None:
+            header = struct.pack(
+                end + "IIIIII",
+                self.malformed_dylib_cmd,
+                self.malformed_dylib_cmdsize,
+                self.malformed_dylib_name_offset,
+                *self.malformed_dylib_header_fields,
+            )
+            commands += header[: self.malformed_dylib_cmdsize]
+            ncmds += 1
+        if self.malformed_rpath_name_offset is not None:
+            commands += struct.pack(end + "III", LC_RPATH, 12, self.malformed_rpath_name_offset)
+            ncmds += 1
+        if self.unterminated_dylib_name is not None:
+            name_bytes = self.unterminated_dylib_name.encode("utf-8", "surrogateescape")
+            header_len = 24
+            cmdsize = header_len + len(name_bytes)
+            commands += (
+                struct.pack(end + "IIIIII", LC_LOAD_DYLIB, cmdsize, header_len, 0, 0, 0)
+                + name_bytes
+            )
+            ncmds += 1
+        if self.all_nonprintable_dylib_name:
+            name_bytes = b"\x01\x02\x03\x00"  # control bytes, then the terminating NUL
+            header_len = 24
+            cmdsize = header_len + len(name_bytes)
+            commands += (
+                struct.pack(end + "IIIIII", LC_LOAD_DYLIB, cmdsize, header_len, 0, 0, 0)
+                + name_bytes
+            )
             ncmds += 1
         for path in self.rpaths:
             commands += self._rpath_command(path, end)
@@ -206,7 +289,9 @@ class MachOBuilder:
         return data + b"\x00" * pad
 
     def _dylib_command(self, cmd: int, name: str, end: str) -> bytes:
-        name_bytes = self._pad4(name.encode("ascii") + b"\x00")
+        # `surrogateescape`, the way `MachOSym.name` is encoded above, so a test can
+        # plant a byte that is not valid UTF-8 in an install name or a dependency name.
+        name_bytes = self._pad4(name.encode("utf-8", "surrogateescape") + b"\x00")
         header_len = 24
         cmdsize = header_len + len(name_bytes)
         return struct.pack(end + "IIIIII", cmd, cmdsize, header_len, 0, 0, 0) + name_bytes
