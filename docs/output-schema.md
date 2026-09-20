@@ -153,6 +153,7 @@ positives rather than a surprise.
 | `pe_delay_load` | A delay-load import directory, which this reader does not parse, so the libraries it names are undeclared dependencies; records no error. |
 | `strings_bytes_unread` | The reader's byte budget ran out before the object did, so a region of it was never looked at and found nothing there for that reason; records no error. Emitted by every reader, each bounding what it pulls in: `binfmt.elf` bounds the concatenated read-only sections, and a single eligible section too large for the budget on its own still contributes its own in-budget prefix rather than nothing; the other three readers bound a prefix of the object. An extension whose only crypto evidence is an OpenSSL version banner past the budget reads exactly like one with no OpenSSL in it. |
 | `symtab_understates_rows` | A symbol table declared fewer entries than the string table it points into holds names for, so symbols the object carries were never looked at. The object is not corrupt: every structural check passes and the count is simply not the truth. Emitted by the ELF and Mach-O readers alike, beside that format's own cause, because the lie and the check are the same in both. |
+| `ar_member_table_unread` | An `ar`-format archive (`.a`/`.lib`) whose member table could not be walked to completion before even one real object was found. Whatever real objects a partially-walked table did yield keep their own separate evidence; this token marks the whole-archive fallback record built only when none were found at all. |
 
 ## `findings`
 

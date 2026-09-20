@@ -16,6 +16,8 @@ in `helpers.binfmt.elf`, `.macho` and `.pe`; import them from there rather than
 open-coding the offset, which is how `0x3C` ends up in a test.
 """
 
+from .ar import MAGIC as AR_MAGIC
+from .ar import ArMember, build_ar, gnu_symbol_table_member, pseudo_member
 from .elf import (
     E_SHNUM_OFFSET,
     EM_386,
@@ -48,6 +50,11 @@ from .pe import (
 )
 
 __all__ = [
+    "AR_MAGIC",
+    "ArMember",
+    "build_ar",
+    "gnu_symbol_table_member",
+    "pseudo_member",
     "DynSym",
     "EM_386",
     "EM_S390",

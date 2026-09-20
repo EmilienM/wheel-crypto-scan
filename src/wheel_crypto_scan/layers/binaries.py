@@ -7,6 +7,14 @@ so anything plausible in a library or binary directory is sniffed by magic numbe
 
 Symlinks are recorded and never followed: their content is a path string, and handing
 that to an ELF reader produces noise instead of evidence.
+
+A `.a`/`.lib` member is sniffed by magic, after opening, rather than trusted by suffix
+alone: an older MSVC `.lib` (not `ar`-format) or a suffix collision reads as any other
+unrecognised structure would, through `read_binary`'s own strings-only fallback, not
+`binfmt.ar`'s. `binfmt.ar.read_ar_members` returns *several* `BinaryEvidence` entries
+for one archive member, unlike every other reader here, because an archive holds many
+separate objects a consumer wants told apart -- so it is called directly, in place of
+`read_binary`, rather than through `read_binary`'s own one-in-one-out dispatch. See #99.
 """
 
 from __future__ import annotations
@@ -14,13 +22,19 @@ from __future__ import annotations
 import re
 
 from ..binfmt import read_binary
+from ..binfmt.ar import MAGIC as _AR_MAGIC
+from ..binfmt.ar import read_ar_members
 from ..evidence import STAGE_BINARY, BinaryEvidence, ScanError
 from ..errors import MEMBER_READ_ERROR
 from ..ruleset import BinaryPatterns, Conventions
 from ..wheelfile import MemberInfo, WheelArchive
 
-# `.so`, `.so.3`, `.3.dylib`, `.pyd`, `.dll`, `.exe` and friends.
-_BINARY_SUFFIX = re.compile(r"\.(so|dylib|pyd|dll|exe)(\.\d+)*$", re.IGNORECASE)
+# `.so`, `.so.3`, `.3.dylib`, `.pyd`, `.dll`, `.exe`, `.a` and `.lib` (a static
+# archive, or occasionally an import library -- either way worth opening and sniffing;
+# `binfmt.ar` recognises the ones that are really `ar`-format, and anything else falls
+# through to the same strings-only fallback an unrecognised suffix-matched file
+# already gets) and friends.
+_BINARY_SUFFIX = re.compile(r"\.(so|dylib|pyd|dll|exe|a|lib)(\.\d+)*$", re.IGNORECASE)
 _VERSIONED_DYLIB = re.compile(r"\.\d+(\.\d+)*\.dylib$", re.IGNORECASE)
 # Directories where a suffix-less file is plausibly an executable or a library.
 _SNIFF_DIRS = ("bin", "lib", "lib64", "scripts", "libexec")
@@ -68,12 +82,23 @@ def scan_binaries(
             )
             continue
         try:
-            evidence, member_errors = read_binary(
-                stream,
-                member.name,
-                patterns,
-                vendored=conventions.is_vendor_path(member.name),
-            )
+            stream.seek(0)
+            is_archive = stream.read(len(_AR_MAGIC)) == _AR_MAGIC
+            stream.seek(0)
+            vendored = conventions.is_vendor_path(member.name)
+            if is_archive:
+                member_evidence, member_errors = read_ar_members(
+                    stream, member.name, patterns, vendored=vendored
+                )
+            else:
+                # `read_binary` returns one `(evidence, errors)` pair, not the
+                # `(evidences, errors)` shape `read_ar_members` returns; wrap the
+                # single evidence in a tuple so both branches feed `binaries.extend`
+                # below identically.
+                single_evidence, member_errors = read_binary(
+                    stream, member.name, patterns, vendored=vendored
+                )
+                member_evidence = (single_evidence,)
         except Exception as exc:  # noqa: BLE001 - one bad member never sinks the wheel
             # Above the in-memory threshold the member is decompressed lazily inside
             # the reader, so a CRC failure surfaces here rather than at open time.
@@ -91,7 +116,7 @@ def scan_binaries(
         # Keep the record even for an unrecognised format. The strings-only fallback
         # exists so a wheel can never look clean merely because we cannot parse it,
         # and dropping the object here would throw away exactly that evidence.
-        binaries.append(evidence)
+        binaries.extend(member_evidence)
         errors.extend(member_errors)
 
     binaries.sort(key=lambda binary: binary.path)

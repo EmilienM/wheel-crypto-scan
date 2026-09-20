@@ -370,6 +370,28 @@ def test_a_relative_needed_entrys_basename_collision_still_confirms_bundled(rule
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
 
 
+def test_an_archive_members_soname_never_confirms_a_siblings_needed_entry(ruleset) -> None:
+    """#99's adversarial review: the same basename-collision shape as the test
+    above, but the colliding object is `from_archive=True` -- a relocatable object
+    `binfmt.ar` read out of a `.a`/`.lib` static archive. Unlike a real zip member,
+    such an object was never a file any dynamic loader could resolve a `needed`
+    entry to, and its `SONAME` is bytes the archive itself wrote, read exactly as
+    written -- attacker-controlled the same way any other bytes in the wheel are.
+    Before `member_stem_counts` excluded these, a crafted archive member could flip
+    a genuinely system-linked sibling extension's own posture to `bundled`.
+    """
+    evidence = wheel(
+        binary("fakecrypto/_ext.so", needed=("libcrypto.so.3",)),
+        binary(
+            "fakecrypto/vendor/lib.a(evil.o)",
+            soname="libcrypto.so.3",
+            needed=("libc.so.6",),
+            from_archive=True,
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
 def test_an_absolute_mangled_needed_entry_is_still_bundled(ruleset) -> None:
     """The `mangled` check is unaffected by absoluteness on purpose (#80): a
     hash-renamed basename is strong enough evidence on its own, independent of

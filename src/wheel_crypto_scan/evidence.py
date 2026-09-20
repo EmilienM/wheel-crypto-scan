@@ -19,6 +19,7 @@ BINDING_DEFINED = "defined"
 FORMAT_ELF = "elf"
 FORMAT_MACHO = "macho"
 FORMAT_PE = "pe"
+FORMAT_AR = "ar"
 FORMAT_UNKNOWN = "unknown"
 
 # Printable characters only, so a corrupt string table entry can never smuggle control
@@ -207,6 +208,16 @@ PARTIAL_SYMTAB_UNDERSTATES_ROWS = "symtab_understates_rows"
 # nothing else, so a budget stopping short of the banner is the difference between
 # `static` and a clean bill.
 PARTIAL_STRINGS_BYTES_UNREAD = "strings_bytes_unread"
+# An `ar`-format archive (`.a`/`.lib`) whose member table could not be walked to
+# completion: a header running past the archive's own end, a non-numeric size field,
+# or a member whose declared size overruns the bytes remaining. Whatever real objects
+# were found before the point of failure keep their own evidence, each under its own
+# path and its own `partial_analysis`; this reason marks the *whole-archive* fallback
+# record built when the table could not be walked at all -- before even one member was
+# found -- the same "no structure to split, strings only" shape
+# `PARTIAL_NO_STRUCTURAL_READER` gives a format with no reader, not a claim about any
+# one member. See #99.
+PARTIAL_AR_MEMBER_TABLE_UNREAD = "ar_member_table_unread"
 
 PARTIAL_REASONS: frozenset[str] = frozenset(
     {
@@ -237,6 +248,7 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_PE_DELAY_LOAD,
         PARTIAL_SYMTAB_UNDERSTATES_ROWS,
         PARTIAL_STRINGS_BYTES_UNREAD,
+        PARTIAL_AR_MEMBER_TABLE_UNREAD,
     }
 )
 
@@ -336,6 +348,14 @@ class BinaryEvidence:
     # True when the object lives in an auditwheel `*.libs/` or delocate `.dylibs/`
     # directory, i.e. the wheel ships it rather than borrowing it from the system.
     vendored_path: bool = False
+    # True for an object `binfmt.ar` read out of a `.a`/`.lib` static archive rather
+    # than a real member of the wheel's own zip. Internal only -- `record.py` never
+    # serialises it -- because a relocatable object inside an archive was never a
+    # `needed` entry any real loader could resolve, and `linkage.member_stem_counts`
+    # excludes it for exactly that reason: a same-named SONAME on an archive member,
+    # attacker-controlled the same way any other bytes in the wheel are, must not be
+    # able to make a genuinely system-linked dependency read as bundled. See #99.
+    from_archive: bool = False
     machine: str | None = None
     bits: int | None = None
     endian: str | None = None

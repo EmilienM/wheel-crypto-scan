@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "17"
+ruleset_version = "18"
 
 
 # ---------------------------------------------------------------------------
@@ -1630,7 +1630,7 @@ title = "Binary could not be parsed"
 why = "Truncated, corrupt or an unrecognised format. Same reasoning as an opaque binary: we cannot see inside it, so we say so."
 [rule.match]
 kind = "scan_error"
-error_kinds = ["elf_parse_error", "macho_parse_error", "pe_parse_error", "binary_truncated", "binary_unknown_format"]
+error_kinds = ["elf_parse_error", "macho_parse_error", "pe_parse_error", "ar_parse_error", "binary_truncated", "binary_unknown_format"]
 
 [[rule]]
 id = "BIN_TOO_LARGE"

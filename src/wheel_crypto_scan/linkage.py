@@ -68,8 +68,20 @@ def member_stem_counts(conventions: Conventions, evidence: Evidence) -> Mapping[
     The object's `path` is set by `layers.binaries.scan_binaries` for every member it
     attempts to read, whether or not the read succeeded, so a vendored copy whose
     internal structure could not be parsed still counts.
+
+    `binary.from_archive` objects are excluded: a relocatable object inside a `.a`/
+    `.lib` static archive (`binfmt.ar`, #99) was never a file any real dynamic loader
+    could resolve a `needed` entry to, so a `SONAME` on one -- bytes `binfmt.ar` reads
+    exactly as written, including whatever an adversarial wheel chose to write there
+    -- must not be able to confirm an unrelated `needed` entry as resolving inside the
+    wheel. Counting it would let a crafted archive member flip a genuinely
+    system-linked sibling extension's posture to `bundled`.
     """
-    return Counter(conventions.raw_stem(binary.soname, binary.path) for binary in evidence.binaries)
+    return Counter(
+        conventions.raw_stem(binary.soname, binary.path)
+        for binary in evidence.binaries
+        if not binary.from_archive
+    )
 
 
 def _resolves_within_wheel(own_stem: str, needed_stem: str, counts: Mapping[str, int]) -> bool:

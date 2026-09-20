@@ -4150,3 +4150,168 @@ Tracked in [#82](https://github.com/EmilienM/wheel-crypto-scan/issues/82), along
 `engine._MATCHERS` drift test and its `WHEEL_BINARIES_TRUNCATED` wording correction
 (also fixed in `SCHEMA.md` and `docs/output-schema.md`, which repeated the same
 overstatement).
+
+## `binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader
+
+**Accepted. A new evidence source, not a new format for the record's `format` field.**
+
+`.lib`/`.a` static archives -- the `ar` container format that bundles multiple `.o`/
+`.obj` relocatable objects for downstream linking -- matched no route into
+`layers.binaries.is_binary_member` at all, before or after #65: neither suffix, vendor
+path, sniff directory nor executable bit. A wheel shipping a vendored `libcrypto.a` for
+downstream linking, or a `.lib` import library, was invisible to the scanner on any
+platform, with nothing in the record to say so -- not `OPAQUE`, not a missing-evidence
+note, simply absent, because the member was never opened in the first place.
+
+**Why this is not one more entry in `binfmt._READERS`.** Every existing reader answers
+to `read_binary`'s contract: one stream in, one `BinaryEvidence` out. An archive holds
+many separate, independently-linkable objects, and a consumer wants them told apart --
+which member defines a crypto symbol matters as much as whether one does. Merging them
+into one record would mean inventing an aggregation `read_binary` was never asked to
+do, for a container that is not a "binary object" in the sense every other format
+here is. `binfmt.ar.read_ar_members` is instead called directly by
+`layers.binaries.scan_binaries`, in place of `read_binary`, once the member's own magic
+(sniffed after opening, not trusted from the `.a`/`.lib` suffix alone) confirms it is
+really `ar`-format -- an older MSVC `.lib` or a suffix collision falls through to the
+same strings-only fallback any other unrecognised format already gets. `binfmt.ar` is
+therefore a sibling module to `elf.py`/`macho.py`/`pe.py`, not a fourth entry in the
+reader table, and imports `read_binary` from `binfmt/__init__.py` to dispatch each real
+member to the same per-format readers everything else in the wheel goes through --
+`layers.binaries` imports both directly rather than routing the container through
+`binfmt/__init__.py`'s own dispatch. That split is a chosen direction, not a
+structural necessity: nothing stops `binfmt/__init__.py` from importing `ar.py` and
+re-exporting `read_ar_members` except that `ar.py` already imports `read_binary` from
+`binfmt/__init__.py` at module load time, and importing back would make the cycle
+real. `binfmt/__init__.py.__all__` says so at the point it omits `read_ar_members`,
+so the omission reads as a decision rather than an oversight the next reader has to
+rediscover.
+
+**The container format itself, verified against real output before being written from
+the documented spec.** An 8-byte magic, then 60-byte member headers (name, mtime, uid,
+gid, mode, size, a 2-byte end marker) each followed by that many bytes of data, padded
+to an even offset. Built real archives with this host's own GNU `ar` 2.46 (`gcc -c` two
+trivial `.c` files, `ar rcs`, including a deliberately-long filename to force the GNU
+long-name table and an odd-sized member to force the padding byte) and inspected the
+bytes directly before writing `read_ar_members`, rather than trusting the documented
+format alone -- the header layout, the end-of-header magic, the `//` long-name table's
+`name/\n`-terminated entries and the odd-size padding byte all matched what the real
+tool produced. BSD's `#1/<N>` extended-name convention is implemented from the
+documented format only; no BSD `ar` was available to verify it against on this
+development host. Every index/padding pseudo-member a real toolchain writes -- GNU's
+own symbol index (name field exactly `/`), GNU's 64-bit index (`/SYM64/`), and BSD/
+Apple `ar`'s ranlib index (`__.SYMDEF`, `__.SYMDEF SORTED` on newer toolchains,
+`__.SYMDEF_64`) -- is skipped rather than dispatched as an object: its content is
+`ar`'s own bookkeeping, not something `read_binary` has any use for. An earlier
+version of this module only skipped the GNU index and read every BSD/Apple ranlib
+member as an ordinary object; since it is neither ELF, Mach-O nor PE, that dispatch
+always failed and cost the *whole archive* a spurious `partial_analysis`/
+`BIN_PARTIAL_FORMAT` verdict hit -- every ordinary macOS static library or Windows
+`/SYM64/`-indexed import archive would misreport as partially unreadable, not just a
+crafted one. See #99's adversarial review.
+
+**A structure that does not parse costs that structure, never the evidence already
+gathered, applied one level higher than usual.** Every other reader's version of this
+promise is about *one* object; an archive's version has to say what happens to the
+objects a partially-walked member table already found before hitting a header that
+overruns the archive, a non-numeric size field, or a member declaring more bytes than
+remain. Answer: they keep their own evidence, each under its own path, independently of
+whatever went wrong later in the table -- the failure is recorded once, against the
+archive's own path, as `errors.AR_PARSE_ERROR`, and does not retract what earlier
+members already yielded. Whenever the walk ends with zero real members -- whether
+because a header overran the archive before any were found, or because the table
+walked to completion and held nothing but index/padding pseudo-members -- the whole
+archive falls back to one `read_strings_only` record over its raw bytes, marked
+`evidence.PARTIAL_AR_MEMBER_TABLE_UNREAD`: the identical "no structure to split,
+strings only" shape a format with no registered reader gets, not a new fallback
+mechanism, tagged `evidence.FORMAT_AR` so the record still says this was a
+recognised archive rather than an unknown format. Only a stream whose own magic
+does not match `ar`'s at all -- unreachable through `layers.binaries`, which sniffs
+that magic itself before ever calling in, but reachable by a test calling
+`read_ar_members` directly -- takes the same fallback shape tagged `FORMAT_UNKNOWN`
+instead.
+
+**A member's name is never grounds to drop the member.** A `#1/<N>` field claiming
+more bytes than the member holds, or a `/<offset>` pointing past the long-name
+table's end or into an entry that never closes with `/\n`, leaves `_resolve_name`
+unable to say what the member is called -- not whether it exists. An earlier version
+of this module treated that as a reason to skip the member outright, which throws
+away real, already-read evidence over nothing worse than its own label: "unreadable
+means `OPAQUE`, never `NO_CRYPTO_DETECTED`" applies to a name exactly as much as to a
+structure. The fix reads the member's bytes exactly as it would if the name had
+resolved, under a synthetic `member@<offset>` path, with its own `AR_PARSE_ERROR`
+naming why the real name could not be used. Two members that legitimately share one
+resolved name -- ordinary in `ar`, since nothing stops two same-named `.o` files
+vendored from different source directories -- are disambiguated with a `#2`, `#3`
+suffix (`_dedupe`) for the same reason: `binaries[].path` was unique before this
+module existed, and `record._cap_by_findings` keys a dict on it, so two members
+silently sharing one path would let the second overwrite the first's evidence even
+when the cap had room for both.
+
+**Member bytes are windowed onto the original stream, never copied out first.** An
+`ar` archive can legitimately be as large as any other member this tool streams, and
+reading the whole thing into one buffer -- worse, slicing every member out of a
+second full copy -- would spend exactly the memory `wheelfile.ArchiveLimits` streams
+a large member specifically to avoid. `_Window(io.RawIOBase)`, wrapped in
+`io.BufferedReader` for the same reason `wheelfile.open_member` wraps
+`SeekableZipMember` (a bare `RawIOBase` only promises one underlying `read()` call
+per request and can return short mid-stream), gives `read_binary` a seekable view of
+`[member_start, member_start + size)` on the archive's own stream. No cap is applied
+at the archive layer beyond `_MAX_MEMBERS`: truncating a member's bytes here would
+risk misreading a section table that legitimately sits past an arbitrary cut as
+corrupt, so each dispatched member applies its own `max_strings_bytes` budget the
+same way it would outside an archive.
+
+**An archive member's `SONAME` must not confirm a sibling's `needed` entry.**
+`BinaryEvidence.from_archive` marks every record `read_ar_members` produces, and
+`linkage.member_stem_counts` excludes them: a relocatable object bundled inside a
+static archive was never a file a dynamic loader could resolve a `DT_NEEDED` entry
+to, so a same-named `SONAME` on one -- bytes this module reads exactly as written,
+not invented -- must not be able to make a genuinely system-linked sibling extension
+read as bundled. Verified by mutation: removing the exclusion in
+`member_stem_counts` turns a sibling's linkage classification from `system` to
+`bundled` in `tests/test_linkage.py`'s
+`test_an_archive_members_soname_never_confirms_a_siblings_needed_entry`.
+
+**A cap on member count, independent of `max_binaries_per_record`.** That cap bounds
+the record's *size*, applied once after every binary in the wheel (archive-contained or
+not) has already been read; it says nothing about the *work* a crafted archive can
+demand before ever reaching it. `_MAX_MEMBERS = 4096` bounds how many `read_binary`
+dispatches one archive can force, reported the same way a truncation elsewhere in this
+tool is: an `AR_PARSE_ERROR` naming the cap, not silence.
+
+**What was rejected.** Reading `ar`'s own GNU symbol-index member (the `/`
+pseudo-member's own name-to-offset table) to shortcut symbol matching, rather than
+dispatching every real member through the ordinary per-format readers: rejected because
+the index does not carry binding (imported vs. defined) or which crypto *group* a name
+belongs to, both of which `read_binary`'s own matchers already compute correctly, and
+because trusting an index a hostile archive controls without cross-checking it against
+the object it claims to describe is the exact hazard `binfmt.symtab`'s cross-check
+exists to close for `.dynsym`/`.symtab` themselves. Recursing into a member that is
+itself `ar`-format (an archive inside an archive) was not attempted: `read_binary`'s
+own dispatch does not special-case this, so such a member is read as `FORMAT_UNKNOWN`
+strings-only rather than walked recursively -- static archives holding other static
+archives are not a real toolchain output, and the existing fallback already keeps this
+safe rather than silent.
+
+**The scope this fix does not close.** `binfmt.elf`'s crypto symbol matching reads
+`.dynsym` only, never `.symtab`. A relocatable `.o` -- every member of a real static
+archive -- normally carries no `.dynsym` at all, so a genuine symbol *definition* with
+no accompanying string banner is still invisible to symbol-based detection even though
+this fix makes the archive and its members visible and read at all. Strings-based
+detection (which reads every section regardless of symbol table) is unaffected, and is
+demonstrated working in the same test that demonstrates the gap
+(`test_a_symtab_only_definition_is_not_matched_the_documented_gap` and
+`test_a_banner_string_in_a_relocatable_object_is_still_found`, `tests/test_binfmt_ar.py`).
+Deliberately not attempted here, per the scoping decision made before implementation:
+extending `.symtab` matching touches the reader used by every ELF object in the corpus,
+not just archive members, and needs its own design pass on binding, on whether it
+should apply only when `.dynsym` is absent or always, and on a real corpus check that
+it does not change output for the ordinary case. Filed separately, found while scoping
+this fix: [#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117).
+
+`ANALYZER_VERSION` moves: a wheel shipping a `.a`/`.lib` now produces real evidence
+where it previously produced none. `ruleset_version` moves: `ar_parse_error` joins
+`BIN_UNPARSEABLE`'s `error_kinds`, the same rule `elf_parse_error`/`macho_parse_error`/
+`pe_parse_error` already claim.
+
+Tracked in [#99](https://github.com/EmilienM/wheel-crypto-scan/issues/99).
