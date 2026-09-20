@@ -174,7 +174,16 @@ def _aggregate(postures: set[str], unanswered: bool) -> str:
     on `always_report`, so an object we could not read makes the answer `unknown` for
     the libraries reported whatever the evidence -- where a false `none` is what does
     the damage -- and does not list every library in the ruleset as unknown.
+
+    `mixed` can now arrive already resolved for a single object (#60: `needed`
+    matched the system library and the object also defines or banners its own
+    copy), not only as this function's own combination of two definite postures
+    from different objects. `mixed` has no finer split than that in the
+    vocabulary, so one object already reading `mixed` makes the wheel `mixed`
+    outright, whatever any other object says.
     """
+    if LINKAGE_MIXED in postures:
+        return LINKAGE_MIXED
     definite = sorted(posture for posture in postures if posture in _DEFINITE)
     if len(definite) == 1:
         return definite[0]
@@ -218,13 +227,25 @@ def _binary_posture(
             uncertain = True
             continue
         system = True
+
+    defined = _has_symbol(binary, library.symbol_group, BINDING_DEFINED)
+    static = defined or _has_string(binary, library.string_group)
+    if system and static:
+        # A real `needed` match to the system library and a real definition or
+        # banner inside this same object are both true at once: one names a
+        # dependency the object declares, the other names code the object
+        # compiled in, and neither is weaker evidence than the other. Returning
+        # early on `system` alone used to let this defined/banner check go
+        # unreached, so the record paired `DERIVED_SYSTEM_OPENSSL_ONLY` with
+        # `BIN_OPENSSL_SYMBOLS_DEFINED` -- a contradiction in the clean
+        # direction. See #60.
+        return LINKAGE_MIXED
     if system:
         return LINKAGE_SYSTEM
     if uncertain:
         return LINKAGE_UNKNOWN
 
-    defined = _has_symbol(binary, library.symbol_group, BINDING_DEFINED)
-    if defined or _has_string(binary, library.string_group):
+    if static:
         return LINKAGE_STATIC
 
     if _has_symbol(binary, library.symbol_group, BINDING_IMPORTED):

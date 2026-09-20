@@ -68,24 +68,46 @@ was `partial_analysis: true` for ever. Most macOS wheels are universal2, so a cr
 universal2 wheel came out `OPAQUE` rather than `NO_CRYPTO_DETECTED`, and the README's
 `select(.verdict.class == "OPAQUE")` triage recipe listed all of them.
 
-**What it costs.** A union hides an intra-object disagreement. A universal2 dylib whose
-x86_64 slice links the host OpenSSL and whose arm64 slice has it compiled in merges to
+**What it costs.** A union hides an intra-object disagreement, but not the way this was
+first written up, and not for every disagreement shape. A universal2 dylib whose x86_64
+slice links the host OpenSSL and whose arm64 slice has it compiled in merges to
 `needed: [libcrypto...]` plus both an `imported` and a `defined` `EVP_DigestInit_ex`.
-`linkage._binary_posture` tests `needed` first, so the object resolves to `system`, where
-reading the slices separately would give `system` and `static` and `_aggregate` would call
-that `mixed`. Previously the record was equally wrong about the posture but carried
-`partial_analysis: true`, which fired `BIN_PARTIAL_FORMAT` and forced
-`needs_human_review`. That net is now gone for this case.
+**`linkage._binary_posture` tested `needed` first and returned as soon as it found a
+system match, so the object resolved to `system` -- exactly what reading the slices
+separately and letting `_aggregate` combine them would have called `mixed` instead. That
+was the bug tracked in #60, now fixed for this shape: `_binary_posture` checks the
+`needed` and defined/banner evidence together and returns `mixed` itself when both are
+true.** The fix is narrower than "every disagreement reads the same merged or separate":
+`_binary_posture` still returns `LINKAGE_BUNDLED` from inside the `needed` loop before the
+new check runs, so a slice disagreement between `bundled` and `system`, or `bundled` and
+`static`, still merges to `bundled` where reading the slices apart would give `mixed` --
+verified directly, both on ELF-shaped mangled/absolute `needed` pairs and on the Mach-O
+equivalent. The safe direction holds regardless (`bundled` is at least as conservative a
+read as `mixed` for every rule that keys on it), so this is not a new hole, but it means
+only the system-vs-static disagreement this issue asked about is actually fixed; which
+architecture said which is gone either way, so a `mixed` record from a universal2 dylib
+still cannot say "x86_64 links system, arm64 is static." Previously the record was
+equally wrong about the posture but carried `partial_analysis: true`, which fired
+`BIN_PARTIAL_FORMAT` and forced `needs_human_review`; #60 restores `needs_human_review`
+for the system-vs-static shape by a different route -- `mixed` itself carries it, through
+`BIN_OPENSSL_LINKAGE_UNKNOWN` -- so the net loss this paragraph originally described
+turned out to be temporary for that one shape.
 
-The trade is right because the losing case needs two independently built thin dylibs
-`lipo`-ed together, which `delocate` does not produce, while the winning case is most of
-the macOS wheels in the index. It is recorded here because nothing in the output says a
-record was merged, so a reader of `matched_symbols` carrying one name as both `imported`
-and `defined` should know why that is representable at all.
+The trade of merging slices into one record at all is still right, independent of the
+above: the losing case needs two independently built thin dylibs `lipo`-ed together,
+which `delocate` does not produce, while the winning case (no fat-slice disagreement) is
+most of the macOS wheels in the index. It is recorded here because nothing in the output
+says a record was merged, so a reader of `matched_symbols` carrying one name as both
+`imported` and `defined` should know why that is representable at all.
 
-Revisit if a real wheel is found whose architectures disagree about linkage.
+Revisit if a real wheel is found whose slices disagree between `bundled` and any other
+posture -- `mixed` can represent that combination, the code just does not produce it from
+inside the `needed` loop's early `bundled` return -- or whose architectures disagree in a
+way `mixed` cannot represent at all, e.g. three or more slices that would benefit from
+naming which architecture said what.
 
-Tracked in [#10](https://github.com/EmilienM/wheel-crypto-scan/issues/10).
+Tracked in [#10](https://github.com/EmilienM/wheel-crypto-scan/issues/10), the `mixed`
+fix in [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60).
 
 ## A routine cause is recorded but does not make a wheel opaque
 
@@ -1219,9 +1241,10 @@ the `member_stems` half; the three "naming nothing shipped" tests go `system` wi
 before `defined`/`static`, one short-circuit per definite posture -- is unchanged; this
 fix is one more way a `needed` entry can resolve to `bundled`, slotted into the existing
 per-entry loop, not a restructuring. The precedence question between `needed` and
-`defined` within one object is [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60);
-the `is_opaque` arm's per-library fan-out is [#68](https://github.com/EmilienM/wheel-crypto-scan/issues/68).
-Neither is touched here.
+`defined` within one object is [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60)
+(now fixed -- see "A `needed` match and a definition inside one object are both true"
+below); the `is_opaque` arm's per-library fan-out is
+[#68](https://github.com/EmilienM/wheel-crypto-scan/issues/68). Neither is touched here.
 
 **A real risk this does not fully close.** `member_stems` matches on file identity
 alone, not on directory. Two different libraries that happen to share a basename in
@@ -1407,6 +1430,96 @@ imprecision, rather than just the silence, needs closing. The invariant test abo
 worth adding regardless, as a follow-up: it is free.
 
 Tracked in [#57](https://github.com/EmilienM/wheel-crypto-scan/issues/57).
+
+## A `needed` match and a definition inside one object are both true, so the object is `mixed`
+
+**Fixed. The precedence question #57 deliberately left open.**
+
+`_binary_posture` read `needed` first and returned `LINKAGE_SYSTEM` as soon as one entry
+resolved to the system library, before the defined-symbol and banner check a few lines
+below it ever ran. An object that both declares `DT_NEEDED libssl.so.3` (or the Mach-O
+equivalent) and defines `EVP_DigestInit_ex` -- or carries an OpenSSL version banner,
+which a version script cannot hide -- read `system` regardless, and the record then
+paired `DERIVED_SYSTEM_OPENSSL_ONLY` ("every piece of OpenSSL evidence points at the
+system library and none at a bundled or static copy") with `BIN_OPENSSL_SYMBOLS_DEFINED`
+("OpenSSL was compiled into it") in the same `rule_ids` list -- a contradiction in the
+favourable direction, and the one shape this tool's invariants exist to rule out reads
+clean instead of uncertain.
+
+```
+demo/_ext.so   needed: libc.so.6, libssl.so.3
+               defines EVP_DigestInit_ex, rodata: "OpenSSL 3.0.14 4 Jun 2024"
+-> before: openssl_linkage: system, verdict.rule_ids: [..., "DERIVED_SYSTEM_OPENSSL_ONLY",
+           "BIN_OPENSSL_SYMBOLS_DEFINED", ...]
+-> after:  openssl_linkage: mixed, verdict.rule_ids: [..., "BIN_OPENSSL_SYMBOLS_DEFINED",
+           "BIN_OPENSSL_LINKAGE_UNKNOWN", ...] (no "DERIVED_SYSTEM_OPENSSL_ONLY");
+           the needed-side evidence itself is in findings[] as "BIN_NEEDED_SYSTEM_OPENSSL",
+           which carries no verdict of its own and so never appears in verdict.rule_ids
+           either before or after
+```
+
+**The decision: `mixed`, not `static`-wins.** Two ways to resolve one object carrying
+both signals were on the table. `static` wins outright, discarding the `needed` match's
+own conclusion; or `mixed`, `_aggregate`'s existing answer for exactly this kind of
+disagreement between two different objects, extended to mean "both postures found for
+the evidence contributing to one object's own posture" as well as "two objects disagreed
+about the same library." `mixed` was chosen: both facts are independently true and
+independently reportable (a real `DT_NEEDED` entry names the system library, and a real
+symbol or banner shows the object also carries its own copy), and `static`-wins would
+suppress the `needed` evidence from `verdict.conditions.openssl_linkage` itself, not just
+from the findings list -- the one field most consumers filter on would then say `static`
+about an object that also, genuinely, links the system library. `mixed` costs no schema
+change: the value already exists, `SCHEMA.md` already gives it a row, and it was already
+reachable in principle (see the fat-merge entry above, corrected alongside this one) --
+this fix is what makes `_binary_posture` produce it directly instead of only via
+`_aggregate` combining two different objects.
+
+**What changed.** `_binary_posture` now computes `defined`/banner evidence before
+deciding what the `needed` loop found, and returns `LINKAGE_MIXED` when both `system` and
+that evidence are true, ahead of the plain `system` and `static` returns; the ordinary
+cases (`system` alone, `static` alone, neither) fall through to the same branches as
+before, and the `uncertain` (vendor-shaped-but-unconfirmed) case is untouched -- it still
+returns before the `static` check ever runs, so a `needed` entry that only *might* resolve
+inside the wheel still wins over a confirmed `defined`/banner match the way a confirmed
+`system` match no longer does after this fix. That is the same shape of gap #60 closes for
+`system`, left open for `uncertain` on purpose: extending the same precedent there was not
+part of this fix, and is worth its own follow-up rather than folding in here since
+`uncertain` already means "the record is not sure," where `system` meant "the record is
+sure, and wrong." `_aggregate` needed a small change too: a per-binary posture
+of `mixed` did not exist before this fix, only `_aggregate`'s own combination of two
+*different* objects' definite postures, so `mixed` was not itself in `_DEFINITE` and a
+set containing only `{"mixed"}` fell through to `openssl_linkage: none` -- the linkage
+*value*, not the verdict *class*: `BIN_OPENSSL_SYMBOLS_DEFINED` still fired regardless, so
+`verdict.class` never became `NO_CRYPTO_DETECTED` for this shape even before the
+`_aggregate` fix, only the field consumers filter on went silently wrong. `_aggregate` now
+returns `mixed` immediately whenever any object's own posture already is one, since the
+vocabulary has no finer split than that to offer.
+
+**What it costs.** `BIN_OPENSSL_LINKAGE_UNKNOWN` (`values = ["unknown", "mixed"]`,
+`verdict = "OPAQUE"`) now also fires for this shape, because it already treated every
+`mixed` as worth `OPAQUE` regardless of how the disagreement arose. Its own `why` --
+"the wheel calls OpenSSL without declaring a dependency on it, or the only evidence came
+from an object we could not read" -- describes the cross-object and uncertain shapes
+`mixed`/`unknown` already covered, not this one: here the dependency *is* declared and
+the object *was* read in full. `verdict.classes` still leads with `CONDITIONAL`
+(`[verdict] precedence` ranks it ahead of `OPAQUE`), so `verdict.class` is unaffected,
+but `classes` now lists `OPAQUE` too and `BIN_OPENSSL_LINKAGE_UNKNOWN` sits in `rule_ids`
+next to a `why` that does not fit. Left as is rather than reworded here: rewording it
+correctly means splitting what is now two different reasons `mixed` can fire, which is
+exactly the kind of enumeration risk the #57 entry above warns against taking on lightly.
+
+**What was rejected.** `static`-wins, covered above. A new rule id distinguishing
+"mixed from one object's own contradiction" from "mixed from two objects disagreeing" --
+rejected for the same reason `DERIVED_SYSTEM_OPENSSL_ONLY` does not distinguish which
+object resolved `system`: the record's `openssl_linkage` field does not carry
+per-object detail today, and a new rule id would answer a question `rule_ids` cannot
+currently ask.
+
+Revisit if `BIN_OPENSSL_LINKAGE_UNKNOWN`'s `why` text needs to name this case explicitly,
+or if a real wheel's `mixed` verdict is confusing enough in practice that the two ways to
+reach it need their own rule ids after all.
+
+Tracked in [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60).
 
 ## An explicit usedforsecurity=True, and a non-constant flag, are not `NO_CRYPTO_DETECTED`
 
