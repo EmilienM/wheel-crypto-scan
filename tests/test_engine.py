@@ -232,10 +232,39 @@ def test_a_self_referencing_absolute_system_dependency_is_not_manufactured_bundl
     assert "BIN_BUNDLED_OPENSSL" not in ids(findings)
 
 
-def test_the_documented_basename_collision_residual_still_carries_a_finding(ruleset) -> None:
-    """Two different objects that happen to share a basename (`DECISIONS.md`'s
-    accepted residual): the `bundled` classification may still be an imprecise false
-    positive from the coincidence, but it must never be silent about it.
+def test_a_self_referencing_relative_dependency_is_not_manufactured_bundled(ruleset) -> None:
+    """#80 gives an absolute entry its own short-circuit ahead of the own-stem
+    discount above, so the reproduction just above no longer exercises it: one object
+    declaring a plain *relative* `libcrypto.so.3` -- its own stem, and one a real
+    loader genuinely could resolve via `RUNPATH $ORIGIN` -- must still not answer its
+    own question, or `BIN_NEEDED_VENDORED_CRYPTO` would manufacture a `bundled`
+    reading with nothing behind it.
+    """
+    evidence = wheel(
+        binaries=(
+            binary(
+                "fakecrypto/libcrypto.so",
+                soname="libcrypto.so",
+                needed=("libcrypto.so.3", "libc.so.6"),
+                runpath=("$ORIGIN",),
+                matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            ),
+        )
+    )
+    findings = run(ruleset, evidence)
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in ids(findings)
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in ids(findings)
+    assert "BIN_NEEDED_VENDORED_CRYPTO" not in ids(findings)
+    assert "BIN_BUNDLED_OPENSSL" not in ids(findings)
+
+
+def test_an_absolute_basename_collision_no_longer_reads_as_bundled(ruleset) -> None:
+    """Closed by #80. This was the documented residual: two different objects that
+    happen to share a basename, with the `needed` entry naming the absolute path. An
+    absolute path is never resolved via search order by a real loader, so the second
+    object's basename is as meaningless here as the declaring object's own name was in
+    `test_a_self_referencing_absolute_system_dependency_is_not_manufactured_bundled` --
+    the object *count* was never the right test for an absolute path.
     """
     evidence = wheel(
         binaries=(
@@ -243,6 +272,25 @@ def test_the_documented_basename_collision_residual_still_carries_a_finding(rule
                 "demo/libcrypto.so", soname="libcrypto.so", needed=("/usr/lib64/libcrypto.so.3",)
             ),
             binary("demo/plugins/libcrypto.so", soname="libcrypto.so", needed=("libc.so.6",)),
+        )
+    )
+    findings = run(ruleset, evidence)
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in ids(findings)
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in ids(findings)
+    assert "BIN_NEEDED_VENDORED_CRYPTO" not in ids(findings)
+
+
+def test_the_documented_basename_collision_residual_still_carries_a_finding(ruleset) -> None:
+    """#80 narrows the residual to relative entries. Two different objects that happen
+    to share a basename, with the `needed` entry a relative name that can genuinely be
+    resolved by search order (`DECISIONS.md`'s accepted residual, unchanged for this
+    shape): the `bundled` classification may still be an imprecise false positive from
+    the coincidence, but it must never be silent about it.
+    """
+    evidence = wheel(
+        binaries=(
+            binary("demo/_ext.so", needed=("libcrypto.so.3",)),
+            binary("demo/plugins/libcrypto.so.3", soname="libcrypto.so.3", needed=("libc.so.6",)),
         )
     )
     findings = run(ruleset, evidence)

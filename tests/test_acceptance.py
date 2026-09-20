@@ -325,14 +325,15 @@ def self_colliding_wheel(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def basename_collision_wheel(tmp_path: Path) -> Path:
-    """BLOCKING 1, the residual that stays possible after fixing the sharpest repro:
-    two genuinely different objects that happen to share a basename. The `bundled`
-    reading may still be an imprecise false positive from the coincidence -- that is
-    the accepted residual `DECISIONS.md` documents -- but it must carry a finding.
+def absolute_basename_collision_wheel(tmp_path: Path) -> Path:
+    """#80: the residual above, but for two genuinely different objects that happen
+    to share a basename, rather than one object colliding with itself. An absolute
+    `needed` entry is never resolved via search order by a real loader, so this must
+    read exactly like `self_colliding_wheel` -- `system`, not `bundled` -- and the
+    object count must not change that.
     """
     return build_wheel(
-        subdir(tmp_path, "basename-collision") / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        subdir(tmp_path, "absolute-basename-collision") / f"fakecrypto-1.0-{MANYLINUX}.whl",
         name="fakecrypto",
         version="1.0",
         tags=(MANYLINUX,),
@@ -344,6 +345,28 @@ def basename_collision_wheel(tmp_path: Path) -> Path:
                 dynsyms=(DynSym(EVP, defined=False),),
             ),
             "fakecrypto/plugins/libcrypto.so": extension(soname="libcrypto.so"),
+        },
+    )
+
+
+@pytest.fixture
+def basename_collision_wheel(tmp_path: Path) -> Path:
+    """BLOCKING 1, the residual that stays possible after fixing the sharpest repro,
+    narrowed by #80 to a relative `needed` entry: two genuinely different objects
+    that happen to share a basename, where the dependency is a relative name that can
+    genuinely be resolved by search order. The `bundled` reading may still be an
+    imprecise false positive from the coincidence -- that is the accepted residual
+    `DECISIONS.md` documents for this shape -- but it must carry a finding.
+    """
+    return build_wheel(
+        subdir(tmp_path, "basename-collision") / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import libcrypto\n",
+            "fakecrypto/_ext.so": extension(needed=("libcrypto.so.3", "libc.so.6")),
+            "fakecrypto/plugins/libcrypto.so.3": extension(soname="libcrypto.so.3"),
         },
     )
 
@@ -361,6 +384,64 @@ def test_a_self_referencing_dependency_is_not_manufactured_bundled(context, self
     assert "DERIVED_SYSTEM_OPENSSL_ONLY" in rule_ids
     assert "BIN_NEEDED_VENDORED_CRYPTO" not in rule_ids
     assert "BIN_BUNDLED_OPENSSL" not in rule_ids
+    assert record["verdict"]["needs_human_review"] is True
+
+
+def test_an_absolute_basename_collision_is_not_manufactured_bundled(
+    context, absolute_basename_collision_wheel
+):
+    """#80: before the fix this read `openssl_linkage: bundled` via
+    `BIN_NEEDED_VENDORED_CRYPTO`, the same wrong answer `self_colliding_wheel` gave
+    before #57 -- an absolute path is never resolved via search order by a real
+    loader, whatever else in the wheel happens to share its basename.
+    """
+    record = scan(context, absolute_basename_collision_wheel)
+    rule_ids = {f["rule_id"] for f in record["findings"]}
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in rule_ids
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in rule_ids
+    assert "BIN_NEEDED_VENDORED_CRYPTO" not in rule_ids
+    assert "BIN_BUNDLED_OPENSSL" not in rule_ids
+
+
+def test_an_absolute_needed_entry_beside_an_unreadable_basename_collision_stays_system(
+    context, tmp_path: Path
+) -> None:
+    """The sharpest variant of the fix: the object that happens to share a basename
+    with the absolute `needed` entry is not just unrelated, it is itself unreadable
+    -- a truncated member, the same shape `test_a_truncated_extension_is_recorded_
+    not_ignored` uses. Before #80 an unreadable colliding object could not rule out
+    `_resolves_within_wheel`'s basename match either way, so this combination is the
+    one most likely to have quietly kept reading `bundled` through the `incomplete`
+    path even after a narrower fix. It must not: the absolute entry answers `system`
+    on its own, unconditionally, and the unreadable member still gets its own
+    `OPAQUE`-headline finding rather than being folded into, or silencing, the
+    `openssl` answer -- `needs_human_review` stays `true` and the record never reads
+    `NO_CRYPTO_DETECTED`.
+    """
+    good = extension(soname="libcrypto.so.3", needed=("libc.so.6",))
+    wheel = build_wheel(
+        tmp_path / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import libcrypto\n",
+            "fakecrypto/_ext.so": extension(
+                needed=("/usr/lib64/libcrypto.so.3", "libssl.so.3", "libc.so.6"),
+                dynsyms=(DynSym(EVP, defined=False),),
+            ),
+            "fakecrypto/plugins/libcrypto.so.3": good[: len(good) // 2],
+        },
+    )
+    record = scan(context, wheel)
+    rule_ids = {f["rule_id"] for f in record["findings"]}
+    assert record["errors"]
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in rule_ids
+    assert "BIN_NEEDED_VENDORED_CRYPTO" not in rule_ids
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "OPAQUE" in record["verdict"]["classes"]
     assert record["verdict"]["needs_human_review"] is True
 
 

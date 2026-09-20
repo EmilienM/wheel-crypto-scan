@@ -250,5 +250,15 @@ tables nobody read.
 nothing in the wheel answered definitely, so one unreadable object still cannot erase what the
 readable ones said.
 
+### The `always_report` gate had a second, unguarded route around it
+
+**Corrected.** `_binary_posture` (not `_left_unanswered`) separately returned `unknown` for
+any opaque object, once per library in the ruleset's per-library loop -- bypassing the
+`always_report` gate this whole entry describes and making all thirteen shipped libraries
+report `unknown`, not only `openssl`, the one library with `always_report = true`. Deleted;
+`_left_unanswered` already covered `is_opaque`, and now it is the only route a wheel-wide
+non-answer can reach the record through.
+
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#linkage-reads-a-second-split-over-the-same-vocabulary) ·
-[#40](https://github.com/EmilienM/wheel-crypto-scan/issues/40)
+[#40](https://github.com/EmilienM/wheel-crypto-scan/issues/40), corrected in
+[#68](https://github.com/EmilienM/wheel-crypto-scan/issues/68)
