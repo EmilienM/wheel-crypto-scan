@@ -223,20 +223,9 @@ class Conventions:
         parts = path.split("/")[:-1]
         return any(fnmatch(part, glob) for part in parts for glob in self.vendor_dir_globs)
 
-    def normalise_soname(self, name: str) -> SonameInfo:
-        """Reduce `libcrypto-3a1f2b4c.so.3` or `libcrypto-3-x64.dll` to `libcrypto`.
-
-        Windows spells a library's version, and sometimes its architecture, inside the
-        file name where Unix spells it as a `.so.N` suffix. That is a property of the
-        platform rather than of any one library, so it is undone here instead of being
-        enumerated per library: `libgnutls-30.dll` and `libgcrypt-20.dll` are the same
-        convention as `libcrypto-3-x64.dll` and none of them would otherwise resolve.
-
-        The reduction applies only to a name that carried a Windows suffix, because a
-        Unix `libfoo-2.so` really is called `libfoo-2`. Those names are casefolded for
-        the same reason: Windows file names are case-insensitive and an import names
-        its DLL in whatever case the linker happened to write.
-        """
+    def _reduced_stem(self, name: str) -> tuple[str, bool]:
+        """Strip path, version suffix and library extension. Shared by
+        `normalise_soname` (also undoes a hash rename) and `raw_stem` (does not)."""
         stem = name.split("/")[-1]
         windows = False
         while True:
@@ -260,6 +249,11 @@ class Conventions:
             stem = stripped
         if windows:
             stem = stem.casefold()
+        return stem, windows
+
+    def normalise_soname(self, name: str) -> SonameInfo:
+        """Reduce `libcrypto-3a1f2b4c.so.3` or `libcrypto-3-x64.dll` to `libcrypto`."""
+        stem, windows = self._reduced_stem(name)
         match = self.mangled_soname_regex.match(stem)  # pylint: disable=no-member
         mangled = match is not None
         if match is not None:
@@ -280,6 +274,12 @@ class Conventions:
         declaration out.
         """
         return self.normalise_soname(soname or path.rsplit("/", 1)[-1]).base
+
+    def raw_stem(self, soname: str | None, path: str) -> str:
+        """Like `own_base`, but keeps a content-hash rename instead of undoing it, so a
+        plain `needed` entry cannot match a same-family copy renamed elsewhere. #57."""
+        stem, _ = self._reduced_stem(soname or path.rsplit("/", 1)[-1])
+        return stem
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,6 +18,13 @@ from packaging.utils import canonicalize_name
 
 from .evidence import Evidence
 from .findings import Finding, Location
+from .linkage import (
+    LINKAGE_BUNDLED,
+    LINKAGE_SYSTEM,
+    member_stem_counts,
+    needed_posture,
+    wheel_incompletely_read,
+)
 from .ruleset import CryptoLibrary, Limits, Rule, Ruleset
 
 __all__ = ["Hit", "apply_rules"]
@@ -351,9 +358,25 @@ def _match_bundled_library(rule, match, ruleset, evidence, linkage, index) -> It
 
 
 def _match_dt_needed(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
+    """Match a `needed` entry naming a crypto library.
+
+    `mangled` splits on the literal name -- `BIN_NEEDED_MANGLED_CRYPTO` fires on a
+    content-hash rename, `BIN_NEEDED_SYSTEM_OPENSSL` (`mangled = false`) additionally
+    requires the per-entry posture `_binary_posture` computes to actually be system,
+    because delocate's convention resolves a plain name entirely inside the wheel
+    without renaming it (#57). `resolved` is the other side of that same posture:
+    `BIN_NEEDED_VENDORED_CRYPTO` fires when a `needed` entry is not literally mangled
+    but still resolves to an object the wheel ships, so that route to `bundled` is
+    never silent (also #57).
+    """
     wanted = match.get("library")
     want_mangled = match.get("mangled")
+    want_resolved = match.get("resolved")
+    needs_posture = want_mangled is False or want_resolved is not None
+    counts = member_stem_counts(ruleset.conventions, evidence) if needs_posture else {}
+    incomplete = needs_posture and wheel_incompletely_read(evidence)
     for binary in evidence.binaries:
+        own_stem = ruleset.conventions.raw_stem(binary.soname, binary.path) if needs_posture else ""
         for needed in binary.needed:
             info = ruleset.conventions.normalise_soname(needed)
             library = index.get(info.base)
@@ -363,6 +386,22 @@ def _match_dt_needed(rule, match, ruleset, evidence, linkage, index) -> Iterator
                 continue
             if want_mangled is not None and info.mangled is not want_mangled:
                 continue
+            if needs_posture:
+                posture = needed_posture(
+                    info.original,
+                    info.mangled,
+                    own_stem,
+                    binary,
+                    ruleset.conventions,
+                    counts,
+                    incomplete,
+                )
+                if want_mangled is False and posture != LINKAGE_SYSTEM:
+                    continue
+                if want_resolved is not None:
+                    resolved = posture == LINKAGE_BUNDLED and not info.mangled
+                    if resolved is not want_resolved:
+                        continue
             yield Hit(
                 subject_kind="library",
                 subject=library.name,
@@ -370,8 +409,8 @@ def _match_dt_needed(rule, match, ruleset, evidence, linkage, index) -> Iterator
                     path=binary.path,
                     evidence=_clean(f"DT_NEEDED={needed}", ruleset.limits.max_evidence_chars),
                 ),
-                severity=library.severity if want_mangled else None,
-                verdict=library.verdict if want_mangled else None,
+                severity=library.severity if (want_mangled or want_resolved) else None,
+                verdict=library.verdict if (want_mangled or want_resolved) else None,
             )
 
 

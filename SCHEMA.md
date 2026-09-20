@@ -172,11 +172,11 @@ The field most consumers filter on. Always present.
 | Value | Meaning |
 |---|---|
 | `system` | Resolves `libcrypto`/`libssl` from the host, so it inherits the host's FIPS provider and crypto policy. **The condition under which a `CONDITIONAL` wheel is acceptable.** |
-| `bundled` | Ships its own copy, in a vendor directory or via a hash-renamed dependency. Cannot see the system provider. |
+| `bundled` | Ships its own copy: in a vendor directory, via a hash-renamed dependency, or via a dependency that names an unmangled but unrenamed file the wheel itself ships (delocate's convention). Cannot see the system provider. |
 | `static` | Compiled in, with no library file and no declared dependency. Same consequence as `bundled`, harder to spot. |
 | `mixed` | Both postures across different objects in one wheel. |
 | `none` | No OpenSSL evidence, from objects read far enough to say so. |
-| `unknown` | Evidence came only from an object we could not read, or some object in the wheel was not read in full and the cause could have hidden what this field is read off. `partial_reasons` names the cause; the ones that leave the answer intact are marked in the reason table above. |
+| `unknown` | Evidence came only from an object we could not read, some object in the wheel was not read in full and the cause could have hidden what this field is read off, or the wheel itself was not read in full (a member skipped by an archive limit, or one that failed to open) and a dependency's path looks vendored (an `@loader_path`/`@rpath`-relative path, or a vendor-shaped `RPATH`/`RUNPATH`) without a shipped object confirming it. A vendor-shaped path naming nothing, in a wheel read in full, is `system`: the complete member list not containing the answer is itself the answer. `partial_reasons` names the cause when it applies; the ones that leave the answer intact are marked in the reason table above. |
 
 Other libraries appear as `<name>_linkage` when they have evidence.
 

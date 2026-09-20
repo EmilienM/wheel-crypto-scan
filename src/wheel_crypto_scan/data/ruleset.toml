@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "10"
+ruleset_version = "11"
 
 
 # ---------------------------------------------------------------------------
@@ -1238,7 +1238,7 @@ severity = "info"
 confidence = "high"
 needs_human_review = false
 title = "Links the system OpenSSL"
-why = "A plain, unmangled libcrypto.so.3 or libssl.so.3 dependency. This is the good case: the extension resolves to whatever OpenSSL the host provides, so a FIPS-enabled host gives it the FIPS provider. Recorded as information; the wheel is still CONDITIONAL, and the condition is what the linkage field reports."
+why = "A plain, unmangled libcrypto.so.3 or libssl.so.3 dependency that does not resolve to a copy the wheel itself ships (delocate vendors without renaming, so an unmangled name alone is not enough -- see #57). This is the good case: the extension resolves to whatever OpenSSL the host provides, so a FIPS-enabled host gives it the FIPS provider. Recorded as information; the wheel is still CONDITIONAL, and the condition is what the linkage field reports."
 [rule.match]
 kind = "dt_needed"
 library = "openssl"
@@ -1258,6 +1258,21 @@ why = "A dependency such as libcrypto-3a1f2b4c.so.3, or libcrypto-3-x64-a1b2c3d4
 kind = "dt_needed"
 table = "crypto_library"
 mangled = true
+
+[[rule]]
+id = "BIN_NEEDED_VENDORED_CRYPTO"
+layer = "binary"
+category = "bundled-crypto"
+severity = "high"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Depends on a crypto library the wheel ships under its own name"
+why = "delocate copies a dependency into .dylibs/ and rewrites the load command to point there without renaming the file, so a plain, unmangled needed entry can still resolve to an object this wheel itself ships -- and nothing stops a Linux build placing an unmangled dependency beside the extension the same way. BIN_NEEDED_MANGLED_CRYPTO only catches a hash-renamed name; this is the rule that says a needed entry is bundled when it resolves to a shipped object without one, so that reading of bundled is never silent. See #57."
+[rule.match]
+kind = "dt_needed"
+table = "crypto_library"
+resolved = true
 
 [[rule]]
 id = "BIN_OPENSSL_SYMBOLS_IMPORTED"

@@ -16,8 +16,8 @@ There are three ways a wheel can carry its own OpenSSL, and all three are caught
 
 | Evidence | `openssl_linkage` |
 |---|---|
-| Plain `DT_NEEDED libcrypto.so.3`, OpenSSL symbols imported | `system` |
-| A library under `*.libs/` or `.dylibs/`, or a dependency on a hash-renamed `libcrypto-3a1f2b4c.so.3` | `bundled` |
+| Plain `DT_NEEDED libcrypto.so.3`, OpenSSL symbols imported, and nothing in the wheel resolves it | `system` |
+| A library under `*.libs/` or `.dylibs/`, a dependency on a hash-renamed `libcrypto-3a1f2b4c.so.3`, or an unrenamed dependency (delocate's convention) that still names a file the wheel itself ships | `bundled` |
 | No dependency and no vendor directory, but OpenSSL symbols defined or its version banner in read-only data | `static` |
 
 The third case is the one that matters most and the one a vendor-directory check alone

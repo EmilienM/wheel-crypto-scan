@@ -17,6 +17,7 @@ from wheel_crypto_scan.evidence import (
     FORMAT_PE,
     PARTIAL_ELF_GO_BUILDINFO_UNREAD,
     PARTIAL_ELF_SYMTAB_UNREAD,
+    PARTIAL_MACHO_HEADER_UNREAD,
     PARTIAL_MACHO_SYMTAB_INCOMPLETE,
     PARTIAL_PE_DELAY_LOAD,
     PARTIAL_PE_NO_IMPORT_DIRECTORY,
@@ -32,6 +33,7 @@ from wheel_crypto_scan.evidence import (
     StringMatch,
     SymbolMatch,
 )
+from wheel_crypto_scan.errors import MEMBER_READ_ERROR
 from wheel_crypto_scan.linkage import (
     LINKAGE_BUNDLED,
     LINKAGE_MIXED,
@@ -56,12 +58,16 @@ def binary(path: str, **kwargs) -> BinaryEvidence:
     return BinaryEvidence(path=path, **kwargs)
 
 
-def wheel(*binaries: BinaryEvidence, errors: tuple[ScanError, ...] = ()) -> Evidence:
+def wheel(
+    *binaries: BinaryEvidence,
+    errors: tuple[ScanError, ...] = (),
+    artifacts: ArtifactInventory | None = None,
+) -> Evidence:
     return Evidence(
         filename="demo-1.0-py3-none-any.whl",
         sha256="0" * 64,
         size_bytes=1,
-        artifacts=ArtifactInventory(),
+        artifacts=artifacts if artifacts is not None else ArtifactInventory(),
         binaries=binaries,
         errors=errors,
     )
@@ -171,6 +177,333 @@ def test_a_wheel_shipping_its_own_openssl_is_bundled(ruleset) -> None:
         ),
     )
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+# --- delocate: bundled without a rename (#57) --------------------------------
+#
+# delocate copies a dependency into `.dylibs/` and rewrites the load command to point
+# there, but never renames the file the way auditwheel and delvewheel do. A plain
+# `libcrypto.3.dylib` `needed` entry can therefore resolve entirely inside the wheel,
+# so `mangled` cannot be the only test for "does this name a copy the wheel ships".
+
+
+def test_a_loader_path_dependency_resolving_to_a_shipped_object_is_bundled(ruleset) -> None:
+    """`@loader_path/.dylibs/libcrypto.3.dylib`: delocate's usual load-command form.
+
+    Before #57 this read `mixed`: the extension's `needed` entry was unmangled, so it
+    resolved to `system`, disagreeing with the vendored copy's own `bundled` record.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@loader_path/.dylibs/libcrypto.3.dylib"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+        ),
+        binary(
+            "pkg/.dylibs/libcrypto.3.dylib",
+            format=FORMAT_MACHO,
+            vendored_path=True,
+            soname="@loader_path/libcrypto.3.dylib",
+            matched_symbols=(
+                SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),
+                SymbolMatch("SSL_new", "openssl", BINDING_DEFINED),
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+def test_an_rpath_dependency_resolving_to_a_shipped_object_is_bundled(ruleset) -> None:
+    """`@rpath/libcrypto.3.dylib` plus an `LC_RPATH` pointing at `.dylibs/`."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@rpath/libcrypto.3.dylib"),
+            rpath=("@loader_path/.dylibs",),
+        ),
+        binary(
+            "pkg/.dylibs/libcrypto.3.dylib",
+            format=FORMAT_MACHO,
+            vendored_path=True,
+            soname="libcrypto.3.dylib",
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+def test_an_unmangled_elf_dependency_beside_the_extension_is_bundled(ruleset) -> None:
+    """The same gap on Linux: no vendor directory at all, the library just sits next
+    to the extension, and `RUNPATH $ORIGIN` says to look there. Delocate has no ELF
+    equivalent, but an unmangled dependency placed beside the extension hits the same
+    `mangled`-only check.
+    """
+    evidence = wheel(
+        binary("pkg/_ext.so", needed=("libcrypto.so.3", "libc.so.6"), runpath=("$ORIGIN",)),
+        binary("pkg/libcrypto.so.3", soname="libcrypto.so.3", needed=("libc.so.6",)),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+def test_an_unreadable_vendored_copy_still_lets_the_needed_entry_resolve(ruleset) -> None:
+    """The vendored copy's own structure could not be parsed -- no `needed`, no
+    symbols read -- but `layers.binaries.scan_binaries` still records its `path` for
+    any member it attempted to read (AGENTS.md: "a structure that does not parse costs
+    that structure, never the evidence already gathered"), so the extension's `needed`
+    entry still resolves against it.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@loader_path/.dylibs/libcrypto.3.dylib"),
+        ),
+        binary(
+            "pkg/.dylibs/libcrypto.3.dylib",
+            format=FORMAT_MACHO,
+            vendored_path=True,
+            partial_analysis=True,
+            partial_reasons=(PARTIAL_MACHO_HEADER_UNREAD,),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+# --- BLOCKING 1 (adversarial review of #57): a needed entry cannot confirm itself ---
+#
+# `member_stem_counts` is built from every object in the wheel, the querying object
+# included. An object's own file name can coincidentally share a stem with a dependency
+# it declares -- most sharply, an object literally called `libcrypto.so` that itself
+# declares an absolute, genuinely-system `/usr/lib64/libcrypto.so.3` -- and without
+# discounting the object's own contribution, that coincidence answered the object's own
+# question, reading a plain system dependency as `bundled` with nothing behind it.
+
+
+def test_a_needed_entry_matching_its_own_declaring_objects_name_is_not_self_confirmed(
+    ruleset,
+) -> None:
+    """One object, no vendor directory, no second file. `/usr/lib64/libcrypto.so.3` is
+    an absolute path to the host's OpenSSL and can never resolve to the object that
+    names it, whatever its own file name happens to be.
+    """
+    evidence = wheel(
+        binary(
+            "fakecrypto/libcrypto.so",
+            soname="libcrypto.so",
+            needed=("/usr/lib64/libcrypto.so.3", "libc.so.6"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_second_genuinely_different_object_sharing_that_name_still_confirms_bundled(
+    ruleset,
+) -> None:
+    """Discounting an object's own contribution to its own answer must not also blind
+    the check to a second, real object that happens to share the same stem -- the
+    documented residual (two different files, one basename), which stays possible on
+    purpose and is what `DECISIONS.md` accepts as an imprecise but never silent read.
+    """
+    evidence = wheel(
+        binary(
+            "fakecrypto/libcrypto.so", soname="libcrypto.so", needed=("/usr/lib64/libcrypto.so.3",)
+        ),
+        binary("fakecrypto/plugins/libcrypto.so", soname="libcrypto.so", needed=("libc.so.6",)),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+# --- BLOCKING 2 (adversarial review of #57): vendoring something else is not evidence
+# --- about openssl -------------------------------------------------------------------
+#
+# `_looks_vendored` used to treat "this object HAS a vendor-shaped rpath/runpath
+# anywhere" as grounds for `unknown`, regardless of whether anything the wheel ships
+# could plausibly be the target -- so a FIPS-conscious build that genuinely links the
+# system OpenSSL (auditwheel's `--exclude libcrypto.so.3`) while vendoring an unrelated
+# library in the same wheel read as `unknown`/`OPAQUE` instead of `system`.
+
+
+def test_a_genuine_system_openssl_dependency_beside_unrelated_vendoring_stays_system(
+    ruleset,
+) -> None:
+    """ELF: `RUNPATH` is vendor-shaped because the wheel vendors an unrelated libjpeg,
+    but nothing under it, or anywhere else in this fully-read wheel, answers to
+    `libcrypto` -- that is evidence the dependency resolves outside the wheel, not
+    grounds for `unknown`.
+    """
+    evidence = wheel(
+        binary(
+            "fakecrypto/_ext.so",
+            needed=("libcrypto.so.3", "libc.so.6"),
+            runpath=("$ORIGIN/../fakecrypto.libs",),
+        ),
+        binary(
+            "fakecrypto.libs/libjpeg.so.8",
+            soname="libjpeg.so.8",
+            vendored_path=True,
+            needed=("libc.so.6",),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_genuine_macos_system_openssl_dependency_beside_unrelated_vendoring_stays_system(
+    ruleset,
+) -> None:
+    """The same shape via `LC_RPATH`: the wheel vendors an unrelated libjpeg under
+    `.dylibs/`, but the extension's own OpenSSL dependency is an absolute, genuinely
+    system path.
+    """
+    evidence = wheel(
+        binary(
+            "fakecrypto/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "/usr/lib/libcrypto.3.dylib"),
+            rpath=("@loader_path/.dylibs",),
+        ),
+        binary(
+            "fakecrypto/.dylibs/libjpeg.9.dylib",
+            format=FORMAT_MACHO,
+            vendored_path=True,
+            soname="libjpeg.9.dylib",
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_vendor_shaped_loader_path_naming_nothing_shipped_is_system_when_fully_read(
+    ruleset,
+) -> None:
+    """The path looks like delocate's convention, but the wheel does not actually ship
+    anything under it, and every member of the wheel was read: `member_stem_counts`
+    already speaks for the whole wheel, so this is genuine `system`, not `unknown`
+    -- asserting `unknown` from the path shape alone would be a different overconfident
+    misreading in the other direction. #57.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@loader_path/.dylibs/libcrypto.3.dylib"),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_vendor_shaped_rpath_naming_nothing_shipped_is_system_when_fully_read(ruleset) -> None:
+    """Same call, reached through `@rpath` plus an `LC_RPATH` this time."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@rpath/libcrypto.3.dylib"),
+            rpath=("@loader_path/.dylibs",),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_bare_needed_entry_with_a_vendor_shaped_runpath_naming_nothing_is_system_when_full(
+    ruleset,
+) -> None:
+    """The ELF counterpart: no path in `DT_NEEDED` itself, but `RUNPATH` alone points
+    at a vendor directory that does not actually contain the library, in a wheel read
+    in full.
+    """
+    evidence = wheel(
+        binary("pkg/_ext.so", needed=("libcrypto.so.3", "libc.so.6"), runpath=("$ORIGIN/.libs",))
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_vendor_shaped_path_is_unknown_when_a_member_could_not_be_read(ruleset) -> None:
+    """Genuine incompleteness, this time: a member of the wheel raised on open and
+    never became a `BinaryEvidence` at all, so `member_stem_counts` cannot rule
+    anything out, and the vendor-shaped path it cannot confirm stays `unknown` rather
+    than a confident `system`.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@loader_path/.dylibs/libcrypto.3.dylib"),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/.dylibs/libcrypto.3.dylib",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_vendor_shaped_path_is_unknown_when_the_archive_skipped_a_member(ruleset) -> None:
+    """The other way a member never becomes a `BinaryEvidence`: an archive-level limit
+    skipped it before Layer 2 ever tried to read it, recorded in `artifacts.skipped`.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@loader_path/.dylibs/libcrypto.3.dylib"),
+        ),
+        artifacts=ArtifactInventory(skipped=(("pkg/.dylibs/libcrypto.3.dylib", "oversized"),)),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_plain_dependency_stays_system_even_in_an_incompletely_read_wheel(ruleset) -> None:
+    """The `incomplete` gate on `_looks_vendored` is not a blanket downgrade: a wheel
+    can be incompletely read for a reason that has nothing to do with a given `needed`
+    entry, and a plain, non-vendor-shaped name with no vendor-shaped `RPATH`/`RUNPATH`
+    at all must still read `system`. Mutating `_looks_vendored` to unconditionally
+    return `True` would flip only this test, not the `incomplete`-gating ones, so it
+    is the one that pins the vendor-*shape* check rather than the gate around it.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto.so.3", "libc.so.6"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.so",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_symlinked_vendored_library_is_treated_as_incompletely_read(ruleset) -> None:
+    """`layers.binaries.is_binary_member` returns `False` for every symlink, so a
+    vendored library shipped as one is never read as a binary at all: it records
+    neither a `skipped` entry nor a `STAGE_BINARY` error, only `artifacts.symlinks`.
+    Without checking that field, the extension's vendor-shaped `needed` entry read
+    `system` -- `BIN_NEEDED_SYSTEM_OPENSSL`'s "Links the system OpenSSL" and
+    `DERIVED_SYSTEM_OPENSSL_ONLY`'s "All OpenSSL use resolves to the system library"
+    are both affirmatively wrong for an `@loader_path`-anchored load command, which
+    can never be the host's system OpenSSL by construction.
+    """
+    evidence = wheel(
+        binary(
+            "demo/_ext.abi3.so",
+            format=FORMAT_MACHO,
+            needed=("/usr/lib/libSystem.B.dylib", "@loader_path/.dylibs/libcrypto.3.dylib"),
+        ),
+        artifacts=ArtifactInventory(
+            symlinks=(("demo/.dylibs/libcrypto.3.dylib", "libcrypto.3.0.0.dylib"),)
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
 
 
 # --- the case a vendor-directory check alone would miss ---------------------

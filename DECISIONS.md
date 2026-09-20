@@ -1146,3 +1146,264 @@ next real gap in this family is answered by option 3 as a whole, not by another
 field.
 
 Tracked in [#56](https://github.com/EmilienM/wheel-crypto-scan/issues/56).
+
+## A `needed` entry is bundled by what it resolves to, not by whether its name was renamed
+
+**Accepted, and it changes `openssl_linkage` and one finding. Two claims below did not
+hold up under adversarial review -- see "Two claims here did not hold up" below, which
+is the part to read first if you are deciding whether `member_stem_counts` or
+`_looks_vendored` is safe to lean on as written.**
+
+`_binary_posture` read `needed` first: a base name in a crypto library's `sonames` was
+`bundled` only when the name itself carried a content hash (`libcrypto-3a1f2b4c.so.3`),
+otherwise `system`. That is exactly what auditwheel and delvewheel produce, and it is
+not what delocate produces. delocate, the macOS counterpart of auditwheel, copies a
+dependency into `.dylibs/` and rewrites the load command to point there -- `@loader_path/
+.dylibs/libcrypto.3.dylib`, or `@rpath/libcrypto.3.dylib` plus an `LC_RPATH` -- without
+renaming the file. `normalise_soname` reduces either to the plain base `libcrypto`,
+unmangled, so the extension read `system` while the vendored copy sitting right next to
+it, under `.dylibs/`, independently read `bundled`: two postures for one OpenSSL,
+`_aggregate` calling it `mixed`, plus `BIN_OPENSSL_LINKAGE_UNKNOWN` ("could not be
+resolved") and `BIN_NEEDED_SYSTEM_OPENSSL` ("Links the system OpenSSL") both firing --
+wrong on every count. The same shape reaches ELF too: nothing stops a build placing an
+unmangled dependency beside the extension with `RUNPATH $ORIGIN`.
+
+```
+pkg/_ext.cpython-312-darwin.so   needed: @loader_path/.dylibs/libcrypto.3.dylib
+pkg/.dylibs/libcrypto.3.dylib    vendored_path: true, defines EVP_DigestInit_ex, SSL_new
+-> before: openssl_linkage: mixed, BIN_OPENSSL_LINKAGE_UNKNOWN, BIN_NEEDED_SYSTEM_OPENSSL
+-> after:  openssl_linkage: bundled, BIN_BUNDLED_OPENSSL
+```
+
+**The fix has two parts, matched to the two ways a `needed` entry can prove it names a
+file the wheel ships.** `Conventions.raw_stem` reduces a name the same way `own_base`
+does -- strip path, version suffix, library extension -- but stops short of undoing a
+content-hash rename, which is what keeps it from being the same question `own_base`
+answers. `linkage.member_stems` collects every object's `raw_stem` across the wheel, and
+a `needed` entry whose own `raw_stem` lands in that set is `bundled`, mangled or not:
+this is what makes the delocate case, and the plain ELF-beside-the-extension case,
+resolve without touching mangling at all. Second, `linkage._looks_vendored` reads the
+`needed` string itself (`Conventions.is_vendor_path`, which already recognises `.dylibs`
+and `*.libs` as path components regardless of what comes before them) and, for
+`@rpath`-relative names, the object's own `LC_RPATH` list combined with it, or for a
+bare ELF name, its `RPATH`/`RUNPATH`. This is a weaker signal used only as a backstop:
+it never asserts `bundled` by itself.
+
+**Why the path-convention half is capped at `unknown`, never `bundled`.** A `needed`
+entry can look exactly like delocate's convention and still name nothing the wheel
+actually ships -- a broken build, a load command nobody rewrote, a symlink `is_binary_
+member` never followed into a record. Letting the shape alone promote to `bundled` would
+manufacture the same overconfidence this issue closes, aimed the other way: a wheel that
+plainly resolves to nothing being told with certainty that it carries its own copy. So a
+`needed` entry that looks vendored but that `member_stems` cannot confirm reads
+`unknown`, the same answer this tool already gives for "an object was read too little
+to say", not `system` (which would be the old bug moved sideways) and not `bundled`
+(which would be a new one).
+
+**Why `member_stems` is enough on its own for both real reproductions.** `raw_stem`
+only looks at the trailing file name, and a `needed` entry's own path prefix
+(`@loader_path/`, `@rpath/`, `$ORIGIN/`) never survives into that trailing component,
+so matching on it is already prefix-agnostic: `@rpath/libcrypto.3.dylib` and `pkg/
+.dylibs/libcrypto.3.dylib` share the same `raw_stem` without any `@rpath`/`LC_RPATH`
+resolution being consulted. `_looks_vendored`'s `@rpath` and `RPATH`/`RUNPATH` handling
+earns its place on a narrower case: a member that is not independently a
+`BinaryEvidence` at all (a symlink `layers.binaries` never follows into a record, or an
+object dropped for a total read failure) has no `raw_stem` for `member_stems` to hold in
+the first place, and the path shape is the only thing left to read off. It is measured
+here rather than assumed: mutating each half out independently pins one test each
+(`test_an_unmangled_elf_dependency_beside_the_extension_is_bundled` goes `system` without
+the `member_stems` half; the three "naming nothing shipped" tests go `system` without
+`_looks_vendored`), and no test in the added set needs both at once to pass.
+
+**Kept out of scope, on purpose.** `_binary_posture`'s overall shape -- `needed` checked
+before `defined`/`static`, one short-circuit per definite posture -- is unchanged; this
+fix is one more way a `needed` entry can resolve to `bundled`, slotted into the existing
+per-entry loop, not a restructuring. The precedence question between `needed` and
+`defined` within one object is [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60);
+the `is_opaque` arm's per-library fan-out is [#68](https://github.com/EmilienM/wheel-crypto-scan/issues/68).
+Neither is touched here.
+
+**A real risk this does not fully close.** `member_stems` matches on file identity
+alone, not on directory. Two different libraries that happen to share a basename in
+different parts of the same wheel -- unusual, but not forbidden by any format here --
+would let an unrelated `needed` entry read as `bundled` because *something* in the
+wheel answers to that name, not because the referenced object actually does. Resolving
+that precisely needs walking the actual search path (`@rpath` order, `RUNPATH` entries,
+the standard library directories) to the specific candidate file, which is a
+meaningfully bigger change than this issue's reproductions call for. Recorded here
+rather than fixed, because the failure direction it can produce -- reading `system` as
+`bundled` -- is the safe one for a FIPS-risk tool: it never manufactures the clean
+answer, and the same false-`bundled` outcome only fires when the wheel already ships
+*some* object under that literal name, which is itself circumstantial evidence worth a
+human's attention.
+
+Revisit if a real wheel is found where this collision actually happens, or if #60's
+precedence work needs `member_stems` threaded further into `_binary_posture`.
+
+Tracked in [#57](https://github.com/EmilienM/wheel-crypto-scan/issues/57).
+
+### Two claims here did not hold up
+
+**Corrected. "A real risk this does not fully close" understated the risk, and the
+`_looks_vendored` backstop fired far more broadly than the "narrow case" claimed above.**
+
+Adversarial review ran a 150-shape differential matrix against `main` and found both
+wrong, with reproductions neither of the paragraphs above anticipated.
+
+**Claim 1: "the same false-`bundled` outcome only fires when the wheel already ships
+*some* object under that literal name, which is itself circumstantial evidence worth a
+human's attention."** True of the *two-file* collision the paragraph had in mind, and
+not the sharpest shape a `member_stems` lookup admits: a *single* object, no vendor
+directory, no second file, whose own file name happens to reduce to the same stem as an
+absolute, genuinely-system dependency it declares --
+
+```
+fakecrypto/libcrypto.so   soname: libcrypto.so
+                          needed: /usr/lib64/libcrypto.so.3, libc.so.6
+-> before: openssl_linkage: bundled, verdict.class: NO_CRYPTO_DETECTED,
+           rule_ids: [], needs_human_review: false
+```
+
+`member_stems` included the querying object itself, so the object answered its own
+question: `/usr/lib64/libcrypto.so.3` can never resolve to the object that names it,
+under any real search order, whatever that object happens to be called. Worse than a
+wrong posture, this one had no rule behind it at all -- there is a *third* route to
+`openssl_linkage: bundled` besides the two the ruleset already accounts for
+(`BIN_BUNDLED_OPENSSL` for a vendored member's own record, `BIN_NEEDED_MANGLED_CRYPTO`
+for a literal hash rename), and nothing claimed it. `BIN_LINKED_CRYPTO_LIBRARY`'s own
+`why` names exactly this failure mode for every other library and excludes openssl on
+the assumption that openssl's own rules already cover it; they did not cover this one.
+
+**The fix has two parts.** `member_stems` (a set) became `member_stem_counts` (a
+`collections.Counter`), and `linkage._resolves_within_wheel(own_stem, needed_stem,
+counts)` discounts an object's own contribution to its own answer: confirmation
+requires a *second* contributor when the querying object's own stem is the one in
+question, and any contributor at all otherwise -- so a genuinely different object that
+happens to share the declaring object's stem still confirms it (the two-file case the
+original paragraph had in mind stays possible, on purpose). Second, a new rule,
+`BIN_NEEDED_VENDORED_CRYPTO` (`kind = "dt_needed"`, `table = "crypto_library"`,
+`resolved = true`), fires whenever `needed_posture` reads `bundled` off this path and
+the name was not literally mangled, so this third route to `bundled` is claimed the
+same way the other two are, and the residual imprecision the two-file case still
+allows (`test_the_documented_basename_collision_residual_still_carries_a_finding`,
+`test_the_basename_collision_residual_is_never_silent`) is never silent about it:
+`needs_human_review` is `true` even when the `bundled` classification itself is a false
+positive from the coincidence.
+
+**Claim 2: "`_looks_vendored`'s `@rpath` and `RPATH`/`RUNPATH` handling earns its place
+on a narrower case."** The code did not match the claim: `_looks_vendored` fired
+whenever the object had *any* vendor-shaped `RPATH`/`RUNPATH`/`LC_RPATH`, independent of
+whether the specific `needed` entry in question could plausibly resolve under it. The
+review's matrix found this misreading a genuine system dependency as `unknown` on 11 of
+150 shapes, on both ELF and Mach-O: a FIPS-conscious build that runs auditwheel's
+`--exclude libcrypto.so.3` (a real, intentional pattern) while vendoring an unrelated
+library, say libjpeg, in the same wheel --
+
+```
+fakecrypto/_ext.so        needed: libcrypto.so.3, libc.so.6
+                          runpath: $ORIGIN/../fakecrypto.libs
+fakecrypto.libs/libjpeg.so.8   (unrelated to OpenSSL)
+-> before: openssl_linkage: unknown, verdict.class: OPAQUE, BIN_OPENSSL_LINKAGE_UNKNOWN
+```
+
+The `RUNPATH` is vendor-shaped because the wheel vendors libjpeg, not because anything
+there could be OpenSSL, and a wheel this tool can read in full is exactly the case where
+it does not need to guess the way a real dynamic loader would: `member_stem_counts`
+already speaks for everything the wheel ships.
+
+**The fix.** `linkage.wheel_incompletely_read(evidence)` is `true` only when some member
+never became a `BinaryEvidence` at all -- skipped by an archive-level limit
+(`artifacts.skipped`) or a member that raised on open or failed its CRC (`errors` at
+`STAGE_BINARY`). `needed_posture` now consults `_looks_vendored` -- and can therefore
+read `unknown` -- only when that is `true`; when the wheel was read in full, a
+vendor-shaped path naming nothing `member_stem_counts` confirms is genuine `system`,
+because a complete member list that does not contain the answer is itself the answer.
+`unknown` stays reachable for a wheel that genuinely was not read in full
+(`test_a_vendor_shaped_path_is_unknown_when_a_member_could_not_be_read`,
+`test_a_vendor_shaped_path_is_unknown_when_the_archive_skipped_a_member`), which is the
+narrower case the original claim meant but the code had not yet been made to match.
+
+**A smaller finding from the same review, folded into this fix:** mutation testing
+showed the `@rpath/`-specific branch inside the old `_looks_vendored` was dead code --
+deleting it failed nothing, because the generic fallthrough (joining the *whole* `needed`
+string, `@rpath/` prefix included, to each `RPATH`/`RUNPATH`/`LC_RPATH` entry) already
+finds a vendor-directory component anywhere in the combined path, prefix garbage or not.
+The rewritten `_looks_vendored` has one combining branch instead of two.
+
+### The `_looks_vendored` gate was still incomplete
+
+**Corrected again. The fix above closed BLOCKING 2's over-firing but left the gate
+itself unguarded on both the shape side and the completeness side.**
+
+Two more findings from the same review thread, past the point above:
+
+**The vendor-shape check itself had no test.** Mutating `_looks_vendored` to
+unconditionally `return True` left the full suite green: the `incomplete` gate around
+it was pinned in both directions, but nothing pinned the shape check *inside* the
+gate. That mutant would have reintroduced BLOCKING 2's false-positive family for every
+incompletely-read wheel carrying a plain, non-vendor-shaped dependency, just moved
+behind "and the wheel happens to be incomplete for an unrelated reason" instead of
+firing unconditionally. `test_a_plain_dependency_stays_system_even_in_an_incompletely_
+read_wheel` builds a wheel that is incompletely read (a `STAGE_BINARY` error on an
+unrelated member) with a needed entry that is plainly not vendor-shaped, and pins
+`system`; it is the only test that mutation flips.
+
+**`wheel_incompletely_read` did not check `artifacts.symlinks`, so the "narrower case"
+sentence a few paragraphs up was still wrong when it was written.**
+`layers.binaries.is_binary_member` returns `False` for every symlink, so a vendored
+library shipped as one -- a real shape: a versioned `.so`/`.dylib` left as a symlink to
+the real file is ordinary practice -- is never read as a binary at all. It records
+neither a `skipped` entry nor a `STAGE_BINARY` error, only `artifacts.symlinks`, which
+`wheel_incompletely_read` did not consult:
+
+```
+demo/_ext.abi3.so               needed: @loader_path/.dylibs/libcrypto.3.dylib
+demo/.dylibs/libcrypto.3.dylib  -> a symlink, never read as a binary at all
+-> before: openssl_linkage: system, BIN_NEEDED_SYSTEM_OPENSSL ("Links the system OpenSSL"),
+           DERIVED_SYSTEM_OPENSSL_ONLY ("All OpenSSL use resolves to the system library")
+```
+
+Both finding descriptions are affirmatively wrong here: an `@loader_path`-anchored load
+command is wheel-internal by construction and can never be the host's system OpenSSL.
+`needs_human_review` was still `true`, so this was never silent, but it was confidently
+wrong rather than honestly uncertain, which is the distinction this whole entry exists
+to draw. `wheel_incompletely_read` now also checks `evidence.artifacts.symlinks`;
+`test_a_symlinked_vendored_library_is_treated_as_incompletely_read` pins it.
+
+Tracked in [#57](https://github.com/EmilienM/wheel-crypto-scan/issues/57).
+
+**What is still true, and named honestly rather than assumed.** For every `bundled`
+`_binary_posture` can produce, a rule now fires: the vendored-member path
+(`BIN_BUNDLED_OPENSSL`), the literal-rename path (`BIN_NEEDED_MANGLED_CRYPTO`), and the
+resolves-within-the-wheel path (`BIN_NEEDED_VENDORED_CRYPTO`), audited one branch at a
+time against the three places `_binary_posture` returns `LINKAGE_BUNDLED`. But `system`
+has an aggregate-level backstop no per-mechanism enumeration needs to keep in step --
+`DERIVED_SYSTEM_OPENSSL_ONLY` fires off `linkage.get("openssl") == "system"` directly,
+whatever mechanism produced it -- and `bundled` does not: nothing here would notice if a
+fourth mechanism were added to `_binary_posture` without a fourth rule to match it. That
+asymmetry is not new to this fix; `BIN_BUNDLED_OPENSSL` and `BIN_NEEDED_MANGLED_CRYPTO`
+already worked this way.
+
+**Two ways to close it, deferred rather than done here, both measured rather than
+assumed.** An aggregate `openssl` "bundled" rule, mirroring `DERIVED_SYSTEM_OPENSSL_ONLY`,
+breaks exactly one test -- an id-enumeration test, not a behavioural one -- and the
+evidence-text objection above is weaker than it first reads: `DERIVED_SYSTEM_OPENSSL_ONLY`
+already carries the identical limitation (it cannot name which object resolved system
+either) and fires *alongside* the mechanism-specific rule rather than replacing it, so
+the aggregate rule would cost nothing that `system` does not already cost. The cheaper
+option is not a new rule at all but a behavioural invariant test -- the same species of
+guard as the `partial_analysis`/`partial_reasons` agreement test and the test asserting
+every recordable failure maps to a rule -- asserting that no definite `openssl_linkage`
+value reaches the record without at least one contributing rule having fired for it.
+That test changes no output and costs nothing to add; it was not written for this fix
+only because doing so is itself the follow-up, not a step this fix needed to take to be
+correct. A future change to `_binary_posture` that adds a fourth path to `bundled`
+should read this paragraph before assuming the existing rules still enumerate every
+case, and should prefer adding the invariant test over trusting enumeration again.
+
+Revisit if a fourth mechanism is ever added to `_binary_posture`'s `bundled` branches,
+or if the two-file basename collision is seen in a real wheel often enough that the
+imprecision, rather than just the silence, needs closing. The invariant test above is
+worth adding regardless, as a follow-up: it is free.
+
+Tracked in [#57](https://github.com/EmilienM/wheel-crypto-scan/issues/57).
