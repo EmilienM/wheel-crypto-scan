@@ -195,6 +195,109 @@ def test_a_finding_without_a_subject_has_no_subject_kind(context, tmp_path: Path
     assert finding["subject_kind"] is None
 
 
+# --- usedforsecurity: an explicit flag must never read as clean (#58) --------
+#
+# The AST extractor already recorded "true", "false", "unresolved" and "absent"
+# correctly; the gap was entirely in the ruleset's match tables. An explicit
+# usedforsecurity=True fired nothing at all, and a non-constant usedforsecurity on a
+# weak hash fired nothing despite PY_WEAK_HASH_UNRESOLVED's own `why` claiming it did.
+
+
+def _hashlib_wheel(tmp_path: Path, name: str, source: bytes):
+    return build_wheel(
+        tmp_path / f"{name}-1.0-py3-none-any.whl",
+        name=name,
+        version="1.0",
+        files={f"{name}/__init__.py": source},
+    )
+
+
+def test_a_bare_weak_hash_call_is_unchanged(context, tmp_path: Path) -> None:
+    """No usedforsecurity keyword at all: the ordinary, already-working case."""
+    wheel = _hashlib_wheel(tmp_path, "bare", b"import hashlib\nhashlib.md5(b'x')\n")
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "FIPS_BREAKING"
+    assert "PY_WEAK_HASH_CALL" in record["verdict"]["rule_ids"]
+
+
+def test_an_explicit_usedforsecurity_true_is_fips_breaking(context, tmp_path: Path) -> None:
+    """The code declares itself security use; that is at least as confident a signal
+    as no keyword at all, and used to fire nothing."""
+    wheel = _hashlib_wheel(
+        tmp_path, "explicittrue", b"import hashlib\nhashlib.md5(b'x', usedforsecurity=True)\n"
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "FIPS_BREAKING"
+    assert "PY_WEAK_HASH_CALL" in record["verdict"]["rule_ids"]
+
+
+def test_a_non_constant_usedforsecurity_on_md5_is_context_dependent(
+    context, tmp_path: Path
+) -> None:
+    wheel = _hashlib_wheel(
+        tmp_path,
+        "nonconstflag",
+        b"import hashlib\nflag = True\nhashlib.md5(b'x', usedforsecurity=flag)\n",
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONTEXT_DEPENDENT"
+    assert "PY_WEAK_HASH_UNRESOLVED" in record["verdict"]["rule_ids"]
+    assert "PY_WEAK_HASH_CALL" not in record["verdict"]["rule_ids"]
+
+
+def test_a_non_constant_usedforsecurity_on_hashlib_new_weak_is_context_dependent(
+    context, tmp_path: Path
+) -> None:
+    wheel = _hashlib_wheel(
+        tmp_path,
+        "nonconstflagnew",
+        b"import hashlib\nflag = True\nhashlib.new('md5', usedforsecurity=flag)\n",
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONTEXT_DEPENDENT"
+    assert "PY_WEAK_HASH_UNRESOLVED" in record["verdict"]["rule_ids"]
+    assert "PY_WEAK_HASH_CALL" not in record["verdict"]["rule_ids"]
+
+
+def test_a_variable_algorithm_name_is_unchanged(context, tmp_path: Path) -> None:
+    """hashlib.new(name): already worked before this fix, must still work after."""
+    wheel = _hashlib_wheel(
+        tmp_path, "varalgo", b"import hashlib\nname = 'md5'\nhashlib.new(name)\n"
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONTEXT_DEPENDENT"
+    assert "PY_WEAK_HASH_UNRESOLVED" in record["verdict"]["rule_ids"]
+
+
+def test_an_explicit_usedforsecurity_false_is_unchanged(context, tmp_path: Path) -> None:
+    """Regression check: this fix is additive and must not touch the marked case."""
+    wheel = _hashlib_wheel(
+        tmp_path, "explicitfalse", b"import hashlib\nhashlib.md5(b'x', usedforsecurity=False)\n"
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONTEXT_DEPENDENT"
+    assert "PY_WEAK_HASH_CALL_MARKED" in record["verdict"]["rule_ids"]
+    assert "PY_WEAK_HASH_CALL" not in record["verdict"]["rule_ids"]
+
+
+def test_a_non_constant_usedforsecurity_on_a_strong_hash_is_not_flagged(
+    context, tmp_path: Path
+) -> None:
+    """sha256 stays approved regardless of usedforsecurity: a non-constant flag on it
+    is a different, less alarming shape than the same flag on a weak hash, and must
+    not borrow PY_WEAK_HASH_UNRESOLVED's finding."""
+    wheel = _hashlib_wheel(
+        tmp_path,
+        "strongnonconst",
+        b"import hashlib\nflag = True\nhashlib.new('sha256', usedforsecurity=flag)\n",
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NO_CRYPTO_DETECTED"
+    assert not {"PY_WEAK_HASH_CALL", "PY_WEAK_HASH_CALL_MARKED", "PY_WEAK_HASH_UNRESOLVED"} & set(
+        record["verdict"]["rule_ids"]
+    )
+
+
 # --- the error vocabulary must be live ---------------------------------------
 
 

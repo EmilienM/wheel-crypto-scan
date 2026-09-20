@@ -1407,3 +1407,50 @@ imprecision, rather than just the silence, needs closing. The invariant test abo
 worth adding regardless, as a follow-up: it is free.
 
 Tracked in [#57](https://github.com/EmilienM/wheel-crypto-scan/issues/57).
+
+## An explicit usedforsecurity=True, and a non-constant flag, are not `NO_CRYPTO_DETECTED`
+
+**Fixed. The AST extractor already recorded the right thing; the ruleset just never
+asked for it.**
+
+`_hashlib_usedforsecurity` in `layers/python_ast.py` has always yielded `"absent"`,
+`"false"`, `"true"` or `"unresolved"` correctly. Nothing in `data/ruleset.toml` matched
+`"true"` at all, so `hashlib.md5(data, usedforsecurity=True)` -- the code explicitly
+declaring itself a security use -- produced zero findings and read as
+`NO_CRYPTO_DETECTED`, the one outcome this tool's invariants exist to rule out for an
+uncertain or unreadable case, and this case was neither: it was the single most certain
+shape the extractor can produce. Likewise, `PY_WEAK_HASH_UNRESOLVED`'s own `why` claimed
+to cover "usedforsecurity passed a non-constant," but no match table read that value; it
+only matched a non-constant *algorithm name* on `hashlib.new`.
+
+**The fix.** `PY_WEAK_HASH_CALL`'s match table now accepts `usedforsecurity = ["absent",
+"true"]` instead of just `"absent"`; `_match_py_call` in `engine.py` normalises a scalar
+string into a one-element tuple and checks membership, the same shape `_match_py_attr`
+already uses for its `values` list. `PY_WEAK_HASH_UNRESOLVED` gained a second
+`[[rule.match]]` table for `usedforsecurity = "unresolved"` with `weak_algorithms_only =
+true`, ORed with its existing `algorithm = "unresolved"` table -- one rule id, two ways
+of reaching it. This is the first rule in the shipped ruleset to use more than one
+`[[rule.match]]` table; `Rule`'s docstring already defines several tables as alternatives
+ORed together, and `tests/test_ruleset.py` already exercised the form synthetically, so
+the mechanism was proven before this rule became its first real user.
+
+**The judgment call: no new rule id for the `usedforsecurity=True` case.** An explicit
+`True` is worth distinguishing from the bare no-keyword call in the evidence text, since
+one is a default and the other is a declaration, but not in severity, confidence or
+verdict class -- both are `FIPS_BREAKING`, both need human review. The distinction
+already exists one layer down: `PySite.detail` carries `usedforsecurity=absent` or
+`usedforsecurity=true` per occurrence, so a reader loses nothing by both landing under
+`PY_WEAK_HASH_CALL`. A second rule id would duplicate the `why` for no material gain.
+
+**The other judgment call: a non-constant usedforsecurity on a non-weak algorithm is not
+this finding, at any verdict class.** `hashlib.new("sha256", usedforsecurity=flag)` does
+not fire `PY_WEAK_HASH_UNRESOLVED` (or either of the other two): sha256 is FIPS-approved
+regardless of what the flag turns out to be at runtime, so the uncertainty a human would
+be asked to resolve does not exist. `weak_algorithms_only = true` on the new match table
+does this for free, the same filter the two existing hash-call rules already rely on.
+
+Revisit if a future weak-hash rule needs the True/absent split visible at the rule_id
+level rather than in `detail`, or if `weak_algorithms_only`'s definition of "weak" ever
+needs to move for reasons unrelated to `usedforsecurity`.
+
+Tracked in [#58](https://github.com/EmilienM/wheel-crypto-scan/issues/58).
