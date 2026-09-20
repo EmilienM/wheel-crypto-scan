@@ -435,6 +435,41 @@ def test_a_runtime_chosen_algorithm_is_unresolved(ruleset) -> None:
     assert "PY_WEAK_HASH_CALL" not in findings
 
 
+def test_an_explicit_usedforsecurity_true_is_fips_breaking(ruleset) -> None:
+    """#58: usedforsecurity=True is a stronger signal than the no-keyword case, not a
+    weaker one, and it fired nothing at all before this rule's match table grew it."""
+    evidence = wheel(
+        py_sites=(site("py_call", "hashlib.md5", algorithm="md5", usedforsecurity="true"),)
+    )
+    finding = one(run(ruleset, evidence), "PY_WEAK_HASH_CALL")
+    assert finding.verdict == "FIPS_BREAKING"
+
+
+def test_a_non_constant_usedforsecurity_on_a_weak_hash_is_unresolved(ruleset) -> None:
+    """#58: PY_WEAK_HASH_UNRESOLVED's own `why` already claimed this shape; nothing
+    matched it until a second [[rule.match]] table was added for it."""
+    evidence = wheel(
+        py_sites=(site("py_call", "hashlib.md5", algorithm="md5", usedforsecurity="unresolved"),)
+    )
+    findings = ids(run(ruleset, evidence))
+    assert "PY_WEAK_HASH_UNRESOLVED" in findings
+    assert "PY_WEAK_HASH_CALL" not in findings
+
+
+def test_a_non_constant_usedforsecurity_on_a_strong_hash_is_not_flagged(ruleset) -> None:
+    """#58: sha256 stays approved regardless of usedforsecurity, so a non-constant flag
+    on it must not borrow the weak-hash finding."""
+    evidence = wheel(
+        py_sites=(site("py_call", "hashlib.new", algorithm="sha256", usedforsecurity="unresolved"),)
+    )
+    findings = ids(run(ruleset, evidence))
+    assert not findings & {
+        "PY_WEAK_HASH_CALL",
+        "PY_WEAK_HASH_CALL_MARKED",
+        "PY_WEAK_HASH_UNRESOLVED",
+    }
+
+
 def test_a_method_call_matches_the_wildcard_target(ruleset) -> None:
     assert "PY_TLS_POLICY_OVERRIDE" in ids(
         run(ruleset, wheel(py_sites=(site("py_call", "ctx.set_ciphers"),)))

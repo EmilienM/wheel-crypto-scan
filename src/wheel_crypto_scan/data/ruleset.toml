@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "11"
+ruleset_version = "12"
 
 
 # ---------------------------------------------------------------------------
@@ -1672,12 +1672,12 @@ confidence = "high"
 verdict = "FIPS_BREAKING"
 needs_human_review = true
 title = "Weak hash called without usedforsecurity=False"
-why = "hashlib.md5() and hashlib.sha1() raise on a FIPS-enforcing host unless the caller passes usedforsecurity=False. This is the finding that predicts a runtime crash rather than a policy discussion, and the fix is usually one keyword argument."
+why = "hashlib.md5() and hashlib.sha1() raise on a FIPS-enforcing host unless the caller passes usedforsecurity=False. This is the finding that predicts a runtime crash rather than a policy discussion, and the fix is usually one keyword argument. An explicit usedforsecurity=True is the same outcome, and at least as confident: the caller is not silent about intent, it is declaring one."
 [rule.match]
 kind = "py_call"
 targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
 weak_algorithms_only = true
-usedforsecurity = "absent"
+usedforsecurity = ["absent", "true"]
 
 [[rule]]
 id = "PY_WEAK_HASH_CALL_MARKED"
@@ -1703,12 +1703,18 @@ severity = "medium"
 confidence = "low"
 verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
-title = "Hash algorithm chosen at runtime"
-why = "hashlib.new(name) where name is a variable, or usedforsecurity passed a non-constant. Static analysis stops here by design: we record the call site and let a human read the surrounding code rather than guessing which branch runs."
-[rule.match]
+title = "Hash choice or security use not resolvable at scan time"
+why = "hashlib.new(name) where name is a variable, or usedforsecurity passed a non-constant on a weak-hash-capable call. Static analysis stops here by design: we record the call site and let a human read the surrounding code rather than guessing which branch runs. Restricted to weak algorithms: usedforsecurity is irrelevant to sha256 and the like, which stay approved regardless of the flag, so a non-constant flag there is not this finding."
+[[rule.match]]
 kind = "py_call"
 targets = ["hashlib.new"]
 algorithm = "unresolved"
+
+[[rule.match]]
+kind = "py_call"
+targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
+weak_algorithms_only = true
+usedforsecurity = "unresolved"
 
 [[rule]]
 id = "PY_TLS_POLICY_OVERRIDE"

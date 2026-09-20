@@ -582,6 +582,10 @@ def _match_py_call(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
     targets = frozenset(match.get("targets", ()))
     weak_only = bool(match.get("weak_algorithms_only"))
     want_used = match.get("usedforsecurity")
+    # A single string is the common case; a list lets one match table accept more than
+    # one value, the same way `_match_py_attr`'s `values` does for an attribute value.
+    if isinstance(want_used, str):
+        want_used = (want_used,)
     want_algorithm = match.get("algorithm")
     weak = ruleset.conventions.weak_hash_algorithms
     for site in evidence.py_sites:
@@ -593,7 +597,7 @@ def _match_py_call(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
             continue
         if want_algorithm is not None and algorithm != want_algorithm:
             continue
-        if want_used is not None and attrs.get("usedforsecurity") != want_used:
+        if want_used is not None and attrs.get("usedforsecurity") not in want_used:
             continue
         yield Hit(subject=None, location=_site_location(site, ruleset.limits))
 
