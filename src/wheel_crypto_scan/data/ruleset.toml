@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "12"
+ruleset_version = "13"
 
 
 # ---------------------------------------------------------------------------
@@ -1107,6 +1107,20 @@ why = "Not a readable zip at all, so nothing in it was examined. This has to be 
 [rule.match]
 kind = "scan_error"
 error_kinds = ["bad_zip"]
+
+[[rule]]
+id = "WHEEL_SCAN_INTERRUPTED"
+layer = "metadata"
+category = "opacity"
+severity = "high"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "Wheel scan was interrupted"
+why = "An exception the scanner did not specifically anticipate cut the read short before anything else ran -- unlike WHEEL_UNREADABLE this makes no claim about the archive's own bytes, so it must not be reported as a corrupt zip. The same wheel can read cleanly on a later attempt once whatever interrupted this one (memory pressure, a transient I/O error) has passed, which is also why a record carrying this kind is never cached: see DECISIONS.md."
+[rule.match]
+kind = "scan_error"
+error_kinds = ["unexpected_error"]
 
 [[rule]]
 id = "WHEEL_MEMBER_UNREADABLE"

@@ -63,7 +63,13 @@ def scan_wheel(path: str | Path, context: ScanContext, sha256: str | None = None
     except errors.WheelReadError as exc:
         evidence = _unreadable(path, digest, str(exc))
     except Exception as exc:  # noqa: BLE001 - never lose a wheel to an unexpected failure
-        evidence = _unreadable(path, digest, f"unexpected {type(exc).__name__}")
+        # Not `errors.BAD_ZIP`: this branch catches whatever `_collect` did not
+        # specifically anticipate, which says nothing about whether the archive itself
+        # is readable -- a `MemoryError` under load leaves the wheel's own bytes
+        # untouched. See errors.UNEXPECTED_ERROR and DECISIONS.md.
+        evidence = _unreadable(
+            path, digest, f"unexpected {type(exc).__name__}", kind=errors.UNEXPECTED_ERROR
+        )
 
     # Linkage, the rules and the verdict all run over the full, untruncated
     # `evidence.binaries` that was actually read. The cap only ever slices the
@@ -123,8 +129,13 @@ def _collect(path: Path, context: ScanContext, digest: str) -> Evidence:
         )
 
 
-def _unreadable(path: Path, digest: str, message: str) -> Evidence:
-    """A wheel we could not open at all still gets a record, marked for what it is."""
+def _unreadable(path: Path, digest: str, message: str, *, kind: str = errors.BAD_ZIP) -> Evidence:
+    """A wheel we could not open at all still gets a record, marked for what it is.
+
+    `kind` defaults to `BAD_ZIP`, the specific claim that the archive itself would not
+    open. A caller whose failure makes no claim about the archive's own bytes -- an
+    exception `_collect` did not anticipate -- passes `errors.UNEXPECTED_ERROR` instead.
+    """
     try:
         size = path.stat().st_size
     except OSError:
@@ -134,7 +145,7 @@ def _unreadable(path: Path, digest: str, message: str) -> Evidence:
         sha256=digest,
         size_bytes=size,
         artifacts=ArtifactInventory(source_available=False, pyc_files=0),
-        errors=(ScanError(stage=STAGE_ARCHIVE, kind=errors.BAD_ZIP, message=message, path=None),),
+        errors=(ScanError(stage=STAGE_ARCHIVE, kind=kind, message=message, path=None),),
     )
 
 

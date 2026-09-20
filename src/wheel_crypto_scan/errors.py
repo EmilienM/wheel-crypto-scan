@@ -16,6 +16,12 @@ DUPLICATE_MEMBER = "duplicate_member"
 SIZE_LIMIT_EXCEEDED = "size_limit_exceeded"
 COMPRESSION_RATIO_EXCEEDED = "compression_ratio_exceeded"
 MEMBER_READ_ERROR = "member_read_error"
+# An exception `_collect` did not specifically anticipate cut the read short before
+# anything else ran: a `MemoryError` under load, a transient I/O error, an unforeseen
+# bug. Distinct from `BAD_ZIP`, which is a specific, checked claim about the archive's
+# own bytes (`zipfile.BadZipFile` or similar) -- this kind makes no claim about the
+# wheel at all, so it must never be asserted for a wheel whose only problem was timing.
+UNEXPECTED_ERROR = "unexpected_error"
 
 # Distribution metadata.
 DIST_INFO_MISSING = "dist_info_missing"
@@ -48,6 +54,7 @@ ERROR_KINDS: frozenset[str] = frozenset(
         SIZE_LIMIT_EXCEEDED,
         COMPRESSION_RATIO_EXCEEDED,
         MEMBER_READ_ERROR,
+        UNEXPECTED_ERROR,
         DIST_INFO_MISSING,
         DIST_INFO_AMBIGUOUS,
         METADATA_MISSING,
@@ -68,6 +75,33 @@ ERROR_KINDS: frozenset[str] = frozenset(
         PYTHON_TOO_LARGE,
     }
 )
+
+# Archive- and member-stage kinds this scanner cannot yet prove are deterministic, so a
+# record carrying one is not a final answer for its wheel -- caching it, or treating it
+# as already done on `--resume`, risks serving a transient failure forever, the bug #64
+# was filed about. Not exhaustive: binfmt's own parse-error kinds share this risk one
+# layer down and are out of this set's scope for now (#97).
+#
+# `BAD_ZIP` and `UNEXPECTED_ERROR` abort `_collect` outright: nothing past the open
+# ever ran, from a catch (in `wheelfile.WheelArchive.__init__` and `scan.scan_wheel`
+# respectively) broad enough to admit it does not know what went wrong. `MEMBER_READ_ERROR`
+# does *not* abort anything -- a scan that hits it keeps going and still reports
+# whatever else it read -- but every site that records it (`wheelfile.read`,
+# `layers/binaries.py`, `layers/metadata.py`, `layers/python_ast.py`) reaches it
+# through a catch just as broad, wide enough to admit a transient `MemoryError` or
+# `OSError` alongside a genuinely corrupt member, with nothing downstream able to
+# tell which one actually happened. What all three share is not "the scan was
+# aborted" -- only two of them abort anything -- but "the code path that recorded
+# this could not have told a content defect from an outside interruption apart."
+#
+# `DUPLICATE_MEMBER`, `SIZE_LIMIT_EXCEEDED`, `COMPRESSION_RATIO_EXCEEDED` and
+# `BINARY_TOO_LARGE` are deliberately not in this set: each is a comparison or a dict
+# lookup over zip metadata already fully in hand (a filename seen twice, a size field
+# against a limit), with no I/O and no broad catch anywhere on the path that records
+# it, so the same wheel's bytes always produce the same one and caching it is safe.
+#
+# See DECISIONS.md, "A record produced without reading the wheel is never cached."
+SCAN_ABORTED_KINDS: frozenset[str] = frozenset({BAD_ZIP, UNEXPECTED_ERROR, MEMBER_READ_ERROR})
 
 
 class RulesetError(Exception):

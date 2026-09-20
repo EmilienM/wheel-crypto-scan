@@ -27,6 +27,7 @@ from typing import Any, TextIO
 from . import TOOL_NAME, __version__
 from .cache import RecordCache, default_cache_root
 from .discovery import discover
+from .errors import SCAN_ABORTED_KINDS
 from .record import EVIDENCE_LEVELS, to_json_line
 from .report import render_markdown
 from .ruleset import Ruleset, load_ruleset
@@ -202,9 +203,25 @@ def _scan_path(path: str) -> str:
     cached = _CACHE.get(digest, filename)
     if cached is not None:
         return cached
-    line = to_json_line(scan_wheel(path, _CONTEXT, sha256=digest))
-    _CACHE.put(digest, filename, line)
+    record = scan_wheel(path, _CONTEXT, sha256=digest)
+    line = to_json_line(record)
+    if not _scan_was_aborted(record):
+        _CACHE.put(digest, filename, line)
     return line
+
+
+def _scan_was_aborted(record: dict[str, Any]) -> bool:
+    """True when this record carries a kind this scanner cannot yet prove is
+    deterministic for the wheel's own bytes -- see `errors.SCAN_ABORTED_KINDS`.
+
+    Such a record may reflect a condition (memory pressure, a transient I/O error)
+    that is already gone by the time anyone reads it back. Caching it, or treating it
+    as done on `--resume`, would serve the same stale non-answer forever even after a
+    later attempt would read the wheel correctly, or read the rest of it that a
+    transient failure on one member cost the first time. See DECISIONS.md, "A record
+    produced without reading the wheel is never cached."
+    """
+    return any(error["kind"] in SCAN_ABORTED_KINDS for error in record.get("errors", ()))
 
 
 def _with_progress(lines: Iterable[str], total: int) -> Iterator[str]:
@@ -218,7 +235,10 @@ def _existing_records(output: Path) -> dict[str, str]:
     """Complete records already in the output file, keyed by wheel filename.
 
     An interrupted run can leave a truncated final line, so anything that does not
-    parse is dropped and rescanned rather than trusted.
+    parse is dropped and rescanned rather than trusted. A record whose scan never got
+    underway (see `_scan_was_aborted`) is dropped the same way: `--resume` must not
+    treat a stale, possibly-transient failure as a finished answer for that wheel
+    either, for the same reason the cache does not.
     """
     records: dict[str, str] = {}
     try:
@@ -227,8 +247,12 @@ def _existing_records(output: Path) -> dict[str, str]:
         return records
     for line in text.splitlines():
         try:
-            filename = json.loads(line)["wheel"]["filename"]
+            parsed = json.loads(line)
+            filename = parsed["wheel"]["filename"]
+            aborted = _scan_was_aborted(parsed)
         except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        if aborted:
             continue
         records[filename] = line + "\n"
     return records
