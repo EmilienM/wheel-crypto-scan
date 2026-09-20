@@ -5,11 +5,12 @@ version, locale and flags are not part of our contract, which is fatal to the
 determinism this tool promises. Extraction here is a single regex over raw bytes, so
 the same bytes always produce the same runs everywhere.
 
-Four things live here. `PRINTABLE` is the definition; `sanitize` and `extract_printable`
-are its two expressions, which is why `sanitize` is in this module despite not being
-about extraction at all: it is applied to names the readers pull out of their own
-structural tables, and a second spelling of the same character range in a second file
-is a thing that drifts. `match_string_groups` and `scan_strings` build on them.
+Three things live here. `sanitize` and `extract_printable` are both expressions of
+`evidence.PRINTABLE` (`sanitize`'s own complement class included, derived from the same
+range rather than spelled again), which is why `sanitize` is in this module despite not
+being about extraction at all: it is applied to names the readers pull out of their own
+structural tables, and a second spelling of the same character range in a second file is
+a thing that drifts. `match_string_groups` and `scan_strings` build on them.
 
 `scan_strings` is the whole sequence every reader runs over its bytes. It is the one
 part of a reader's work with no per-format variation at all, which is what makes it
@@ -23,22 +24,38 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
-from ..evidence import RustCrate, StringMatch
+from ..evidence import PRINTABLE, RustCrate, StringMatch
 from ..ruleset import BinaryPatterns, StringGroup
 from .caps import cap
 from .rust import find_rust_crates
 
-# Printable characters only, so a corrupt string table entry can never smuggle control
-# bytes or non-ASCII garbage into the (supposedly stable) JSON record. This is the one
-# definition: `sanitize` filters by it and `extract_printable`'s regex class is derived
+# `sanitize` filters by `PRINTABLE` and `extract_printable`'s regex class is derived
 # from it, because the same range spelled twice is two things that can drift apart.
-PRINTABLE = range(0x20, 0x7F)
 _PRINTABLE_CLASS = rb"[\x%02x-\x%02x]" % (PRINTABLE.start, PRINTABLE.stop - 1)
+# The complement of `_PRINTABLE_CLASS`, over `str` rather than `bytes`: what `sanitize`
+# strips. Same derivation, same one definition -- a `re.sub` over this is byte-identical
+# to filtering character by character and doesn't pay per character for it. The `+` is
+# not cosmetic: `symtab.py` bounds one row's own name at `_MAX_NAME_BYTES` (8 KiB), but
+# nothing bounds how much of it is control bytes, and a class with no quantifier makes
+# `re.sub` perform one substitution per non-printable character -- slower than the
+# generator it replaced on exactly that input, because a run of them still costs one
+# substitution apiece. Quantified, a whole run of non-printable bytes is one
+# substitution, so the adversarial case is faster, not merely the ordinary one.
+_NON_PRINTABLE_RE = re.compile(rf"[^\x{PRINTABLE.start:02x}-\x{PRINTABLE.stop - 1:02x}]+")
+
+# What `extract_printable` joins runs with, and what `match_string_groups` searches for
+# to recover a hit's enclosing run. Not itself printable ASCII (`ord("\n") == 0x0a`,
+# outside `PRINTABLE`), which is the one fact `match_string_groups`'s own optimization
+# depends on: `ruleset_loader` refuses any `[[string_group]]` substring that is not
+# printable ASCII, so no group's pattern can ever match across this separator, and a
+# hit's run boundaries are safe to reuse across hits instead of resolved fresh each
+# time. `tests/test_binfmt_strings.py` pins that this constant stays outside `PRINTABLE`.
+RUN_SEPARATOR = "\n"
 
 
 def sanitize(text: str) -> str:
     """Drop anything outside printable ASCII, so recorded values are JSON-stable."""
-    return "".join(ch for ch in text if ord(ch) in PRINTABLE)
+    return _NON_PRINTABLE_RE.sub("", text)
 
 
 # How much of one object every reader pulls into memory. It bounds the strings pass in
@@ -65,8 +82,8 @@ def extract_printable(data: bytes, min_length: int, max_bytes: int) -> Extracted
 
     `data` is truncated to `max_bytes` first, so a caller that already bounded its
     read gets a no-op here; one that did not still gets a hard cap. Runs are joined
-    with "\\n", which both `match_string_groups` and `find_rust_crates` rely on to
-    recover the whole run around a match rather than just the matched substring.
+    with `RUN_SEPARATOR`, which both `match_string_groups` and `find_rust_crates` rely
+    on to recover the whole run around a match rather than just the matched substring.
     """
     truncated = False
     if len(data) > max_bytes:
@@ -75,7 +92,7 @@ def extract_printable(data: bytes, min_length: int, max_bytes: int) -> Extracted
     length = max(min_length, 1)
     pattern = re.compile(_PRINTABLE_CLASS + b"{%d,}" % length)
     runs = [match.group().decode("ascii") for match in pattern.finditer(data)]
-    return ExtractedStrings(text="\n".join(runs), truncated=truncated)
+    return ExtractedStrings(text=RUN_SEPARATOR.join(runs), truncated=truncated)
 
 
 def match_string_groups(
@@ -83,21 +100,45 @@ def match_string_groups(
 ) -> tuple[tuple[StringMatch, ...], bool]:
     """Find every string group hit, each reported with its enclosing printable run.
 
-    A match's `value` is the whole run that contains it (recovered via the "\\n"
-    separators `extract_printable` left behind), not just the substring the group's
-    pattern matched: a banner like "OpenSSL 3.0.14 4 Jun 2024" is far more useful
-    evidence than the "OpenSSL 3." fragment that triggered the match. Results are
-    deduplicated, then sorted, then capped a group at a time, so truncation is stable
-    and cannot silence a group outright.
+    A match's `value` is the whole run that contains it (recovered via the
+    `RUN_SEPARATOR` boundaries `extract_printable` left behind), not just the
+    substring the group's pattern matched: a banner like "OpenSSL 3.0.14 4 Jun 2024"
+    is far more useful evidence than the "OpenSSL 3." fragment that triggered the
+    match. Results are deduplicated, then sorted, then capped a group at a time, so
+    truncation is stable and cannot silence a group outright.
+
+    `finditer` yields a group's hits left to right, so once a run has been sliced for
+    a group, every later hit whose start falls before that run's end is the same run
+    again: recomputing its boundaries and re-slicing it would build the identical
+    `StringMatch` the set already has (`__eq__` is by value, not position), just paid
+    for again. Skipping those hits changes nothing the set ends up holding -- a run
+    matched twice by the same group, or two separate runs that happen to share content,
+    still land in `found` exactly as they would without the skip -- it only makes the
+    cost one full-run copy per distinct run instead of one per hit.
+
+    This assumes a group's pattern can never match text containing `RUN_SEPARATOR`, so
+    a later hit's start falling inside the previous claim really does mean the same run
+    rather than a stray one past it. `ruleset_loader` is what keeps that true: it
+    refuses a `[[string_group]]` substring outside printable ASCII, and `RUN_SEPARATOR`
+    is the only non-printable character an escaped-literal pattern built from printable
+    substrings could ever match at all -- every other excluded character can't match
+    anything in `text`, printable or not, so it costs a rule author nothing a run could
+    have contained anyway. `tests/test_ruleset.py` pins this property against the
+    shipped ruleset directly, rather than trusting the substrings-are-printable check
+    as a proxy for it.
     """
     text = extracted.text
     found: set[StringMatch] = set()
     for group in groups:
+        claimed_run_end = -1
         for m in group.pattern.finditer(text):
-            start = text.rfind("\n", 0, m.start())
+            if m.start() < claimed_run_end:
+                continue
+            start = text.rfind(RUN_SEPARATOR, 0, m.start())
             start = 0 if start == -1 else start + 1
-            end = text.find("\n", m.end())
+            end = text.find(RUN_SEPARATOR, m.end())
             end = len(text) if end == -1 else end
+            claimed_run_end = end
             found.add(StringMatch(group=group.name, value=text[start:end]))
     return cap(found, max_matches)
 
