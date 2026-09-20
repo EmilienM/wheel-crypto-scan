@@ -343,28 +343,36 @@ and were found still uncapped while verifying this fix — a wheel with 3000 ref
 members produces a correctly capped `errors: 256` beside an uncapped
 `artifacts.skipped: 3003`. Filed as
 [#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119), closed by the next
-entry.
+entry — whose first draft guessed a plain prefix would be "probably enough" for both
+and was wrong on both counts.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#bundled_libs-and-errors-get-their-own-caps-not-binaries_truncateds) ·
 [#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76)
 
 ---
 
-## A plain cap for the two inventory listings no finding references
+## `skipped` and `symlinks` reuse `caps.cap`, not a plain prefix
 
 **Accepted. A new pair of record fields, `symlinks_truncated` and `skipped_truncated`.**
 
 `artifacts.skipped` and `artifacts.symlinks` were the same unbounded shape the previous
-entry fixed for `bundled_libs`/`errors[]`, found while verifying that fix. Both are
-plain inventory listings no `Finding.locations[].path` ever names — a rule matches
-evidence read *from* an object, and a refused or symlinked member was never read as
-one — so neither needs the finding-aware selection `bundled_libs` uses, or the
-per-kind representative `errors[]` uses: every `skipped`/`symlinks` entry is already
-fully specific, so there is no group of interchangeable entries a plain prefix could
-crowd out unfairly. `artifacts.skipped[:max_binaries]` and
-`artifacts.symlinks[:max_binaries]` are the whole fix, since both arrive pre-sorted
-from `layers.inventory.build_inventory` — the same plain-prefix shape `bundled_libs`
-itself had before the previous entry existed.
+entry fixed for `bundled_libs`/`errors[]`. A first attempt capped both with a plain
+sorted prefix on the premise that neither is finding-referenced and every entry is
+already fully specific — an adversarial review found both halves of that premise
+false. `skipped`'s `reason` **is** `ScanError.kind`, the exact axis `errors[]`'s own
+`cap_key` already protects, and two shipped rules (`BIN_TOO_LARGE`,
+`WHEEL_MEMBER_UNREADABLE`) do name `skipped` paths — reproduced: a plain prefix dropped
+an entire reason class from `skipped` while `errors[]` correctly kept a representative.
+`symlinks`' `target`, not the entry as a whole, is the axis a consumer keys on (#57: a
+bundled library reachable only through its symlink's target) — reproduced: a plain
+prefix dropped the one crypto-relevant target behind a flood of boring ones, the same
+starvation `caps.py`'s own `ring`-behind-`anyhow` crate example exists to prevent.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#a-plain-cap-for-the-two-inventory-listings-no-finding-references) ·
+Both now go through `caps.cap`, keyed on the axis that matters: `cap_key() -> reason`
+for `skipped`, `cap_key() -> target` for `symlinks`. Neither bare tuple implements
+`caps.Capped` on its own, so `record.py` wraps each pair in a small local frozen
+dataclass at cap time and unwraps the result — `ArtifactInventory.skipped`/`.symlinks`
+themselves stay plain tuples everywhere else.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix) ·
 [#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119)
