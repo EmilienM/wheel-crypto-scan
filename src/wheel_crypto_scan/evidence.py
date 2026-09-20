@@ -273,6 +273,16 @@ class ScanError:
     def sort_key(self) -> tuple[str, str, str, str]:
         return (self.stage, self.path or "", self.kind, self.message)
 
+    def cap_key(self) -> tuple[str, str]:
+        """`(stage, kind)`: what a reader loses when a whole class of failure is cut
+        from a capped `errors[]`. `record.py` caps `evidence.errors` through
+        `caps.cap`, which keeps one representative per `cap_key` before filling
+        the rest -- a wheel with thousands of errors of one kind must not crowd every
+        other kind out of the record, the same reasoning `SymbolMatch`/`StringMatch`/
+        `RustCrate` already carry for their own caps.
+        """
+        return (self.stage, self.kind)
+
 
 @dataclass(frozen=True, slots=True)
 class SymbolMatch:
@@ -378,7 +388,7 @@ class BinaryEvidence:
     # cap, never a partial read: the object was read, and what was capped is what got
     # written down, so neither of these two fields is a cause and neither should become
     # one. Bytes that went unread are a different fact and carry
-    # `strings_bytes_unread`. `binfmt.caps` chooses the sample so that a cap bounds the
+    # `strings_bytes_unread`. `caps` chooses the sample so that a cap bounds the
     # record's size without silencing a kind of evidence.
     strings_truncated: bool = False
     # Set when part of the object was not read: a format with no structural reader; a

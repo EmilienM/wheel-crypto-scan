@@ -14,7 +14,8 @@ Everything below is under `src/wheel_crypto_scan/`.
 | `engine.py`, `ruleset.py` | Rule dispatch and matchers |
 | `ruleset_loader.py` | Parses and validates the TOML into the `Ruleset` object model `ruleset.py` defines |
 | `layers/` | Evidence gathering: wheel metadata, Python AST, binaries, archive inventory |
-| `binfmt/` | ELF, Mach-O, PE, Go and Rust readers, the `ar`-archive container reader, the shared strings pass, the shared symbol-table cross-check, the shared evidence-preserving cap, the fallback |
+| `binfmt/` | ELF, Mach-O, PE, Go and Rust readers, the `ar`-archive container reader, the shared strings pass, the shared symbol-table cross-check, the fallback |
+| `caps.py` | The shared evidence-preserving cap: one representative per key before filling the rest. Top-level, not under `binfmt/`, because `record.py` caps `evidence.errors` with it too, and must not import the whole binary-reader stack to do it |
 | `wheelfile.py` | In-memory zip reading with the bounded decompression window |
 | `record.py`, `verdict.py` | Output record shape and verdict assembly |
 | `evidence.py` | What extractors may say: the record dataclasses, and the `FORMAT_*`, `STAGE_*`, `BINDING_*` and `PARTIAL_REASONS` vocabularies |
@@ -69,7 +70,6 @@ hosts and interpreter versions.
 | `pe.py` | PE: the header chain, the import and export directories, forwarders |
 | `strings.py` | The shared read-only-data strings pass and its byte budget |
 | `symtab.py` | The shared symbol-table cross-check and the shared bounded name reader |
-| `caps.py` | The shared evidence-preserving cap: one representative per key before filling the rest |
 | `golang.py`, `rust.py` | Go build info and Rust crates inferred from embedded cargo paths |
 | `fallback.py` | Formats with no structural reader: strings only, and say so |
 

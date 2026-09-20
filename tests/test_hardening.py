@@ -1502,3 +1502,143 @@ def test_a_fat_binary_that_declares_a_giant_arch_count_does_not_reparse_itself(
     assert binary["partial_analysis"] is True
     # Counted once, for bytes that exist once, rather than once per entry naming them.
     assert binary["symbol_counts"]["symtab"] == 2000
+
+
+# --- M11: bundled_libs and errors[] are capped too (#76) ---------------------
+
+
+def test_a_wheel_vendoring_thousands_of_libraries_produces_a_bounded_bundled_libs_list(
+    context, tmp_path: Path
+) -> None:
+    """#76: `bundled_libs` is a *subset* of `binaries[]`/`extensions`, built from the
+    full, untruncated object list independently of `max_binaries_per_record` -- before
+    this it had no cap of its own at all, so a wheel vendoring thousands of small
+    libraries under `*.libs/` produced a correspondingly unbounded array."""
+    tiny = ElfBuilder(needed=("libc.so.6",)).build()
+    files = {f"many.libs/libfoo{index:05d}-deadbeef.so": tiny for index in range(3000)}
+    wheel = build_wheel(
+        tmp_path / f"many-1.0-{MANYLINUX}.whl",
+        name="many",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+    record = scan_wheel(wheel, context)
+    # A real bound, not a decorative one: #76 measured the pre-fix, uncapped shape of
+    # this exact reproduction at 274 KB for 5000 objects; this one, capped, is under a
+    # third of that even at 3000.
+    assert len(json.dumps(record)) < 200_000, "bundled_libs is not actually bounded"
+    assert len(record["artifacts"]["bundled_libs"]) == context.max_binaries_per_record
+    assert record["artifacts"]["bundled_libs_truncated"] is True
+
+
+def test_a_small_bundle_does_not_report_bundled_libs_truncated(context, tmp_path: Path) -> None:
+    """The negative half of the same guard: a wheel that never hits the cap must not
+    claim it did."""
+    tiny = ElfBuilder(needed=("libc.so.6",)).build()
+    wheel = build_wheel(
+        tmp_path / f"small-1.0-{MANYLINUX}.whl",
+        name="small",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={"small.libs/libfoo-deadbeef.so": tiny},
+    )
+    record = scan_wheel(wheel, context)
+    assert record["artifacts"]["bundled_libs"] == ["small.libs/libfoo-deadbeef.so"]
+    assert record["artifacts"]["bundled_libs_truncated"] is False
+    assert record["errors_truncated"] is False
+
+
+def test_exactly_the_cap_worth_of_libraries_is_not_reported_as_truncated(
+    context, tmp_path: Path
+) -> None:
+    """The boundary the flag must get exactly right: a wheel landing precisely on
+    `max_binaries_per_record` fits without being cut, so the flag must read `False`,
+    not just "close to it"."""
+    tiny = ElfBuilder(needed=("libc.so.6",)).build()
+    count = context.max_binaries_per_record
+    files = {f"exact.libs/libfoo{index:05d}-deadbeef.so": tiny for index in range(count)}
+    wheel = build_wheel(
+        tmp_path / f"exact-1.0-{MANYLINUX}.whl",
+        name="exact",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+    record = scan_wheel(wheel, context)
+    assert len(record["artifacts"]["bundled_libs"]) == count
+    assert record["artifacts"]["bundled_libs_truncated"] is False
+
+
+def test_a_wheel_with_thousands_of_the_same_error_produces_a_bounded_errors_list(
+    context, tmp_path: Path
+) -> None:
+    """#76: `errors[]` had no cap either -- a wheel that hits the same recordable
+    failure on thousands of members produced a correspondingly unbounded JSON line.
+    Measured during #55's adversarial review at 5000 vendored objects, a 274 KB line."""
+    # Starts with the ELF magic, so it is sniffed as ELF, but has nothing past it for
+    # `ELFFile` to read: one `binary_unknown_format` error per member, same (stage,
+    # kind) pair three thousand times over.
+    opaque = b"\x7fELF" + b"\x00" * 60
+    files = {f"many/_ext{index:05d}.so": opaque for index in range(3000)}
+    wheel = build_wheel(
+        tmp_path / f"broken-1.0-{MANYLINUX}.whl",
+        name="broken",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+    record = scan_wheel(wheel, context)
+    # A real bound, not a decorative one: #76 measured the pre-fix, uncapped shape of
+    # this exact reproduction at 274 KB for 5000 objects; this one, capped, is under a
+    # third of that even at 3000.
+    assert len(json.dumps(record)) < 200_000, "errors[] is not actually bounded"
+    assert len(record["errors"]) == context.max_binaries_per_record
+    assert record["errors_truncated"] is True
+
+
+def test_a_rare_error_survives_a_flood_of_a_common_one(context, tmp_path: Path) -> None:
+    """The representative-per-kind half of the fix (`ScanError.cap_key`): a wheel
+    drowning in one kind of failure must not crowd a different, rarer one out of the
+    capped `errors[]`, mirroring #51's fix for the per-binary string/symbol/crate caps
+    and #75's fix for `binaries[]` itself."""
+    opaque = b"\x7fELF" + b"\x00" * 60
+    flood = {f"many/_ext{index:05d}.so": opaque for index in range(3000)}
+    # A distinct kind of error, sorting after every flooded path -- a plain
+    # path-sorted prefix would have dropped it. Padded past _SNIFF_MIN_BYTES so it is
+    # still opened as a candidate binary member at all.
+    files = {**flood, "zzz_archive.a": b"!<arch>\n" + b"\x00" * 64}
+    wheel = build_wheel(
+        tmp_path / f"mixed-1.0-{MANYLINUX}.whl",
+        name="mixed",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+    record = scan_wheel(wheel, context)
+    assert record["errors_truncated"] is True
+    kinds = {error["kind"] for error in record["errors"]}
+    assert kinds == {"binary_unknown_format", "ar_parse_error"}
+
+
+def test_exactly_the_cap_worth_of_errors_is_not_reported_as_truncated(
+    context, tmp_path: Path
+) -> None:
+    """The same boundary as `bundled_libs`, for `errors[]`: landing precisely on
+    `max_binaries_per_record` errors must not read as truncated, even though every one
+    of them shares the same `(stage, kind)` pair -- `cap` only reaches its per-key
+    representative pass once `len(ordered) > limit`, so an exact fit must return
+    everything untouched regardless of how many keys collide."""
+    count = context.max_binaries_per_record
+    opaque = b"\x7fELF" + b"\x00" * 60
+    files = {f"many/_ext{index:05d}.so": opaque for index in range(count)}
+    wheel = build_wheel(
+        tmp_path / f"exact-1.0-{MANYLINUX}.whl",
+        name="exact",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+    record = scan_wheel(wheel, context)
+    assert len(record["errors"]) == count
+    assert record["errors_truncated"] is False

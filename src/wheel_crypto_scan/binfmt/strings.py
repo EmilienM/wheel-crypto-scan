@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 
 from ..evidence import PRINTABLE, RustCrate, StringMatch
 from ..ruleset import BinaryPatterns, StringGroup
-from .caps import cap
+from ..caps import cap
 from .rust import find_rust_crates
 
 # `sanitize` filters by `PRINTABLE` and `extract_printable`'s regex class is derived
@@ -155,7 +155,7 @@ class StringsPass:
     `partial_reasons`.** Everything behind it is a *recording* cap -- more group matches
     or more crates than the limits keep -- and a recording cap is not a partial read:
     the object was read, and what was capped is what got written down. What a cap costs
-    is bounded by `binfmt.caps`, which keeps a representative of every key before it
+    is bounded by `caps`, which keeps a representative of every key before it
     fills the remainder, so a cap can no longer silence a group or a named crate
     outright.
 

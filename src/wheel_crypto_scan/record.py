@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
 from . import ANALYZER_VERSION, SCHEMA_VERSION, TOOL_NAME, __version__
+from .caps import cap
 from .evidence import ArtifactInventory, BinaryEvidence, Evidence, MetadataEvidence, ScanError
 from .findings import Finding
 from .ruleset import Ruleset
@@ -41,11 +42,13 @@ def build_record(
 
     `evidence.binaries` is expected to be the *full* set of objects that were actually
     read: `findings` and `verdict` were computed over all of it, not a truncated view.
-    `max_binaries`, when given, caps only the `binaries[]` array built here, so the
-    record stays bounded without the cap ever having withheld evidence from a rule.
-    A finding's `locations[].path` can therefore legitimately name an object that this
-    cap left out of `binaries[]`, when even the finding-aware selection below could not
-    make room for it -- see SCHEMA.md.
+    `max_binaries`, when given, also caps the `binaries[]`, `artifacts.bundled_libs`
+    and `errors[]` arrays built here, so the record stays bounded without the cap
+    ever having withheld evidence from a rule -- every object and every error is still
+    fully evaluated regardless of what this cap keeps. A finding's `locations[].path`
+    can therefore legitimately name an object that this cap left out of `binaries[]`,
+    when even the finding-aware selection below could not make room for it -- see
+    SCHEMA.md.
     """
     if evidence_level not in EVIDENCE_LEVELS:
         raise ValueError(f"unknown evidence level: {evidence_level!r}")
@@ -54,6 +57,10 @@ def build_record(
         if max_binaries is None
         else _cap_by_findings(evidence.binaries, lambda binary: binary.path, findings, max_binaries)
     )
+    if max_binaries is None:
+        errors, errors_truncated = evidence.errors, False
+    else:
+        errors, errors_truncated = cap(evidence.errors, max_binaries)
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {
@@ -71,7 +78,13 @@ def build_record(
         "binaries": [_binary_block(binary, evidence_level) for binary in binaries],
         "findings": [_finding_block(finding) for finding in findings],
         "verdict": _verdict_block(verdict),
-        "errors": [_error_block(error) for error in evidence.errors],
+        "errors": [_error_block(error) for error in errors],
+        # Set when thousands of errors (typically the same kind repeated across many
+        # members) would otherwise produce an unbounded record. `caps.cap`
+        # keeps one representative `(stage, kind)` pair before filling the rest, so a
+        # wheel drowning in one failure never crowds out a different, rarer one --
+        # see ScanError.cap_key.
+        "errors_truncated": errors_truncated,
     }
 
 
@@ -83,13 +96,19 @@ def _cap_by_findings(
 ) -> tuple[T, ...]:
     """Cap `items` to `max_binaries`, keeping what a finding points at first.
 
-    Shared by `binaries[]` and `artifacts.extensions`, both keyed by the object path
-    `path_of` reads off each item -- a `BinaryEvidence` for one, a bare `(path,
-    format)` pair for the other. Keeping them on one function is what keeps the two
-    arrays agreeing on which objects survive the cap, the same thing that was true of
-    them before this existed, when both were the identical plain prefix.
+    Shared by `binaries[]`, `artifacts.extensions` and `artifacts.bundled_libs`, each
+    keyed by the object path `path_of` reads off each item -- a `BinaryEvidence` for
+    the first, a bare `(path, format)` pair for the second, the bare path string
+    itself for the third. `binaries[]` and `extensions` are always the same length,
+    one entry per object read, so keeping them on one function is what keeps those two
+    agreeing on which objects survive the cap -- the same thing that was true of them
+    before this existed, when both were the identical plain prefix. `bundled_libs` is
+    a different, usually smaller universe of paths (only the vendored objects), so it
+    is never expected to list the same objects as the other two; what it shares with
+    them is only the *selection rule* -- a finding-referenced object wins a slot first
+    -- not the resulting set.
 
-    Mirrors `binfmt.caps.cap()`'s fix for the per-binary string/symbol/crate caps
+    Mirrors `caps.cap()`'s fix for the per-binary string/symbol/crate caps
     (DECISIONS.md, "A cap bounds the record, it does not pick the evidence", #51), one
     layer up: there the cap picked which *matches inside an object* a rule got to see;
     here it only ever picked which *objects* the serialised record lists, since #55
@@ -100,7 +119,7 @@ def _cap_by_findings(
     named them (#75).
 
     Three passes fill the room in the order a reader would miss it most, the same
-    shape `binfmt.caps.cap()` uses for its own three passes:
+    shape `caps.cap()` uses for its own three passes:
 
       1. One representative object per `(rule_id, subject)` a finding names, visited
          in that order -- so a finding does not lose *every* one of its objects to an
@@ -119,7 +138,7 @@ def _cap_by_findings(
     any group and cannot win a slot through this function; it was never going to be an
     entry in `binaries[]` or `extensions` regardless of the wheel's content.
 
-    Unlike `binfmt.caps.cap()`'s per-binary caps, there is no fixed, ruleset-declared
+    Unlike `caps.cap()`'s per-binary caps, there is no fixed, ruleset-declared
     vocabulary of finding subjects to guarantee room for one of: how many distinct
     `(rule_id, subject)` groups and objects a wheel's own findings reference is data
     the wheel supplies, not policy the ruleset declares, so nothing here can be
@@ -132,7 +151,7 @@ def _cap_by_findings(
     `(rule_id, subject)` groups alone exceeds `max_binaries`, group 1 above cannot
     give every group its one slot, and the groups are visited in the same
     deterministic, arbitrary order every time: sorted by `(rule_id, subject)`, so the
-    lowest-sorting groups win, the same posture `binfmt.caps.cap()` documents for its
+    lowest-sorting groups win, the same posture `caps.cap()` documents for its
     own analogous case. `binaries_truncated` and `WHEEL_BINARIES_TRUNCATED` still fire
     whenever the result is a prefix of anything, referenced or not, so this case is
     never silent -- see DECISIONS.md and SCHEMA.md.
@@ -245,6 +264,18 @@ def _artifacts_block(
         if max_binaries is None
         else _cap_by_findings(artifacts.extensions, lambda item: item[0], findings, max_binaries)
     )
+    # `bundled_libs` is a *subset* of the objects `binaries[]`/`extensions` list --
+    # only the vendored ones -- so it can be smaller than `max_binaries` even when
+    # `artifacts.binaries_truncated` is true, and it needs its own truncation flag
+    # rather than reusing that one: a wheel that vendors thousands of small libraries
+    # under `*.libs/`/`.dylibs/` produced an unbounded `bundled_libs` array before
+    # this, independently of how many native objects were read in total (#76).
+    bundled_libs = (
+        artifacts.bundled_libs
+        if max_binaries is None
+        else _cap_by_findings(artifacts.bundled_libs, lambda path: path, findings, max_binaries)
+    )
+    bundled_libs_truncated = max_binaries is not None and len(artifacts.bundled_libs) > max_binaries
     return {
         "py_files": artifacts.py_files,
         "pyc_files": artifacts.pyc_files,
@@ -254,7 +285,8 @@ def _artifacts_block(
         "record_entries": artifacts.record_entries,
         "total_uncompressed_bytes": artifacts.total_uncompressed_bytes,
         "extensions": [{"path": path, "format": fmt} for path, fmt in extensions],
-        "bundled_libs": list(artifacts.bundled_libs),
+        "bundled_libs": list(bundled_libs),
+        "bundled_libs_truncated": bundled_libs_truncated,
         "sboms": list(artifacts.sboms),
         "symlinks": [{"path": path, "target": target} for path, target in artifacts.symlinks],
         "skipped": [{"path": path, "reason": reason} for path, reason in artifacts.skipped],

@@ -171,7 +171,7 @@ def _check_limits_leave_room_for_every_key(
 ) -> None:
     """Refuse limits too small to hold one of everything the ruleset can match.
 
-    `binfmt.caps` keeps one of every key before filling the remainder, so no kind of
+    `caps` keeps one of every key before filling the remainder, so no kind of
     evidence is crowded out -- while there is room for one of each. Below that the
     choice among keys is the alphabet again, and `SCHEMA.md` states the guarantee
     without conditions. Nobody sets a limit to change what is detected, so a value that
