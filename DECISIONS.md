@@ -833,6 +833,177 @@ this fix or `WHEEL_BINARIES_TRUNCATED` attempts.
 
 Tracked in [#55](https://github.com/EmilienM/wheel-crypto-scan/issues/55).
 
+## `binaries[]` keeps what a finding points at, before filling the rest
+
+**Accepted, and it changes records. Revised after adversarial review of the first
+version of this fix found two things worth fixing in the fix itself -- see "What
+adversarial review changed here" below, which is the part to read first if you are
+deciding whether the fallback this entry describes still needs work.**
+
+`#55`, directly above, made evaluation complete: every object in a wheel is read,
+linked and matched against every rule regardless of `max_binaries_per_record`, so the
+verdict no longer depends on where an object's filename happens to sort. What it left
+alone was the *display* half -- `build_record`'s own `max_binaries` slice, which still
+cut `evidence.binaries` (and, identically, `artifacts.extensions`) to a plain
+path-sorted prefix. That is the same mistake `#51` ("A cap bounds the record, it does
+not pick the evidence") fixed for the per-binary string, symbol and crate caps, one
+layer up: a sort key with nothing to do with what a match is worth decided what
+survived. There the unit was a match inside an object; here it is the object itself,
+and crypto-relevant objects have no more reason to sort early than `ring` did among a
+hundred `anyhow`-class crate names.
+
+Adversarial review of `#55` built the shape directly: 300 filler `.so` objects plus
+`pkg/zz1_broken.so` (a partial ELF carrying an OpenSSL banner) and
+`pkg/zz2_opaque.so` (unparseable), both sorting after every filler.
+
+```
+verdict: CONDITIONAL, needs_human_review: true
+rule_ids: [BIN_OPAQUE, BIN_PARTIAL_FORMAT, BIN_STATIC_OPENSSL, BIN_UNPARSEABLE]
+binaries[]: the first 256 filler objects, neither zz1 nor zz2 present
+```
+
+Every finding correctly names one of the two objects that earned the verdict, and
+neither object is anywhere in the array a human would read to corroborate it. The
+verdict is right; nothing in the record backs it up. This is a completeness gap, not
+the correctness gap `#55` closed -- the "unreadable means `OPAQUE`, never
+`NO_CRYPTO_DETECTED`" invariant was never at risk here, since evaluation already saw
+everything.
+
+**The fix.** `record.py`'s `_cap_by_findings` fills `binaries[]` and
+`artifacts.extensions` alike, both keyed by object path, in three passes, in the order
+a reader would miss it most:
+
+  1. One representative object per `(rule_id, subject)` a finding names, the groups
+     themselves visited in a fixed, deterministic order.
+  2. Every other object a finding references, in path order.
+  3. Everything else, in path order -- the same rule the plain prefix already used
+     for everything, when there was nothing to prefer.
+
+`extensions` reuses the same function rather than a parallel copy of it, so the two
+arrays keep agreeing on which objects survive the cap: they always agreed before this
+fix, when both were the identical plain prefix, and there is no reason a reader should
+have to learn that they can now disagree. `build_inventory` stopped capping
+`extensions` itself for the same reason `#55` stopped truncating `Evidence.binaries`
+before the rules ran: it does not have `findings` yet, and capping first is capping
+blind.
+
+`_cap_by_findings` is deliberately not a call into `binfmt.caps.cap()`, even though
+pass 1 above is the same "give every group one slot before filling the rest" shape
+that function already implements: `cap()`'s grouping is keyed on a `cap_key` that
+comes from the *item* (a string's group, a symbol's group and binding, a crate's
+name), and the group that matters here comes from the *finding*, not the object --
+one object can be named by several different findings, so the natural key is not a
+property `BinaryEvidence` or a bare `(path, format)` pair could sensibly expose
+through a shared `Capped` protocol. The *pattern* is the same on purpose; the code is
+not shared, for the same reason it was not shared before the grouping pass existed.
+
+**What adversarial review changed here.** The version of this fix first proposed
+skipped the grouping pass and went straight from "referenced objects, then the rest,
+both in path order" to a flat truncation once the referenced set itself exceeded the
+cap -- justified at the time by an unbounded worst case ("four hundred statically-linked
+OpenSSL extensions, each individually named by `BIN_STATIC_OPENSSL`") that does not
+actually happen: `BIN_STATIC_OPENSSL` is a `kind = "linkage"` rule, and
+`engine._match_linkage`'s `Hit` always carries `evidence.filename` as its location,
+never an individual object's path -- a wheel with any number of statically-linked
+extensions contributes *zero* object paths to the referenced set through that rule,
+verified directly against a one-object wheel. The real bound is `[limits]
+max_locations_per_finding` (10) times the number of *object-naming* findings, which is
+small and tractable, not unbounded -- the stated reason a smarter fallback was not
+worth attempting turned out not to hold. With that correction, review also found the
+flat fallback was severity-blind even within the tractable bound it actually has: a
+wheel with 270 distinct crate-naming findings and a cap of 256 let ten low-severity
+`getrandom` objects (subject sorts early, alphabetically) crowd the one `ring` object
+(`NON_APPROVED_CRYPTO`, high severity, subject sorts late) out of `binaries[]`
+entirely, because sorting the referenced set by path -- or, without the grouping pass,
+by finding subject -- moves the same arbitrary-with-respect-to-severity ordering
+problem rather than solving it. Grouping by `(rule_id, subject)` and reserving one
+slot per group first is what closes that: it does not need to know what "high
+severity" means, only that every *finding* gets a chance at a slot before any finding
+gets a second one.
+
+**What it still does not promise, and why this cap is not quite the string/symbol/crate
+one even now.** `#51`'s caps validate at load time that `max_strings_per_binary`,
+`max_symbols_per_binary` and `max_rust_crates_per_binary` are each large enough to
+hold one of every group the *ruleset* declares -- a fixed, load-time-known vocabulary.
+`max_binaries_per_record` still has no equivalent to refuse against: how many distinct
+`(rule_id, subject)` groups a wheel's own findings produce is data the wheel supplies,
+not policy the ruleset declares, and the corrected bound above (`10 x` the number of
+object-naming findings) is real but wheel-dependent, not a ruleset-fixed count
+`parse_ruleset` could check ahead of a scan. When the number of distinct groups itself
+exceeds `max_binaries` -- plausible for a large Rust wheel naming many distinct
+crates, each its own finding -- pass 1 cannot give every group its slot, and the
+groups that lose are whichever sort last by `(rule_id, subject)`, a deterministic but
+otherwise arbitrary tie-break, the same posture `binfmt.caps.cap()` documents for its
+own analogous case ("the lowest-sorting keys win"). `binaries_truncated` and
+`WHEEL_BINARIES_TRUNCATED` still fire whenever this happens, so it is never silent.
+
+**`artifacts.binaries_truncated` and `WHEEL_BINARIES_TRUNCATED` keep their meaning.**
+Both mean "the listing is a prefix of the full evaluated set," and neither ever meant
+*which* prefix. `build_inventory`'s computation of the flag is untouched -- it compares
+the full object count against the same `max_binaries` this fix also uses -- so a wheel
+crosses the same threshold it always did, this fix or not, and a human reading the
+flag learns the same fact either way: not every object made it into `binaries[]`, and
+the count in `WHEEL_BINARIES_TRUNCATED`'s own evidence line is the true, full count.
+The rule's own `why` text was updated alongside the fix -- it said "carries only a
+prefix," which stopped being accurate the moment the prefix became finding-aware, and
+that text is not only internal documentation: `wheel-crypto-scan rules` and `rules
+--json` print it verbatim, so it is user-visible. `ruleset_version` moved because of
+it, per `AGENTS.md`. What changed in the fields themselves is only that the flag no
+longer needs to be cross-referenced to know whether a *specific* object a finding
+names is missing -- it usually is not, now.
+
+**Determinism.** `_cap_by_findings` sorts explicitly at every step -- the groups
+(by key), each group's representative (`min` over its path set), the referenced fill
+set, the general fill set, and the final `kept` list -- rather than trusting
+`evidence.binaries`' own order or any intermediate `set`'s iteration order, the same
+requirement `#51`'s `cap()` documents for its own `sort_key`. The `set`s involved
+(`groups`' values, `referenced_paths`, `seen`) are read only for membership or via
+`sorted`/`min`, never iterated for output order, so a hash-seed-dependent iteration
+order has nowhere to leak into the result. Since `findings` themselves must already be
+deterministic (`apply_rules` sorts by `(rule_id, subject)` and each finding's own
+`locations` by `Location.sort_key`, both pre-existing requirements this fix does not
+touch), and each wheel is scanned end to end inside one worker regardless of `--jobs`,
+this selection is exercised by exactly the tests that were already pinning that: the
+corpus-level `--jobs` comparisons in `test_cli.py`, plus one that shapes a wheel
+specifically to hit the new code path.
+
+**Cost.** `_cap_by_findings` only runs at all when `len(items) > max_binaries`, and
+then does two linear passes over the input plus a handful of sorts bounded by the
+number of distinct `(rule_id, subject)` groups, the referenced-path count and the
+input size -- no worse, and no more than a constant factor worse, than the plain slice
+it replaces. Building `groups` and `referenced_paths` is one pass over the
+already-capped `findings[].locations[]`, which `#51`'s own
+`max_locations_per_finding` keeps small regardless of wheel size, independent of how
+many distinct findings a wheel produces. Nothing here is quadratic in the number of
+binaries or findings.
+
+**What was rejected.** Reusing `binfmt.caps.cap()` directly, covered above. Refusing,
+at load or scan time, a `max_binaries_per_record` too small for a synthetic
+worst-case wheel's referenced-group count: there is no ruleset-fixed worst case to
+check against the way there is for the string/symbol/crate caps, so the check would
+either be vacuous or wrong for some real wheel -- the corrected bound in this entry
+makes the *typical* case tractable without making it a guarantee `parse_ruleset` could
+enforce. Sorting groups by the rule's own `severity` instead of `(rule_id, subject)`
+for pass 1: it would remove the one remaining arbitrary tie-break in the case groups
+outnumber the cap, but `severity` is ruleset policy threaded through a `Rule`, not a
+property of a `Finding` the record layer already holds without a lookup, and no real
+wheel has been found yet where the deterministic-but-arbitrary key actually costs a
+group its slot -- revisit if one is.
+
+`ANALYZER_VERSION` moves: any already-cached wheel whose `binaries[]` or
+`artifacts.extensions` was capped, and whose cut objects included one a finding
+referenced or one a low-priority group's abundance had pushed out a scarcer group's
+object, now serialises differently.
+
+Revisit if a real wheel is found whose findings alone produce more distinct
+`(rule_id, subject)` groups than `max_binaries_per_record` allows, and the lost
+corroboration for the group that did not fit turns out to matter in practice -- that
+would be the same question `#55`'s own entry left open for the fully-unbounded case:
+reconstructing the full per-object list is a different feature (streaming or
+paginating `binaries[]`) from what this fix or `WHEEL_BINARIES_TRUNCATED` attempts.
+
+Tracked in [#75](https://github.com/EmilienM/wheel-crypto-scan/issues/75).
+
 ## Sections are found by type, not by a name nobody checks
 
 **Accepted, and it changes records.**

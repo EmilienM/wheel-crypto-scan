@@ -426,6 +426,10 @@ class ArtifactInventory:
     py_files: int = 0
     pyc_files: int = 0
     source_available: bool = True
+    # The full, untruncated `(path, format)` set: `record.py` caps this the same
+    # finding-aware way it caps `binaries[]`, which needs the findings this dataclass
+    # is built without. See "`binaries[]` keeps what a finding points at, before
+    # filling the rest" in DECISIONS.md.
     extensions: tuple[tuple[str, str], ...] = ()
     bundled_libs: tuple[str, ...] = ()
     sboms: tuple[str, ...] = ()

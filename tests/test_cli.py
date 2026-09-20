@@ -115,6 +115,38 @@ def test_parallel_output_matches_serial_output(corpus: Path, tmp_path: Path) -> 
     assert serial.read_bytes() == parallel.read_bytes()
 
 
+def test_parallel_output_matches_serial_output_when_binaries_are_capped(tmp_path: Path) -> None:
+    """#75: the `binaries[]` cap now picks which objects to keep based on `findings`,
+    not just a path sort. `--jobs` must not be able to reach that choice -- each
+    wheel is still scanned end to end inside one worker, but this pins it directly for
+    the one wheel shaped to actually exercise the new selection, rather than relying
+    on the general corpus above happening to hit it."""
+    directory = tmp_path / "wheels"
+    directory.mkdir()
+    tiny = ElfBuilder(needed=("libc.so.6",)).build()
+    crypto = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("EVP_DigestInit_ex", True),),
+        rodata=b"\x00OpenSSL 3.0.14 4 Jun 2024\x00",
+    ).build()
+    files = {f"pkg/_ext{i:04d}.so": tiny for i in range(260)}
+    files["pkg/zzz_crypto.so"] = crypto  # sorts last, past the 256-object cap
+    build_wheel(
+        directory / f"capped-1.0-{MANYLINUX}.whl",
+        name="capped",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+
+    serial, parallel = tmp_path / "s.jsonl", tmp_path / "p.jsonl"
+    main(["scan", str(directory), "-o", str(serial), "--jobs", "1", "--no-cache", "-q"])
+    main(["scan", str(directory), "-o", str(parallel), "--jobs", "4", "--no-cache", "-q"])
+    assert serial.read_bytes() == parallel.read_bytes()
+    record = read_records(serial)[0]
+    assert any(binary["path"] == "pkg/zzz_crypto.so" for binary in record["binaries"])
+
+
 def test_a_warm_cache_produces_identical_output(corpus: Path, tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     cold, warm = tmp_path / "cold.jsonl", tmp_path / "warm.jsonl"

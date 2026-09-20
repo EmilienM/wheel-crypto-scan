@@ -71,11 +71,17 @@ and the top-level `binaries[]` array, so a wheel with thousands of objects canno
 produce an unbounded record. **It means the listing is incomplete, never that the
 evaluation was.** Every object the archive holds is decompressed, read and fed to
 linkage and every rule regardless of this cap; only the arrays a consumer reads back
-out of the JSON are capped, to the same prefix (sorted by path). A finding's
-`locations[].path` can therefore legitimately name an object that is not present in
-`binaries[]` -- it was still evaluated, just not listed. `findings[]` where
-`rule_id == "WHEEL_BINARIES_TRUNCATED"` names how many objects were evaluated in
-total when this happens.
+out of the JSON are capped, and `extensions` and `binaries[]` are always capped to the
+same set of objects, so the two never disagree on which ones they list. Neither is a
+plain path-sorted prefix: the objects any `findings[].locations[]` names are kept
+first (one per distinct `(rule_id, subject)` a finding names, before any finding gets
+a second object), and the remaining room is filled with the rest in path order. A
+finding's `locations[].path` can still, rarely, name an object that is not present in
+either array: only when findings alone name more distinct `(rule_id, subject)` groups
+than the cap allows, in which case the groups that sort last by `(rule_id, subject)`
+lose out. `findings[]` where `rule_id == "WHEEL_BINARIES_TRUNCATED"` names how many
+objects were evaluated in total when this happens. See DECISIONS.md, "`binaries[]`
+keeps what a finding points at, before filling the rest".
 
 `source_available` is `false` when the wheel ships no readable Python at all: bytecode
 without source, or source that would not parse. **When it is false, the absence of Python
@@ -155,7 +161,7 @@ One entry per **rule and subject**, not per occurrence.
 | `verdict` | The class this finding pushes the wheel into, or `null` for informational findings. |
 | `occurrences` | Number of **distinct locations**. Two calls on one line count once. |
 | `truncated` | The `locations` list was capped; `occurrences` still holds the full count. |
-| `locations[]` | `{path, line, evidence}`. `line` is `null` for non-source findings. `evidence` is the literal matched text, printable ASCII, capped. A `path` naming a native object is not guaranteed to appear in `binaries[]`: `artifacts.binaries_truncated` can leave it out of that list while the object, and this finding, were still produced from reading it in full. |
+| `locations[]` | `{path, line, evidence}`. `line` is `null` for non-source findings. `evidence` is the literal matched text, printable ASCII, capped. A `path` naming a native object is not *guaranteed* to appear in `binaries[]`, though `binaries[]` keeps every object a finding references before it keeps anything else: only when findings alone name more distinct `(rule_id, subject)` groups than `artifacts.binaries_truncated`'s cap allows can one be left out, while the object, and this finding, were still produced from reading it in full. See `artifacts` above. |
 
 ## `verdict`
 

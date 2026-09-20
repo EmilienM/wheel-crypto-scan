@@ -49,9 +49,11 @@ def build_inventory(
         # failed to parse is as opaque as one that ships no source at all, and must not
         # report the same empty Python findings as a genuinely clean wheel.
         source_available=(py_files - py_files_unparsed) > 0 or (py_files == 0 and pyc_files == 0),
-        extensions=tuple(sorted((binary.path, binary.format) for binary in binaries))[
-            :max_binaries
-        ],
+        # The full, untruncated set, sorted by path: `record.py`'s `build_record` caps
+        # this the same finding-aware way it caps `binaries[]`, which needs `findings`
+        # this layer does not have yet. Capping here first would cap it blind, the
+        # same mistake #55 fixed for `Evidence.binaries` itself.
+        extensions=tuple(sorted((binary.path, binary.format) for binary in binaries)),
         bundled_libs=tuple(sorted(b.path for b in binaries if b.vendored_path)),
         sboms=sbom_paths,
         symlinks=tuple(sorted(symlinks)),
