@@ -12,13 +12,17 @@ class and will not acquire one. The tool reports evidence; a human decides.
 | Change | `schema_version` |
 |---|---|
 | A new optional key | unchanged |
+| A new key that is always present (`required` in the JSON Schema) | unchanged |
 | A new `rule_id`, `subject_kind`, verdict class, binary format, layer or error kind | unchanged |
 | A key removed, renamed, or changed type | **bumped** |
 
 Consumers **must ignore unknown keys** and **must not** treat the documented value lists as
 closed. That is why the schema deliberately leaves the verdict class, binary format, layer
 and stage fields as open strings: closing them would turn every intended addition into a
-breaking change. Pin `tool.ruleset_version` if you need a fixed value set.
+breaking change. Pin `tool.ruleset_version` if you need a fixed value set. A new key can be
+`required` in the schema without bumping this version: it is a statement that the key is
+always present *from here on*, not a guarantee an old consumer relied on and would break by
+its arrival -- ignoring an unknown key already covers that consumer.
 
 Canonical serialisation: keys sorted, ASCII only (`\uXXXX`-escaped), no floats anywhere, no
 insignificant whitespace, exactly one trailing newline per record. No host paths,
@@ -36,6 +40,7 @@ timestamps, hostnames or user names appear in any field.
 | `findings` | array | Rules that matched. |
 | `verdict` | object | The classification. |
 | `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes record no error, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording one. Recording no error is not the same as carrying no verdict: only the latter is marked in the reason table below, and every other cause still makes the wheel `OPAQUE`. |
+| `errors_truncated` | bool | True when the wheel produced more errors than fit in `errors`, so it is capped -- a wheel that hits the same recordable failure on thousands of members cannot produce an unbounded record. One representative error per `(stage, kind)` pair is kept before the rest, so a wheel drowning in one kind of failure cannot crowd a different, rarer one out. |
 
 ## `tool`
 
@@ -64,6 +69,12 @@ missing key.
 `extensions` (`{path, format}`), `bundled_libs` (paths under `*.libs/` or `.dylibs/`),
 `sboms`, `symlinks` (`{path, target}`, recorded and never followed),
 `skipped` (`{path, reason}` for members refused by a limit).
+
+`bundled_libs_truncated` is true when the wheel vendors more native libraries than fit
+in `bundled_libs`, so it is capped -- independently of `binaries_truncated` below,
+since `bundled_libs` is a *subset* of the objects `binaries[]`/`extensions` list (only
+the vendored ones) and can hit its own cap even when the full object list does not.
+Capped the same finding-aware way `binaries[]` and `extensions` are.
 
 `py_files_unparsed` counts source files that would not parse. `binaries_truncated` is
 true when the wheel has more native objects than fit in the `extensions` list above

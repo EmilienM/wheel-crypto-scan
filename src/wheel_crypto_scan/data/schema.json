@@ -13,7 +13,8 @@
     "binaries",
     "findings",
     "verdict",
-    "errors"
+    "errors",
+    "errors_truncated"
   ],
   "properties": {
     "schema_version": {
@@ -171,6 +172,7 @@
         "total_uncompressed_bytes",
         "extensions",
         "bundled_libs",
+        "bundled_libs_truncated",
         "sboms",
         "symlinks",
         "skipped"
@@ -220,6 +222,10 @@
             "type": "string"
           },
           "description": "Native libraries shipped inside the wheel by auditwheel or delocate."
+        },
+        "bundled_libs_truncated": {
+          "type": "boolean",
+          "description": "True when the wheel vendors more native libraries than fit in bundled_libs, so it is capped independently of binaries_truncated -- bundled_libs is a subset of the objects binaries[]/extensions list and can be capped even when the full object list is not."
         },
         "sboms": {
           "type": "array",
@@ -697,6 +703,10 @@
           }
         }
       }
+    },
+    "errors_truncated": {
+      "type": "boolean",
+      "description": "True when the wheel produced more errors than fit in the errors list, so it is capped. One representative error per (stage, kind) pair is kept before the rest, so a wheel drowning in one kind of failure cannot crowd every other kind out of the record."
     }
   },
   "$defs": {

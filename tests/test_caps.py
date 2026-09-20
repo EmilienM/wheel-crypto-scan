@@ -23,13 +23,14 @@ from helpers.binfmt import (
     PEImport,
 )
 from wheel_crypto_scan.binfmt import read_binary
-from wheel_crypto_scan.binfmt.caps import cap
+from wheel_crypto_scan.caps import cap
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.evidence import (
     ArtifactInventory,
     BinaryEvidence,
     Evidence,
     RustCrate,
+    ScanError,
     StringMatch,
     SymbolMatch,
 )
@@ -209,6 +210,10 @@ def _match(group: str, name: str) -> SymbolMatch:
             ("name", "group", "binding"),
         ),
         (lambda **kw: RustCrate(**{"name": "n", "version": "1.0", **kw}), ("name", "version")),
+        (
+            lambda **kw: ScanError(**{"stage": "binary", "kind": "k", "message": "m", **kw}),
+            ("stage", "path", "kind", "message"),
+        ),
     ],
 )
 def test_a_sort_key_separates_any_two_records_that_differ(factory, fields) -> None:
@@ -218,7 +223,7 @@ def test_a_sort_key_separates_any_two_records_that_differ(factory, fields) -> No
     in -- and they arrive out of a `set`, whose order is not stable across runs. A
     `sort_key` that skipped a field would therefore make the record depend on the hash
     seed, which is the determinism this tool promises. `SbomComponent` already carries
-    this reasoning in a comment; these three carry it in a test.
+    this reasoning in a comment; these four carry it in a test.
     """
     base = factory()
     for field in fields:
@@ -278,3 +283,22 @@ def test_one_pinned_name_cannot_eat_the_budget_with_its_versions() -> None:
     kept, _ = cap(many + [ring], 64, pin=lambda c: c.name in claimed)
     assert ring in kept
     assert {c.name for c in kept} >= claimed
+
+
+def test_a_pinned_leftover_fills_the_last_slot_before_an_unpinned_one() -> None:
+    """The fill-phase half of pin priority, not just the representative-pass half:
+    once every group has its one representative, whatever pinned items are still
+    left over must still be offered the remaining room before an unpinned leftover
+    is. A version of `cap` that scanned pinned and unpinned leftovers in the wrong
+    order passes every other test in this file but fails this one -- confirmed by
+    swapping the fill passes' order and watching this assertion, and only this one,
+    flip."""
+    claimed = RustCrate(name="ring", version="0.17.8")
+    ring_extra = RustCrate(name="ring", version="0.17.9")
+    other_rep = RustCrate(name="other", version="1.0.0")
+    other_extra = RustCrate(name="other", version="1.0.1")
+    kept, truncated = cap(
+        [claimed, ring_extra, other_rep, other_extra], 3, pin=lambda c: c.name == "ring"
+    )
+    assert truncated is True
+    assert set(kept) == {claimed, ring_extra, other_rep}

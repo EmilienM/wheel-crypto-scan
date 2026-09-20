@@ -79,7 +79,7 @@ from .. import evidence
 from ..errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
-from .caps import cap
+from ..caps import cap
 from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings

@@ -279,3 +279,70 @@ calling the resolver that was already in scope. 200 alias rows against one 2 MiB
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#a-symbol-name-is-capped-like-pes-already-are) ·
 [#61](https://github.com/EmilienM/wheel-crypto-scan/issues/61)
+
+---
+
+## `caps.cap` scans `ordered` again instead of materialising `pinned`/`rest`/`leftovers`
+
+**Accepted. Performance and memory, not correctness.**
+
+The original three passes each built their own reference list on top of `ordered`:
+`pinned` and `rest` (together the same length as `ordered`), and `leftovers` (every
+item that lost its `cap_key` slot or arrived after the room was gone). For the case
+this cap exists to bound — an object with half a million matching symbols — that is
+up to three item-reference lists live at once on top of `ordered` and `kept`. `pin`
+was also called twice per item.
+
+The fix keeps the same four-pass priority order but scans `ordered` itself on every
+pass, using `pin`'s answer for each index (`pinned_at`, computed once) and a set of
+already-kept indices (`kept_at`) instead of the three item-reference lists.
+`kept_at` is bounded by `limit`; `pinned_at`, one bool per item, is not — smaller than
+a reference list but still `O(n)`. Measured, not assumed: at n=500,000 the whole
+call's *peak* allocation is unchanged old to new (the sort itself sets it); what
+shrinks is the tail after the sort. Verified equivalent to the original by an
+exhaustive sweep over small inputs (583,238 cases) and 20,000 randomised trials at
+larger `n`, alongside `tests/test_caps.py`'s existing behavioural pins. The cap's
+output is unchanged, only how it gets there.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#capscap-scans-ordered-again-instead-of-materialising-pinnedrestleftovers) ·
+[#71](https://github.com/EmilienM/wheel-crypto-scan/issues/71)
+
+---
+
+## `bundled_libs` and `errors[]` get their own caps, not `binaries_truncated`'s
+
+**Accepted. A new pair of record fields, `bundled_libs_truncated` and `errors_truncated`.**
+
+`binaries_truncated` bounds `binaries[]` and `artifacts.extensions`, always the same
+length. `artifacts.bundled_libs` and the top-level `errors[]` had no cap at all: a
+wheel vendoring thousands of small libraries, or hitting the same failure on thousands
+of members, produced a correspondingly unbounded line — measured during #55's review
+at 5000 vendored objects, a 274 KB line.
+
+`bundled_libs` is a *subset* of `binaries[]`/`extensions`, so it needs its own
+truncation flag rather than reusing `binaries_truncated`: a wheel with a huge object
+count but a small vendored subset would otherwise report truncation that never
+actually touched `bundled_libs`. It is capped the same finding-aware way
+`binaries[]`/`extensions` already are.
+
+`errors[]` needed a different cap: dropping an error silently could hide the reason a
+wheel reads `OPAQUE`, so a plain path-sorted prefix could crowd out a rare failure
+behind a flood of one common kind. `ScanError` gained a `cap_key`, `(stage, kind)`,
+making it a `caps.Capped` exactly like `SymbolMatch`/`StringMatch`/`RustCrate`, and
+`build_record` caps `evidence.errors` through that same `cap` — one representative
+error per `(stage, kind)` survives before the rest. `caps.py` itself moved out of
+`binfmt/` to the package's top level for this: `record.py` needed it too, and staying
+under `binfmt/` would have made the serialisation layer transitively import every
+structural reader, pyelftools included, just to cap a list of errors.
+
+Both share `max_binaries_per_record`, the same knob that already bounds
+`binaries[]`/`extensions` — no new context field or CLI flag.
+
+**Not closed here:** `artifacts.skipped` and `artifacts.symlinks` are the same shape
+and were found still uncapped while verifying this fix — a wheel with 3000 refused
+members produces a correctly capped `errors: 256` beside an uncapped
+`artifacts.skipped: 3003`. Filed as
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#bundled_libs-and-errors-get-their-own-caps-not-binaries_truncateds) ·
+[#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76)

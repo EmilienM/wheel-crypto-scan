@@ -58,7 +58,7 @@ from .. import evidence
 from ..errors import PE_PARSE_ERROR
 from ..evidence import BinaryEvidence, ScanError, SymbolMatch
 from ..ruleset import BinaryPatterns
-from .caps import cap
+from ..caps import cap
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
 

@@ -4315,3 +4315,154 @@ where it previously produced none. `ruleset_version` moves: `ar_parse_error` joi
 `pe_parse_error` already claim.
 
 Tracked in [#99](https://github.com/EmilienM/wheel-crypto-scan/issues/99).
+
+## `caps.cap` scans `ordered` again instead of materialising `pinned`/`rest`/`leftovers`
+
+**Accepted. Performance and memory, not correctness.**
+
+`cap`'s original three passes each built their own reference list on top of `ordered`:
+`pinned` and `rest` (a stable partition of `ordered`, together the same length as it),
+and `leftovers` (every item that lost its `cap_key` slot or arrived after the room was
+gone). For the case this cap exists to bound -- an object with half a million matching
+symbols -- that is up to three item-reference lists live at once on top of `ordered`
+and `kept`. `pin` was also called twice per item: once building `pinned`, once
+building `rest`.
+
+**The fix keeps the same four-pass priority order** (one representative per `cap_key`
+among the pinned items, then among the rest, then whatever pinned items are still
+short of room, then whatever of the rest is) but scans `ordered` itself on every pass
+instead of a materialised bucket. Two small aids replace the three item-reference
+lists: `pinned_at`, `pin`'s answer for every index computed once up front (`pin` now
+runs once per item, not twice), and `kept_at`, the set of indices already kept.
+`kept_at` is bounded by `limit`, not by how many items came in -- it only grows when
+an item is added to `kept`, which the cap itself already bounds. `pinned_at` is not:
+it is one bool per input item, still smaller than an item reference but `O(n)`, not
+`O(limit)`.
+
+**Measured, not assumed, and the result corrects the first draft of this entry.** At
+n=500,000, limit=512: the whole call's *peak* allocation is 47.86 MB, identical old and
+new, for both `pin=None` and `pin` given -- `sorted(items, key=...)` materialising
+`ordered` plus one key tuple per item sets the peak, before either version's own passes
+run, and this fix does not touch that. What does shrink is the tail after the sort:
+8.35 -> 0.06 MB unpinned, 8.20 -> 4.23 MB pinned. This is an auxiliary-allocation fix,
+not a peak-memory one, and the earlier wording here claiming "roughly doubling the
+memory the cap was meant to save" overstated it -- corrected once the diff had a
+reviewer measure it rather than reason about it. `pin`'s call count is a real,
+unconditional win: once per item instead of twice, for every input.
+
+Verified equivalent to the original by two differentials: an exhaustive sweep (key
+sequences, pin patterns, sort orders including a deliberately non-total `sort_key`, and
+every `limit` in `0..n+1`, for `n <= 6`, 583,238 cases) and 20,000 randomised trials at
+larger `n` -- zero divergences in either, across random item counts, key
+cardinalities, pin predicates and limits -- alongside `tests/test_caps.py`'s existing
+behavioural pins (representative per key, pins first, bounded, sorted,
+order-independent) -- none needed to change, since
+this is a rewrite of the same passes rather than a new selection rule. Not itself
+re-measured against the 0.1.3 review's ~10% figure; the correctness of the cap was
+never in question, only its footprint and its walk count.
+
+**Correction, found by the same review that measured the peak above.** The first
+version of this fix called a `want(index, wants_pinned)` closure from inside every
+pass's inner loop, re-checking `pinned_at is None` on every call. Measured against the
+`pin`-given post-sort tail specifically, that closure overhead cost more than the
+three lists it removed saved: +8% for `pin=None`, +86% for `pin` given, in the tail
+alone (the whole call, sort included, was a smaller +6%, since the sort dominates
+there too). Fixed by inlining the check and hoisting the `pin is not None` test out of
+the loop into one `passes` tuple computed once -- a change filed under "performance
+and memory" regressing either was not an acceptable trade against three list
+allocations, however large.
+
+Neither `ANALYZER_VERSION` nor `ruleset_version` moves: the cap's output is identical
+input for input, only how it gets there changed.
+
+Tracked in [#71](https://github.com/EmilienM/wheel-crypto-scan/issues/71).
+
+## `bundled_libs` and `errors[]` get their own caps, not `binaries_truncated`'s
+
+**Accepted. A new pair of record fields, `bundled_libs_truncated` and
+`errors_truncated`.**
+
+`binaries_truncated` bounds `binaries[]` and `artifacts.extensions`, two arrays that
+are always the same length (one entry per object read). `artifacts.bundled_libs` and
+the top-level `errors[]` had no cap of their own at all: a wheel vendoring thousands of
+small libraries under `*.libs/`/`.dylibs/`, or hitting the same recordable failure on
+thousands of members, produced a correspondingly unbounded JSON line -- measured
+during #55's adversarial review at 5000 vendored objects, a 274 KB line, reproducible
+on `main` unrelated to that fix.
+
+**Why not reuse `binaries_truncated` for `bundled_libs` too.** `bundled_libs` is a
+*subset* of the objects `binaries[]`/`extensions` list -- only the vendored ones --
+so its length can never exceed `binaries[]`'s, and a wheel with a huge object count
+but a small vendored subset would report `binaries_truncated: true` while
+`bundled_libs` itself was never actually cut. `bundled_libs_truncated` is computed
+against `bundled_libs`'s own length, and the array itself is capped the same
+finding-aware way `binaries[]` and `extensions` already are, through the same
+`record._cap_by_findings`, keyed on the bare path string rather than a
+`BinaryEvidence` or a `(path, format)` pair -- the same universe of paths, so a
+finding naming a vendored library still wins it a slot ahead of an unclaimed one.
+
+**Why `errors[]` needed a different cap, not a reuse of `_cap_by_findings`.**
+`_cap_by_findings` picks winners by which object a *finding* references; an error is
+not about an object a rule matched, and dropping one silently could itself hide the
+reason a wheel reads `OPAQUE` -- a plain path-sorted prefix could crowd out a rare
+`bad_zip` behind three thousand identical `binary_unknown_format` entries from a
+flood of malformed members. `ScanError` gained a `cap_key`, `(stage, kind)`, making it
+a `binfmt.caps.Capped` exactly like `SymbolMatch`/`StringMatch`/`RustCrate` already
+are, and `build_record` caps `evidence.errors` through the very same `binfmt.caps.cap`
+those three use -- one representative error per `(stage, kind)` pair survives before
+the rest, so a wheel drowning in one kind of failure cannot crowd a different, rarer
+one out. No new capping logic was written for this; reusing `cap` is what `caps.py`'s
+own module docstring already promises for "a match list" in general, and a `ScanError`
+qualifies exactly as well as the three it was written for.
+
+Both `bundled_libs` and `errors[]` share `max_binaries_per_record`, the knob that
+already bounds `binaries[]`/`extensions` -- no new context field or CLI flag, since
+this is the same "keep one record bounded" concern at the same order of magnitude,
+not a separate policy question.
+
+**What was rejected.** A single, generic name-and-count field
+(`something_truncated: {bundled_libs: bool, errors: bool}`) instead of two flat
+top-level/nested booleans: rejected for staying consistent with `binaries_truncated`'s
+own shape, one boolean per capped array, rather than inventing a second convention for
+the same kind of fact.
+
+**Neither flag gets a `binaries_truncated`-shaped rule.** `WHEEL_BINARIES_TRUNCATED`
+exists because `binaries_truncated` being true changes what a reader can trust about
+`findings[]` and `verdict`: an object past that cap was still evaluated, but a human
+reading the record back cannot corroborate the verdict against every object that
+earned it without also checking the flag, so the rule's own `why` argues explicitly
+against leaving the boolean as the only trace. Neither new flag carries that
+consequence -- `bundled_libs` and `errors[]` are inventory listings a rule never reads,
+not evidence a finding or the verdict depends on -- so a human losing entries from
+either learns less about the wheel's *inventory*, never less about why it was
+classified the way it was. This is the same posture the per-object
+`symbols_truncated`/`strings_truncated` flags already have: real signals with no rule
+of their own, because what changes when they fire is what a record's arrays show, not
+what a rule saw. Revisit if a future rule ever comes to depend on either array.
+
+`ANALYZER_VERSION` moves: every record now carries `errors_truncated` and
+`artifacts.bundled_libs_truncated`, so an unchanged wheel that never approaches either
+cap still produces a record with two new keys. `schema_version` does not: `SCHEMA.md`'s
+versioning table has its own row for exactly this, "a new key that is always present",
+distinct from an optional one -- added alongside this fix, since the table did not yet
+say what it meant for a *required* key to arrive rather than an optional one. No
+existing consumer is broken by their arrival regardless, because the schema's own
+description already asks every consumer to ignore unknown keys. `ruleset_version` does
+not move: no rule, symbol, library or verdict changed.
+
+**What this fix does not close.** `artifacts.skipped` and `artifacts.symlinks` are the
+same shape -- plain inventory listings built without a cap -- and were not touched
+here. Found while verifying this fix: 3000 members refused by
+`ArchiveLimits.max_member_bytes` produces a correctly capped `errors: 256` sitting
+next to an uncapped `artifacts.skipped: 3003`, a 220 KB record whose own
+`errors_truncated` flag gives no hint that `skipped` is *also* incomplete -- `skipped`
+and `errors[]` are fed by the same `archive.errors` for a member-refusal wheel, so the
+two arrays now disagree about the same events. Deliberately not folded into this fix:
+each needs its own cap decided (neither is finding-referenced, so `_cap_by_findings`
+is unnecessary weight; a plain sorted-and-capped prefix, `bundled_libs`'s original
+shape before this issue existed, is probably enough), and doing it well needs the same
+scrutiny this entry's `pinned_at` and `schema_version` corrections show a first pass
+tends to miss. Filed separately, found while verifying this fix:
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
+
+Tracked in [#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76).

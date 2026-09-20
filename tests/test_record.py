@@ -16,6 +16,7 @@ from wheel_crypto_scan.evidence import (
     Evidence,
     MetadataEvidence,
     RustCrate,
+    ScanError,
     StringMatch,
     SymbolMatch,
 )
@@ -123,6 +124,24 @@ def test_a_wheel_without_metadata_still_produces_a_complete_record(ruleset) -> N
     assert set(record) >= {"schema_version", "tool", "wheel", "artifacts", "findings", "verdict"}
 
 
+def test_no_max_binaries_means_no_cap_and_no_truncation_flag(ruleset) -> None:
+    """`max_binaries=None` is `build_record`'s own default -- callers besides `scan.py`
+    exist (this module's own `record_for` is one), and neither new flag should fire
+    just because nothing asked for a cap at all."""
+    evidence = Evidence(
+        filename="broken-1.0-py3-none-any.whl",
+        sha256="c" * 64,
+        size_bytes=10,
+        artifacts=ArtifactInventory(bundled_libs=("pkg.libs/libfoo-deadbeef.so",)),
+        errors=(ScanError(stage="binary", kind="member_read_error", message="m", path="x"),),
+    )
+    record = record_for(ruleset, evidence)
+    assert record["artifacts"]["bundled_libs"] == ["pkg.libs/libfoo-deadbeef.so"]
+    assert record["artifacts"]["bundled_libs_truncated"] is False
+    assert len(record["errors"]) == 1
+    assert record["errors_truncated"] is False
+
+
 # --- the field the acceptance gate reads ------------------------------------
 
 
@@ -161,7 +180,7 @@ def test_every_finding_has_the_same_key_set(ruleset) -> None:
 
 # --- binaries[] cap: what a finding points at is kept first (#75) -----------
 #
-# `binfmt.caps.cap()` fixed this shape one layer down for the per-binary string,
+# `caps.cap()` fixed this shape one layer down for the per-binary string,
 # symbol and crate caps (DECISIONS.md, "A cap bounds the record, it does not pick the
 # evidence", #51): a plain sort-and-cut let a crate list with `ring` sorting behind a
 # hundred `anyhow`-class names drop the one crate a rule cared about. `max_binaries`

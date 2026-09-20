@@ -246,7 +246,7 @@ def test_every_always_report_library_can_be_recognised_without_its_symbols() -> 
     ],
 )
 def test_a_limit_too_small_to_hold_one_of_each_key_is_rejected(limit, value) -> None:
-    """`binfmt.caps` keeps one of every key, and below that it is the alphabet again.
+    """`caps` keeps one of every key, and below that it is the alphabet again.
 
     `SCHEMA.md` states the guarantee without conditions, and nothing checked the one
     condition it has. A limit is not policy in the sense the rest of this file means:

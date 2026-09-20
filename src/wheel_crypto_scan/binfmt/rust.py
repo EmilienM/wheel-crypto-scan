@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 from ..evidence import RustCrate
-from .caps import cap
+from ..caps import cap
 
 
 def find_rust_crates(
@@ -23,7 +23,7 @@ def find_rust_crates(
     guarantees this). Deduplication happens before sorting and the cap is applied
     after, so which crates survive truncation never depends on scan order.
 
-    `claimed` is the crate names the ruleset has an entry for, and `binfmt.caps` keeps
+    `claimed` is the crate names the ruleset has an entry for, and `caps` keeps
     one version of each ahead of everything else. Required rather than defaulted: a
     default would turn the protection off for a caller that forgot it, silently.
 
