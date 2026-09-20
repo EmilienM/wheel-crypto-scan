@@ -204,7 +204,51 @@ def _validated_strtab(elf, sh_link: int, dt_strtab_addr: int | None) -> Section 
     return section
 
 
-def _symbol_bytes(elf, section, dt_strtab_addr: int | None) -> tuple[bytes, bytes]:
+def _bounded_section_data(section: Section, max_bytes: int) -> tuple[bytes, bool]:
+    """`section.data()`, refused before it would produce more than `max_bytes`.
+
+    Two shapes make `data_size` -- the amount `.data()` is actually about to
+    materialise -- larger than anything the object's own bytes on disk justify, and
+    both are checked here rather than trusted to `sh_size`.
+
+    A `SHF_COMPRESSED` section's `Chdr.ch_size` is the logical, decompressed size, and
+    it is an attacker-controlled 64-bit field exactly like `sh_size` itself: pyelftools'
+    `Section.__init__` already reads it eagerly (24 bytes for `Elf64_Chdr`, 12 for
+    `Elf32_Chdr`; both fixed-size and cheap regardless of the section's declared
+    length) and exposes it as `section.data_size`, well before `.data()` ever calls
+    `zlib.decompressobj().decompress()` against however many bytes `ch_size` names.
+
+    An `SHT_NOBITS` section is the same shape without any compression at all:
+    `Section.data()` special-cases it first, ahead of the compressed branch, and
+    returns `b"\\0" * self.data_size` with no file bytes read to justify the length --
+    `data_size` there is just `sh_size` itself (pyelftools' `Section.__init__` sets
+    `_decompressed_size = header['sh_size']` whenever `compressed` is false), which
+    occupies no file space and so is never bounded by how big the object actually is.
+    `_collect_string_bytes` already excludes `SHT_NOBITS` sections outright for its own
+    `.rodata`/`.comment` sweep; this helper is used by callers (`.go.buildinfo`) that
+    are found by name rather than by type and so never ran that exclusion, which makes
+    it the one field-checked here rather than assumed: `not section.compressed` is not
+    "ordinary and file-backed", it is "not compressed", and `SHT_NOBITS` is the case
+    where that gap is real.
+
+    Checking `data_size` first means an oversized section, compressed or `SHT_NOBITS`,
+    is refused, not inflated: `.data()` is never called at all, so neither the
+    decompression nor the zero-fill this guards against ever runs. A section declaring
+    at most `max_bytes` is unaffected either way.
+
+    Returns `(b"", True)` in the refused case, the same "unread" signal a `.data()`
+    call that raises already produces one level up -- decompression failures that
+    happen despite an honest declared size (garbage compression bytes, a truncated
+    stream) are unchanged: they still reach `.data()` and still raise there.
+    """
+    if (section.compressed or section["sh_type"] == "SHT_NOBITS") and section.data_size > max_bytes:
+        return b"", True
+    return section.data(), False
+
+
+def _symbol_bytes(
+    elf, section, dt_strtab_addr: int | None, max_table_bytes: int
+) -> tuple[bytes, bytes, bool]:
     """A symbol table and its string table, each read once, in that order.
 
     pyelftools' `get_symbol()` seeks per symbol, alternating between the two. On a
@@ -225,13 +269,25 @@ def _symbol_bytes(elf, section, dt_strtab_addr: int | None) -> tuple[bytes, byte
     goes": an object whose `.dynamic` could not be read has no witness for `.dynsym`'s
     string table either, so this falls back to no names found, the same as any other
     unresolved `sh_link` -- never to trusting whatever `sh_link` names outright.
+
+    `max_table_bytes` is `_bounded_section_data`'s ceiling for both reads: `.dynsym`
+    and its string table are read through the identical `.data()` call `.rodata` is,
+    so a `SHF_COMPRESSED` `.dynsym` or `.dynstr` is the same exposure one level over,
+    and the caller's own budget (`max_strings_bytes`) is what already bounds how much
+    of this object it is willing to inflate. The third return value is `True` when
+    either read was refused for that reason; the caller folds it into
+    `elf_dynsym_unread` the same way an actual decompression failure already does.
     """
     strtab = _validated_strtab(elf, section["sh_link"], dt_strtab_addr)
     if strtab is not None and strtab["sh_offset"] < section["sh_offset"]:
-        names = strtab.data()
-        return section.data(), names
-    data = section.data()
-    return data, strtab.data() if strtab is not None else b""
+        names, names_unread = _bounded_section_data(strtab, max_table_bytes)
+        data, data_unread = _bounded_section_data(section, max_table_bytes)
+        return data, names, names_unread or data_unread
+    data, data_unread = _bounded_section_data(section, max_table_bytes)
+    names, names_unread = b"", False
+    if strtab is not None:
+        names, names_unread = _bounded_section_data(strtab, max_table_bytes)
+    return data, names, data_unread or names_unread
 
 
 def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, bool]]:
@@ -532,7 +588,25 @@ def read_elf(
             # table, for a question only ever asked about the handful a group claims.
             read_crypto: set[str] = set()
             unresolved = 0
-            table, dynstr = _symbol_bytes(elf, dynsym, dt_strtab_addr)
+            table, dynstr, symtab_bytes_unread = _symbol_bytes(
+                elf, dynsym, dt_strtab_addr, max_strings_bytes
+            )
+            if symtab_bytes_unread:
+                # A compressed .dynsym or .dynstr declaring more than the object's
+                # own budget: refused before decompression by `_bounded_section_data`,
+                # so `table`/`dynstr` are empty rather than however many bytes
+                # `ch_size` named. Named explicitly rather than left to fall out of
+                # `unresolved` below: an object whose .dynsym itself was refused has
+                # no rows to iterate at all, so `unresolved` would stay zero with
+                # nothing else to say this object was not read.
+                errors.append(
+                    _error(
+                        path,
+                        ELF_PARSE_ERROR,
+                        ".dynsym or its string table declares more bytes than the budget allows",
+                    )
+                )
+                reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
             for name, undefined, resolved in _iter_symbols(elf, table, dynstr):
                 if not resolved:
                     unresolved += 1
@@ -617,11 +691,22 @@ def read_elf(
     buildinfo_section = _find_section(sections, ".go.buildinfo")
     buildinfo_bytes: bytes | None = None
     if buildinfo_section is not None:
+        buildinfo_unread = False
         try:
-            buildinfo_bytes = buildinfo_section.data()
+            # Read through the same `.data()` call `.rodata` and `.dynsym` are, so a
+            # `SHF_COMPRESSED` `.go.buildinfo` is the identical exposure: refused
+            # before decompression rather than caught after, via
+            # `_bounded_section_data`. An actual decompression failure despite an
+            # honest declared size still reaches `.data()` and is still caught here.
+            buildinfo_bytes, buildinfo_unread = _bounded_section_data(
+                buildinfo_section, max_strings_bytes
+            )
         except Exception:
+            buildinfo_unread = True
+        if buildinfo_unread:
             errors.append(_error(path, ELF_PARSE_ERROR, "failed to read .go.buildinfo"))
             reasons.add(evidence.PARTIAL_ELF_GO_BUILDINFO_UNREAD)
+            buildinfo_bytes = None
     has_buildid = _find_section(sections, ".note.go.buildid") is not None
     go = build_go_info(buildinfo_bytes, strings_found.text, patterns)
     if go is None and (buildinfo_section is not None or has_buildid):
@@ -690,13 +775,38 @@ def _collect_string_bytes(
         if remaining <= 0:
             truncated = True
             break
+        # `_bounded_section_data` reads `section.data_size` -- `Chdr.ch_size` for a
+        # `SHF_COMPRESSED` section, which pyelftools reads eagerly in
+        # `Section.__init__` well before `.data()` would call
+        # `zlib.decompressobj().decompress()` against however many bytes it names --
+        # against `remaining`, the budget actually left, and refuses the section
+        # before it is inflated rather than truncating it after. A section declaring
+        # exactly `remaining` still reads normally below -- refused is strictly
+        # "more than", not "at least" -- and this is the one call site in the module
+        # that predicate is written, shared with `_symbol_bytes` and `.go.buildinfo`.
+        #
+        # A refusal here sets `unread`, not `truncated`: `truncated` is what a
+        # section read in full and then cut to fit sets, and this section was never
+        # read at all, so nothing here actually knows how many of its bytes -- if
+        # any -- would have been genuine strings versus more of whatever made
+        # `ch_size` this large in the first place. `ch_size` alone cannot tell an
+        # honestly oversized declaration apart from a malformed header that happens
+        # to decode to a huge number (see DECISIONS.md, "A compressed section is
+        # checked before it is inflated" -- the existing "elf section data
+        # unreadable" fixture in `tests/test_partial_reasons.py` is exactly that
+        # shape), so `strings_truncated` can under-report for this cause: `true`
+        # would claim a definite byte count was dropped for budget reasons
+        # specifically, which is not a claim this branch is in a position to make.
         try:
-            data = section.data()
+            data, section_unread = _bounded_section_data(section, remaining)
         except Exception:
             # The one failure here that used to be silent: no error, no reason, and the
             # strings simply absent. A `.rodata` flagged `SHF_COMPRESSED` over bytes
             # that are not compressed reaches this, and a wheel whose only evidence was
             # the banner in it came back with no findings and nothing saying why.
+            unread = True
+            continue
+        if section_unread:
             unread = True
             continue
         if not data and section["sh_size"]:

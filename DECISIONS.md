@@ -1955,3 +1955,189 @@ read in full is that it was never read, not a guess dressed as one. Nothing in
 `ruleset_version` does not move.
 
 Tracked in [#61](https://github.com/EmilienM/wheel-crypto-scan/issues/61).
+
+## A compressed section is checked before it is inflated
+
+**Accepted. Option 1 of #62's three: refuse to inflate past what can be used.**
+
+`Section.data()` decompresses a `SHF_COMPRESSED` section's `Chdr.ch_size` bytes before
+`_collect_string_bytes` or `_symbol_bytes` ever get to apply their own budget. `ch_size`
+is a 64-bit field the object declares about itself, the same shape `#61`'s per-name cap
+and this file's own `#48` entry already closed for a name and a whole-table size --
+except here the number buys an actual `zlib.decompressobj()` call rather than a Python
+loop, so the cost is a memory spike, not CPU. The issue's own reproduction: a 255 KiB
+ELF declaring a 256 MiB `.rodata`, `read_elf` peaking at 512 MiB in 0.82 s, recorded as
+`partial=True reasons=('strings_bytes_unread',) errors=[]` -- the record was correct,
+the cost was getting there. The wheel-level `ArchiveLimits.max_compression_ratio` guard
+never sees this shape: the zlib stream sits inside the zip member, whose own compression
+ratio looks ordinary either way.
+
+**Checked with a call already made, not a new one.** `Section.__init__` reads `Chdr`
+eagerly and cheaply -- `Elf64_Chdr` is `ch_type`, `ch_reserved`, `ch_size`,
+`ch_addralign`, 24 bytes; `Elf32_Chdr` drops `ch_reserved`, 12 -- before `.data()` is
+ever called, and exposes the result as `section.compressed` and `section.data_size`
+(pyelftools, `elftools/elf/sections.py`; the struct layouts, elfclass-aware, are in
+`elftools/elf/structs.py:_create_chdr`). `_bounded_section_data` (`binfmt/elf.py`) reads
+those two properties and refuses -- `(b"", True)`, the same "unread" signal a
+`.data()` call that raises already produced -- when `section.compressed and
+section.data_size > max_bytes`, never calling `.data()` at all in that case. Both ELF
+classes are covered by construction, through the one property read, not by hand-parsing
+`Chdr` a second time or by a dedicated 32-bit test: `structs.Elf_Chdr` is already built
+per-object from `elf.elfclass`.
+
+**One helper, three call sites, the same shape at each.** `_collect_string_bytes`
+checks against `remaining`, the budget actually left after earlier sections -- over
+`remaining` is over `max_strings_bytes` outright whenever `remaining` is still the
+whole budget, so nothing else needed comparing. `_symbol_bytes` reads `.dynsym`'s
+entries and its string table through the same call `.rodata` is, so `max_strings_bytes`
+-- already the caller's own ceiling on how much of this object it will inflate -- is
+threaded through as `_symbol_bytes`'s bound too, rather than a second constant for a
+question this file already answers once. Auditing every other `.data()` call in
+`binfmt/elf.py` for the same exposure, per the issue's own reproduction only naming
+`.rodata` and `.dynsym`/`.dynstr`, found one more: `.go.buildinfo`, read the identical
+way with no size check of its own. It gets the same guard, against `max_strings_bytes`,
+reusing `elf_go_buildinfo_unread`, no new token.
+
+**`.go.buildinfo` carried a second, uncompressed exposure the same audit found, and
+the first pass at this fix missed it.** `Section.data()` checks `SHT_NOBITS` before it
+checks `compressed` at all, and for a `SHT_NOBITS` section returns `b"\0" *
+self.data_size` with no file bytes read to justify the length -- `data_size` there is
+just `sh_size` itself (`Section.__init__` sets `_decompressed_size = header['sh_size']`
+whenever `compressed` is false), and `SHT_NOBITS` is defined to occupy no file space,
+so nothing bounds it against the object's actual size. `_collect_string_bytes` was
+never exposed to this: it already excludes `SHT_NOBITS` outright, for every section it
+considers, before this fix existed. `.go.buildinfo` is found by `_find_section` on
+name alone, with no `sh_type` check of any kind, so a section named `.go.buildinfo`
+and flagged `SHT_NOBITS` reached `.data()` through this fix's first pass exactly the
+way an honest one does -- `_bounded_section_data`'s original guard read `not
+section.compressed` as "ordinary and file-backed," which is not what it means; it
+means "not compressed," and `SHT_NOBITS` is the gap between those two readings.
+Reproduced: a 298-byte object (no compression, no zlib) with `.go.buildinfo` marked
+`SHT_NOBITS` and `sh_size` declaring 2048 MiB peaks at 2 GiB, `partial_analysis:
+false`, no error -- three orders of magnitude cheaper to build than the compressed
+reproduction above, and silent rather than merely expensive, since nothing about it
+routes through the compression check at all. `.dynsym` and its string table are safe
+from this by construction rather than by having been checked for it: both are reached
+through `_find_section_by_type`/`_validated_strtab`, which match on `sh_type ==
+"SHT_DYNSYM"`/`"SHT_STRTAB"` specifically, and a section cannot carry two `sh_type`
+values at once, so the `SHT_NOBITS` branch those two call sites hand to
+`_bounded_section_data` is reachable in the function but dead at both of them.
+`_bounded_section_data` now refuses on `section.compressed or section["sh_type"] ==
+"SHT_NOBITS"`, not on `compressed` alone, and its docstring no longer claims `sh_size`
+bounds the uncompressed case -- it does not, `data_size` is the field that matters for
+both shapes, and for `SHT_NOBITS` `data_size` is `sh_size` read with nothing checking
+it. `tests/test_hardening.py::test_a_nobits_named_go_buildinfo_does_not_allocate` pins
+this the same way the compressed cases above are pinned: a peak-bytes ceiling, reverted
+by hand to confirm it fails red without the `SHT_NOBITS` arm.
+
+**No new `partial_reasons` token at either site.** `.rodata`/`.comment`'s refusal folds
+into `elf_section_data_unread`, the existing cause the `SHF_COMPRESSED`-over-garbage-bytes
+case in `tests/test_partial_reasons.py` already produces from a `.data()` call that
+raises -- refused before the call and raised inside it are the same fact for a consumer,
+"this section was not read," so they share the token rather than needing a means-versus-
+end distinction nothing downstream asks for. `.dynsym`/`.dynstr`'s refusal folds into
+`elf_dynsym_unread` the same way, and for the case where only the string table is over
+budget this mostly falls out of the existing cross-check for free: an empty `dynstr`
+resolves nothing, `unresolved` climbs, and the existing `if unresolved: ...` branch
+already adds the token. It is still named explicitly (`symtab_bytes_unread`, checked
+before the resolve loop) because a `.dynsym` whose *own* bytes were refused iterates
+zero rows -- `unresolved` stays zero, `holds_a_name_not_read` has nothing pointed away
+from to notice either, and nothing else would say this object was not read at all.
+
+**The boundary is "more than", not "at least".** A section declaring exactly `remaining`
+(or exactly `max_strings_bytes`, for the symbol-table and `.go.buildinfo` call sites) is
+refused nothing: `.data()` runs, produces exactly that many bytes, and nothing past this
+point truncates it further, the same "cap means what its name says" reading `#61`'s own
+entry above gives `_MAX_NAME_BYTES`.
+
+**Measured, scaled down for the test suite.** The issue's own 256 MiB declared / 512 MiB
+peak reproduces at 8 MiB declared against a 64 KiB budget: unfixed, `tracemalloc` shows
+a ~16.9 MiB peak (the inflated buffer plus pyelftools' own read-back copy, the same
+roughly-2x shape the issue's own 256 MiB/512 MiB numbers show); fixed, well under 2 MiB,
+in well under a second either way since 8 MiB of zero bytes compresses and decompresses
+fast regardless. `tests/test_hardening.py`'s two `..._does_not_allocate` tests assert a
+peak-bytes ceiling rather than a timing race, the same technique `#61`'s own bounded-time
+tests use for the same reason: reverting the guard (checked by hand, not committed) fails
+both on the memory assertion, cleanly, not by chance timing. `tests/test_binfmt_elf.py`
+carries the correctness side at unit scale -- refused-over-budget, honest-under-budget,
+and exactly-at-the-boundary, for both `.rodata` and a corroborated decoy `.dynstr` -- and
+pins the *token* difference a revert produces: unfixed, the over-budget `.rodata` case
+above genuinely decompresses (it is an honest 8 KiB payload, not garbage) and reads as
+`strings_bytes_unread` with no error, exactly the issue's own "the record was correct"
+observation; fixed, it is `elf_section_data_unread` with one, and `strings_bytes_unread`
+does *not* also fire -- see "`strings_truncated` can under-report a budget refusal"
+below for why that is deliberate rather than a fact this fix dropped. The `.dynstr` case
+has no truncate-and-continue at all today, so unfixed it is read in full at any size and
+the symbol resolves -- there was no bound to test to begin with, only an unbounded read.
+
+**`strings_truncated` can under-report a budget refusal, and this is left as-is rather
+than papered over.** A section refused by `_collect_string_bytes`'s new pre-check sets
+`unread`, not `truncated`: `truncated` is what a section read in full and then cut to
+fit sets, and a refused section was never read at all, so nothing here actually knows
+how many of its bytes -- if any -- would have been genuine strings versus more of
+whatever made `ch_size` this large. The obvious fix, setting `truncated` too whenever
+the refusal fires, does not hold up: `ch_size` alone cannot tell an honestly oversized
+declaration apart from a malformed header that happens to decode to a huge number, and
+`tests/test_partial_reasons.py`'s existing "elf section data unreadable" fixture is
+exactly that shape -- `.rodata` filled with the OpenSSL banner text, `SHF_COMPRESSED`
+set over bytes that were never really compressed at all, whose first 24 bytes decode as
+a `Chdr` with `ch_size` around 3.76 * 10^18 purely by accident of what those ASCII
+bytes happen to be. Setting `truncated` there is not a defensible claim -- there was
+never a real 3.76-exabyte string payload to have dropped part of -- so the branch
+cannot set it correctly for every case that reaches it, and the alternative of trying
+to distinguish the two (checking `ch_type` before deciding) reintroduces exactly the
+"is this header sane" question `_bounded_section_data` exists to avoid asking before
+refusing. `strings_truncated: false` alongside `elf_section_data_unread` is therefore
+the honest answer for this cause: `partial_analysis`/`partial_reasons` are what say the
+object was not read in full, and `strings_truncated` narrows to the weaker, cap-specific
+question of whether a definite number of budget bytes is known to have been dropped --
+which, for a section refused before ever being read, is not a question this cause can
+answer either way.
+
+**What was rejected.** Option 2 (decompress with a caller-supplied `max_length`, keeping
+whatever prefix fits, the same shape `_collect_string_bytes` already gives an honest
+oversized *uncompressed* section) is bounded correctly: `zlib.decompressobj().
+decompress(data, max_length=N)` allocates `N`, the defender's own chosen budget, not
+anything the object declares -- verified directly, `max_length=4096` against a stream
+that inflates to 256 MiB peaks at well under a megabyte, `max_length=64 MiB` peaks at
+~128 MiB (the output buffer plus the same roughly-2x overhead this entry's own
+measurements show elsewhere), regardless of what `ch_size` claims. That is not what ruled
+it out. The issue's
+own text notes it "needs the Chdr parse and a zlib call outside pyelftools" -- exactly
+the second reader for one fact `#61`'s "what was rejected" paragraph above already
+declined for `BoundedNames`. It would also split the two call
+sites onto different rules for the identical shape of bug: a partial `.rodata` prefix
+is enough evidence for `strings_bytes_unread`-style truncation, but a partial `.dynstr`
+prefix is not obviously the same table `.dynsym`'s offsets were computed against, and
+the issue's own text already answers this for the symbol tables ("(1) is the natural
+rule"), so applying (2) to `.rodata` alone would have been two fixes for one bug rather
+than one. Option 3 (treat any compressed eligible section as unread, regardless of size)
+throws away an honest, small, well-under-budget compressed banner for no reason --
+losing evidence `#48`'s entry above spent a whole entry establishing a budget precisely
+to keep. Option 1 costs neither: an honest section under budget is untouched, and an
+oversized one is refused before its size is spent on anything.
+
+**What it costs.** `ANALYZER_VERSION` moves: an object whose eligible `.rodata`/
+`.comment` declares a compressed size over the remaining strings budget now reads
+`elf_section_data_unread` where it previously read `strings_bytes_unread` -- still
+`partial_analysis: true` either way, but named, and with an error record, rather than
+silently short. `strings_truncated` moves from `true` to `false` for this shape, which
+is a real change and not just a rename: see "`strings_truncated` can under-report a
+budget refusal" above for why the fix does not also set it. An object whose `.dynsym` or
+its string table declares a compressed size over `max_strings_bytes` now reads
+`elf_dynsym_unread` where it previously read whatever
+a full, unbounded decompress produced -- most likely a correctly resolved symbol table,
+since nothing in the issue's own "what I did not verify" section, nor anything checked
+here, points at a real wheel shaped this way, but no longer taken on faith either way,
+the same trade `#61`'s own entry above accepted for the per-name cap. `.go.buildinfo`
+moves the same way, reusing its own existing token. Nothing in `ruleset.toml` changes:
+every token this reuses was already policy, so `ruleset_version` does not move.
+
+**What was not verified, same as the issue's own gap.** Whether any real wheel ships a
+compressed *allocated* section at all -- `.debug_*` sections are the common carrier and
+are not `SHF_ALLOC`, so `_collect_string_bytes` already skips them before `.data()` is
+reached regardless of this fix; `.comment` is the one named unconditionally and is the
+plausible carrier if any is. Revisit if a real wheel is found on the triage list for
+this and nothing else.
+
+Tracked in [#62](https://github.com/EmilienM/wheel-crypto-scan/issues/62).

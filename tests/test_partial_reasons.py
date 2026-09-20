@@ -162,8 +162,12 @@ _REACHABILITY: dict[str, bytes] = {
         "e_shoff",
         1 << 30,
     ),
-    # A section flagged compressed over bytes that are not: the read raises, and this
-    # used to be the one failure in the reader that recorded nothing at all.
+    # A section flagged compressed over bytes that are not: the first 24 bytes of
+    # this text decode as a `Chdr` whose `ch_size` is some large accident of the
+    # ASCII (~3.76 * 10^18 here), well over the budget, so `_bounded_section_data`
+    # refuses it before `.data()` is ever called. Before that guard existed, this
+    # used to reach `.data()`, which raised there instead -- either way this was once
+    # the one failure in the reader that recorded nothing at all.
     "elf section data unreadable": patch_section_header(
         ElfBuilder(
             rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00",
@@ -579,6 +583,17 @@ class _Exploding:
     @property
     def name(self) -> str:
         return self._inner.name
+
+    @property
+    def compressed(self):
+        # `_bounded_section_data` reads this before ever calling `.data()`, so it has
+        # to reach the real, uncompressed fixture underneath -- forwarding it is what
+        # keeps `methods` precise about which read actually explodes.
+        return self._inner.compressed
+
+    @property
+    def data_size(self):
+        return self._inner.data_size
 
     def _fail(self, method: str):
         if method in self._methods:
