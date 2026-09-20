@@ -175,12 +175,14 @@ def _aggregate(postures: set[str], unanswered: bool) -> str:
     the libraries reported whatever the evidence -- where a false `none` is what does
     the damage -- and does not list every library in the ruleset as unknown.
 
-    `mixed` can now arrive already resolved for a single object (#60: `needed`
-    matched the system library and the object also defines or banners its own
-    copy), not only as this function's own combination of two definite postures
-    from different objects. `mixed` has no finer split than that in the
-    vocabulary, so one object already reading `mixed` makes the wheel `mixed`
-    outright, whatever any other object says.
+    `mixed` can now arrive already resolved for a single object -- #60: a `needed`
+    entry matched the system library and the object also defines or banners its own
+    copy; #88: a `needed` entry resolved inside the wheel (`bundled`) alongside a
+    different `needed` entry matching the system library, or alongside a
+    definition/banner, on that same object -- not only as this function's own
+    combination of two definite postures from different objects. `mixed` has no
+    finer split than that in the vocabulary, so one object already reading `mixed`
+    makes the wheel `mixed` outright, whatever any other object says.
     """
     if LINKAGE_MIXED in postures:
         return LINKAGE_MIXED
@@ -209,6 +211,7 @@ def _binary_posture(
     own_stem = conventions.raw_stem(binary.soname, binary.path)
     system = False
     uncertain = False
+    bundled = False
     for needed in binary.needed:
         info = conventions.normalise_soname(needed)
         if info.base not in sonames:
@@ -219,7 +222,18 @@ def _binary_posture(
         if posture == LINKAGE_BUNDLED:
             # auditwheel and delvewheel rename what they vendor; delocate does not,
             # so a plain name that still resolves inside the wheel counts too. #57.
-            return LINKAGE_BUNDLED
+            #
+            # This used to return immediately, before the rest of this loop -- a
+            # second `needed` entry that resolves to `system`, say -- or the
+            # defined/static check below it ever ran, so a merged fat-slice object
+            # whose slices disagreed (one slice bundled, another system or static)
+            # read `bundled` outright instead of `mixed`, unlike the same evidence
+            # split across two separate objects. Set the flag and keep looping
+            # instead: `bundled` is a `_DEFINITE` posture exactly like `system`, so
+            # it belongs in the same disagreement check below, not in a return of
+            # its own. See #88.
+            bundled = True
+            continue
         if posture == LINKAGE_UNKNOWN:
             # Looks vendored (a `@loader_path`/`@rpath`/vendor-shaped RUNPATH), but
             # nothing in the wheel confirms it names a file that is actually there.
@@ -230,44 +244,65 @@ def _binary_posture(
 
     defined = _has_symbol(binary, library.symbol_group, BINDING_DEFINED)
     static = defined or _has_string(binary, library.string_group)
-    if system and static:
-        # A real `needed` match to the system library and a real definition or
-        # banner inside this same object are both true at once: one names a
-        # dependency the object declares, the other names code the object
-        # compiled in, and neither is weaker evidence than the other. Returning
-        # early on `system` alone used to let this defined/banner check go
-        # unreached, so the record paired `DERIVED_SYSTEM_OPENSSL_ONLY` with
-        # `BIN_OPENSSL_SYMBOLS_DEFINED` -- a contradiction in the clean
-        # direction. See #60.
+    if sum((system, bundled, static)) > 1:
+        # Two or more of `system`, `bundled` and `static` are true on this one
+        # object at once. Each is a `_DEFINITE` posture (see the tuple above) drawn
+        # from its own piece of evidence -- a `needed` entry resolving to the host
+        # library, a different `needed` entry resolving inside the wheel, or a
+        # defined symbol/banner -- and none of the three is weaker evidence than
+        # the others, so none wins outright over the rest: this object's own
+        # evidence already disagrees with itself the same way two different
+        # objects' postures disagree in `_aggregate` (`len(definite) > 1: return
+        # LINKAGE_MIXED`), so it reads `mixed` here too, before `_aggregate` ever
+        # runs. #60 added this check for `system`-and-`static`; #88 widens it to a
+        # three-way count that also catches `bundled`-and-`system` and
+        # `bundled`-and-`static`, closing the gap left by `bundled`'s old early
+        # return in the loop above.
         return LINKAGE_MIXED
     if system:
         return LINKAGE_SYSTEM
+    if bundled:
+        # No other `_DEFINITE` posture was also true above, so this is the
+        # ordinary bundled case: the same answer the loop's old early return gave
+        # for this shape, reached here instead only after confirming it did not
+        # need to combine with a `system` or `static` signal found elsewhere on
+        # this same object. #88.
+        return LINKAGE_BUNDLED
     if uncertain and static:
         # A `needed` entry whose path/rpath shape looks vendored but that this
         # incompletely-read wheel cannot confirm either way, and a real definition
         # or banner in the same object, are both true at once. Returning `unknown`
-        # here -- as this function did before -- discarded the confirmed static
+        # here -- as this function did before #87 -- discarded the confirmed static
         # evidence in favour of the unconfirmed one, the opposite of what
         # "unreadable or uncertain must never read as NO_CRYPTO_DETECTED" asks for:
         # a real fact should never be the one that goes missing.
         #
-        # Reached only when `system` is false. That is not the same shape as the
-        # `system`-and-`static` branch above -- `system` does NOT win outright over
-        # `static`, they combine into `mixed` -- so this branch's ordering answers a
-        # different question: `uncertain` is exactly `needed_posture`'s
-        # `LINKAGE_UNKNOWN`, not one of the `_DEFINITE` postures a few lines up, and
-        # `_aggregate` already treats a non-definite posture as one that never
-        # outvotes a definite one already present (`len(definite) == 1: return
-        # definite[0]`, discarding `LINKAGE_UNKNOWN` outright, whatever else is
-        # true). This branch applies that same rule within one object.
+        # Reached only when neither `system` nor `bundled` is true. That is not the
+        # same shape as the two `_DEFINITE`-count branches above -- `system` and
+        # `bundled` do NOT win outright over `static` there, they combine into
+        # `mixed` -- so this branch's ordering answers a different question:
+        # `uncertain` is exactly `needed_posture`'s `LINKAGE_UNKNOWN`, not one of
+        # the `_DEFINITE` postures a few lines up, and `_aggregate` already treats
+        # a non-definite posture as one that never outvotes a definite one already
+        # present (`len(definite) == 1: return definite[0]`, discarding
+        # `LINKAGE_UNKNOWN` outright, whatever else is true). This branch applies
+        # that same rule within one object -- but only for `system` and `bundled`,
+        # which, like `uncertain` itself, are read off `binary.needed` in the loop
+        # above: a confirmed entry from that same loop already returns two branches
+        # up without ever consulting an unconfirmed different entry from it.
+        # `static` is a different kind of evidence entirely (`matched_symbols`/
+        # `matched_strings`, not `needed`), so `uncertain` combines with it here
+        # instead of being discarded the way it is against `system` or `bundled`.
         #
-        # This branch's own position, below `if system:`, is not what makes a
-        # confirmed `system` win outright over `uncertain` -- that already happens
-        # two lines up, unconditionally, whether or not this branch exists at all
-        # (moving this branch above `if system and static:` changes nothing the
-        # test suite can observe). It sits here because `uncertain` and `static`
-        # are the only two facts left for this branch to combine once `system`
-        # has already been ruled out. See #87, extending #60.
+        # This branch's own position, below `if system:` and `if bundled:`, is not
+        # what makes a confirmed `system` or `bundled` win outright over
+        # `uncertain` -- that already happens a few lines up, unconditionally,
+        # whether or not this branch exists at all (moving this branch above the
+        # `_DEFINITE`-count check changes nothing the test suite can observe). It
+        # sits here because `uncertain` and `static` are the only two facts left
+        # for this branch to combine once `system` and `bundled` have both already
+        # been ruled out. See #87, extended by #88 to also rule out `bundled`
+        # ahead of it, and originally extending #60.
         return LINKAGE_MIXED
     if uncertain:
         return LINKAGE_UNKNOWN

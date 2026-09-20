@@ -710,6 +710,52 @@ def test_a_macho_that_declares_no_dependency_is_not_opaque(context, tmp_path: Pa
     assert record["verdict"]["class"] == "NO_CRYPTO_DETECTED"
 
 
+def test_a_universal_binary_whose_slices_disagree_between_bundled_and_system_is_mixed(
+    context, tmp_path: Path
+) -> None:
+    """The reproduction from #88, through the real Mach-O reader and the whole scan
+    pipeline, not just a hand-built `BinaryEvidence`: one slice's `LC_LOAD_DYLIB`
+    names a hash-renamed vendored copy (`bundled`), the other slice's names the
+    host library outright (`system`). `binfmt.macho` merges both slices' `needed`
+    into the union on one `BinaryEvidence`
+    (`test_load_dylibs_merge_across_slices` in `test_binfmt_macho.py` pins that
+    merge itself), so this object carries both signals at once, the same as if the
+    two slices had been read as separate objects and combined by `_aggregate`.
+
+    Before #88, `linkage._binary_posture`'s `needed` loop returned `LINKAGE_BUNDLED`
+    on the first entry that resolved that way, before the second, disagreeing entry
+    was ever looked at, so this read `bundled` instead of `mixed`.
+    """
+    slices = [
+        MachOBuilder(id_dylib="_ext.so", load_dylibs=("libcrypto-3a1f2b4c.3.dylib",)).build(),
+        MachOBuilder(
+            is64=False,
+            big_endian=True,
+            id_dylib="_ext.so",
+            load_dylibs=("/usr/lib/libcrypto.3.dylib",),
+        ).build(),
+    ]
+    tag = "cp312-cp312-macosx_11_0_universal2"
+    wheel = build_wheel(
+        tmp_path / f"universal-1.0-{tag}.whl",
+        name="universal",
+        version="1.0",
+        tags=(tag,),
+        files={
+            "universal/__init__.py": "def add(a, b):\n    return a + b\n",
+            "universal/_ext.so": build_fat(slices),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    # `binfmt.macho` merges and sorts `needed` across slices, so the wheel-internal
+    # entry sorts ahead of the absolute path.
+    assert record["binaries"][0]["needed"] == [
+        "/usr/lib/libcrypto.3.dylib",
+        "libcrypto-3a1f2b4c.3.dylib",
+    ]
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "mixed"
+
+
 def test_a_stripped_macho_wheel_does_not_claim_there_is_no_openssl(context, tmp_path: Path):
     """The whole chain for #40, which every other test for it drives from the middle.
 
