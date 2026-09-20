@@ -83,16 +83,18 @@ Second, the fix is **prospective only**. A cache entry already poisoned under pr
 still served verbatim, because a cache hit returns before the check is ever consulted. Anyone
 who already hit this bug stays stuck until they clear their cache by hand.
 
-**What was deferred.** The Python layer turns a `RecursionError` into a syntax-error kind, which
-shares the non-determinism risk — the interpreter's stack depth at scan time, not the wheel's
-bytes, decides whether it fires. But that kind is *mixed*: it is also recorded for a null byte
-and for a real `SyntaxError`, both deterministic. Excluding the whole kind would mean re-scanning
-every source file with an ordinary, permanent syntax error on every run, for no benefit. A
-correct fix needs a narrower token, which is distinct, narrower work.
+**What was deferred, and closed in #109.** The Python layer used to turn a `RecursionError` into
+the same syntax-error kind as a null byte or a real `SyntaxError`, both deterministic — sharing
+one kind meant excluding it from caching would re-scan every ordinary, permanent syntax error on
+every run, for no benefit. `errors.PYTHON_RECURSION_LIMIT_EXCEEDED` is now a distinct kind,
+recorded only by the two `except RecursionError:` sites in `layers/python_ast.py`, and it joins
+`SCAN_ABORTED_KINDS` on its own; `python_syntax_error` keeps its two genuinely deterministic
+causes and stays out.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#a-record-produced-without-reading-the-wheel-is-never-cached) ·
 [#64](https://github.com/EmilienM/wheel-crypto-scan/issues/64) ·
-[#97](https://github.com/EmilienM/wheel-crypto-scan/issues/97)
+[#97](https://github.com/EmilienM/wheel-crypto-scan/issues/97) ·
+[#109](https://github.com/EmilienM/wheel-crypto-scan/issues/109)
 
 ---
 

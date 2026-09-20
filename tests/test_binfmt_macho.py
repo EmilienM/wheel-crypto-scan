@@ -2066,6 +2066,69 @@ def test_a_decoy_id_dylib_before_the_honest_one_is_also_not_trusted() -> None:
     assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
 
 
+def test_an_ambiguous_id_dylib_names_that_command_specifically() -> None:
+    """#103: the error message names which command was ambiguous, matching
+    `elf_section_type_ambiguous`'s per-kind messages in `binfmt/elf.py` instead of
+    merging both possible causes into one "one of two things" sentence.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib", extra_id_dylibs=("decoy.dylib",), symbols=(IMPORTED_OPENSSL,)
+    ).build()
+    _, errors = _read(data)
+    messages = [error.message for error in errors]
+    assert "more than one LC_ID_DYLIB command in one object; neither is trusted" in messages
+    assert not any("LC_SYMTAB" in message for message in messages)
+
+
+def test_an_ambiguous_symtab_names_that_command_specifically() -> None:
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,), decoy_symtabs_after=1
+    ).build()
+    _, errors = _read(data)
+    messages = [error.message for error in errors]
+    assert "more than one LC_SYMTAB command in one object; neither is trusted" in messages
+    assert not any("LC_ID_DYLIB" in message for message in messages)
+
+
+def test_both_ambiguities_at_once_produce_two_distinct_messages() -> None:
+    """One object carrying both causes gets both messages, not one merged sentence
+    for either, and `PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS` still fires exactly once."""
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        extra_id_dylibs=("decoy.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        decoy_symtabs_after=1,
+    ).build()
+    ev, errors = _read(data)
+    messages = {error.message for error in errors}
+    assert "more than one LC_ID_DYLIB command in one object; neither is trusted" in messages
+    assert "more than one LC_SYMTAB command in one object; neither is trusted" in messages
+    # partial_reasons is one vocabulary token regardless of cause -- both messages,
+    # one reason, since the two errors above are what distinguishes the cause now.
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
+
+
+def test_each_ambiguity_on_a_different_fat_slice_still_yields_both_messages() -> None:
+    """#103's threading survives the fat-slice merge too: `id_dylib_ambiguous` on one
+    slice and `symtab_ambiguous` on a different slice must not collapse into a single
+    flag read off `read[0]` alone -- each `_SliceEvidence` carries its own pair, and
+    `read_macho`'s two `any(...)` passes each look across every slice independently.
+    """
+    id_dylib_ambiguous_slice = MachOBuilder(
+        id_dylib="libfoo.dylib", extra_id_dylibs=("decoy.dylib",), symbols=(IMPORTED_OPENSSL,)
+    ).build()
+    symtab_ambiguous_slice = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,), decoy_symtabs_after=1
+    ).build()
+    ev, errors = _read(
+        build_fat([id_dylib_ambiguous_slice, symtab_ambiguous_slice]), path="fat.dylib"
+    )
+    messages = {error.message for error in errors}
+    assert "more than one LC_ID_DYLIB command in one object; neither is trusted" in messages
+    assert "more than one LC_SYMTAB command in one object; neither is trusted" in messages
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
+
+
 def test_a_second_symtab_after_the_real_one_discards_both() -> None:
     """The shape that actually demonstrates the pre-fix bug: last-wins keeps the decoy.
 

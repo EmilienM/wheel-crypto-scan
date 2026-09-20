@@ -295,5 +295,19 @@ there, and the project-wide limit reverted to pylint's own default. The other tw
 nowhere near either limit, so nothing was depending on the raised ceiling; reverting it costs
 nothing and stops the next module's growth from riding through unpoliced by accident.
 
+### #103: the error message names which command, the token still does not
+
+**Fixed. Diagnostic text only — does not reopen "One token, not two" above.** The `errors[]`
+message used to merge both possible causes into one sentence, unlike ELF's per-kind messages
+for `elf_section_type_ambiguous`. `_read_thin` already counted each cause separately; the two
+counts just never survived past `_ThinHeader` into a merged boolean before the error-emitting
+loop reached them. Now threaded through as two flags, `read_macho` emits up to two distinct
+messages, and `partial_reasons` still adds `macho_load_command_ambiguous` exactly once,
+computed as the OR of both — one token, now backed by up to two messages instead of one,
+unchanged from what "One token, not two" already argued for.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#103-the-error-message-names-which-command-was-ambiguous-the-token-still-does-not) ·
+[#103](https://github.com/EmilienM/wheel-crypto-scan/issues/103)
+
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#more-than-one-lc_id_dylib-or-lc_symtab-is-ambiguous-not-last-wins) ·
 [#85](https://github.com/EmilienM/wheel-crypto-scan/issues/85)

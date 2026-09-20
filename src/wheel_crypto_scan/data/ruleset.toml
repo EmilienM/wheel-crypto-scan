@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "15"
+ruleset_version = "17"
 
 
 # ---------------------------------------------------------------------------
@@ -1823,7 +1823,7 @@ severity = "low"
 confidence = "high"
 needs_human_review = false
 title = "Python file could not be parsed"
-why = "A syntax error or an undecodable file, commonly a test fixture or a file written for a different Python version. Recorded so the file count and the findings can be reconciled; it carries no verdict because one unreadable file among many says little."
+why = "A syntax error, an undecodable file, a file over the size limit, or one whose nesting exhausted the interpreter's own parsing stack -- commonly a test fixture, a file written for a different Python version, or (for the last cause) generated or minified code. Recorded so the file count and the findings can be reconciled; it carries no verdict because one unreadable file among many says little."
 [rule.match]
 kind = "scan_error"
-error_kinds = ["python_syntax_error", "python_decode_error", "python_too_large"]
+error_kinds = ["python_syntax_error", "python_decode_error", "python_too_large", "python_recursion_limit_exceeded"]

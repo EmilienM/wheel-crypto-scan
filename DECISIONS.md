@@ -3598,7 +3598,7 @@ forces re-evaluation for some other reason. Matches #64's own precedent for
 `MEMBER_READ_ERROR`, which has the same property and was accepted the same way; stated
 here rather than left implicit.
 
-**What was deferred.** `layers/python_ast.py` turns a `RecursionError` into
+**What was deferred, and closed in #109 below.** `layers/python_ast.py` turns a `RecursionError` into
 `PYTHON_SYNTAX_ERROR`, which shares the non-determinism risk -- the interpreter's stack
 depth at scan time, not the wheel's bytes, decides whether it fires. It is a materially
 different problem from the three kinds above, though: `PYTHON_SYNTAX_ERROR` is also
@@ -3629,6 +3629,41 @@ transient-safety this fix exists for; the same "revisit" clause above gives
 split its `RecursionError` occurrences from its deterministic ones; until then it stays
 outside `SCAN_ABORTED_KINDS`, on the grounds that re-scanning a permanent syntax error
 forever costs more than an occasional `RecursionError` staying cached.
+
+### Closed in #109: a distinct kind splits `RecursionError` from `PYTHON_SYNTAX_ERROR`
+
+**Accepted.** The narrower token this entry's own "what was deferred" paragraph named
+as the missing piece: `errors.PYTHON_RECURSION_LIMIT_EXCEEDED`, recorded by
+`layers/python_ast.py`'s two `except RecursionError:` sites (`ast.parse` and the
+`_collect_sites` tree walk) instead of `PYTHON_SYNTAX_ERROR`. The two sites share the
+new kind and the same message, since both are equally "not the wheel's bytes
+deciding this" from a consumer's point of view. `PYTHON_SYNTAX_ERROR` keeps its two
+remaining, genuinely deterministic occurrences -- the deliberate null-byte check and
+a real `SyntaxError` from `ast.parse` -- and stays out of `SCAN_ABORTED_KINDS`,
+exactly as this entry already argued it should for the reason it gives above. The new
+kind joins `SCAN_ABORTED_KINDS` instead, on the identical reasoning #97 gives the
+three `*_parse_error` kinds: every site that can record it is the same narrow catch,
+not a mix of deterministic and transient causes the token cannot tell apart.
+
+`ANALYZER_VERSION` moves: a wheel that previously hit the `RecursionError` path now
+records a different `errors[].kind` for an unchanged input.
+`data/ruleset.toml`'s `PY_UNREADABLE` rule (`error_kinds`) gained the new token
+alongside the three it already claimed, so the finding, verdict and severity are
+unchanged for this shape -- only the kind string and its caching behaviour move.
+`ruleset_version` moves for the `error_kinds` edit.
+
+Tests reproduce both sites via monkeypatching `ast.parse` and `_collect_sites`
+directly, deliberately rather than via a deeply-nested source literal: which
+construct actually exhausts the interpreter's C stack, as opposed to failing a
+`SyntaxError` guard first (`"too many nested parentheses"` fires for 300-deep
+parens/brackets on this interpreter, well before any `RecursionError` would), is
+itself interpreter-version dependent, and this fix's whole point is to be pinned
+regardless of that. A CLI-level test mirrors
+`test_a_transient_elf_parse_failure_is_retried_not_cached`'s shape one layer up: a
+first scan hits the monkeypatched `RecursionError`, and a second, unpatched attempt
+is confirmed not to be served the first attempt's stale, evidence-free record.
+
+Tracked in [#109](https://github.com/EmilienM/wheel-crypto-scan/issues/109).
 
 Tracked in [#97](https://github.com/EmilienM/wheel-crypto-scan/issues/97), itself
 tracked from [#64](https://github.com/EmilienM/wheel-crypto-scan/issues/64).
@@ -3939,6 +3974,45 @@ Revisit if a module OTHER than `binfmt/macho.py` needs the same exemption -- at 
 point the pattern is common enough that a project-wide policy (or a documented list of
 exempted modules) is worth the trade a global bump makes, rather than three modules
 each carrying their own disable comment for the same underlying reason.
+
+### #103: the error message names which command was ambiguous, the token still does not
+
+**Fixed. Diagnostic text only -- does not reopen "one token, not two" above.**
+
+"What was rejected" above covers merging `macho_id_dylib_ambiguous` and
+`macho_symtab_ambiguous` into one `partial_reasons` token,
+`PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS`, and that call stands: `partial_analysis` and
+the verdict are correct either way, and a second token would ask a consumer filtering
+on `partial_reasons` to know Mach-O internals `elf_section_type_ambiguous`'s ELF
+counterpart never asked of them. What #103 is about is one level down, in
+`errors[].message`: `_read_thin` counted `id_dylib_seen` and `symtab_seen`
+separately from the start (this entry's own "The fix mirrors #56's treatment exactly"
+paragraph, above), but `_ThinHeader`/`_SliceHeader`/`_SliceEvidence` collapsed both
+into one `load_command_ambiguous` boolean before `read_macho`'s error-emitting loop
+ever saw them, so the merged message ("more than one LC_ID_DYLIB or LC_SYMTAB
+command...") was a fact the reader already had and chose not to pass along --
+`binfmt/elf.py`'s `elf_section_type_ambiguous` emits a distinct message per section
+kind from the equivalent counts, and this fix brings Mach-O's diagnostic precision up
+to that same level.
+
+The two counts are now two booleans, `id_dylib_ambiguous` and `symtab_ambiguous`,
+threaded through the same three dataclasses `load_command_ambiguous` was, and
+`read_macho` emits up to two error records instead of one when both are true, each
+naming its own command. `partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS)`
+still fires from `id_dylib_ambiguous or symtab_ambiguous`, unchanged -- one token,
+now backed by two possible error messages instead of one, the same relationship
+`macho_load_command_ambiguous` and `macho_symtab_incomplete` already have to each
+other, described above under "Interaction, checked rather than assumed."
+
+`ANALYZER_VERSION` moves: an object with an ambiguous `LC_ID_DYLIB` or `LC_SYMTAB`
+now records a different `errors[].message` for an unchanged input, even though
+`partial_reasons`, `partial_analysis` and the verdict are all byte-identical to
+before. Tests cover each command ambiguous alone (confirming the other command's
+name never appears in its message) and both ambiguous on the same object at once
+(confirming two distinct messages, not one, and that the `partial_reasons` token
+still fires exactly once regardless).
+
+Tracked in [#103](https://github.com/EmilienM/wheel-crypto-scan/issues/103).
 
 Tracked in [#85](https://github.com/EmilienM/wheel-crypto-scan/issues/85), mirroring
 [#56](https://github.com/EmilienM/wheel-crypto-scan/issues/56)'s ELF precedent, and

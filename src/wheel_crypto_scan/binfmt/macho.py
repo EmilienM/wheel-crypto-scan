@@ -274,10 +274,13 @@ class _SliceHeader:
     # walk stopped early either way, so everything after is unaccounted for, not
     # absent. #84, #90.
     load_command_walk_truncated: bool
-    # More than one LC_ID_DYLIB or more than one LC_SYMTAB was walked, so `soname` or
-    # `symtab` above is already `None` for whichever field was ambiguous: neither
-    # candidate is trusted, rather than whichever one the walk reached last. #85.
-    load_command_ambiguous: bool
+    # More than one LC_ID_DYLIB, or more than one LC_SYMTAB, was walked, so `soname`
+    # or `symtab` above is already `None` for whichever field was ambiguous: neither
+    # candidate is trusted, rather than whichever one the walk reached last. Two
+    # separate flags, not one merged boolean, so `read_macho`'s error message can name
+    # which command was ambiguous rather than "one of two things was". #85, #103.
+    id_dylib_ambiguous: bool
+    symtab_ambiguous: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,7 +295,8 @@ class _SliceEvidence:
     rpath: tuple[str, ...]
     load_command_string_unread: bool
     load_command_walk_truncated: bool
-    load_command_ambiguous: bool
+    id_dylib_ambiguous: bool
+    symtab_ambiguous: bool
     matches: frozenset[SymbolMatch]
     symtab_count: int
     stripped: bool
@@ -336,9 +340,11 @@ class _ThinHeader:
     # A command's own cmd/cmdsize header could not be trusted, or ncmds undercounted
     # the real command count, so the walk stopped early. #84, #90.
     load_command_walk_truncated: bool
-    # More than one LC_ID_DYLIB or more than one LC_SYMTAB was walked; `soname` and/or
-    # `symtab` above are already `None` for whichever field was ambiguous. #85.
-    load_command_ambiguous: bool
+    # More than one LC_ID_DYLIB, or more than one LC_SYMTAB, was walked; `soname`
+    # and/or `symtab` above are already `None` for whichever field was ambiguous.
+    # #85, #103.
+    id_dylib_ambiguous: bool
+    symtab_ambiguous: bool
 
 
 def _strip_abi_prefix(name: str) -> str:
@@ -532,8 +538,11 @@ def read_macho(
             "undercounted the real command count, cutting the walk short"
         )
         errors.append(_error(path, message))
-    if any(slice_evidence.load_command_ambiguous for slice_evidence in read):
-        message = "more than one LC_ID_DYLIB or LC_SYMTAB command in one object; neither is trusted"
+    if any(slice_evidence.id_dylib_ambiguous for slice_evidence in read):
+        message = "more than one LC_ID_DYLIB command in one object; neither is trusted"
+        errors.append(_error(path, message))
+    if any(slice_evidence.symtab_ambiguous for slice_evidence in read):
+        message = "more than one LC_SYMTAB command in one object; neither is trusted"
         errors.append(_error(path, message))
 
     # Every architecture has to have been read, and read in full, before this object
@@ -551,7 +560,10 @@ def read_macho(
         partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD)
     if any(slice_evidence.load_command_walk_truncated for slice_evidence in read):
         partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED)
-    if any(slice_evidence.load_command_ambiguous for slice_evidence in read):
+    if any(
+        slice_evidence.id_dylib_ambiguous or slice_evidence.symtab_ambiguous
+        for slice_evidence in read
+    ):
         partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS)
 
     first = read[0]
@@ -708,7 +720,8 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
         symtab=thin.symtab,
         load_command_string_unread=thin.load_command_string_unread,
         load_command_walk_truncated=thin.load_command_walk_truncated,
-        load_command_ambiguous=thin.load_command_ambiguous,
+        id_dylib_ambiguous=thin.id_dylib_ambiguous,
+        symtab_ambiguous=thin.symtab_ambiguous,
     )
 
 
@@ -730,7 +743,7 @@ def _read_slice_symbols(
     # than one `LC_SYMTAB` reaches here the same way: `_read_thin` has already reset
     # `header.symtab` to `None` rather than hand this function whichever candidate it
     # walked last, so an ambiguous table reads exactly like an absent one -- `stripped`
-    # included -- with `macho_load_command_ambiguous` carrying the reason. #85.
+    # included -- with `macho_load_command_ambiguous` carrying the reason. #85, #103.
     stripped = header.symtab is None
     symbols_complete = False
     symbols_shortfall: str | None = None
@@ -765,7 +778,8 @@ def _read_slice_symbols(
         rpath=header.rpath,
         load_command_string_unread=header.load_command_string_unread,
         load_command_walk_truncated=header.load_command_walk_truncated,
-        load_command_ambiguous=header.load_command_ambiguous,
+        id_dylib_ambiguous=header.id_dylib_ambiguous,
+        symtab_ambiguous=header.symtab_ambiguous,
         matches=frozenset(matches),
         symtab_count=symtab_count,
         stripped=stripped,
@@ -896,10 +910,11 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
     # last in the walk -- `read_macho` can still backfill `soname` from a later,
     # unambiguous fat-binary slice (`DECISIONS.md`'s "one record, slices are merged"),
     # so a nulled soname here is not always the record's final answer.
-    load_command_ambiguous = id_dylib_seen > 1 or symtab_seen > 1
-    if id_dylib_seen > 1:
+    id_dylib_ambiguous = id_dylib_seen > 1
+    symtab_ambiguous = symtab_seen > 1
+    if id_dylib_ambiguous:
         soname = None
-    if symtab_seen > 1:
+    if symtab_ambiguous:
         symtab = None
 
     return _ThinHeader(
@@ -910,7 +925,8 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
         symtab=symtab,
         load_command_string_unread=load_command_string_unread,
         load_command_walk_truncated=load_command_walk_truncated,
-        load_command_ambiguous=load_command_ambiguous,
+        id_dylib_ambiguous=id_dylib_ambiguous,
+        symtab_ambiguous=symtab_ambiguous,
     )
 
 

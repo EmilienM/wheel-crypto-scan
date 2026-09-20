@@ -75,6 +75,18 @@ _DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 
 _SOURCE_SUFFIX = ".py"
 
+# Both sites below record this. `RecursionError` is the exception CPython's own
+# documentation names for exhausting the interpreter's recursion limit, but for deep
+# expression nesting specifically, `ast.parse` measured across the whole py311-py314
+# support matrix raises `MemoryError("Parser stack overflowed - Python source too
+# complex to parse")` instead -- CPython's PEG parser signals its own stack exhaustion
+# that way, not as a `RecursionError`. Both are caught for exactly the same reason: a
+# stack limit reached depends on the interpreter's state at scan time, not the wheel's
+# bytes, and neither is caught anywhere shallower than these two `try` blocks -- an
+# uncaught one used to propagate out of this whole layer, costing every other source
+# file in the wheel its evidence too, not just this one. #109.
+_STACK_EXHAUSTED = "source nesting exhausted the interpreter's parsing stack"
+
 
 class _DecodeFailure(Exception):
     """Internal signal only; never escapes `scan_python_source`."""
@@ -155,15 +167,16 @@ def scan_python_source(
     except SyntaxError as exc:
         line = exc.lineno or 0
         return (), (_error(path, errors.PYTHON_SYNTAX_ERROR, f"syntax error at line {line}"),)
-    except RecursionError:
-        message = "syntax error: source nesting exceeds the interpreter's recursion limit"
-        return (), (_error(path, errors.PYTHON_SYNTAX_ERROR, message),)
+    except (RecursionError, MemoryError):
+        # Not a syntax defect: whether this fires depends on the interpreter's stack
+        # depth at scan time, not the wheel's bytes. A distinct kind from
+        # PYTHON_SYNTAX_ERROR for exactly that reason -- see errors.SCAN_ABORTED_KINDS.
+        return (), (_error(path, errors.PYTHON_RECURSION_LIMIT_EXCEEDED, _STACK_EXHAUSTED),)
 
     try:
         sites = _collect_sites(tree, path, patterns)
-    except RecursionError:
-        message = "syntax error: source nesting exceeds the interpreter's recursion limit"
-        return (), (_error(path, errors.PYTHON_SYNTAX_ERROR, message),)
+    except (RecursionError, MemoryError):
+        return (), (_error(path, errors.PYTHON_RECURSION_LIMIT_EXCEEDED, _STACK_EXHAUSTED),)
 
     return sites, ()
 

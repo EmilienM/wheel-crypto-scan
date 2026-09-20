@@ -46,6 +46,18 @@ BINARY_UNKNOWN_FORMAT = "binary_unknown_format"
 PYTHON_SYNTAX_ERROR = "python_syntax_error"
 PYTHON_DECODE_ERROR = "python_decode_error"
 PYTHON_TOO_LARGE = "python_too_large"
+# The interpreter's own parsing stack exhausted during `ast.parse` or the tree walk,
+# not a real syntax defect: whether it fires depends on the interpreter's stack depth
+# at scan time, not the wheel's bytes, unlike every other `PYTHON_SYNTAX_ERROR`
+# occurrence (a real `SyntaxError`, or the deliberate null-byte check), both genuinely
+# deterministic. `RecursionError` and `MemoryError` both reach here: CPython's PEG
+# parser signals its own stack exhaustion for deep *expression* nesting as the latter
+# ("Parser stack overflowed - Python source too complex to parse", measured across the
+# whole py311-py314 support matrix), never `RecursionError`, which is what other deep
+# recursion in this layer (the tree walk) can still raise. A distinct kind, not a flag
+# on `PYTHON_SYNTAX_ERROR`, so it alone -- not the wheel's permanent syntax errors
+# alongside it -- can be excluded from caching. #109.
+PYTHON_RECURSION_LIMIT_EXCEEDED = "python_recursion_limit_exceeded"
 
 ERROR_KINDS: frozenset[str] = frozenset(
     {
@@ -73,6 +85,7 @@ ERROR_KINDS: frozenset[str] = frozenset(
         PYTHON_SYNTAX_ERROR,
         PYTHON_DECODE_ERROR,
         PYTHON_TOO_LARGE,
+        PYTHON_RECURSION_LIMIT_EXCEEDED,
     }
 )
 
@@ -115,6 +128,30 @@ ERROR_KINDS: frozenset[str] = frozenset(
 # against a limit), with no I/O and no broad catch anywhere on the path that records
 # it, so the same wheel's bytes always produce the same one and caching it is safe.
 #
+# `PYTHON_RECURSION_LIMIT_EXCEEDED` is the split #97 itself deferred: unlike
+# `PYTHON_SYNTAX_ERROR`, which also fires for a genuine, permanent `SyntaxError` and
+# for a deliberate null-byte check -- both deterministic, and needlessly re-scanned
+# forever if the whole kind joined this set -- every site that records this kind is
+# the identical `except (RecursionError, MemoryError)`, catching a parsing-stack
+# failure that depends on the interpreter's state at scan time, not the wheel's bytes
+# alone: the same source can cross the threshold on one interpreter in the support
+# matrix and not another. A kind reachable only through that catch belongs here
+# outright, the same reasoning #97 gives the three `*_parse_error` kinds above for a
+# broad `except Exception`, just for a catch narrower still. #109.
+#
+# For a *fixed* interpreter this cause is fully deterministic, so a wheel that
+# genuinely, permanently exhausts the parsing stack pays the same re-scan-forever
+# cost #97 accepted for its own three kinds, for the same reason: there is no cheaper
+# way to split a deterministic occurrence of this kind from one that would resolve
+# differently on a different run without a narrower token than `ScanError.kind`
+# offers today.
+#
+# `layers/metadata.py`'s SBOM reader catches `RecursionError` too (deeply nested
+# CycloneDX JSON), recording `SBOM_PARSE_ERROR` alongside four deterministic causes in
+# the same broad `except` -- the identical shape, not yet split out. Left open: #109's
+# own scope is `layers/python_ast.py`, and the blast radius differs (one SBOM, not the
+# whole wheel's Python evidence).
+#
 # See DECISIONS.md, "A record produced without reading the wheel is never cached."
 SCAN_ABORTED_KINDS: frozenset[str] = frozenset(
     {
@@ -124,6 +161,7 @@ SCAN_ABORTED_KINDS: frozenset[str] = frozenset(
         ELF_PARSE_ERROR,
         MACHO_PARSE_ERROR,
         PE_PARSE_ERROR,
+        PYTHON_RECURSION_LIMIT_EXCEEDED,
     }
 )
 

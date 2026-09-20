@@ -14,6 +14,7 @@ import pytest
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan.evidence import USED_FOR_SECURITY_VALUES
+from wheel_crypto_scan.layers import python_ast
 from wheel_crypto_scan.layers.python_ast import scan_python_files, scan_python_source
 from wheel_crypto_scan.ruleset import PythonPatterns
 from wheel_crypto_scan.ruleset_loader import load_ruleset
@@ -307,17 +308,93 @@ def test_syntax_error_is_recorded_not_raised():
     assert error.path == "bad.py"
 
 
-def test_deeply_nested_expression_is_recorded_not_raised():
-    # Well past the parser's own "too many nested parentheses" guard. This exercises
-    # the "survive deeply nested expressions" requirement through the path this
-    # interpreter actually takes for it, without pinning down which exception type a
-    # different interpreter in the support matrix might raise for the same input.
+def test_deeply_nested_parens_hit_the_syntax_guard_not_the_stack_limit():
+    # Well past the parser's own "too many nested parentheses" guard, which this
+    # interpreter (and, per the guard's own name, presumably every interpreter in the
+    # support matrix) reaches before nesting could ever exhaust the parsing stack.
+    # This is the deterministic, permanent-defect case; see the stack-exhaustion
+    # tests below for the genuinely non-deterministic one, which parenthesized
+    # nesting specifically never reaches.
     src = b"x = " + b"(" * 300 + b"1" + b")" * 300 + b"\n"
     sites, scan_errors = scan_python_source(src, "deep.py", PATTERNS)
 
     assert sites == ()
     assert len(scan_errors) == 1
     assert scan_errors[0].kind == "python_syntax_error"
+
+
+def test_deeply_nested_non_paren_expressions_exhaust_the_parsing_stack():
+    """#109's real-world reproduction: CPython's PEG parser signals its own stack
+    exhaustion for deep *non-paren* expression nesting as `MemoryError` ("Parser
+    stack overflowed - Python source too complex to parse"), not `RecursionError` --
+    measured across the whole py311-py314 support matrix. Before this fix, nothing in
+    this layer caught it: it propagated out of `scan_python_source` (whose own
+    docstring promises "Never raises"), past `scan_python_files`, and cost every
+    other source file in the wheel its evidence too, not just this one -- the
+    "one bad file never costs more than itself" invariant broken outright for a
+    23 KiB file. A natural reproduction, not a monkeypatch, since this is the shape
+    that actually happens.
+    """
+    src = b"x = " + b"not " * 6000 + b"1\n"
+    sites, scan_errors = scan_python_source(src, "deep.py", PATTERNS)
+
+    assert sites == ()
+    assert len(scan_errors) == 1
+    error = scan_errors[0]
+    assert error.kind == "python_recursion_limit_exceeded"
+    assert error.path == "deep.py"
+
+
+def test_a_recursion_error_from_ast_parse_gets_its_own_kind(monkeypatch):
+    """#109: unlike the `SyntaxError` case above -- a real, permanent defect in the
+    wheel's own bytes -- a `RecursionError` or `MemoryError` here depends on the
+    interpreter's stack depth at scan time, not the source. It must not share
+    `python_syntax_error`'s kind, since that kind stays outside
+    `errors.SCAN_ABORTED_KINDS` precisely because most of its occurrences ARE
+    permanent and must not be re-scanned forever; sharing the kind would mean this
+    genuinely transient cause can never safely leave the cache.
+
+    `RecursionError` specifically is monkeypatched rather than triggered naturally:
+    the test above already gives the real, naturally-occurring `MemoryError` shape a
+    natural reproduction; nothing found in this codebase or interpreter matrix
+    naturally raises `RecursionError` from `ast.parse` itself, so this pins the
+    `except` clause covers it too, defensively, without depending on one existing.
+    """
+
+    def _raise(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(python_ast.ast, "parse", _raise)
+    src = b"import hashlib\nhashlib.md5()\n"
+    sites, scan_errors = scan_python_source(src, "deep.py", PATTERNS)
+
+    assert sites == ()
+    assert len(scan_errors) == 1
+    error = scan_errors[0]
+    assert error.kind == "python_recursion_limit_exceeded"
+    assert error.path == "deep.py"
+    assert "stack" in error.message
+
+
+def test_a_recursion_error_from_the_tree_walk_gets_its_own_kind(monkeypatch):
+    """The second site: a `RecursionError` raised by `_collect_sites` walking an
+    already-successfully-parsed tree, not by `ast.parse` itself. Both sites share
+    the same kind and the same message, so a consumer cannot tell them apart -- both
+    are equally "not the wheel's bytes deciding this" either way. `_collect_sites`
+    itself is iterative (built on `ast.walk`), so this too has no known natural
+    trigger and is pinned defensively, the same as the `RecursionError` case above.
+    """
+
+    def _raise(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(python_ast, "_collect_sites", _raise)
+    src = b"import hashlib\nhashlib.md5()\n"
+    sites, scan_errors = scan_python_source(src, "deep.py", PATTERNS)
+
+    assert sites == ()
+    assert len(scan_errors) == 1
+    assert scan_errors[0].kind == "python_recursion_limit_exceeded"
 
 
 def test_null_byte_is_recorded_not_raised():
