@@ -55,9 +55,10 @@ with no rule behind it is how a wheel reads clean for a reason nobody decided.
 
 | Kind | Meaning |
 |---|---|
-| `python_syntax_error` | `ast.parse` raised, or the source carries a null byte, or parsing recursed too deep. |
+| `python_syntax_error` | `ast.parse` raised a real `SyntaxError`, or the source carries a null byte. |
 | `python_decode_error` | The source would not decode. |
 | `python_too_large` | The source file is over the limit. |
+| `python_recursion_limit_exceeded` | `ast.parse` or the tree walk recursed too deep -- depends on the interpreter's stack depth at scan time, not the source, unlike the other three. |
 
 ### `SCAN_ABORTED_KINDS`
 
@@ -68,6 +69,7 @@ answer for its wheel, so it is never cached and `--resume` never treats it as do
 ```
 bad_zip   unexpected_error   member_read_error
 elf_parse_error   macho_parse_error   pe_parse_error
+python_recursion_limit_exceeded
 ```
 
 `duplicate_member`, `size_limit_exceeded`, `compression_ratio_exceeded` and

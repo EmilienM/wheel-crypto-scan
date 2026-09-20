@@ -19,6 +19,7 @@ from wheel_crypto_scan.cache import RecordCache
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import PARTIAL_REASONS
 from wheel_crypto_scan.layers import binaries as binaries_layer
+from wheel_crypto_scan.layers import python_ast
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext
 
@@ -470,6 +471,57 @@ def test_a_transient_elf_parse_failure_is_retried_not_cached(
     assert second["errors"] == []
     assert second["binaries"][0]["needed"] == ["libc.so.6", "libsodium.so.23"]
     assert second["verdict"]["conditions"]["libsodium_linkage"] == "system"
+
+
+def test_a_recursion_error_is_retried_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#109: `python_recursion_limit_exceeded` joined `SCAN_ABORTED_KINDS`, unlike the
+    `python_syntax_error` kind it used to share with a real, permanent `SyntaxError`
+    -- caching THAT kind wholesale would mean an ordinary syntax error gets re-scanned
+    forever, which is why it stays out. This is the same reproduction shape
+    `test_a_transient_elf_parse_failure_is_retried_not_cached` above uses for
+    `elf_parse_error`, one layer up in the Python source reader instead of a binary
+    one: `ast.parse` fails once with a `RecursionError`, and the second attempt must
+    not be served the first attempt's stale, evidence-free record.
+    """
+    real_parse = python_ast.ast.parse
+    calls = {"n": 0}
+
+    def flaky_parse(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RecursionError("simulated transient failure")
+        return real_parse(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(python_ast.ast, "parse", flaky_parse)
+    wheel = build_wheel(
+        tmp_path / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        files={"fakecrypto/__init__.py": WEAK_HASH_SOURCE},
+    )
+    context = ScanContext.build(load_ruleset())
+    monkeypatch.setattr(cli, "_CONTEXT", context)
+    monkeypatch.setattr(
+        cli,
+        "_CACHE",
+        RecordCache(
+            root=tmp_path / "cache",
+            ruleset_version=context.ruleset.version,
+            evidence_level="standard",
+        ),
+    )
+
+    first = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 1
+    assert [error["kind"] for error in first["errors"]] == ["python_recursion_limit_exceeded"]
+    assert first["verdict"]["class"] == "OPAQUE"
+
+    second = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 2, "a cached record must not stop the second attempt from happening"
+    assert second["errors"] == []
+    assert second["verdict"]["class"] != "OPAQUE"
 
 
 def test_resume_does_not_treat_an_aborted_elf_scan_as_already_done(
