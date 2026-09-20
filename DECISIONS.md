@@ -1807,8 +1807,152 @@ above (the same rewording would need to cover this shape too), or if
 above (a confirmed entry does not actually rule out a *different*, unconfirmed one on the
 same object).
 
-Tracked in [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60) and
-[#87](https://github.com/EmilienM/wheel-crypto-scan/issues/87).
+### Extended in #88: a bundled needed match and system/static are mixed too
+
+**Fixed. The third extension of the same precedence work, this time for `bundled`.**
+
+`_binary_posture`'s `needed` loop still returned `LINKAGE_BUNDLED` immediately, from
+inside the loop, as soon as one entry resolved that way -- before a second, disagreeing
+`needed` entry on the same object, or the defined/banner check below the loop, ever ran.
+A universal (fat) Mach-O object merges its slices' `needed` tuples into one
+(`binfmt.macho`; the merge itself is pinned by `test_load_dylibs_merge_across_slices` in
+`test_binfmt_macho.py`), so an object whose slices disagreed about `bundled` versus
+`system` or `static` read `bundled` outright, unlike the same evidence read as two
+separate objects, which `_aggregate` already combines into `mixed`.
+
+```
+one object, needed=("libcrypto-3a1f2b4c.so.3", "/usr/lib64/libcrypto.so.3")
+  -> before: openssl_linkage: bundled
+  -> after:  openssl_linkage: mixed
+same evidence in two separate objects -> mixed, unchanged by this fix
+
+needed=("libcrypto-3a1f2b4c.3.dylib",), defines EVP_DigestInit_ex, one object
+  -> before: openssl_linkage: bundled
+  -> after:  openssl_linkage: mixed
+```
+
+`bundled` was never a safety regression on its own -- `BIN_NEEDED_MANGLED_CRYPTO`,
+`BIN_NEEDED_VENDORED_CRYPTO` and `BIN_BUNDLED_OPENSSL` are findings read off each
+`needed` entry directly (`engine._match_dt_needed`, `kind = "dt_needed"`/
+`"bundled_library"`), not off the aggregated `openssl_linkage` value, so they already
+fired regardless of whether the object's own posture read `bundled` or, after this fix,
+`mixed`. This fix is about the merged object and the two-separate-objects equivalent
+disagreeing with each other, not about a clean read.
+
+**The fix.** The loop no longer returns from inside itself. It sets a third flag,
+`bundled`, alongside the existing `system` and `uncertain`, and lets all three
+per-`needed`-entry postures accumulate across the whole `needed` tuple before the
+function branches on any of them -- the same restructuring #60 did for `system` against
+the defined/banner check, extended to the third `_DEFINITE` posture. The check that read
+`if system and static: return LINKAGE_MIXED` became a three-way count,
+`if sum((system, bundled, static)) > 1: return LINKAGE_MIXED`, checked ahead of any of
+the three being returned on its own.
+
+**Precedence, now that four signals can be in play on one object.** Built out and
+verified directly against the ladder in `linkage._binary_posture` and against the test
+suite, not assumed from #60's or #87's own phrasing (both of those entries record an
+adversarial review catching this same category of mistake once already):
+
+| `system` | `bundled` | `static` | `uncertain` | Result | Why |
+|---|---|---|---|---|---|
+| 2+ of the three true | -- | -- | any | `mixed` | Two or more `_DEFINITE` postures disagree on one object, the same shape `_aggregate` already turns into `mixed` for two different objects. |
+| T | F | F | any | `system` | Unchanged from #60/#87. |
+| F | T | F | any | `bundled` | New in #88: symmetric to the row above, for the reason given below. |
+| F | F | T | T | `mixed` | Unchanged from #87. |
+| F | F | T | F | `static` | Unchanged. |
+| F | F | F | T | `unknown` | Unchanged. |
+| F | F | F | F | falls through to imported/opaque/none | Unchanged. |
+
+`system`-alone-beats-`uncertain` and `bundled`-alone-beats-`uncertain` are the *same*
+rule, not two rules that happen to agree: `system`, `bundled` and `uncertain` are all
+read off the same `for needed in binary.needed` loop, over different entries, and what
+actually makes a confirmed entry beat an unconfirmed one is that `if uncertain: return
+LINKAGE_UNKNOWN` sits *below* both `if system:` and `if bundled:` in the ladder --
+`_aggregate`'s "a non-definite posture never outvotes a definite one already present"
+rule, applied within one object, exactly as #87 already established for `system`. This is
+NOT about the `uncertain`-and-`static` branch's position relative to them: that branch
+can be moved anywhere in the ladder -- above `if system:`, between it and `if bundled:`,
+wherever -- without the test suite observing any difference, confirmed by mutation (the
+same finding #87's own entry already records for the `system`-and-`static` check, and the
+code comment above this paragraph in `linkage.py` already states correctly). What the
+`uncertain`-and-`static` branch's position DOES decide is only which of the two remaining
+facts it gets to combine, once `system` and `bundled` are both already ruled out.
+
+`static` is not read off `binary.needed` at all (`matched_symbols`/`matched_strings`
+instead), so it was never subject to the `if uncertain: return LINKAGE_UNKNOWN` rule the
+other two `needed`-loop facts are -- which is why #87 made it combine with `uncertain`
+into `mixed` rather than being outvoted by a later, unconfirmed `needed` entry. #88 gives
+`bundled` the same treatment as `system` because `bundled`, like `system`, is a
+`binary.needed` fact and `if uncertain:` sits below both.
+
+**Does this reopen #87?** No, traced explicitly. #87's own branch
+(`if uncertain and static: return LINKAGE_MIXED`) is unchanged and still runs, after the
+new `if bundled: return LINKAGE_BUNDLED` branch. The three-way `_DEFINITE`-count check
+above it now also fires when `bundled` and `static` are both true -- but it returns
+`mixed`, the same value #87's own branch would return if it were reached for that case,
+so nothing #87 pinned changes behaviour: every #87 test
+(`test_an_uncertain_needed_match_and_a_defined_symbol_together_are_mixed`,
+`test_system_uncertain_and_static_together_still_read_mixed`, and the rest) passes
+unmodified, confirmed by running the full suite against this fix, not just the new tests.
+
+**What it costs.** No ruleset change: `BIN_OPENSSL_LINKAGE_UNKNOWN` already matches
+`values = ["unknown", "mixed"]` (added for #60/#87, re-checked here and still
+sufficient). This does widen `mixed` the same way #87 already named for its own fix: an
+object that used to read plain `bundled` (discarding a disagreeing `system` or `static`
+signal on the same object) now reads `mixed`, and `_aggregate` promotes any wheel with a
+`mixed` object outright, ahead of counting `_DEFINITE` postures -- so a wheel that used to
+aggregate to `bundled` (one object now `mixed`, no other object contradicting it) now
+aggregates to `mixed` instead, dropping out of `SCHEMA.md`'s `IN("bundled","static")`
+triage recipe the same way #87's widening already does. The direction stays
+conservative: `verdict.class` is unaffected (`BIN_NEEDED_MANGLED_CRYPTO`/
+`BIN_BUNDLED_OPENSSL`/`BIN_NEEDED_VENDORED_CRYPTO` still fire on the `needed` entry
+itself and still carry `CONDITIONAL`, which precedes `OPAQUE` in `[verdict] precedence`),
+and `verdict.classes` only gains `OPAQUE` alongside it, never loses anything silently.
+
+**What was rejected.** A fourth branch, `if bundled and uncertain: return LINKAGE_MIXED`,
+mirroring the `uncertain`-and-`static` branch -- rejected because it would answer `mixed`
+for a shape ("this confirmed `bundled` entry, plus a different, unconfirmed one") that
+the same-loop precedent instead resolves to plain `bundled`, for the same reason #87
+rejected `uncertain`-wins over `static`: the rule already established for `system` beside
+`uncertain` should not read differently for `bundled` beside `uncertain` without a
+positive reason, and none was found. Extending the disagreement check into the
+top-of-function `vendored_path` early return (an object's own file identity matching the
+library -- the vendored copy's own record, `BIN_BUNDLED_OPENSSL`'s evidence source) --
+also rejected, out of scope: #88's reproductions and title are specifically about a
+`needed` entry resolving `bundled`, and that early return is a different mechanism this
+fix does not touch.
+
+**Kept out of scope, on purpose -- and there is a real reproduction for it, found by
+review.** Whether an object identified by its own `binary.vendored_path` (rather than by
+a `needed` entry) can itself carry a disagreeing `system`/`static`/`uncertain` signal
+that its own early return currently discards is a structurally similar question, and
+adversarial review of this fix built a real one: a vendored `libssl` that itself links
+the host `libcrypto` (the `auditwheel --exclude libcrypto.so.3` shape `DECISIONS.md`
+already names elsewhere as real) --
+
+```
+demo/_ext.so                   needed: libc.so.6, libssl-abc123.so.3
+demo.libs/libssl-abc123.so.3   needed: libc.so.6, libcrypto.so.3   defines SSL_new
+-> openssl_linkage: bundled   (the system libcrypto dependency is discarded)
+```
+
+-- reads `bundled` where the same two `needed` entries on a non-vendored object would
+read `mixed` under this fix. `BIN_NEEDED_SYSTEM_OPENSSL` still reaches `findings[]` and
+`needs_human_review` is `true`, so it is milder than #60's original hole (nothing reads
+clean), but it is the same family. This is left open anyway: #88's own reproductions and
+title are specifically about a `needed` entry resolving `bundled`, `vendored_path`'s
+early return is a genuinely different code path this fix does not touch, and folding it
+in now would extend an already-large precedence change further than this issue asked
+for. The honest reason is scope discipline, not the cost of computing the extra checks,
+which is small (a handful of scans over evidence the record already carries).
+
+Revisit if a real wheel is found matching the reproduction above, or if a fifth
+`_DEFINITE`-shaped signal is ever added to `_binary_posture` and needs the same treatment
+this one got.
+
+Tracked in [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60),
+[#87](https://github.com/EmilienM/wheel-crypto-scan/issues/87) and
+[#88](https://github.com/EmilienM/wheel-crypto-scan/issues/88).
 
 ## An explicit usedforsecurity=True, and a non-constant flag, are not `NO_CRYPTO_DETECTED`
 

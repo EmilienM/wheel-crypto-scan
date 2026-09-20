@@ -781,6 +781,116 @@ def test_system_uncertain_and_static_together_still_read_mixed(ruleset) -> None:
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
 
 
+# --- bundled and system/static within one object (#88) -----------------------
+#
+# `_binary_posture`'s `needed` loop used to return `LINKAGE_BUNDLED` as soon as one
+# entry resolved that way, before a second, disagreeing `needed` entry on the same
+# object -- or the defined/static check a few lines below -- ever ran. A universal
+# Mach-O object merges its slices' `needed` tuples into one (`binfmt.macho`, pinned by
+# `test_load_dylibs_merge_across_slices` in `test_binfmt_macho.py`), so a fat object
+# whose slices disagreed about `bundled` versus `system` or `static` read `bundled`
+# outright instead of `mixed`, unlike the same evidence read as two separate objects.
+
+
+def test_a_bundled_needed_match_and_a_system_needed_match_together_are_mixed(ruleset) -> None:
+    """The reproduction from #88: one object, one `needed` entry hash-renamed
+    (`bundled`), a different `needed` entry an absolute path to the host library
+    (`system`). Same evidence in two separate objects already reads `mixed` via
+    `_aggregate`; this object's own evidence must read the same way.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto-3a1f2b4c.so.3", "/usr/lib64/libcrypto.so.3"),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_bundled_needed_match_and_a_defined_symbol_together_are_mixed(ruleset) -> None:
+    """The second reproduction from #88: one hash-renamed `needed` entry, and a real
+    `EVP_DigestInit_ex` definition in the same object -- the shape a Mach-O universal
+    binary merges into one record when one slice declares the vendored dependency and
+    the other has OpenSSL compiled in.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=("libcrypto-3a1f2b4c.3.dylib",),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_bundled_needed_match_and_a_banner_together_are_mixed(ruleset) -> None:
+    """The banner-only variant of the same contradiction, matching #60's and #87's
+    own banner variants."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto-3a1f2b4c.so.3",),
+            matched_strings=(OPENSSL_BANNER,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_bundled_needed_match_alone_is_still_bundled(ruleset) -> None:
+    """No other signal: the ordinary bundled case, now reached after the
+    `_DEFINITE`-count check instead of returning from inside the loop, is unchanged.
+    """
+    evidence = wheel(binary("pkg/_ext.so", needed=("libcrypto-3a1f2b4c.so.3",)))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+def test_a_bundled_needed_match_beside_an_uncertain_one_stays_bundled(ruleset) -> None:
+    """Two `needed` entries on one object: one hash-renamed and therefore confirmed
+    `bundled`, and a second whose own path is vendor-shaped (delocate's convention)
+    but that this incompletely-read wheel cannot confirm. `bundled`, like `system`,
+    is read off `binary.needed` in the loop above, and a confirmed entry from that
+    loop needs no vote from a different, unconfirmed one -- the same rule #87
+    established for `system` beside `uncertain`, extended here to `bundled`. See #88.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.cpython-312-darwin.so",
+            format=FORMAT_MACHO,
+            needed=(
+                "libcrypto-3a1f2b4c.3.dylib",
+                "@loader_path/.dylibs/libssl.3.dylib",
+            ),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.dylib",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+def test_bundled_system_and_static_together_still_read_mixed(ruleset) -> None:
+    """A characterization pin, not a guard for a specific branch: all three
+    `_DEFINITE` signals true on one object at once (a third `needed` entry resolves
+    `bundled`, another resolves `system`, and a real symbol makes `static` true too)
+    still reads `mixed` -- the `_DEFINITE`-count check answers `mixed` regardless of
+    which two, or all three, of the signals are the ones present.
+    """
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto-3a1f2b4c.so.3", "/usr/lib64/libcrypto.so.3"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
 # --- aggregation across several binaries ------------------------------------
 
 
