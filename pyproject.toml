@@ -61,6 +61,11 @@ jobs = 0
 
 [tool.pylint.format]
 max-line-length = 100
+# `binfmt.macho` carries a module docstring that documents every way `partial_analysis`
+# can survive, by design (AGENTS.md: every policy entry carries a `why`), and #84 added
+# one more without shrinking any of the others. The default of 1000 was already close
+# before that; this gives the documentation-heavy readers room without policing prose.
+max-module-lines = 1100
 
 [tool.pylint."messages control"]
 # Each of these is a deliberate design choice rather than an oversight. The reasons

@@ -219,6 +219,13 @@ _REACHABILITY: dict[str, bytes] = {
         malformed_dylib_cmd=LC_LOAD_DYLIB,
         malformed_dylib_name_offset=1000,
     ).build(),
+    # #84: a `cmdsize` claiming to run past the load commands, so the walk stops
+    # rather than trusting a value that already lied about its own extent.
+    "macho load command walk truncated": MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+        poison_cmdsize=0x10000,
+    ).build(),
 }
 
 

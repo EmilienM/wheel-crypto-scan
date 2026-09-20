@@ -39,17 +39,20 @@ declares nothing is reported as unread rather than clean. What is still missed i
 symbol reachable only through those tables, whose name is nowhere in the string table
 either.
 
-`partial_analysis` survives for five cases: a strings read that stopped before the end
+`partial_analysis` survives for six cases: a strings read that stopped before the end
 of the object, so a region of it was never looked at; a `LC_SYMTAB` that could not be read in
 full, whether it is absent, unreachable, names nothing we could resolve, holds nothing
 but debug records, or declares fewer entries than it carries names for, so the
 imported/defined split is missing or incomplete; a slice of a fat binary that could not
 be read, or that the fat header placed outside the object, so one architecture is
 unknown rather than clean; a header or set of load commands that would not parse at
-all, which costs the structural read but not the strings already found; and a
+all, which costs the structural read but not the strings already found; a
 dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string could not be read, so
 a dependency, the object's own install name, or an rpath entry may be missing rather
-than absent.
+than absent; and a load command's own `cmd`/`cmdsize` header that could not be
+trusted, which stops the walk rather than guessing where the next one starts, so
+every later command -- an honest `LC_LOAD_DYLIB` included -- is unaccounted for
+rather than absent. #84.
 
 A universal binary is read slice by slice and merged into one record, in both the
 `FAT_MAGIC` and `FAT_MAGIC_64` forms, which differ only in the width of the arch table's
@@ -238,6 +241,9 @@ class _SliceHeader:
     # a dependency, the object's own install name, or an rpath entry was lost rather
     # than absent.
     load_command_string_unread: bool
+    # A command's own `cmd`/`cmdsize` header could not be trusted, so the walk
+    # stopped early: everything after is unaccounted for, not absent. #84.
+    load_command_walk_truncated: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +257,7 @@ class _SliceEvidence:
     needed: tuple[str, ...]
     rpath: tuple[str, ...]
     load_command_string_unread: bool
+    load_command_walk_truncated: bool
     matches: frozenset[SymbolMatch]
     symtab_count: int
     stripped: bool
@@ -454,6 +461,9 @@ def read_macho(
     if any(slice_evidence.load_command_string_unread for slice_evidence in read):
         message = "a dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read"
         errors.append(_error(path, message))
+    if any(slice_evidence.load_command_walk_truncated for slice_evidence in read):
+        message = "a load command's cmd/cmdsize header could not be trusted, cutting the walk short"
+        errors.append(_error(path, message))
 
     # Every architecture has to have been read, and read in full, before this object
     # can claim it was examined. An unread slice is an unread object.
@@ -468,6 +478,8 @@ def read_macho(
         partial.add(evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS)
     if any(slice_evidence.load_command_string_unread for slice_evidence in read):
         partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD)
+    if any(slice_evidence.load_command_walk_truncated for slice_evidence in read):
+        partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED)
 
     first = read[0]
     merged: set[SymbolMatch] = set()
@@ -599,9 +611,15 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
 
     try:
         stream.seek(slice_.offset)
-        cputype, soname, needed, rpath, symtab, load_command_string_unread = _read_thin(
-            stream, slice_.offset, slice_.size, is64, big_endian
-        )
+        (
+            cputype,
+            soname,
+            needed,
+            rpath,
+            symtab,
+            load_command_string_unread,
+            load_command_walk_truncated,
+        ) = _read_thin(stream, slice_.offset, slice_.size, is64, big_endian)
     except struct.error as bad:
         raise _Unreadable("mach-o header is truncated") from bad
     except Exception as bad:
@@ -617,6 +635,7 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
         rpath=rpath,
         symtab=symtab,
         load_command_string_unread=load_command_string_unread,
+        load_command_walk_truncated=load_command_walk_truncated,
     )
 
 
@@ -661,6 +680,7 @@ def _read_slice_symbols(
         needed=header.needed,
         rpath=header.rpath,
         load_command_string_unread=header.load_command_string_unread,
+        load_command_walk_truncated=header.load_command_walk_truncated,
         matches=frozenset(matches),
         symtab_count=symtab_count,
         stripped=stripped,
@@ -673,7 +693,7 @@ def _read_slice_symbols(
 
 def _read_thin(
     stream, base: int, slice_size: int, is64: bool, big_endian: bool
-) -> tuple[int, str | None, tuple[str, ...], tuple[str, ...], _Symtab | None, bool]:
+) -> tuple[int, str | None, tuple[str, ...], tuple[str, ...], _Symtab | None, bool, bool]:
     """Parse one thin Mach-O header and its load commands, from the current position."""
     end = ">" if big_endian else "<"
     if is64:
@@ -700,12 +720,18 @@ def _read_thin(
     rpaths: list[str] = []
     symtab: _Symtab | None = None
     load_command_string_unread = False
+    load_command_walk_truncated = False
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(commands):
+            # Not even a `cmd`/`cmdsize` pair left to read. #84.
+            load_command_walk_truncated = True
             break
         cmd, cmdsize = struct.unpack_from(end + "II", commands, pos)
         if cmdsize < 8 or pos + cmdsize > len(commands):
+            # `cmdsize` lies about its own extent, so `pos` past here is a guess,
+            # not a fact: stop rather than resync on a value that already lied. #84.
+            load_command_walk_truncated = True
             break
         body = commands[pos : pos + cmdsize]
         if cmd in _LC_DYLIB_DEPENDENCIES or cmd == _LC_ID_DYLIB:
@@ -743,6 +769,7 @@ def _read_thin(
         tuple(sorted(set(rpaths))),
         symtab,
         load_command_string_unread,
+        load_command_walk_truncated,
     )
 
 

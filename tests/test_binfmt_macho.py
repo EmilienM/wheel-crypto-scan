@@ -1365,6 +1365,162 @@ def test_a_load_command_string_unread_in_one_fat_slice_still_flags_the_object() 
     assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
 
 
+def test_a_cmdsize_overrunning_the_object_truncates_the_walk_rather_than_the_command() -> None:
+    """#84: a `cmdsize` claiming to run past the load commands used to abandon the
+    walk with no signal at all, silently dropping every command after it -- including
+    an honest, later `LC_LOAD_DYLIB` naming the system OpenSSL.
+
+    The command before the poison one still has to survive: this is the walk being
+    cut short at the point of the lie, not the whole object going dark.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        poison_cmdsize=0x10000,
+        honest_load_dylib_after_poison="/usr/lib/libcrypto.3.dylib",
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # Lost, not fabricated: its true extent is unknown, so nothing past the poison
+    # command can be trusted enough to resync on.
+    assert "/usr/lib/libcrypto.3.dylib" not in ev.needed
+    # Not lost: it was read before the poison command was ever reached.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+    assert ev.soname == "libfoo.dylib"
+
+
+@pytest.mark.parametrize("cmdsize", [0, 4])
+def test_a_cmdsize_too_small_for_its_own_header_truncates_the_walk(cmdsize: int) -> None:
+    """The other half of #84's break: `cmdsize < 8` cannot even hold `cmd`/`cmdsize`
+    itself, so nothing about the command -- let alone what follows it -- can be read.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        poison_cmdsize=cmdsize,
+        honest_load_dylib_after_poison="/usr/lib/libcrypto.3.dylib",
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    assert "/usr/lib/libcrypto.3.dylib" not in ev.needed
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+
+
+def test_a_command_too_short_to_even_carry_a_cmdsize_field_truncates_the_walk() -> None:
+    """The first break site: `pos + 8 > len(commands)`, not enough bytes left for even
+    the 8-byte `cmd`/`cmdsize` pair -- a different trigger than a `cmdsize` that reads
+    fine and then lies about its own extent.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        dangling_command_bytes=b"\x0c\x00\x00",
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # Everything before the dangling fragment was already read.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+    assert ev.soname == "libfoo.dylib"
+
+
+def test_this_object_never_reads_as_no_crypto_detected() -> None:
+    """The invariant #84 exists to hold: unreadable or uncertain, never clean.
+
+    `MachOBuilder` always places its own `LC_SYMTAB` last, so a fixture built from its
+    fields alone can never show a poison command losing a *later* command while the
+    symbol table still reads in full -- the symtab itself would already be truncated
+    away, and an absent symtab is partial for reasons #84 has nothing to do with. This
+    builds the honest case first, then splices the poison command and one more honest
+    `LC_LOAD_DYLIB` in after a working `LC_SYMTAB`, patching `symoff`/`stroff` for the
+    bytes inserted ahead of them, so the object that reaches the poison command has
+    already read a complete symbol table -- isolating #84's own effect on the verdict.
+    """
+    end = "<"
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ncmds, sizeofcmds = struct.unpack_from(end + "II", data, 16)
+    commands = data[32 : 32 + sizeofcmds]
+    cmd, cmdsize, symoff, nsyms, stroff, strsize = struct.unpack_from(
+        end + "IIIIII", commands, len(commands) - 24
+    )
+    poison = struct.pack(end + "II", LC_LOAD_DYLIB, 0x10000)
+    honest = MachOBuilder()._dylib_command(LC_LOAD_DYLIB, "/usr/lib/libcrypto.3.dylib", end)
+    delta = len(poison) + len(honest)
+    patched_symtab = struct.pack(
+        end + "IIIIII", cmd, cmdsize, symoff + delta, nsyms, stroff + delta, strsize
+    )
+    new_commands = commands[:-24] + patched_symtab + poison + honest
+    header = data[:16] + struct.pack(end + "II", ncmds + 2, len(new_commands)) + data[24:32]
+    tail = data[32 + sizeofcmds :]  # nlist + strtab, byte-identical, just further out now
+    ev, errors = _read(header + new_commands + tail)
+    # The symbol table read in full: this is not the absent-`LC_SYMTAB` cause.
+    assert ev.stripped is False
+    assert ev.symtab_count == 1
+    assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", "imported"),)
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED,)
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+    # Built end to end through `linkage` and `verdict`, the way a wheel actually gets
+    # scored: the reproduction that motivated this fix was a `NO_CRYPTO_DETECTED`
+    # verdict on an object that could not be read in full, not a wrong flag alone.
+    from wheel_crypto_scan.engine import apply_rules
+    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
+    from wheel_crypto_scan.linkage import resolve_linkage
+    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
+
+    ruleset = load_ruleset()
+    wheel_evidence = Evidence(
+        filename="demo-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        metadata=MetadataEvidence(name="demo", canonical_name="demo", version="1.0"),
+        binaries=(ev,),
+    )
+    linkage = resolve_linkage(ruleset, wheel_evidence)
+    assert linkage["openssl"] != "none"
+    findings = apply_rules(ruleset, wheel_evidence, linkage)
+    verdict = classify(ruleset, findings, linkage)
+    assert verdict.headline != NO_CRYPTO_DETECTED
+    assert verdict.needs_human_review is True
+
+
+def test_the_ordinary_multi_command_walk_is_completely_unchanged() -> None:
+    """Regression guard: several honest commands, none of them malformed.
+
+    `ncmds` exhausts exactly when the last real command ends, so neither break site
+    in the walk is ever reached for an object that never lies about its own shape.
+    """
+    data = MachOBuilder(
+        id_dylib="@rpath/libfoo.dylib",
+        load_dylibs=("/usr/lib/libcrypto.3.dylib",),
+        weak_load_dylibs=("/usr/lib/libweak.dylib",),
+        rpaths=("@loader_path/../lib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()
+    assert ev.soname == "@rpath/libfoo.dylib"
+    assert ev.needed == ("/usr/lib/libcrypto.3.dylib", "/usr/lib/libweak.dylib")
+    assert ev.rpath == ("@loader_path/../lib",)
+
+
 def test_a_non_ascii_install_name_is_sanitized_not_dropped() -> None:
     """A stray non-ASCII byte in a dependency name is sanitized, matching `binfmt.elf`.
 

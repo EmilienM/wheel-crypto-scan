@@ -1713,3 +1713,72 @@ from five elements to six, and a small dataclass would stop the signature growin
 one every time a new failure mode joins it.
 
 Tracked in [#59](https://github.com/EmilienM/wheel-crypto-scan/issues/59).
+
+## An unparseable load-command header flags the walk, it does not end it in silence
+
+**Accepted, found while reviewing #59's fix to the same walk, and one level up from
+what that fix closed.**
+
+#59 made an individual command's *name* unreadable a partial reason
+(`macho_load_command_string_unread`) while the walk kept going past it. `_read_thin`'s
+loop has two earlier checks, over the command's own `cmd`/`cmdsize` header rather than
+its name, that stayed silent:
+
+```python
+if pos + 8 > len(commands):
+    break
+cmd, cmdsize = struct.unpack_from(end + "II", commands, pos)
+if cmdsize < 8 or pos + cmdsize > len(commands):
+    break
+```
+
+Neither `break` recorded an error or a `partial_reasons` token. Every command after
+the point either one fired -- an honest, later `LC_LOAD_DYLIB` naming the system
+OpenSSL included -- was silently dropped, not merely one command's string:
+
+```
+poisoned cmdsize (0x10000, claims to run past the object)
+-> before: needed drops the later LC_LOAD_DYLIB entirely, partial_analysis: false
+-> after:  partial_analysis: true, macho_load_command_walk_truncated, error recorded
+```
+
+**Why a new token, not `macho_load_command_string_unread`.** The two claims are not
+the same fact about the object. That token says one command's name could not be
+trusted while the command itself -- its `cmd` and `cmdsize` -- could, so the walk kept
+going and only that one command's string is missing. Here the command's own shape is
+what lied, so nothing past it can be resynced on: not one name but every later
+command, and everything it might have named, is unaccounted for. Forcing the existing
+token onto this would understate it the same way reusing `macho_symtab_incomplete`
+for an unreadable load-command string would have (#59's own rejected option). It
+records an error and is not on `[linkage_policy] exclude_reasons`, the same reasoning
+#59 gave for its own token, more so here: a lost command can be several dependencies,
+not one.
+
+**What was rejected: resyncing past the bad command.** Once `cmdsize` has lied once,
+`pos + cmdsize` is a guess, not a fact -- there is no honest way to know where the
+next command starts, so advancing past it risks reading a decoy command's body as if
+it were real, the exact shape #56's floor checks exist to close elsewhere in this
+reader. Stopping the walk where the previous fix already stopped it, but now with a
+signal, is the safe direction and the one the invariant requires: evidence gathered
+*before* the bad command is unaffected (a command read earlier in the same walk still
+reaches `needed`), only what would have come after is lost, and it is lost as
+`partial_analysis: true`, never as a silent `NO_CRYPTO_DETECTED`.
+
+**What it costs.** `ANALYZER_VERSION` moves again: a wheel already scanned can produce
+a different record without changing on disk. An object whose load-command header is
+too short to hold `cmd`/`cmdsize` at all, or whose `cmdsize` is below that minimum or
+claims to run past the end of the load commands, now reads `partial_analysis: true`
+and `openssl_linkage: unknown` instead of quietly losing every command after it. This
+covers those two specific header-shape failures, not every way a load command can
+lie: an ABI-invalid `cmdsize` (not a multiple of 8 on a 64-bit object) and an `ncmds`
+that understates the real command count both still read clean today, unclosed by this
+fix.
+
+Revisit `_read_thin`'s now seven-element positional return the same way #59's entry
+already flagged at six: a small dataclass would stop the signature growing by one
+every time a further per-command cause joins it, and this issue is the second time
+that prediction came true. Also revisit `binfmt.macho.py`'s pylint `max-module-lines`
+override (1100, in `pyproject.toml`) if the module keeps growing at this rate --
+the docstring alone accounts for most of it.
+
+Tracked in [#84](https://github.com/EmilienM/wheel-crypto-scan/issues/84).
