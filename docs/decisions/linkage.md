@@ -126,6 +126,22 @@ fourth rule. The cheap close is a behavioural invariant test asserting that no d
 `openssl_linkage` value reaches the record without a contributing rule having fired. It costs
 nothing and is worth adding regardless.
 
+### An absolute `needed` entry closes part of "a real risk this does not fully close"
+
+**Fixed, for one shape.** The "real risk" paragraph above accepted that a basename collision
+between two unrelated objects could manufacture a false `bundled`. That is no longer true when
+the colliding `needed` entry is an absolute path (`/usr/lib64/libcrypto.so.3`): no real dynamic
+loader resolves an absolute path against anything the wheel ships, so `needed_posture` now
+answers `system` for it outright, before consulting the basename match or the vendor-shape
+check at all. The residual stays open for a *relative* entry that a loader genuinely could
+resolve via `$ORIGIN`/`@rpath`/`RPATH`/`RUNPATH` — the ordinary vendoring shape this whole
+entry is about — and, narrower still, for a relative-but-non-wheel-resolvable shape like
+`../../hostlib/libcrypto.so.3` or a Mach-O `@executable_path/...` entry, neither of which this
+fix covers even though the same argument applies to them.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#an-absolute-needed-entry-closes-part-of-the-residual-rather-than-leaving-it-open) ·
+[#80](https://github.com/EmilienM/wheel-crypto-scan/issues/80)
+
 ---
 
 ## A `needed` match and a definition inside one object are both true, so the object is `mixed`

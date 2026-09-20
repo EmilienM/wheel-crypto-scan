@@ -23,6 +23,6 @@ SCHEMA_VERSION = 1
 # Bumped whenever extraction behaviour changes such that an unchanged wheel would
 # produce a different record. Part of the cache key, so a reader fix can never serve
 # a stale cached record.
-ANALYZER_VERSION = 34
+ANALYZER_VERSION = 35
 
 __all__ = ["ANALYZER_VERSION", "SCHEMA_VERSION", "TOOL_NAME", "__version__"]

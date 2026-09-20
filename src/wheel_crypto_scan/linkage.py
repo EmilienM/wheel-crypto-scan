@@ -21,6 +21,11 @@ command to point at it *without* renaming the file. A `needed` entry can therefo
 a plain, unmangled `libcrypto.3.dylib` and still resolve entirely inside the wheel, so
 `mangled` cannot be the only test for "does this `needed` entry name a copy the wheel
 ships". See #57.
+
+A structural rule underlies all of the above: an absolute `needed` path is never
+resolved relative to anything -- not `RPATH`/`RUNPATH`, not a vendor directory, not
+the wheel at all -- so it can never be evidence of vendoring, whatever else in the
+wheel happens to share its basename. See #80.
 """
 
 from __future__ import annotations
@@ -48,12 +53,17 @@ def member_stem_counts(conventions: Conventions, evidence: Evidence) -> Mapping[
 
     A count, not a set, because a `needed` entry can share its own declaring object's
     `Conventions.raw_stem` without that meaning anything -- an object named
-    `libcrypto.so` that itself declares an absolute, genuinely-system
-    `/usr/lib64/libcrypto.so.3` shares a stem with its own dependency purely by
-    coincidence of file naming, and a `needed` entry can never legitimately resolve
-    to the object declaring it. `_resolves_within_wheel` uses the count to discount an
-    object's own contribution to its own answer while still honouring a second,
-    genuinely different object that happens to share the same stem. See #57.
+    `libcrypto.so` that itself declares a same-named, genuinely-system dependency
+    shares a stem with its own dependency purely by coincidence of file naming, and a
+    `needed` entry can never legitimately resolve to the object declaring it.
+    `_resolves_within_wheel` uses the count to discount an object's own contribution
+    to its own answer while still honouring a second, genuinely different object that
+    happens to share the same stem. See #57. (#57's own reproduction used an absolute
+    dependency, `/usr/lib64/libcrypto.so.3`; #80 later gave every absolute `needed`
+    entry its own, earlier short-circuit in `needed_posture` that never reaches this
+    function at all, so the discount below is now exercised by a *relative*
+    same-named dependency instead -- the coincidence is exactly as possible there,
+    just reached through the ordinary, non-absolute path.)
 
     The object's `path` is set by `layers.binaries.scan_binaries` for every member it
     attempts to read, whether or not the read succeeded, so a vendored copy whose
@@ -69,6 +79,11 @@ def _resolves_within_wheel(own_stem: str, needed_stem: str, counts: Mapping[str,
     `member_stem_counts`), so when the two coincide, confirmation requires a second
     contributor; when they differ, the declaring object contributes nothing to that
     stem in the first place and any count at all is a different, genuine object.
+
+    Assumes `needed` is a name a real loader could plausibly resolve inside the wheel
+    at all -- `needed_posture` only calls this for a relative entry, never an absolute
+    path, which no loader resolves this way regardless of what shares its basename.
+    See #80.
     """
     count = counts.get(needed_stem, 0)
     return count > 1 if needed_stem == own_stem else count > 0
@@ -106,6 +121,12 @@ def _looks_vendored(needed: str, binary: BinaryEvidence, conventions: Convention
     (`wheel_incompletely_read`): when every member was read, `member_stem_counts`
     already speaks for the whole wheel, and a vendor-shaped path naming nothing there
     is genuine `system`, not `unknown`. See #57.
+
+    Also assumes `needed` is a relative entry: `needed_posture` never calls this for
+    an absolute path, because an absolute path is never resolved relative to a loading
+    object's `RPATH`/`RUNPATH` or its own directory, so a vendor-glob-shaped component
+    inside one -- whether embedded directly or produced by the join below -- names
+    nothing a real loader would ever look at. See #80.
     """
     if conventions.is_vendor_path(needed):
         return True
@@ -135,12 +156,46 @@ def needed_posture(
     otherwise -- including a vendor-shaped path naming nothing, when the wheel was
     read in full and can therefore rule it out.
 
+    An absolute `needed` entry (an ELF `DT_NEEDED` or Mach-O `LC_LOAD_DYLIB` path
+    starting with `/`; PE has no such shape) is `LINKAGE_SYSTEM` outright, ahead of
+    and instead of consulting `_resolves_within_wheel` or `_looks_vendored`: no real
+    dynamic loader resolves an absolute path via `$ORIGIN`/`@loader_path`/`@rpath`/
+    `RPATH`/`RUNPATH` -- it is used literally -- so a same-basename object elsewhere
+    in the wheel, or a vendor-shaped `RPATH`/`RUNPATH` alongside it, is meaningless
+    for it. This also covers `_looks_vendored`'s *other* branch,
+    `conventions.is_vendor_path(needed)` on the string by itself: that branch exists
+    to catch delocate's own convention, `@loader_path/.dylibs/...`, where the
+    vendor-directory component is meaningful only because the path gets resolved
+    relative to the loading object in the first place. An absolute path is never
+    resolved relative to anything, so auditwheel and delocate never emit one for a
+    copy they vendor -- both always rewrite to a relative form for exactly that
+    reason -- and a vendor-glob-shaped component inside an absolute path is therefore
+    always a coincidence or a leftover build-time artifact, never a real vendoring
+    reference, whether it is read via the join or read off the string on its own.
+    `mangled` is checked first, ahead of the absolute-path return, and is unaffected
+    by absoluteness: a hash-renamed basename is strong independent evidence on its
+    own, and mangled detection has nothing to do with whether the path was absolute.
+    #80.
+
+    This closes the residual only for a genuinely absolute path (`startswith("/")`).
+    A relative-looking entry that still cannot resolve inside the wheel by any real
+    search order -- a `../`-relative path, or a Mach-O `@executable_path/`-anchored
+    one, which resolves against the process's own binary rather than the loading
+    object -- still reaches `_resolves_within_wheel` and `_looks_vendored` exactly as
+    before #80 and can still read a spurious `bundled` or `unknown` from an unrelated
+    basename collision. Narrower than the argument above technically allows;
+    `DECISIONS.md` records it as a residual left open rather than assumed closed.
+
     Shared with `engine._match_dt_needed`, which reports this per `needed` entry
     rather than aggregating it, so the record and the finding cannot disagree about
     the same string.
     """
+    if mangled:
+        return LINKAGE_BUNDLED
+    if info_original.startswith("/"):
+        return LINKAGE_SYSTEM
     needed_stem = conventions.raw_stem(None, info_original)
-    if mangled or _resolves_within_wheel(own_stem, needed_stem, counts):
+    if _resolves_within_wheel(own_stem, needed_stem, counts):
         return LINKAGE_BUNDLED
     if incomplete and _looks_vendored(info_original, binary, conventions):
         return LINKAGE_UNKNOWN
@@ -315,8 +370,15 @@ def _binary_posture(
         # symbols at runtime is outside this wheel and outside our sight.
         return LINKAGE_UNKNOWN
 
-    if binary.is_opaque:
-        return LINKAGE_UNKNOWN
+    # `is_opaque` is deliberately NOT consulted here. An opaque object (`needed` is
+    # non-empty for every loadable dylib and every `.pyd`, so this only fires for one
+    # that yielded nothing at all) makes the *wheel* unable to answer for the whole
+    # ruleset -- `_left_unanswered` already says so, and `resolve_linkage` passes that
+    # signal into `_aggregate` gated on `library.always_report`. Returning
+    # `LINKAGE_UNKNOWN` from here instead put that answer directly into this one
+    # library's `postures` set, bypassing the gate: every library in the ruleset, not
+    # only `openssl`, read `unknown` for an opaque binary, which is exactly what
+    # `always_report`-gating exists to prevent. See #68.
     return LINKAGE_NONE
 
 
@@ -353,6 +415,16 @@ def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
     `partial_reasons` is a failure and some of it is a linker convention that leaves
     every field linkage reads intact. Counting the tuple wholesale would turn every
     ordinal import into `openssl_linkage: unknown`, which is the noise #32 removed.
+
+    This is the one place a wheel-wide, library-agnostic non-answer belongs.
+    `_binary_posture` may return `LINKAGE_UNKNOWN` only from a condition that depends
+    on the specific `library` being asked about (an uncertain `needed` match against
+    `library.sonames`, or an imported symbol from `library.symbol_group`) -- never
+    from a fact about the object alone, because that answer is the same for every
+    library in the ruleset and belongs here instead, gated through `resolve_linkage`
+    on `library.always_report` rather than reported for all thirteen. `is_opaque` was
+    a library-agnostic fact answered a second time inside `_binary_posture` until
+    #68; if a future object-level non-answer is added, it belongs here, not there.
     """
     for binary in evidence.binaries:
         if binary.is_opaque:

@@ -479,6 +479,52 @@ erase what the readable ones said.
 
 Tracked in [#40](https://github.com/EmilienM/wheel-crypto-scan/issues/40).
 
+### The `always_report` gate had a second, unguarded route around it
+
+**Corrected. "Only the libraries reported unconditionally are affected" was true of the
+`unanswered` path this entry describes, and false of a second path the code still had.**
+
+`_binary_posture`'s own fallthrough, reached when nothing about an object said `system`,
+`bundled`, `static` or `unknown`-via-imported-symbol, read:
+
+```python
+if binary.is_opaque:
+    return LINKAGE_UNKNOWN
+return LINKAGE_NONE
+```
+
+That `is_opaque` arm runs once per `(binary, library)` pair inside `resolve_linkage`'s
+loop over every library in the ruleset, and it answers `LINKAGE_UNKNOWN` straight into
+that one library's `postures` set -- not through `_aggregate`'s `unanswered` parameter,
+which is where the `always_report` gate above actually lives. An opaque object therefore
+made every one of the thirteen libraries in the shipped ruleset read `unknown`, not only
+`openssl`:
+
+```
+pkg/_ext.so   stripped, no needed, no symbols, no strings -- is_opaque
+-> before: 13 "*_linkage: unknown" keys, one per [[crypto_library]] entry
+-> after:  1 "openssl_linkage: unknown" key (the only always_report = true library)
+```
+
+**Why this held for so long without a failing test.** `_left_unanswered` already checks
+`binary.is_opaque` and returns `True` for exactly this object, which `resolve_linkage`
+already passes into `_aggregate` as `unanswered and library.always_report` -- correctly
+gated, library by library. The `is_opaque` arm inside `_binary_posture` was answering the
+same question a second time, through a route that bypassed the gate entirely, and every
+existing test asked only about `openssl`, the one library the two routes happen to agree
+on. Mutation testing (deleting the arm) confirmed it: nothing in the suite moved.
+
+**The fix.** Delete the arm. `unanswered` already carries the signal for `always_report`
+libraries, which is the documented intent above; `_binary_posture` falls through to
+`LINKAGE_NONE` for every other library, exactly as an object that answered nothing at all
+should for a library nothing pointed at.
+`test_an_opaque_binary_only_costs_the_libraries_always_reported` (`tests/test_linkage.py`)
+pins the whole-ruleset shape this entry always meant, mirroring
+`test_an_unanswered_object_costs_only_the_libraries_always_reported`'s existing coverage
+of the *partial*-read case for the *opaque* one.
+
+Tracked in [#68](https://github.com/EmilienM/wheel-crypto-scan/issues/68).
+
 ## A recording cap is not a partial read
 
 **Accepted. One of the two halves of `truncated` became a cause; the other stayed a
@@ -1415,7 +1461,9 @@ per-entry loop, not a restructuring. The precedence question between `needed` an
 `defined` within one object is [#60](https://github.com/EmilienM/wheel-crypto-scan/issues/60)
 (now fixed -- see "A `needed` match and a definition inside one object are both true"
 below); the `is_opaque` arm's per-library fan-out is
-[#68](https://github.com/EmilienM/wheel-crypto-scan/issues/68). Neither is touched here.
+[#68](https://github.com/EmilienM/wheel-crypto-scan/issues/68) (now fixed -- see "The
+`always_report` gate had a second, unguarded route around it", above). Neither is
+touched here.
 
 **A real risk this does not fully close.** `member_stems` matches on file identity
 alone, not on directory. Two different libraries that happen to share a basename in
@@ -1601,6 +1649,153 @@ imprecision, rather than just the silence, needs closing. The invariant test abo
 worth adding regardless, as a follow-up: it is free.
 
 Tracked in [#57](https://github.com/EmilienM/wheel-crypto-scan/issues/57).
+
+### An absolute `needed` entry closes part of the residual, rather than leaving it open
+
+**Fixed. "A real risk this does not fully close" and the two-file basename collision
+residual both assumed `member_stem_counts`/`_looks_vendored` were the only tools a
+`needed` entry had to prove itself with, for every `needed` entry alike. They are not,
+for one shape: an absolute path.**
+
+`_resolves_within_wheel` matches purely on basename, with no regard for whether the
+`needed` entry's own path shape could resolve inside the wheel under any real search
+order at all. `$ORIGIN`/`@loader_path`/`@rpath`/RPATH/RUNPATH resolution never applies to
+an absolute path -- a real dynamic loader uses it literally -- so an absolute entry that
+happens to share a basename with some unrelated object elsewhere in the wheel read
+`bundled` off that coincidence alone, and `_looks_vendored` had the mirror problem: it
+joins the *whole* `needed` string to each `RPATH`/`RUNPATH` entry, so an absolute path
+could produce a joined string containing a vendor-directory component purely by chance
+(`$ORIGIN/pkg.libs` + `/usr/lib64/libcrypto.so.3`), promoting an unconfirmed absolute
+path to `unknown` for a reason that has nothing to do with how it would actually resolve.
+
+```
+demo/libcrypto.so         needed: /usr/lib64/libcrypto.so.3
+demo/plugins/libcrypto.so (unrelated, shares a basename by coincidence)
+-> before: openssl_linkage: bundled, BIN_NEEDED_VENDORED_CRYPTO
+-> after:  openssl_linkage: system,  BIN_NEEDED_SYSTEM_OPENSSL, DERIVED_SYSTEM_OPENSSL_ONLY
+```
+
+This is the same shape "Claim 1" above fixed for an object colliding with *itself*
+(`_resolves_within_wheel`'s own-stem discount, #57's BLOCKING 1) -- the object count was
+never the right test for an absolute path either way, self or genuinely different.
+
+**The fix.** `needed_posture` now computes `absolute = info_original.startswith("/")` --
+true for both an ELF `DT_NEEDED` and a Mach-O `LC_LOAD_DYLIB` absolute path; PE has no
+such shape -- and skips `_resolves_within_wheel` and `_looks_vendored` for it, falling
+through to `LINKAGE_SYSTEM` (the function's existing default) instead. `mangled` is
+checked first and untouched by this: a hash-renamed basename is strong independent
+evidence regardless of whether the path carrying it happens to be absolute, and mangled
+detection has nothing to do with path shape.
+
+**The skip covers both of `_looks_vendored`'s branches, not only the `RPATH`/`RUNPATH`
+join the reproduction above shows.** `_looks_vendored` also matches `needed` on its own,
+`conventions.is_vendor_path(needed)`, catching delocate's plain convention
+(`@loader_path/.dylibs/...`) with no `RPATH` involved at all. That branch's evidence is
+meaningful only because the vendor-directory component sits in a path that gets resolved
+*relative to the loading object* -- which is precisely what never happens for an absolute
+path. auditwheel and delocate both always rewrite a vendored dependency to a relative
+form for exactly that portability reason, so neither ever emits an absolute reference for
+a copy it ships; a vendor-glob-shaped component inside an absolute path is therefore
+always a coincidence or a leftover build-time artifact, not a real vendoring signal,
+whether it is read through the join or off the bare string.
+`test_an_absolute_needed_entry_shaped_like_a_vendor_path_itself_stays_system_even_
+incomplete` (`tests/test_linkage.py`) pins this branch on its own, with no `RPATH` in the
+picture, so the two halves of the skip are each independently tested rather than only the
+half the original reproduction happened to show.
+
+**The own-stem discount (`_resolves_within_wheel`'s BLOCKING-1 fix, above) is still live
+code, now reached only through a relative entry.** Every existing regression test for
+that discount -- `test_a_needed_entry_matching_its_own_declaring_objects_name_is_not_
+self_confirmed`, its `tests/test_engine.py` and `tests/test_acceptance.py` counterparts --
+used an absolute `needed` string, which after this fix answers through the new
+short-circuit before `_resolves_within_wheel` is ever called; their own assertions still
+hold, just no longer through the route they were written to pin. Adversarial review of
+this fix caught the gap by mutation (widening the discount left the whole suite green).
+`test_a_relative_needed_entry_matching_its_own_declaring_objects_name_is_not_self_
+confirmed` and its `tests/test_engine.py` sibling close it with a relative reproduction of
+the same shape, which cannot take the new short-circuit.
+
+**What this narrows, and what it does not.** The two-file basename collision residual
+above stays open for a *relative* `needed` entry -- one that a real loader genuinely can
+resolve via `$ORIGIN`/`@rpath`/RPATH/RUNPATH, which is the ordinary auditwheel/delocate
+vendoring shape #57 was about -- and `test_a_relative_needed_entrys_basename_collision_
+still_confirms_bundled` (`tests/test_linkage.py`) and
+`test_the_documented_basename_collision_residual_still_carries_a_finding`
+(`tests/test_engine.py`) pin that this fix left it alone. What closes is the absolute
+case specifically: `test_an_absolute_needed_entrys_basename_collision_no_longer_confirms_
+bundled` and `test_an_absolute_needed_entry_beside_a_vendor_shaped_runpath_stays_system_
+even_incomplete` (`tests/test_linkage.py`), `test_an_absolute_basename_collision_no_
+longer_reads_as_bundled` (`tests/test_engine.py`), and
+`test_an_absolute_basename_collision_is_not_manufactured_bundled`
+(`tests/test_acceptance.py`, real ELF bytes) pin it end to end.
+
+**This can move more than the posture -- it can move the wheel's findings and
+`verdict.classes`, corrected here after review measured the first draft's claim.** An
+absolute entry that used to read `bundled` no longer disagrees with a second, genuinely
+system `needed` entry on the same object: before, the two combined into `mixed`
+(`_binary_posture`'s `sum((system, bundled, static)) > 1` check), which would have added
+`BIN_OPENSSL_LINKAGE_UNKNOWN` to the findings and `OPAQUE` to `verdict.classes`; after,
+both read `system`, so the object has one definite posture, not two, and the wheel reads
+plain `system` with `DERIVED_SYSTEM_OPENSSL_ONLY` instead. The headline `verdict.class`
+does **not** move for this specific reproduction -- it is `CONDITIONAL` both before and
+after, because `BIN_NEEDED_VENDORED_CRYPTO` already forces `CONDITIONAL` pre-fix on its
+own. What moves is the rule ids and the `classes` tuple, not the headline; an earlier
+draft of this entry claimed the headline moved too, and adversarial review measured both
+paths through `apply_rules` and `classify` to find that wrong before it shipped.
+`test_an_absolute_basename_collision_beside_a_real_system_match_no_longer_self_
+disagrees` (`tests/test_linkage.py`) pins the posture move at the `resolve_linkage`
+level; `test_an_absolute_basename_collision_is_not_manufactured_bundled` and
+`test_an_absolute_needed_entry_beside_an_unreadable_basename_collision_stays_system`
+(`tests/test_acceptance.py`) carry the full-record assertions on findings and
+`verdict.classes` the unit test does not itself make. The sharpest variant -- the object
+colliding by
+basename with the absolute entry is itself unreadable, not merely unrelated -- was
+checked to confirm it stays safe: the `openssl` answer is unaffected (the absolute entry
+answers on its own, unconditionally), and the unreadable member still gets its own
+`OPAQUE`-headline finding rather than being folded into, or silencing, that answer; the
+record never reads `NO_CRYPTO_DETECTED` and `needs_human_review` stays `true`.
+`test_an_absolute_needed_entry_beside_an_unreadable_basename_collision_stays_system`
+(`tests/test_acceptance.py`) pins that combination end to end.
+
+**What "absolute" means here, and what it deliberately does not cover.** The fix tests
+`info_original.startswith("/")` -- a genuinely absolute path. Adversarial review found
+the argument above ("no loader resolves this against anything the wheel ships") applies
+just as well to a shape the fix does not test for: a `needed` entry containing a slash
+that is not `/`-prefixed and not `@`-prefixed either, such as `../../hostlib/
+libcrypto.so.3` (glibc's loader skips every search-path list once `strchr(name, '/')` is
+non-null, exactly as it does for a leading `/`), and a Mach-O `@executable_path/...`
+entry, which resolves against the *interpreter binary*, never the wheel, and so is
+exactly as meaningless for `_resolves_within_wheel`'s basename match as an absolute path
+is -- yet still takes it, confirmed by reproduction. Both stay on the pre-#80 route,
+unnarrowed, and can still read a spurious `bundled` or `unknown` from an unrelated
+basename collision. This is not a regression -- neither shape was covered before #80
+either -- but it means the residual "Claim 1" above documents is narrower now for a
+literal absolute path specifically, not closed for every path a real loader would
+never resolve inside the wheel. Left open rather than widened here, since widening the
+predicate correctly needs to keep today's handling of `@rpath/`, `@loader_path/` and
+`@executable_path/` (each already meaningful and already tested) from being caught by
+the same net.
+
+**Whether an absolute-path basename collision can ever be a genuine vendored copy,
+rather than pure coincidence, is argued here from loader semantics, not measured
+against a real corpus.** The argument: whatever a wheel ships under a matching
+basename, an absolute `needed` entry's own dynamic loader resolves it literally, so
+that entry will load whatever is actually installed at that path on the machine
+running it -- never the wheel's own copy -- regardless of what the wheel happens to
+ship alongside it. A wheel whose build recorded an absolute, machine-specific path in
+`DT_NEEDED` for a library it also (separately) ships is a different problem from the
+one this fix answers -- such a wheel will not load that dependency correctly on any
+other machine either, absolute-path coincidence or not -- and is out of scope for the
+FIPS-provenance question `linkage` exists to answer. No real corpus run backs this
+argument the way #57's own 288-shape matrix backs its own claims, because none was
+available when this fix was made. Revisit with a `WCS_CORPUS_DIR` count of absolute
+`needed` entries whose `raw_stem` collides with a shipped object's stem if one becomes
+available; if that count is ever non-zero for a wheel that was not built by
+auditwheel/delvewheel/delocate, the honest answer for that specific intersection may be
+`LINKAGE_UNKNOWN` rather than `LINKAGE_SYSTEM`, not the wholesale short-circuit this fix
+takes.
+
+Tracked in [#80](https://github.com/EmilienM/wheel-crypto-scan/issues/80).
 
 ## A `needed` match and a definition inside one object are both true, so the object is `mixed`
 
