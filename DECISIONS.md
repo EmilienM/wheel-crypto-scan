@@ -3750,3 +3750,61 @@ Tracked in [#85](https://github.com/EmilienM/wheel-crypto-scan/issues/85), mirro
 building on the same load-command walk [#59](https://github.com/EmilienM/wheel-crypto-scan/issues/59),
 [#63](https://github.com/EmilienM/wheel-crypto-scan/issues/63) and
 [#84](https://github.com/EmilienM/wheel-crypto-scan/issues/84) already touched.
+
+## A `[[string_group]]` substring must be printable ASCII
+
+**Accepted.**
+
+Two performance fixes in `binfmt/strings.py`, both byte-identical by measurement, not
+by argument. `sanitize` was a per-character generator; a compiled regex over the
+complement of `PRINTABLE` (`_NON_PRINTABLE_RE`, quantified) is 13x faster on typical
+symbol names and 28x on one long ASCII name, checked against the generator over 400
+random cases spanning the full `str` code-point range including surrogates and the
+astral plane. `match_string_groups` re-sliced a hit's whole enclosing run every time
+its group matched inside it, which a crafted object could make quadratic: one
+continuous run with "OpenSSL 3." repeated every 10 bytes measured 0.29s at 4 MiB,
+scaling with the square of run length. Tracking the previously claimed run's end per
+group and skipping a hit that falls inside it removes the re-slicing; both changes
+needed no `ANALYZER_VERSION` bump.
+
+**The skip introduced a real gap, found during adversarial review before it shipped.**
+It assumes a `[[string_group]]` pattern can never match text spanning the `"\n"`
+`extract_printable` joins runs with -- true because every shipped substring is
+printable ASCII and `RUN_SEPARATOR` is not, but never enforced. A ruleset is
+user-supplied (`--ruleset`), and a substring built to span that separator on purpose
+(reachable only through an escaped literal containing a literal `"\n"`, since the
+loader builds every pattern via `re.escape`) made the skip drop a real match: `text =
+"Xb\nab\naY"` with substring `"b\na"` returns one hit instead of two, silently losing
+the second run's evidence. Fuzzed at 20,000 trials with substrings allowed to contain
+non-printable characters: 1,189 diverged from the pre-optimization behavior.
+
+**What was rejected.** Making the skip unconditional on the match's own content
+(`m.end() <= claimed_run_end`, dropping the `\n`-crossing assumption entirely) does not
+work: once a match has spanned a separator, the claimed run is no longer newline-free,
+so a later hit's boundaries would resolve against the wrong `"\n"`. The assumption has
+to hold, not be routed around.
+
+**How it is handled.** `ruleset_loader.py` refuses a `[[string_group]]` substring
+containing any non-printable-ASCII character at load time, the same way it refuses an
+empty substring list -- a substring that could only ever match by spanning the
+separator, or that could never match extracted text at all, is an authoring mistake
+either way, and nothing a rule author loses is expressive: extracted runs are
+printable ASCII by construction. `tests/test_binfmt_strings.py` pins the property
+itself against the shipped ruleset's compiled patterns, not just the substrings-are-
+printable proxy for it, so a future group kind (a raw regex, a case-insensitive flag)
+that kept the proxy green while letting a pattern cross the separator would still be
+caught.
+
+**Where the shared constant lives.** `PRINTABLE` moved from `binfmt/strings.py` to
+`evidence.py`, beside `PARTIAL_REASONS` and the other extractor vocabularies. The
+guard needs it in `ruleset_loader.py`, and importing it from `binfmt.strings` would
+have made the loader execute `binfmt/__init__.py` -- every reader, `pyelftools`
+included -- to reach one `range`. `evidence.py` is the leaf module every vocabulary
+like this already lives in; `ruleset_loader.py` keeps importing only leaf modules, the
+way it already does for `PARTIAL_REASONS`, and the loader-depends-on-binfmt edge this
+would otherwise have opened stays closed, the same edge "The loader moves to
+`ruleset_loader.py`, a sibling module, not a package" (above) already refused once
+from the other direction.
+
+Tracked in [#67](https://github.com/EmilienM/wheel-crypto-scan/issues/67) and
+[#70](https://github.com/EmilienM/wheel-crypto-scan/issues/70).

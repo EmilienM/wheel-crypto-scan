@@ -21,6 +21,14 @@ FORMAT_MACHO = "macho"
 FORMAT_PE = "pe"
 FORMAT_UNKNOWN = "unknown"
 
+# Printable characters only, so a corrupt string table entry can never smuggle control
+# bytes or non-ASCII garbage into the (supposedly stable) JSON record. This is the one
+# definition: every filter and regex class derived from it lives beside its own user
+# rather than here, so it stays a fact this module states, not a dependency this module
+# carries -- `binfmt.strings` imports it for extraction, `ruleset_loader` imports it to
+# refuse a `[[string_group]]` substring that could never match extracted text.
+PRINTABLE = range(0x20, 0x7F)
+
 # Why one object was not read in full. `BinaryEvidence.partial_analysis` is a single
 # boolean with a score of causes behind it, and six of them record no `ScanError` at
 # all,

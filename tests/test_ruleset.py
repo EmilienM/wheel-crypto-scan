@@ -591,6 +591,18 @@ def test_string_group_pattern_escapes_regex_metacharacters() -> None:
     assert patterns.string_group("openssl_banner").pattern.search("OpenSSL 3x0") is None
 
 
+def test_string_group_refuses_a_substring_outside_printable_ascii() -> None:
+    """`match_string_groups` recovers a hit's run by searching for "\\n" boundaries.
+
+    A substring that is not printable ASCII can only ever match by reaching across the
+    "\\n" `extract_printable` joins runs with -- never bytes an object actually carries
+    -- and letting one through would let a single hit's enclosing-run search swallow
+    the run after it. Refused at load time, the same way an empty substring list is.
+    """
+    with pytest.raises(RulesetError, match="printable ASCII"):
+        parse_ruleset(minimal(string_group=[{"name": "g", "substrings": ["a\nb"], "why": "bad"}]))
+
+
 def test_cargo_path_regex_extracts_crate_and_version() -> None:
     patterns = parse_ruleset(minimal()).compile_patterns().binary
     match = patterns.cargo_path_regex.search(

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
+import random
 import re
+import time
 
 from wheel_crypto_scan.binfmt.strings import (
     PRINTABLE,
+    RUN_SEPARATOR,
     ExtractedStrings,
     extract_printable,
     match_string_groups,
@@ -71,6 +74,85 @@ def test_match_string_groups_dedupes_and_sorts() -> None:
     assert matches == (matches[0],)  # only one distinct value survives dedup
 
 
+def test_match_string_groups_many_hits_in_one_run_still_dedupe_to_one() -> None:
+    """#67: repeated hits inside a single run must not multiply the survivors.
+
+    A run with many hits for the same group used to re-slice the whole run once per
+    hit, all producing the same value, which the set collapsed anyway. The fix skips
+    the re-slicing, but the result -- one match, the whole run -- must be unchanged.
+    """
+    run = "OpenSSL 3." * 50  # 50 hits for the same group, all inside one run
+    extracted = ExtractedStrings(text="junk\n" + run + "\nmore junk", truncated=False)
+    group = _group("openssl_banner", "OpenSSL 3.")
+    matches, truncated = match_string_groups(extracted, (group,), max_matches=64)
+    assert truncated is False
+    assert len(matches) == 1
+    assert matches[0].value == run
+
+
+def test_match_string_groups_resets_the_claimed_run_per_group() -> None:
+    """Each group claims its own run independently, even inside the same text.
+
+    If the claimed-run tracking were hoisted above the per-group loop instead of
+    reset for each group, `boringssl`'s hit -- which starts inside the span
+    `openssl_banner` already claimed -- would be wrongly skipped.
+    """
+    extracted = ExtractedStrings(text="junk\nOpenSSL 3.0 and BoringSSL\ntail", truncated=False)
+    groups = (_group("openssl_banner", "OpenSSL 3."), _group("boringssl", "BoringSSL"))
+    matches, truncated = match_string_groups(extracted, groups, max_matches=64)
+    assert truncated is False
+    assert {m.group for m in matches} == {"openssl_banner", "boringssl"}
+
+
+def test_run_separator_is_outside_printable() -> None:
+    """The one fact `match_string_groups`'s optimization depends on, named and pinned.
+
+    `RUN_SEPARATOR` has to stay outside `PRINTABLE`, or a group's pattern built from
+    printable-ASCII-only substrings could match across it, breaking the assumption
+    that a later hit inside a previously claimed run is always the same run.
+    """
+    assert ord(RUN_SEPARATOR) not in PRINTABLE
+
+
+def test_no_shipped_string_group_pattern_can_match_across_the_run_separator() -> None:
+    """#67's optimization depends on this property directly, not on the
+    substrings-are-printable-ASCII check `ruleset_loader` enforces as a proxy for it.
+
+    Pinned against the shipped ruleset rather than trusted from the proxy alone: a
+    future group kind (a regex escape hatch, a case-insensitive flag) could keep that
+    check green while letting a pattern match text containing `RUN_SEPARATOR`, which
+    would silently drop evidence the way `test_match_string_groups_resets_the_claimed_
+    run_per_group` guards for the per-group case.
+    """
+    for group in PATTERNS.string_groups:
+        for substring in group.substrings:
+            for split in range(1, len(substring)):
+                text = f"pad{substring[:split]}{RUN_SEPARATOR}{substring[split:]}pad"
+                for m in group.pattern.finditer(text):
+                    assert RUN_SEPARATOR not in m.group()
+
+
+def test_match_string_groups_does_not_go_quadratic_in_hits_per_run() -> None:
+    """#67: a crafted run with many hits for one group must stay roughly linear.
+
+    Before the fix, each hit re-sliced the whole enclosing run, so a run with `k`
+    hits cost O(k * run_length). At this shape (200,000 hits in a ~2 MB run),
+    reverting the fix measures ~3.5s; the 0.5s budget keeps a comfortable margin
+    below the fixed time (~0.01s) while staying well clear of that reverted time too,
+    rather than sitting close enough to either that host noise could flip the result.
+    """
+    run = "OpenSSL 3." * 200_000
+    extracted = ExtractedStrings(text=run, truncated=False)
+    group = _group("openssl_banner", "OpenSSL 3.")
+    start = time.perf_counter()
+    matches, truncated = match_string_groups(extracted, (group,), max_matches=64)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.5, f"match_string_groups took {elapsed:.2f}s"
+    assert truncated is False
+    assert len(matches) == 1
+    assert matches[0].value == run
+
+
 def test_match_string_groups_caps_after_sorting_deterministically() -> None:
     text = "\n".join(f"BLAKE2-{i:02d}" for i in range(5))
     extracted = ExtractedStrings(text=text, truncated=False)
@@ -98,6 +180,45 @@ def test_sanitize_keeps_printable_ascii_unchanged() -> None:
 def test_sanitize_drops_control_bytes_and_non_ascii() -> None:
     """A corrupt string table must not be able to reach the JSON record."""
     assert sanitize("EVP\x00_Digest\x1b[31m\u00e9\x7f") == "EVP_Digest[31m"
+
+
+def _sanitize_reference(text: str) -> str:
+    """The pre-#70 per-character generator, kept only so the two can't silently drift.
+
+    `sanitize` itself is now a compiled-regex `.sub`; this is the original
+    character-by-character definition it replaced, pinned here so a future edit to
+    one without the other is caught rather than assumed equivalent.
+    """
+    return "".join(ch for ch in text if ord(ch) in PRINTABLE)
+
+
+def test_sanitize_matches_the_reference_generator_over_a_random_corpus() -> None:
+    """#70: a compiled regex must stay byte-identical to the generator it replaced.
+
+    The random sample spans the full `str` code-point range, not just the 0x00-0x1ff
+    the issue itself checked, so it also covers the lone-surrogate and astral-plane
+    code points that are the only place a code-point-wise `re` class could plausibly
+    diverge from the generator's `ord()` check.
+    """
+    rng = random.Random(0xC0FFEE)
+    cases = [
+        "",
+        "\x00" * 8,
+        "".join(chr(c) for c in PRINTABLE),
+        "A\ud800B",  # a lone surrogate, not a valid encodable code point on its own
+        chr(0x10FFFF),  # the highest code point `str` can hold
+        "EVP\U0001f600Digest",  # astral-plane (emoji)
+    ]
+    cases.extend(
+        "".join(chr(rng.randint(0x00, 0x1FF)) for _ in range(rng.randint(0, 200)))
+        for _ in range(200)
+    )
+    cases.extend(
+        "".join(chr(rng.randint(0x00, 0x10FFFF)) for _ in range(rng.randint(0, 200)))
+        for _ in range(200)
+    )
+    for text in cases:
+        assert sanitize(text) == _sanitize_reference(text), repr(text)
 
 
 # --- scan_strings ------------------------------------------------------------

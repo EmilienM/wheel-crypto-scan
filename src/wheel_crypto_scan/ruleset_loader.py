@@ -19,7 +19,7 @@ from typing import Any
 from packaging.utils import canonicalize_name
 
 from .errors import ERROR_KINDS, RulesetError
-from .evidence import PARTIAL_REASONS
+from .evidence import PARTIAL_REASONS, PRINTABLE
 from .ruleset import (
     BINDINGS,
     CONFIDENCES,
@@ -459,6 +459,18 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         substrings = tuple(sorted(_require(entry, "substrings", where)))
         if not substrings:
             raise RulesetError(f"{where}: has no substrings")
+        # `match_string_groups` runs this pattern over runs joined with
+        # `binfmt.strings.RUN_SEPARATOR`, and recovers each hit's enclosing run by
+        # searching outward for that separator, on the assumption that no group's
+        # pattern can ever match across it. A substring outside printable ASCII either
+        # can never match extracted text at all, or -- if it is the separator itself --
+        # is the one character whose presence would break that assumption; either way
+        # it names nothing a real object carries, since extracted runs are printable
+        # ASCII by construction, so it is refused here the same way an empty substring
+        # list is, rather than silently authoring a rule that can never fire or, worse,
+        # letting one hit's enclosing-run search swallow the boundary of a run after it.
+        if any(ord(ch) not in PRINTABLE for text in substrings for ch in text):
+            raise RulesetError(f"{where}: substrings must be printable ASCII")
         string_groups[name] = StringGroup(
             name=name,
             substrings=substrings,
