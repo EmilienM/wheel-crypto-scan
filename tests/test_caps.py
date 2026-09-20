@@ -27,6 +27,7 @@ from wheel_crypto_scan.binfmt.caps import cap
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.evidence import (
     ArtifactInventory,
+    BinaryEvidence,
     Evidence,
     RustCrate,
     StringMatch,
@@ -45,9 +46,9 @@ def _cargo(name: str, version: str) -> bytes:
     return f"{root}/{name}-{version}/src/lib.rs\x00".encode()
 
 
-def _scan(**builder):
-    data = ElfBuilder(**builder).build()
-    ev, errors = read_binary(io.BytesIO(data), "x.so", PATTERNS, vendored=False)
+def _evidence(data: bytes, path: str = "x") -> tuple[BinaryEvidence, Evidence]:
+    """Read `data` and wrap it in the one-binary wheel `Evidence` every helper here needs."""
+    ev, errors = read_binary(io.BytesIO(data), path, PATTERNS, vendored=False)
     wheel = Evidence(
         filename="demo-1.0-py3-none-any.whl",
         sha256="0" * 64,
@@ -56,7 +57,11 @@ def _scan(**builder):
         binaries=(ev,),
         errors=errors,
     )
-    linkage = resolve_linkage(RULESET, wheel)
+    return ev, wheel
+
+
+def _scan(**builder):
+    ev, linkage, wheel = _read(ElfBuilder(**builder).build(), path="x.so")
     return ev, linkage, {finding.rule_id for finding in apply_rules(RULESET, wheel, linkage)}
 
 
@@ -111,17 +116,9 @@ def test_a_symbol_group_survives_a_flood_of_an_earlier_group() -> None:
     assert len(ev.matched_symbols) == limit
 
 
-def _read(data: bytes):
-    ev, errors = read_binary(io.BytesIO(data), "x", PATTERNS, vendored=False)
-    wheel = Evidence(
-        filename="demo-1.0-py3-none-any.whl",
-        sha256="0" * 64,
-        size_bytes=1,
-        artifacts=ArtifactInventory(),
-        binaries=(ev,),
-        errors=errors,
-    )
-    return ev, resolve_linkage(RULESET, wheel)
+def _read(data: bytes, path: str = "x"):
+    ev, wheel = _evidence(data, path)
+    return ev, resolve_linkage(RULESET, wheel), wheel
 
 
 def _flooded(reader: str, n: int) -> bytes:
@@ -149,7 +146,7 @@ def test_every_reader_caps_symbols_a_group_at_a_time(reader) -> None:
     free to go back to a plain slice with the suite staying green.
     """
     limit = PATTERNS.limits.max_symbols_per_binary
-    ev, linkage = _read(_flooded(reader, limit + 6))
+    ev, linkage, _ = _read(_flooded(reader, limit + 6))
     assert "openssl" in {match.group for match in ev.matched_symbols}, reader
     assert linkage["openssl"] == "static", reader
     assert len(ev.matched_symbols) <= limit, reader
@@ -189,7 +186,7 @@ def test_the_binding_is_part_of_the_key_not_just_the_group(reader) -> None:
     the suite staying green.
     """
     limit = PATTERNS.limits.max_symbols_per_binary
-    ev, linkage = _read(_one_defined_behind_many_imported(reader, limit + 6))
+    ev, linkage, _ = _read(_one_defined_behind_many_imported(reader, limit + 6))
 
     bindings = {match.binding for match in ev.matched_symbols if match.group == "openssl"}
     assert bindings == {"imported", "defined"}, reader

@@ -309,8 +309,23 @@ def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> 
         tags=(MANYLINUX,),
         files={"fakenobits/_ext.abi3.so": bytes(payload)},
     )
+
+    tracemalloc.start()
+    start = time.monotonic()
     record = scan_wheel(wheel, context)  # must return promptly without 3 GiB of RSS
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the scan took {elapsed:.1f}s"
+    # Comfortably above the wheel-scan machinery's own bookkeeping, nowhere near the
+    # 3 GiB an unfixed reader would have to materialise to honour the declared size.
+    assert peak < 4 * 1024 * 1024, f"peaked at {peak} bytes"
     assert record["wheel"]["name"] == "fakenobits"
+    # Pins the NOBITS skip itself, not just the budget check behind it: without it this
+    # ordinary object reads OPAQUE with a spurious elf_parse_error.
+    assert record["binaries"][0]["partial_analysis"] is False
+    assert record["errors"] == []
 
 
 # --- #62: a SHF_COMPRESSED section's declared size is checked before it is inflated --

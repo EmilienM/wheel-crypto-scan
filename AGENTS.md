@@ -123,8 +123,9 @@ uvx --with tox-uv tox -e real      # opt-in, needs real wheels in WCS_CORPUS_DIR
 uv run wheel-crypto-scan scan /path/to/wheels -o index.jsonl --jobs 8
 ```
 
-Tests marked `real` and `hostbin` are deselected by default: they need downloaded wheels or
-host system libraries. Line length is 100.
+Tests marked `real` are deselected by default: they need a corpus of real wheels
+(`WCS_CORPUS_DIR`). Tests marked `hostbin` run by default and self-skip on a host without
+the system library they check. Line length is 100.
 
 ## Releasing
 

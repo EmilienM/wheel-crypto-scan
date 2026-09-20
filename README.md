@@ -138,8 +138,9 @@ uvx --with tox-uv tox -e lint
 ```
 
 Test fixtures are synthesised, including the ELF objects: the suite needs no compiler, no
-network and no committed binaries, and runs byte-identically anywhere. Tests against real
-downloaded wheels are behind the `real` marker; tests that read host system libraries are
+network and no committed binaries, and runs byte-identically anywhere. Tests against a
+corpus of real wheels (point `WCS_CORPUS_DIR` at a directory of `.whl` files, then run
+`tox -e real`) are behind the `real` marker; tests that read host system libraries are
 behind `hostbin`.
 
 Dependencies are `pyelftools` and `packaging`, and nothing else without asking.
