@@ -22,6 +22,7 @@ from helpers.binfmt import (
     MachOSym,
     PEBuilder,
     PEExport,
+    PEImport,
     build_fat,
 )
 from helpers.wheelbuilder import build_wheel
@@ -767,3 +768,113 @@ def test_a_pe_that_declares_no_import_is_not_opaque(context, tmp_path: Path) -> 
     assert record["binaries"][0]["symbol_counts"]["symtab"] == 1
     assert "BIN_OPAQUE" not in {f["rule_id"] for f in record["findings"]}
     assert record["verdict"]["conditions"]["openssl_linkage"] == "none"
+
+
+# --------------------------------------------------------------------------
+# .exe members are sniffed too (#65)
+#
+# `is_binary_member` accepted a member by suffix, by vendor path, by living in a
+# sniff directory with no dot in its name, or by the executable bit with no dot in
+# its name. `.exe` failed every route: the wrong suffix, and the dot disqualified it
+# from both "no dot" fallbacks. The same PE, shipped as `bin/openssl` on manylinux and
+# `openssl.exe` on win_amd64, used to be read on one platform and not the other.
+# --------------------------------------------------------------------------
+
+WIN_TAG = "cp312-cp312-win_amd64"
+
+
+def _openssl_pe() -> bytes:
+    """The issue's own reproduction: imports `KERNEL32.dll`, exports
+    `EVP_DigestInit_ex`, carries the OpenSSL banner in `.text`."""
+    return PEBuilder(
+        dll_name="openssl.exe",
+        imports=(PEImport("KERNEL32.dll", names=("ExitProcess",)),),
+        exports=(PEExport(EVP),),
+        text=OPENSSL_BANNER,
+    ).build()
+
+
+@pytest.mark.parametrize("suffix", ["", ".exe"])
+def test_an_exe_member_is_read_like_its_suffixless_equivalent(
+    context, tmp_path: Path, suffix: str
+) -> None:
+    wheel = build_wheel(
+        tmp_path / f"pkg-1.0-{WIN_TAG}.whl",
+        name="pkg",
+        version="1.0",
+        tags=(WIN_TAG,),
+        files={f"pkg-1.0.data/scripts/openssl{suffix}": _openssl_pe()},
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
+    assert "BIN_STATIC_OPENSSL" in record["verdict"]["rule_ids"]
+    assert len(record["artifacts"]["extensions"]) == 1
+
+
+def test_the_exe_and_suffixless_forms_produce_the_same_record_but_for_the_path(
+    context, tmp_path: Path
+) -> None:
+    """The direct pin of the issue's own reproduction pair: same bytes, same verdict,
+    same linkage, same extension count, differing only in the path each was shipped
+    at."""
+    plain = build_wheel(
+        subdir(tmp_path, "plain") / f"pkg-1.0-{WIN_TAG}.whl",
+        name="pkg",
+        version="1.0",
+        tags=(WIN_TAG,),
+        files={"pkg-1.0.data/scripts/openssl": _openssl_pe()},
+    )
+    exe = build_wheel(
+        subdir(tmp_path, "exe") / f"pkg-1.0-{WIN_TAG}.whl",
+        name="pkg",
+        version="1.0",
+        tags=(WIN_TAG,),
+        files={"pkg-1.0.data/scripts/openssl.exe": _openssl_pe()},
+    )
+    plain_record = scan(context, plain)
+    exe_record = scan(context, exe)
+    assert plain_record["verdict"] == exe_record["verdict"]
+    assert plain_record["artifacts"]["extensions"] == [
+        {"path": "pkg-1.0.data/scripts/openssl", "format": "pe"}
+    ]
+    assert exe_record["artifacts"]["extensions"] == [
+        {"path": "pkg-1.0.data/scripts/openssl.exe", "format": "pe"}
+    ]
+
+
+def test_a_malformed_exe_member_degrades_like_any_other_unreadable_binary(
+    context, tmp_path: Path
+) -> None:
+    """Garbage bytes named `.exe` (no `MZ` magic, so `FORMAT_UNKNOWN`) are sniffed and
+    read for strings, the same as garbage bytes named `.dll` always were: never a
+    crash, never silently dropped, and `OPAQUE` when nothing crypto-relevant turns up
+    -- the same shape `test_a_binary_that_yields_nothing_is_opaque` pins for ELF.
+    """
+    wheel = build_wheel(
+        tmp_path / f"pkg-1.0-{WIN_TAG}.whl",
+        name="pkg",
+        version="1.0",
+        tags=(WIN_TAG,),
+        files={"pkg-1.0.data/scripts/broken.exe": b"\x00" * 128},
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["class"] == "OPAQUE"
+    assert "BIN_OPAQUE" in record["verdict"]["rule_ids"]
+
+
+def test_a_pyd_member_is_unaffected_by_the_exe_fix(context, tmp_path: Path) -> None:
+    """Regression guard: the pre-existing PE routes (`.pyd`/`.dll`) are untouched."""
+    wheel = build_wheel(
+        tmp_path / f"winext-1.0-{WIN_TAG}.whl",
+        name="winext",
+        version="1.0",
+        tags=(WIN_TAG,),
+        files={
+            "winext/__init__.py": b"from winext import _ext\n",
+            "winext/_ext.pyd": _openssl_pe(),
+        },
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
+    assert len(record["artifacts"]["extensions"]) == 1
