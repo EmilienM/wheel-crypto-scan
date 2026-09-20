@@ -7,15 +7,18 @@ cache that served the wrong record.
 
 from __future__ import annotations
 
+import io
 import json
 import struct
 import time
 import tracemalloc
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
 from helpers.binfmt import (
+    SHF_COMPRESSED,
     DynSym,
     ElfBuilder,
     MachOBuilder,
@@ -23,11 +26,14 @@ from helpers.binfmt import (
     PEBuilder,
     PEExport,
     PEImport,
+    append_strtab_decoy,
+    patch_section_header,
 )
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import errors
 from wheel_crypto_scan.binfmt import pe, symtab
+from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import SbomComponent
 from wheel_crypto_scan.ruleset import load_ruleset
@@ -303,6 +309,174 @@ def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> 
     )
     record = scan_wheel(wheel, context)  # must return promptly without 3 GiB of RSS
     assert record["wheel"]["name"] == "fakenobits"
+
+
+# --- #62: a SHF_COMPRESSED section's declared size is checked before it is inflated --
+#
+# `Chdr.ch_size` is `SHT_NOBITS`'s `sh_size` one call deeper: an attacker-controlled
+# 64-bit field, except `Section.data()` actually decompresses that many bytes rather
+# than materialising zero ones. The issue's own reproduction is a 255 KiB object
+# declaring 256 MiB, peaking at 512 MiB on `main`. These two scale that down to a
+# declared 8 MiB against a 64 KiB budget -- the same shape, sized so the mutation
+# check below (reverting the fix and watching this fail) can actually decompress the
+# unfixed path in a normal test run rather than skipping it.
+
+
+def _compressed_chdr(ch_size: int, *, addralign: int = 1) -> bytes:
+    """A `SHF_COMPRESSED` section's `Elf64_Chdr`: `ELFCOMPRESS_ZLIB`, declaring `ch_size`."""
+    return struct.pack("<IIQQ", 1, 0, ch_size, addralign)
+
+
+def _compressed_zero_run(size: int) -> bytes:
+    """A real, honestly-declared `SHF_COMPRESSED` section of `size` zero bytes.
+
+    All zero compresses to a few KiB regardless of `size`, so the fixture itself, and
+    the honest compress/decompress this measures against, stay cheap -- only the
+    *declared*, logical size drives what an unfixed reader would inflate.
+    """
+    return _compressed_chdr(size) + zlib.compress(b"\x00" * size, 9)
+
+
+def test_a_compressed_elf_rodata_declaring_more_than_the_budget_does_not_allocate(
+    context,
+) -> None:
+    body = _compressed_zero_run(8 * 1024 * 1024)
+    data = patch_section_header(
+        ElfBuilder(rodata=body).build(), ".rodata", "sh_flags", SHF_COMPRESSED, bitwise_or=True
+    )
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_elf(
+        io.BytesIO(data),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=64 * 1024,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    # Comfortably above the budget's own bookkeeping, nowhere near the 8 MiB an
+    # unfixed reader would have to inflate to reach the same declared size.
+    assert peak < 2 * 1024 * 1024, f"peaked at {peak} bytes"
+    assert ev.partial_analysis is True
+    assert "elf_section_data_unread" in ev.partial_reasons
+    assert errs != ()
+
+
+def test_a_compressed_elf_dynstr_declaring_more_than_the_budget_does_not_allocate(
+    context,
+) -> None:
+    """The symbol-table half of the same exposure: `.dynsym`'s string table, resolved
+    through a corroborated decoy `SHT_STRTAB` the way #56's own tests already build
+    one, so the fixture can declare and (unfixed) genuinely inflate an 8 MiB
+    `.dynstr` without the builder needing a raw-bytes hook for the real one.
+    """
+    honest = ElfBuilder(dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),)).build()
+    body = _compressed_zero_run(8 * 1024 * 1024)
+    with_decoy, decoy_index = append_strtab_decoy(honest, body, sh_addr=0)
+    with_decoy = patch_section_header(
+        with_decoy, "", "sh_flags", SHF_COMPRESSED, bitwise_or=True, occurrence=2
+    )
+    repointed = patch_section_header(with_decoy, ".dynsym", "sh_link", decoy_index)
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_elf(
+        io.BytesIO(repointed),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=64 * 1024,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert peak < 2 * 1024 * 1024, f"peaked at {peak} bytes"
+    assert ev.partial_analysis is True
+    assert "elf_dynsym_unread" in ev.partial_reasons
+    assert ev.matched_symbols == ()
+    assert errs != ()
+
+
+def test_a_compressed_elf_go_buildinfo_declaring_more_than_the_budget_does_not_allocate(
+    context,
+) -> None:
+    """`.go.buildinfo` is the third call site sharing `_bounded_section_data`, found
+    while auditing every `.data()` call in `binfmt/elf.py` for the same exposure --
+    the issue itself only names `.rodata`/`.comment` and `.dynsym`/`.dynstr`. Unlike
+    those, `ElfBuilder` accepts `.go.buildinfo`'s raw bytes directly, so no decoy or
+    corroboration step is needed to control what it declares.
+    """
+    body = _compressed_zero_run(8 * 1024 * 1024)
+    data = patch_section_header(
+        ElfBuilder(go_buildinfo=body).build(),
+        ".go.buildinfo",
+        "sh_flags",
+        SHF_COMPRESSED,
+        bitwise_or=True,
+    )
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_elf(
+        io.BytesIO(data),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=64 * 1024,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert peak < 2 * 1024 * 1024, f"peaked at {peak} bytes"
+    assert ev.partial_analysis is True
+    assert "elf_go_buildinfo_unread" in ev.partial_reasons
+    assert errs != ()
+
+
+def test_a_nobits_named_go_buildinfo_does_not_allocate(context) -> None:
+    """A second, uncompressed exposure at the same call site: `Section.data()` checks
+    `SHT_NOBITS` before it checks `compressed` at all, and for a `SHT_NOBITS` section
+    returns `b"\\0" * data_size` with no file bytes read to justify the length --
+    `sh_size` occupies no file space by definition, so nothing bounds it against the
+    object's real size. `.dynsym`/`.dynstr` cannot be aimed at this: both are found by
+    `sh_type` itself (`SHT_DYNSYM`/`SHT_STRTAB`), which a section cannot also be
+    `SHT_NOBITS`. `.go.buildinfo` is found by name alone, with no `sh_type` check, so
+    it is the one call site this is reachable through -- three orders of magnitude
+    cheaper to build than the compressed reproduction above: 298 bytes, no zlib.
+    """
+    small = b"\xff Go buildinf:" + bytes([8, 2]) + b"\x00" * 16 + b"\x08go1.22.3"
+    data = ElfBuilder(go_buildinfo=small).build()
+    data = patch_section_header(data, ".go.buildinfo", "sh_type", 8)  # SHT_NOBITS
+    data = patch_section_header(data, ".go.buildinfo", "sh_size", 2048 * 1024 * 1024)
+    assert len(data) < 512, f"fixture itself is {len(data)} bytes"
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_elf(
+        io.BytesIO(data),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=64 * 1024,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert peak < 2 * 1024 * 1024, f"peaked at {peak} bytes"
+    assert ev.partial_analysis is True
+    assert "elf_go_buildinfo_unread" in ev.partial_reasons
+    assert errs != ()
 
 
 def test_a_mach_o_that_declares_a_giant_symbol_table_does_not_allocate(

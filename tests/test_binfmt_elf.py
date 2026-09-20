@@ -13,6 +13,7 @@ import dataclasses
 import io
 import os
 import struct
+import zlib
 
 import pytest
 
@@ -20,6 +21,7 @@ from helpers.binfmt import (
     E_SHNUM_OFFSET,
     EM_S390,
     EM_X86_64,
+    SHF_COMPRESSED,
     SHT_DYNAMIC,
     SHT_DYNSYM,
     SHT_PROGBITS,
@@ -443,6 +445,7 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
     from elftools.elf.elffile import ELFFile
 
     from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes
+    from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
 
     for elfclass, big_endian in ((64, False), (32, False), (64, True), (32, True)):
         symbols = tuple(DynSym(f"sym_{i:03d}", defined=(i % 3 == 0)) for i in range(60)) + (
@@ -461,7 +464,8 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
         # `ElfBuilder` always writes DT_STRTAB and every section's sh_addr as 0, so 0
         # is the value that corroborates `.dynstr` here -- this test is about the fast
         # reader agreeing with pyelftools, not about the sh_link/DT_STRTAB check.
-        read = _iter_symbols(elf, *_symbol_bytes(elf, section, 0))
+        table, dynstr, _unread = _symbol_bytes(elf, section, 0, MAX_STRINGS_BYTES)
+        read = _iter_symbols(elf, table, dynstr)
         actual = [(name, undefined) for name, undefined, resolved in read if resolved and name]
         assert actual == expected, f"mismatch for elfclass={elfclass} big_endian={big_endian}"
 
@@ -570,6 +574,162 @@ def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
     stream = io.BytesIO(ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build())
     ev, _ = read_elf(stream, "mod.so", PATTERNS, vendored=False, max_strings_bytes=8)
     assert ev.strings_truncated is True
+
+
+# --- #62: a SHF_COMPRESSED section's declared size is checked before it is inflated --
+#
+# `Section.data()` decompresses `Chdr.ch_size` bytes -- the logical, decompressed size,
+# an attacker-controlled 64-bit field -- before this reader ever gets to apply its own
+# byte budget. A 255 KiB object can declare and produce a 256 MiB buffer this way. The
+# fix reads `ch_size` (`section.data_size`, which pyelftools itself already parses
+# eagerly, cheaply, in `Section.__init__`) and refuses to call `.data()` at all once
+# that alone is over budget.
+
+
+def _compressed_chdr(ch_size: int, *, addralign: int = 1) -> bytes:
+    """A `SHF_COMPRESSED` section's `Elf64_Chdr`: `ELFCOMPRESS_ZLIB`, declaring `ch_size`."""
+    return struct.pack("<IIQQ", 1, 0, ch_size, addralign)
+
+
+def _compressed_section(payload: bytes) -> bytes:
+    """A real, honestly-declared `SHF_COMPRESSED` section body for `payload`."""
+    return _compressed_chdr(len(payload)) + zlib.compress(payload, 9)
+
+
+def test_a_compressed_rodata_declaring_more_than_the_budget_is_refused_not_inflated() -> None:
+    """Refused by the declared size alone, before the (here, real and honest) payload
+    is ever decompressed.
+
+    The payload genuinely does decompress to its declared 8 KiB -- this is not a
+    section whose bytes cannot be trusted, the way "elf section data unreadable" in
+    `tests/test_partial_reasons.py` is. Unfixed, `.data()` succeeds here and the
+    banner at the front of the buffer survives truncation to 4 KiB, so the object
+    reads as `strings_bytes_unread` rather than `elf_section_data_unread`: correct in
+    the sense the issue itself describes ("the record afterwards is correct... this
+    is cost, not evidence"), but only after the 8 KiB (a stand-in for the issue's own
+    512 MiB) was fully inflated to get there. Fixed, the declared size alone is over
+    budget and `.data()` is never called, so nothing is ever read from this section --
+    and `strings_truncated` stays `False`: the section was never read, so nothing
+    here can say how many of its bytes, if any, were genuine strings versus more of
+    whatever `ch_size` this large represents (see DECISIONS.md's note on this).
+    """
+    payload = BANNER + b"\x00" + b"\x00" * (8192 - len(BANNER) - 1)
+    body = _compressed_section(payload)
+    data = patch_section_header(
+        ElfBuilder(rodata=body).build(), ".rodata", "sh_flags", SHF_COMPRESSED, bitwise_or=True
+    )
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_ELF_SECTION_DATA_UNREAD in ev.partial_reasons
+    assert evidence.PARTIAL_STRINGS_BYTES_UNREAD not in ev.partial_reasons
+    assert ev.strings_truncated is False
+    assert any(e.kind == ELF_PARSE_ERROR for e in errs)
+    assert ev.matched_strings == ()
+
+
+def test_a_compressed_rodata_declaring_exactly_the_remaining_budget_still_reads() -> None:
+    """Exactly `remaining`, not more than it, so the section is refused nothing."""
+    payload = BANNER + b"\x00"
+    body = _compressed_section(payload)
+    data = patch_section_header(
+        ElfBuilder(rodata=body).build(), ".rodata", "sh_flags", SHF_COMPRESSED, bitwise_or=True
+    )
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=len(payload)
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert ev.strings_truncated is False
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+def test_a_compressed_rodata_under_the_budget_reads_normally() -> None:
+    """Regression guard: an honestly small compressed section still decompresses."""
+    payload = BANNER + b"\x00"
+    body = _compressed_section(payload)
+    data = patch_section_header(
+        ElfBuilder(rodata=body).build(), ".rodata", "sh_flags", SHF_COMPRESSED, bitwise_or=True
+    )
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=len(payload) * 4
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert [m.value for m in ev.matched_strings] == [BANNER.decode()]
+
+
+# `.dynsym`'s associated string table goes through the identical `.data()` call, via
+# `_bounded_section_data` shared with `.rodata` above -- a decoy `SHT_STRTAB`,
+# corroborated against `.dynamic`'s own `DT_STRTAB` the way #56 already requires, is
+# how a test can control what bytes `.dynsym` resolves names through without the
+# builder needing a raw-bytes hook for `.dynstr` itself. `sh_addr=0` is what
+# corroborates: `ElfBuilder` always writes `DT_STRTAB`'s own `d_ptr`, and every
+# section's `sh_addr`, as 0.
+
+_DYNSTR_NAME = "EVP_DigestInit_ex"
+_DYNSTR_PAYLOAD = b"\x00" + _DYNSTR_NAME.encode("ascii") + b"\x00"
+
+
+def _compressed_dynstr_decoy(honest: bytes, body: bytes) -> bytes:
+    with_decoy, decoy_index = append_strtab_decoy(honest, body, sh_addr=0)
+    with_decoy = patch_section_header(
+        with_decoy, "", "sh_flags", SHF_COMPRESSED, bitwise_or=True, occurrence=2
+    )
+    return patch_section_header(with_decoy, ".dynsym", "sh_link", decoy_index)
+
+
+def test_a_compressed_dynstr_declaring_more_than_the_budget_is_refused_not_inflated() -> None:
+    """As above, one level over: `.dynsym` has no truncate-and-continue of its own, so
+    unfixed this genuinely decompressing 8 KiB `.dynstr` is read in full regardless of
+    `max_strings_bytes` and the symbol resolves -- the exposure here is that nothing
+    ever refuses it, at any size. Fixed, `ch_size` alone over budget refuses it before
+    `.data()` runs, and the entry that named it comes back unresolved instead.
+    """
+    honest = ElfBuilder(dynsyms=(DynSym(_DYNSTR_NAME, defined=False),)).build()
+    payload = _DYNSTR_PAYLOAD + b"\x00" * (8192 - len(_DYNSTR_PAYLOAD))
+    body = _compressed_section(payload)
+    repointed = _compressed_dynstr_decoy(honest, body)
+    ev, errs = read_elf(
+        io.BytesIO(repointed), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_ELF_DYNSYM_UNREAD in ev.partial_reasons
+    assert ev.matched_symbols == ()
+    assert any(e.kind == ELF_PARSE_ERROR for e in errs)
+
+
+def test_a_compressed_dynstr_declaring_exactly_the_budget_still_resolves() -> None:
+    honest = ElfBuilder(dynsyms=(DynSym(_DYNSTR_NAME, defined=False),)).build()
+    body = _compressed_section(_DYNSTR_PAYLOAD)
+    repointed = _compressed_dynstr_decoy(honest, body)
+    ev, errs = read_elf(
+        io.BytesIO(repointed),
+        "mod.so",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=len(_DYNSTR_PAYLOAD),
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert {m.name for m in ev.matched_symbols} == {_DYNSTR_NAME}
+
+
+def test_a_compressed_dynstr_under_the_budget_resolves_normally() -> None:
+    honest = ElfBuilder(dynsyms=(DynSym(_DYNSTR_NAME, defined=False),)).build()
+    body = _compressed_section(_DYNSTR_PAYLOAD)
+    repointed = _compressed_dynstr_decoy(honest, body)
+    ev, errs = read_elf(
+        io.BytesIO(repointed),
+        "mod.so",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=len(_DYNSTR_PAYLOAD) * 4,
+    )
+    assert errs == ()
+    assert ev.partial_analysis is False
+    assert {m.name for m in ev.matched_symbols} == {_DYNSTR_NAME}
 
 
 # --- a header that does not parse costs the header, not the strings ----------
