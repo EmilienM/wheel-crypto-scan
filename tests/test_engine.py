@@ -179,6 +179,78 @@ def test_a_hash_renamed_dependency_is_treated_as_vendored(ruleset) -> None:
     assert "BIN_NEEDED_SYSTEM_OPENSSL" not in ids(findings)
 
 
+# --- BLOCKING 1 (adversarial review of #57): a resolved-but-unmangled needed entry
+# --- must carry its own finding, never a silent `bundled` ---------------------------
+
+
+def test_an_unmangled_needed_entry_resolving_to_a_shipped_object_gets_its_own_rule(
+    ruleset,
+) -> None:
+    """No vendor directory at all, so `BIN_BUNDLED_OPENSSL` (which reads the shipped
+    object's own `vendored_path`) does not fire here: `BIN_NEEDED_VENDORED_CRYPTO` is
+    the only thing standing between this `bundled` reading and `verdict.conditions`
+    saying `bundled` while `rule_ids` says nothing did -- the contradiction
+    `BIN_LINKED_CRYPTO_LIBRARY`'s own `why` says must never happen.
+    """
+    evidence = wheel(
+        binaries=(
+            binary("demo/_ext.so", needed=("libcrypto.so.3", "libc.so.6")),
+            binary("demo/libcrypto.so.3", soname="libcrypto.so.3", needed=("libc.so.6",)),
+        )
+    )
+    findings = run(ruleset, evidence)
+    finding = one(findings, "BIN_NEEDED_VENDORED_CRYPTO")
+    assert finding.verdict == "CONDITIONAL"
+    assert finding.needs_human_review is True
+    assert "BIN_BUNDLED_OPENSSL" not in ids(findings)
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" not in ids(findings)
+
+
+def test_a_self_referencing_absolute_system_dependency_is_not_manufactured_bundled(
+    ruleset,
+) -> None:
+    """The sharpest case the review found: one object, named `libcrypto.so`, declaring
+    an absolute, genuinely-system `/usr/lib64/libcrypto.so.3`. Before excluding an
+    object's own stem from its own answer, this read `bundled` with no rule behind it
+    at all -- `verdict.conditions.openssl_linkage == "bundled"` while `rule_ids` was
+    empty and `needs_human_review` was `false`.
+    """
+    evidence = wheel(
+        binaries=(
+            binary(
+                "fakecrypto/libcrypto.so",
+                soname="libcrypto.so",
+                needed=("/usr/lib64/libcrypto.so.3", "libc.so.6"),
+                matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            ),
+        )
+    )
+    findings = run(ruleset, evidence)
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in ids(findings)
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in ids(findings)
+    assert "BIN_NEEDED_VENDORED_CRYPTO" not in ids(findings)
+    assert "BIN_BUNDLED_OPENSSL" not in ids(findings)
+
+
+def test_the_documented_basename_collision_residual_still_carries_a_finding(ruleset) -> None:
+    """Two different objects that happen to share a basename (`DECISIONS.md`'s
+    accepted residual): the `bundled` classification may still be an imprecise false
+    positive from the coincidence, but it must never be silent about it.
+    """
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/libcrypto.so", soname="libcrypto.so", needed=("/usr/lib64/libcrypto.so.3",)
+            ),
+            binary("demo/plugins/libcrypto.so", soname="libcrypto.so", needed=("libc.so.6",)),
+        )
+    )
+    findings = run(ruleset, evidence)
+    finding = one(findings, "BIN_NEEDED_VENDORED_CRYPTO")
+    assert finding.verdict == "CONDITIONAL"
+    assert finding.needs_human_review is True
+
+
 def test_imported_and_defined_symbols_produce_different_rules(ruleset) -> None:
     imported = wheel(
         binaries=(

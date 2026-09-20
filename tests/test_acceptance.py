@@ -175,6 +175,286 @@ def test_a_statically_linked_wheel_is_not_mistaken_for_system_linked(context, st
 
 
 # --------------------------------------------------------------------------
+# delocate: bundled without a rename (#57)
+#
+# delocate, the macOS counterpart of auditwheel, copies a dependency into `.dylibs/`
+# and rewrites the load command to point there -- but never renames the file the way
+# auditwheel and delvewheel do. `mangled` alone therefore cannot tell "system" from
+# "bundled" for a plain `libcrypto.3.dylib` dependency.
+# --------------------------------------------------------------------------
+
+MACOS_TAG = "cp312-cp312-macosx_11_0_arm64"
+
+
+def _delocate_extension(needed: tuple[str, ...], rpaths: tuple[str, ...] = ()) -> bytes:
+    return MachOBuilder(
+        load_dylibs=("/usr/lib/libSystem.B.dylib", *needed),
+        rpaths=rpaths,
+        symbols=(
+            MachOSym("_PyInit__ext", True),
+            MachOSym("_EVP_DigestInit_ex", False),
+        ),
+    ).build()
+
+
+def _delocate_libcrypto(id_dylib: str) -> bytes:
+    return MachOBuilder(
+        id_dylib=id_dylib,
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(
+            MachOSym("_EVP_DigestInit_ex", True),
+            MachOSym("_SSL_new", True),
+        ),
+    ).build()
+
+
+@pytest.fixture
+def delocate_loader_path_wheel(tmp_path: Path) -> Path:
+    """`@loader_path/.dylibs/libcrypto.3.dylib`, delocate's usual load-command form."""
+    return build_wheel(
+        tmp_path / f"fakecrypto-42.0.5-{MACOS_TAG}.whl",
+        name="fakecrypto",
+        version="42.0.5",
+        tags=(MACOS_TAG,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _ext\n",
+            "fakecrypto/_ext.cpython-312-darwin.so": _delocate_extension(
+                needed=("@loader_path/.dylibs/libcrypto.3.dylib",)
+            ),
+            "fakecrypto/.dylibs/libcrypto.3.dylib": _delocate_libcrypto(
+                "@loader_path/libcrypto.3.dylib"
+            ),
+        },
+    )
+
+
+@pytest.fixture
+def delocate_rpath_wheel(tmp_path: Path) -> Path:
+    """`@rpath/libcrypto.3.dylib` with an `LC_RPATH` pointing at `.dylibs/`."""
+    return build_wheel(
+        tmp_path / f"fakecrypto-42.0.5-{MACOS_TAG}.whl",
+        name="fakecrypto",
+        version="42.0.5",
+        tags=(MACOS_TAG,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _ext\n",
+            "fakecrypto/_ext.cpython-312-darwin.so": _delocate_extension(
+                needed=("@rpath/libcrypto.3.dylib",), rpaths=("@loader_path/.dylibs",)
+            ),
+            "fakecrypto/.dylibs/libcrypto.3.dylib": _delocate_libcrypto(
+                "@loader_path/libcrypto.3.dylib"
+            ),
+        },
+    )
+
+
+@pytest.fixture
+def unmangled_vendor_dir_wheel(tmp_path: Path) -> Path:
+    """The ELF shape of the same gap: a vendor directory whose library was never
+    hash-renamed, resolved through a plain RUNPATH rather than a load-command path."""
+    return build_wheel(
+        subdir(tmp_path, "unmangled") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="42.0.5",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libcrypto.so.3", "libc.so.6"),
+                runpath=("$ORIGIN/../fakecrypto.libs",),
+                dynsyms=(DynSym(EVP, defined=False),),
+            ),
+            "fakecrypto.libs/libcrypto.so.3": ElfBuilder(
+                soname="libcrypto.so.3",
+                needed=("libc.so.6",),
+                dynsyms=(DynSym(EVP, defined=True),),
+                rodata=OPENSSL_BANNER,
+            ).build(),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["delocate_loader_path_wheel", "delocate_rpath_wheel", "unmangled_vendor_dir_wheel"],
+)
+def test_an_unmangled_vendored_dependency_is_bundled_not_mixed(context, request, fixture_name):
+    """Before #57: `mixed`, plus `BIN_OPENSSL_LINKAGE_UNKNOWN` and
+    `BIN_NEEDED_SYSTEM_OPENSSL` both fired -- an unmangled `needed` entry read as
+    the system library even though the wheel plainly ships its own copy right next
+    to it.
+    """
+    wheel = request.getfixturevalue(fixture_name)
+    record = scan(context, wheel)
+    rule_ids = {f["rule_id"] for f in record["findings"]}
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "bundled"
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_BUNDLED_OPENSSL" in rule_ids
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" not in rule_ids
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" not in rule_ids
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in rule_ids
+
+
+# --------------------------------------------------------------------------
+# Adversarial review of #57, two BLOCKING findings
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def self_colliding_wheel(tmp_path: Path) -> Path:
+    """BLOCKING 1, sharpest repro: one object, no vendor directory, no second file.
+
+    Its own file name happens to reduce to the same stem as an absolute, genuinely
+    system dependency it declares, which must not let it answer its own question.
+    """
+    return build_wheel(
+        subdir(tmp_path, "self-collision") / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import libcrypto\n",
+            "fakecrypto/libcrypto.so": extension(
+                soname="libcrypto.so",
+                needed=("/usr/lib64/libcrypto.so.3", "libc.so.6"),
+                dynsyms=(DynSym(EVP, defined=False),),
+            ),
+        },
+    )
+
+
+@pytest.fixture
+def basename_collision_wheel(tmp_path: Path) -> Path:
+    """BLOCKING 1, the residual that stays possible after fixing the sharpest repro:
+    two genuinely different objects that happen to share a basename. The `bundled`
+    reading may still be an imprecise false positive from the coincidence -- that is
+    the accepted residual `DECISIONS.md` documents -- but it must carry a finding.
+    """
+    return build_wheel(
+        subdir(tmp_path, "basename-collision") / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import libcrypto\n",
+            "fakecrypto/libcrypto.so": extension(
+                soname="libcrypto.so",
+                needed=("/usr/lib64/libcrypto.so.3", "libc.so.6"),
+                dynsyms=(DynSym(EVP, defined=False),),
+            ),
+            "fakecrypto/plugins/libcrypto.so": extension(soname="libcrypto.so"),
+        },
+    )
+
+
+def test_a_self_referencing_dependency_is_not_manufactured_bundled(context, self_colliding_wheel):
+    """Before this fix: `openssl_linkage: bundled`, `verdict.class:
+    NO_CRYPTO_DETECTED`, `rule_ids: []`, `needs_human_review: false` -- a wheel that
+    plainly, only links the system OpenSSL, read as if nothing had been found at all.
+    """
+    record = scan(context, self_colliding_wheel)
+    rule_ids = {f["rule_id"] for f in record["findings"]}
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in rule_ids
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in rule_ids
+    assert "BIN_NEEDED_VENDORED_CRYPTO" not in rule_ids
+    assert "BIN_BUNDLED_OPENSSL" not in rule_ids
+    assert record["verdict"]["needs_human_review"] is True
+
+
+def test_the_basename_collision_residual_is_never_silent(context, basename_collision_wheel):
+    """The classification may still be an imprecise `bundled` from the coincidence --
+    that residual imprecision is the accepted trade -- but `rule_ids` must never be
+    empty and `needs_human_review` must never be `false` for it.
+    """
+    record = scan(context, basename_collision_wheel)
+    assert record["findings"], "a bundled reading must always carry a finding"
+    assert record["verdict"]["needs_human_review"] is True
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+@pytest.fixture
+def elf_system_openssl_with_unrelated_vendoring_wheel(tmp_path: Path) -> Path:
+    """BLOCKING 2: a FIPS-conscious build that genuinely links the system OpenSSL
+    (auditwheel's `--exclude libcrypto.so.3`) while vendoring an unrelated library,
+    libjpeg, in the same wheel. The vendor-shaped `RUNPATH` is about libjpeg, not
+    OpenSSL.
+    """
+    return build_wheel(
+        subdir(tmp_path, "elf-unrelated-vendoring") / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libcrypto.so.3", "libc.so.6"),
+                runpath=("$ORIGIN/../fakecrypto.libs",),
+                dynsyms=(DynSym(EVP, defined=False),),
+            ),
+            "fakecrypto.libs/libjpeg.so.8": ElfBuilder(
+                soname="libjpeg.so.8", needed=("libc.so.6",)
+            ).build(),
+        },
+    )
+
+
+@pytest.fixture
+def macho_system_openssl_with_unrelated_vendoring_wheel(tmp_path: Path) -> Path:
+    """The same shape via `LC_RPATH`: the wheel vendors an unrelated libjpeg under
+    `.dylibs/`, but the extension's own OpenSSL dependency is an absolute, genuinely
+    system path.
+    """
+    return build_wheel(
+        tmp_path / f"fakecrypto-1.0-{MACOS_TAG}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MACOS_TAG,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _ext\n",
+            "fakecrypto/_ext.cpython-312-darwin.so": MachOBuilder(
+                load_dylibs=("/usr/lib/libSystem.B.dylib", "/usr/lib/libcrypto.3.dylib"),
+                rpaths=("@loader_path/.dylibs",),
+                symbols=(
+                    MachOSym("_PyInit__ext", True),
+                    MachOSym("_EVP_DigestInit_ex", False),
+                ),
+            ).build(),
+            "fakecrypto/.dylibs/libjpeg.9.dylib": MachOBuilder(
+                id_dylib="@loader_path/libjpeg.9.dylib",
+                load_dylibs=("/usr/lib/libSystem.B.dylib",),
+            ).build(),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "elf_system_openssl_with_unrelated_vendoring_wheel",
+        "macho_system_openssl_with_unrelated_vendoring_wheel",
+    ],
+)
+def test_vendoring_something_else_does_not_downgrade_a_genuine_system_link(
+    context, request, fixture_name
+):
+    """Before this fix: `openssl_linkage: unknown`, `verdict.class: OPAQUE`,
+    `BIN_OPENSSL_LINKAGE_UNKNOWN` -- a vendor-shaped `RPATH`/`RUNPATH` alone was
+    enough to downgrade a plain, genuine system dependency, even though nothing the
+    wheel ships could possibly be what it names.
+    """
+    wheel = request.getfixturevalue(fixture_name)
+    record = scan(context, wheel)
+    rule_ids = {f["rule_id"] for f in record["findings"]}
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_NEEDED_SYSTEM_OPENSSL" in rule_ids
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in rule_ids
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" not in rule_ids
+
+
+# --------------------------------------------------------------------------
 # The rest of the corpus
 # --------------------------------------------------------------------------
 
