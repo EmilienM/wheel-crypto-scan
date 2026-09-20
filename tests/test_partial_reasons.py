@@ -37,6 +37,7 @@ from helpers.binfmt import (
     patch_section_header,
     patch_u16,
 )
+from helpers.binfmt.macho import LC_LOAD_DYLIB
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import elf as elf_module
 from wheel_crypto_scan.binfmt import read_binary
@@ -210,6 +211,14 @@ _REACHABILITY: dict[str, bytes] = {
             b"\x00" * 64,
         ]
     ),
+    # #59: a dylib-loading command whose name offset lands outside its own body. No
+    # name payload at all, so the offset has nothing to point at.
+    "macho dylib name unread": MachOBuilder(
+        id_dylib="libfoo.dylib",
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+        malformed_dylib_cmd=LC_LOAD_DYLIB,
+        malformed_dylib_name_offset=1000,
+    ).build(),
 }
 
 
@@ -681,6 +690,7 @@ _BYTE_REACHABLE = {
     "macho header unread": [evidence.PARTIAL_MACHO_HEADER_UNREAD],
     "macho stripped": [evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE],
     "macho fat slice unread": [evidence.PARTIAL_MACHO_FAT_SLICE_UNREAD],
+    "macho dylib name unread": [evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD],
     "pe header unread": [evidence.PARTIAL_PE_HEADER_UNREAD],
     "pe ordinal import": [evidence.PARTIAL_PE_ORDINAL_IMPORT],
     "unknown format": [evidence.PARTIAL_NO_STRUCTURAL_READER],

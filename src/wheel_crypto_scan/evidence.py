@@ -101,6 +101,14 @@ PARTIAL_MACHO_SYMTAB_INCOMPLETE = "macho_symtab_incomplete"
 # A slice of a universal binary could not be read, or its header named one it did not
 # describe, so an architecture is unknown rather than clean.
 PARTIAL_MACHO_FAT_SLICE_UNREAD = "macho_fat_slice_unread"
+# A dylib-loading command (LC_LOAD_DYLIB and its LC_LOAD_WEAK_DYLIB, LC_LAZY_LOAD_DYLIB,
+# LC_LOAD_UPWARD_DYLIB and LC_REEXPORT_DYLIB siblings), LC_ID_DYLIB or LC_RPATH could
+# not have its string read: the offset is outside the command's own body, below where
+# a string could legitimately start, or the run it starts never closes. A dependency,
+# the object's own install name, or an rpath entry was lost rather than absent.
+# Records an error, the same way a PE import or export directory that could not be
+# walked in full does.
+PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD = "macho_load_command_string_unread"
 # The PE header chain would not parse.
 PARTIAL_PE_HEADER_UNREAD = "pe_header_unread"
 # The section table was cut short, so an address may resolve to the wrong bytes.
@@ -156,6 +164,7 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_MACHO_HEADER_UNREAD,
         PARTIAL_MACHO_SYMTAB_INCOMPLETE,
         PARTIAL_MACHO_FAT_SLICE_UNREAD,
+        PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD,
         PARTIAL_PE_HEADER_UNREAD,
         PARTIAL_PE_SECTION_TABLE_TRUNCATED,
         PARTIAL_PE_NO_IMPORT_DIRECTORY,

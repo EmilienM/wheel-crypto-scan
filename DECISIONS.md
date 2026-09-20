@@ -1454,3 +1454,149 @@ level rather than in `detail`, or if `weak_algorithms_only`'s definition of "wea
 needs to move for reasons unrelated to `usedforsecurity`.
 
 Tracked in [#58](https://github.com/EmilienM/wheel-crypto-scan/issues/58).
+
+## Every dylib-loading command reaches `needed`, not just `LC_LOAD_DYLIB`
+
+**Accepted, the direct Mach-O counterpart of #54's PE forwarder fix, and it changes
+what a re-exporting shim can hide.**
+
+`_read_thin` recognised exactly `LC_LOAD_DYLIB` and `LC_ID_DYLIB`. Four sibling
+commands share the identical `dylib_command` layout -- cmd, cmdsize, then
+name.offset, timestamp, current_version, compatibility_version -- and differ only in
+what the dynamic linker does with the name: `LC_LOAD_WEAK_DYLIB` tolerates the library
+being absent, `LC_LAZY_LOAD_DYLIB` and `LC_LOAD_UPWARD_DYLIB` are ordinary
+dependencies with different load timing, and `LC_REEXPORT_DYLIB` folds the target's
+exports into this object's own API surface. All four were silently skipped:
+
+```
+libcrypto.3.dylib via LC_LOAD_WEAK_DYLIB / LC_LAZY_LOAD_DYLIB / LC_LOAD_UPWARD_DYLIB
+-> before: needed drops it entirely, partial_analysis: false, openssl_linkage: unknown
+-> after:  needed carries it, openssl_linkage: system
+```
+
+The re-exporting shape is the sharper failure, and the one this entry tracks against
+#54's precedent directly: a shim whose whole job is re-exporting libcrypto read
+completely clean.
+
+```
+libshim.dylib   id: @rpath/libshim.dylib
+                needed: /usr/lib/libSystem.B.dylib
+                LC_REEXPORT_DYLIB -> /opt/homebrew/lib/libcrypto.3.dylib
+-> before: needed: ['/usr/lib/libSystem.B.dylib'], class: NO_CRYPTO_DETECTED,
+           openssl_linkage: none, needs_human_review: false
+-> after:  needed carries the re-exported dylib too, openssl_linkage: system,
+           class: CONDITIONAL, needs_human_review: true
+```
+
+**What changed.** `_LC_DYLIB_DEPENDENCIES`, a frozenset of the five command values
+`LC_LOAD_DYLIB` shares its struct with, replaces the single-value check in `_read_thin`.
+Every one of the five is read into `needed` the same way `LC_LOAD_DYLIB` always was;
+`LC_ID_DYLIB` stays a separate arm because it names this object, not a dependency.
+
+**No marker beyond `needed`, the same call #54 made.** The PE forwarder fix populated
+`needed` and `matched_symbols` and let the existing rules do their job, rather than
+inventing a "this dependency arrived via a forwarder" field. `linkage._binary_posture`
+reads `needed` first regardless of which of the five commands put an entry there, so
+that alone closes the shim case: `BIN_NEEDED_SYSTEM_OPENSSL` and
+`DERIVED_SYSTEM_OPENSSL_ONLY` fire on the resolved posture, not on which load command
+produced it. A `LC_REEXPORT_DYLIB` entry has less to distinguish it than a PE forwarder
+did in the first place -- the load command names only the target dylib, never a target
+symbol, so there is no per-symbol forwarding information to fold into
+`matched_symbols` the way `exports.forwarded_targets` did for PE. Asymmetric handling
+between the two formats would need a reason neither format's evidence gives one, and
+there is a second reason beside the missing per-symbol data: no rule anywhere reads
+"which load command produced this `needed` entry", so a distinguishing marker would
+have no consumer to read it. Collapsing five commands into one field is also the
+conservative direction for the one command that asserts slightly more than the object
+guarantees -- `LC_LOAD_WEAK_DYLIB` tolerates the library being absent at load time, so
+recording it exactly like an ordinary dependency can flag a wheel over a library that
+may never actually load. That is a choice, not an oversight: `needs_human_review` is
+what a false positive here costs, not a wrong verdict class, and the alternative --
+a weak dependency excluded from `needed` -- reopens the silent-drop shape this whole
+issue exists to close for a case a real object almost never exercises.
+
+**Every one of the six commands sharing `dylib_command`'s or `rpath_command`'s layout
+now has its string read the same way, through one function.** `_read_command_string`
+takes the fixed header size for whichever struct it is (`dylib_command`'s 24 bytes or
+`rpath_command`'s 12) and refuses two shapes an offset can take: below that header,
+which points at one of the command's own integer fields rather than a string the
+object spells out, and past the command's own body, which names nothing at all.
+Trusting an in-header offset is a decoy risk `dylib_command` genuinely has --
+`timestamp`, `current_version` and `compatibility_version` are three attacker-controlled
+32-bit fields with no structural meaning to this reader, so an offset landing on them
+can read whatever bytes are there as a name, and a crafted object can make that read
+back as a plausible dependency string that the object never named. `rpath_command` has
+no such room (`cmd` and `cmdsize` are the only fields ahead of the offset itself, and
+both are structurally constrained), so the same floor there is a consistency measure
+rather than a demonstrated risk; the test suite says so rather than claiming
+otherwise.
+
+**`macho_load_command_string_unread` is the one token for all of this, not a silent
+drop.** `_read_cstring` returning `None` used to conflate two different things: an
+offset the command's own bytes could not support, or (below) a non-ASCII byte that
+made the whole name unrecoverable. No existing token covered a per-command name
+failure -- the closest, `macho_symtab_incomplete`, is about `LC_SYMTAB` specifically --
+so this is a new one, following the naming already used for the format's other partial
+causes, and it covers `LC_RPATH` alongside the dylib-loading family and `LC_ID_DYLIB`:
+`elf_dynamic_unread` is the precedent for one ELF token covering `needed`, `soname`,
+`rpath` and `runpath` together, so one Mach-O token covering a dependency name, the
+object's own name and an rpath entry is the same shape, not a new one. It records an
+error, the way an unwalkable PE import or export directory does, and it is not on
+`[linkage_policy] exclude_reasons`: a lost load-command string is a lost dependency or
+a lost rpath entry, and #56's `elf_section_table_absent` is the precedent for costing
+the linkage answer rather than assuming the loss is harmless. `linkage._looks_vendored`
+reads `rpath` directly, so a lost rpath entry can misread a bundled library's posture
+in either direction, the same stakes a lost dependency name already had.
+
+**A non-ASCII byte in an install name, dependency name or rpath entry is sanitized,
+not dropped.** `_read_cstring` decoded with plain `.decode("ascii")`, which raised on
+any byte outside that range and was caught by returning `None` -- indistinguishable,
+to the caller, from an offset that pointed nowhere. `binfmt.elf` and `binfmt.pe` both
+decode permissively (`"utf-8", "replace"`) and then sanitize, so `_read_cstring` now
+does the same: a `libcrypto\x80-3.dylib` reads as `libcrypto-3.dylib` rather than
+vanishing along with whatever crypto evidence its dependency name carried.
+
+**What it costs.** `ANALYZER_VERSION` moves: a wheel already scanned under the old
+reader can produce a different record without changing on disk. A weak, lazy or
+upward-loaded system OpenSSL now resolves rather than reading `unknown`; a
+re-exporting shim moves off `NO_CRYPTO_DETECTED`; an object with an unreadable
+dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` string now reads `partial_analysis: true`
+instead of silently losing that dependency, name or rpath entry.
+
+**What was rejected.** A distinguishing marker for `LC_REEXPORT_DYLIB` beyond
+`needed`, covered above. Reusing `macho_symtab_incomplete` for the unreadable-string
+case, which would have named a `LC_SYMTAB`-specific cause for a failure that has
+nothing to do with the symbol table. A second token to keep `LC_RPATH` separate from
+the dylib-loading family, rejected on the `elf_dynamic_unread` precedent above.
+
+**Found by adversarial review, before this shipped.** Three gaps in the first version
+of this fix, none of them in the four sibling commands or the shim case above, which
+were the reproductions this issue named:
+
+- `_read_cstring`'s unterminated-run fallback (`end = len(body)` when no NUL was
+  found) survived the first pass untouched, because the issue's own reproductions
+  never removed a name's terminator. It is the identical failure `_iter_symbols`
+  already guards against for the symbol string table, in the same file, and it means
+  a name whose terminating NUL was clobbered read as a longer, wrong string with
+  `partial_analysis: false` rather than as an unreadable one. Now `None`, joining
+  `macho_load_command_string_unread` like every other unreadable case.
+- Nothing stopped a name or path offset from pointing inside the command's own fixed
+  header instead of past it. For `dylib_command`, `timestamp`, `current_version` and
+  `compatibility_version` are three free 32-bit fields with no structural meaning to
+  this reader, so a crafted offset could read a plausible-looking name out of them
+  that the object never spelled out anywhere -- the same shape #56 closed for ELF's
+  section tables. `_read_command_string`'s floor closes it here.
+- `LC_RPATH` kept the exact silent-drop shape this issue closes for the dylib-loading
+  family: an unreadable path offset lost the rpath entry with no error and no
+  `partial_reasons` token. `linkage._looks_vendored` reads `rpath` directly, so this
+  was not cosmetic.
+
+Revisit if a real wheel is found using `LC_REEXPORT_DYLIB` to re-export a specific
+symbol rather than a whole dylib -- nothing in this load command carries one, so this
+would have to come from `LC_DYLD_EXPORTS_TRIE`, already named as a blind spot in
+`binfmt.macho`'s module docstring. Also revisit `_read_thin`'s six-element positional
+return if a further per-command cause is ever added to it: this change is what took it
+from five elements to six, and a small dataclass would stop the signature growing by
+one every time a new failure mode joins it.
+
+Tracked in [#59](https://github.com/EmilienM/wheel-crypto-scan/issues/59).

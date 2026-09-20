@@ -14,6 +14,7 @@ import struct
 
 import pytest
 from helpers.binfmt import MachOBuilder, MachOSym, build_fat
+from helpers.binfmt.macho import LC_ID_DYLIB, LC_LOAD_DYLIB
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt.macho import read_macho
 from wheel_crypto_scan.errors import MACHO_PARSE_ERROR
@@ -1076,3 +1077,321 @@ def test_an_alias_row_cannot_launder_a_hidden_symbol() -> None:
     ev, errors = _read(data)
     assert errors == ()
     assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
+
+
+# --- #59: LC_LOAD_DYLIB's siblings, and a name offset outside its own body ----
+#
+# `_LC_DYLIB_DEPENDENCIES` in `binfmt.macho` reads `LC_LOAD_DYLIB`, `LC_LOAD_WEAK_DYLIB`,
+# `LC_LAZY_LOAD_DYLIB`, `LC_LOAD_UPWARD_DYLIB` and `LC_REEXPORT_DYLIB` into `needed` the
+# same way, because the dynamic linker resolves every one of them as a real dependency
+# at load time. Before #59, only `LC_LOAD_DYLIB` and `LC_ID_DYLIB` were read: the other
+# four were skipped without a trace, and a name offset outside a command's own body was
+# dropped the same silent way.
+
+
+@pytest.mark.parametrize(
+    "field", ["weak_load_dylibs", "lazy_load_dylibs", "upward_load_dylibs", "reexport_dylibs"]
+)
+def test_a_dylib_loading_sibling_command_reaches_needed(field: str) -> None:
+    """Each of `LC_LOAD_DYLIB`'s four siblings is read into `needed`, not skipped.
+
+    Before #59 these four command types were not recognised at all: the dependency
+    they name dropped out of `needed` with no trace, `partial_analysis` stayed False,
+    and a wheel that used one of them to reach libcrypto read as though it never
+    named the dependency.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(MachOSym("_PyInit__ext", defined=True), IMPORTED_OPENSSL),
+        **{field: ("/opt/homebrew/lib/libcrypto.3.dylib",)},
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.needed == ("/opt/homebrew/lib/libcrypto.3.dylib", "/usr/lib/libSystem.B.dylib")
+    assert ev.partial_analysis is False
+
+
+def test_a_reexporting_shim_no_longer_reads_clean() -> None:
+    """The reproduction from issue #59, the Mach-O analogue of #54's PE forwarder.
+
+    `LC_REEXPORT_DYLIB` folds the target's exports into this object's own API surface,
+    so a shim re-exporting libcrypto is itself an OpenSSL API surface in the sense
+    `linkage._binary_posture` cares about. Before #59 this read `NO_CRYPTO_DETECTED`
+    with `needs_human_review: false`, `openssl_linkage: none` and `needed` carrying
+    only libSystem: nothing about the object said it re-exported OpenSSL at all.
+    """
+    shim = MachOBuilder(
+        id_dylib="@rpath/libshim.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        reexport_dylibs=("/opt/homebrew/lib/libcrypto.3.dylib",),
+        symbols=(MachOSym("_shim_init", defined=True),),
+    ).build()
+    ev, errors = _read(shim, path="libshim.dylib")
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.needed == (
+        "/opt/homebrew/lib/libcrypto.3.dylib",
+        "/usr/lib/libSystem.B.dylib",
+    )
+
+    # The evidence alone is not the whole claim: run it through the same engine that
+    # decides the verdict, the way `test_binfmt_pe.py`'s forwarder test does for #54.
+    from wheel_crypto_scan.engine import apply_rules
+    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
+    from wheel_crypto_scan.linkage import resolve_linkage
+    from wheel_crypto_scan.ruleset import load_ruleset as _load_ruleset
+    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
+
+    ruleset = _load_ruleset()
+    wheel_evidence = Evidence(
+        filename="demo-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        metadata=MetadataEvidence(name="demo", canonical_name="demo", version="1.0"),
+        binaries=(ev,),
+    )
+    linkage = resolve_linkage(ruleset, wheel_evidence)
+    assert linkage["openssl"] != "none"
+    findings = apply_rules(ruleset, wheel_evidence, linkage)
+    verdict = classify(ruleset, findings, linkage)
+    assert verdict.headline != NO_CRYPTO_DETECTED
+    assert verdict.needs_human_review is True
+
+
+def test_a_dylib_name_offset_outside_its_own_body_is_a_partial_read() -> None:
+    """A name offset past the command's own body is a lost dependency, not silence.
+
+    Before #59 `_read_cstring` returning `None` here was treated exactly like a
+    command that simply had nothing else to say: the load command vanished with no
+    error and no `partial_reasons` entry, and `partial_analysis` stayed False.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        malformed_dylib_cmd=LC_LOAD_DYLIB,
+        malformed_dylib_name_offset=1000,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # The one dependency this object could name still reads.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+
+
+def test_an_id_dylib_name_offset_outside_its_own_body_is_a_partial_read_too() -> None:
+    """`LC_ID_DYLIB` shares the same struct and the same failure mode as its siblings.
+
+    It names the object itself rather than a dependency, but an unreadable offset is
+    an unreadable offset either way: `soname` is lost, not merely absent.
+    """
+    data = MachOBuilder(
+        id_dylib=None,
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        malformed_dylib_cmd=LC_ID_DYLIB,
+        malformed_dylib_name_offset=1000,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.soname is None
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+
+def test_a_command_too_short_to_carry_a_name_offset_is_a_partial_read() -> None:
+    """`len(body) < 12`: the offset field itself was never there to read.
+
+    Distinct from an offset that points outside the body: here the command does not
+    even carry enough bytes to say what the offset was.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        malformed_dylib_cmd=LC_LOAD_DYLIB,
+        malformed_dylib_cmdsize=8,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+
+
+def test_a_name_offset_below_the_command_header_is_not_trusted() -> None:
+    """A name offset inside `dylib_command`'s own fixed fields is a decoy, not a name.
+
+    `name_offset = 12` points at the `timestamp` field. `timestamp` is set to
+    `b"AAAA"` and `current_version` to zero (a NUL right after it), so a reader with
+    no floor check would resolve a clean, printable name -- "AAAA" -- out of an
+    integer field the object never used to name anything. The class of bug #56's ELF
+    work was the precedent for closing: this is deliberately not the all-zeros case,
+    which would sanitize to empty and pass whether or not the floor check exists.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        malformed_dylib_cmd=LC_LOAD_DYLIB,
+        malformed_dylib_name_offset=12,
+        malformed_dylib_header_fields=(0x41414141, 0, 0),
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # Not fabricated as a dependency: "AAAA" is nowhere in `needed`.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+
+
+def test_a_dylib_name_run_that_never_closes_is_not_fabricated() -> None:
+    """A name payload with no terminating NUL must not be read to the body's edge.
+
+    Taking the bytes that are there, unterminated, would report a name the object
+    does not fully spell out -- the exact shape `_iter_symbols` already guards
+    against for the symbol string table, and the "a name reported is a name read in
+    full" invariant this reader now holds everywhere else too.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        unterminated_dylib_name="/opt/homebrew/lib/libcrypto.3.dylib",
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # The name that never closed must not appear, fabricated or otherwise.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+
+
+def test_a_name_that_sanitizes_to_nothing_is_unread_not_empty() -> None:
+    """A NUL-terminated name whose every byte is stripped by `sanitize` is not a name.
+
+    Unlike `test_a_dylib_name_run_that_never_closes_is_not_fabricated`, this run DOES
+    close -- `_read_cstring` reads it in full -- so this pins the separate `or None` on
+    the sanitized result, not the unterminated-run check. Without it, an empty string
+    would land in `needed` as `''`: a dependency the record asserts and the object never
+    named, with `partial_analysis` staying false.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        all_nonprintable_dylib_name=True,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # No fabricated empty entry: only the one real dependency survives.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+    assert "" not in ev.needed
+
+
+def test_an_unreadable_rpath_is_a_partial_read_not_a_silent_drop() -> None:
+    """`LC_RPATH` shares the failure mode: an unreadable path is a lost rpath entry.
+
+    `linkage._looks_vendored` reads `rpath` to decide whether an `@rpath`-relative
+    dependency resolves inside the wheel, so silently dropping one can misread a
+    bundled library's posture in either direction.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        rpaths=("@loader_path/../lib",),
+        symbols=(IMPORTED_OPENSSL,),
+        malformed_rpath_name_offset=1000,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # The one rpath this object could name still reads.
+    assert ev.rpath == ("@loader_path/../lib",)
+
+
+def test_an_rpath_offset_below_its_command_header_is_rejected() -> None:
+    """`_read_command_string`'s floor applies to `rpath_command` too.
+
+    Unlike `dylib_command`, `rpath_command` has no fields beyond `cmd`, `cmdsize` and
+    the offset itself -- there is no attacker-controlled room inside its 12-byte
+    header to plant a printable decoy the way `dylib_command`'s version fields allow,
+    so this does not independently prove the floor rejects a fabricated name the way
+    `test_a_name_offset_below_the_command_header_is_not_trusted` does for dylibs. It
+    does pin the floor's other job: an in-header offset produces no rpath at all,
+    never a wrong one built from `cmd`/`cmdsize`'s own bytes.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        malformed_rpath_name_offset=4,
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    assert ev.rpath == ()
+
+
+def test_a_load_command_string_unread_in_one_fat_slice_still_flags_the_object() -> None:
+    """The `any(...)` merge across fat-binary slices: one bad slice is enough.
+
+    The clean slice's own dependency still has to survive the merge -- a partial
+    object is not the same claim as an empty one.
+    """
+    clean = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    malformed = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        malformed_dylib_cmd=LC_LOAD_DYLIB,
+        malformed_dylib_name_offset=1000,
+    ).build()
+    ev, errors = _read(build_fat([clean, malformed]), path="fat.dylib")
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD,)
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+
+
+def test_a_non_ascii_install_name_is_sanitized_not_dropped() -> None:
+    """A stray non-ASCII byte in a dependency name is sanitized, matching `binfmt.elf`.
+
+    Before #59 `_read_cstring` raised `UnicodeDecodeError` on a non-ASCII byte and the
+    caller treated that exactly like an out-of-bounds offset: the whole name was
+    dropped rather than the one byte that could not be kept.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("libcrypto\udc80-3.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.needed == ("libcrypto-3.dylib",)
+    assert ev.partial_analysis is False
+
+
+def test_the_plain_load_dylib_case_is_unchanged() -> None:
+    """Regression guard: the ordinary case #59 leaves untouched."""
+    data = MachOBuilder(
+        id_dylib="@rpath/libfoo.dylib",
+        load_dylibs=("/usr/lib/libcrypto.3.dylib", "/usr/lib/libSystem.B.dylib"),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.soname == "@rpath/libfoo.dylib"
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib", "/usr/lib/libcrypto.3.dylib")
+    assert ev.partial_analysis is False
