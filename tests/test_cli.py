@@ -5,17 +5,24 @@ from __future__ import annotations
 import json
 import os
 import threading
+import warnings
+import zipfile
 from pathlib import Path
 
 import pytest
 from helpers.binfmt import DynSym, ElfBuilder
 from helpers.wheelbuilder import build_wheel
 
-from wheel_crypto_scan import TOOL_NAME
+from wheel_crypto_scan import TOOL_NAME, cli, scan
+from wheel_crypto_scan.cache import RecordCache
 from wheel_crypto_scan.cli import main
+from wheel_crypto_scan.layers import binaries as binaries_layer
+from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.scan import ScanContext
 
 WEAK_HASH_SOURCE = b"import hashlib\n\ndigest = hashlib.md5()\n"
 CLEAN_SOURCE = b"VALUES = [1, 2, 3]\n"
+MANYLINUX = "cp39-abi3-manylinux_2_28_x86_64"
 
 
 @pytest.fixture
@@ -138,6 +145,241 @@ def test_resume_discards_a_truncated_final_line(corpus: Path, tmp_path: Path) ->
     out.write_text(text[: len(text) // 2], encoding="utf-8")
     main(["scan", str(corpus), "-o", str(out), "--no-cache", "--resume", "-q"])
     assert len(read_records(out)) == 2
+
+
+# --- transient failures (#64) ------------------------------------------------
+#
+# A `MemoryError` (or any exception `_collect` did not specifically anticipate) must
+# read as `unexpected_error`, never `bad_zip`, and a record carrying it must never be
+# treated as a final answer for that wheel -- not by the on-disk cache, and not by
+# `--resume` reading its own prior output back. Both are exercised through
+# `cli._scan_path` / `cli.main` directly rather than `scan_wheel` alone, because the
+# bug was never in what `scan_wheel` returns for one call: it was in what the caller
+# around it decided to do with that record afterward.
+
+
+def _flaky_collect(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Patches `scan._collect` to fail once with `MemoryError`, then behave normally."""
+    real_collect = scan._collect
+    calls = {"n": 0}
+
+    def flaky(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise MemoryError("simulated transient failure")
+        return real_collect(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(scan, "_collect", flaky)
+    return calls
+
+
+def test_a_transient_failure_is_retried_not_served_from_cache_forever(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reproduction from #64: one `MemoryError` must not calcify into a permanent
+    stale `OPAQUE` record that a later, successful attempt never gets to override.
+    """
+    wheel = build_wheel(
+        tmp_path / "flaky-1.0-py3-none-any.whl",
+        name="flaky",
+        version="1.0",
+        files={"flaky/__init__.py": WEAK_HASH_SOURCE},
+    )
+    calls = _flaky_collect(monkeypatch)
+    context = ScanContext.build(load_ruleset())
+    monkeypatch.setattr(cli, "_CONTEXT", context)
+    monkeypatch.setattr(
+        cli,
+        "_CACHE",
+        RecordCache(
+            root=tmp_path / "cache",
+            ruleset_version=context.ruleset.version,
+            evidence_level="standard",
+        ),
+    )
+
+    first = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 1
+    assert [error["kind"] for error in first["errors"]] == ["unexpected_error"]
+    assert first["verdict"]["class"] == "OPAQUE"
+    assert "WHEEL_SCAN_INTERRUPTED" in first["verdict"]["rule_ids"]
+
+    second = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 2, "a cached record must not stop the second attempt from happening"
+    assert second["errors"] == []
+    assert second["verdict"]["class"] == "FIPS_BREAKING"
+    assert "PY_WEAK_HASH_CALL" in second["verdict"]["rule_ids"]
+
+
+def test_a_genuinely_corrupt_zip_is_bad_zip_and_is_not_cached_either(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed zip is a specific, checked claim about the archive's own bytes, so
+    it keeps `bad_zip` rather than the new kind. It is cheap to re-fail -- nothing
+    past `zipfile.ZipFile()` ever ran -- so it is not cached either, the same as an
+    unexpected-error record.
+    """
+    wheel = tmp_path / "broken-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"not a zip")
+    context = ScanContext.build(load_ruleset())
+    monkeypatch.setattr(cli, "_CONTEXT", context)
+    monkeypatch.setattr(
+        cli,
+        "_CACHE",
+        RecordCache(
+            root=tmp_path / "cache",
+            ruleset_version=context.ruleset.version,
+            evidence_level="standard",
+        ),
+    )
+
+    record = json.loads(cli._scan_path(str(wheel)))
+    assert [error["kind"] for error in record["errors"]] == ["bad_zip"]
+    assert "WHEEL_UNREADABLE" in record["verdict"]["rule_ids"]
+    assert cli._CACHE.get(record["wheel"]["sha256"], wheel.name) is None
+
+
+def test_a_completed_scan_with_a_recorded_archive_error_is_still_cached(tmp_path: Path) -> None:
+    """A duplicate member name is recorded *alongside* a scan that otherwise ran to
+    completion, unlike `bad_zip`/`unexpected_error` where nothing past the open ever
+    happened. There is a real answer here, and it is not cheap to re-derive, so this
+    one must still be cached.
+    """
+    wheel = build_wheel(
+        tmp_path / "dupmember-1.0-py3-none-any.whl",
+        name="dupmember",
+        version="1.0",
+        files={"dupmember/__init__.py": WEAK_HASH_SOURCE},
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(wheel, "a") as archive:
+            archive.writestr(
+                zipfile.ZipInfo("dupmember/__init__.py", date_time=(1980, 1, 1, 0, 0, 0)),
+                WEAK_HASH_SOURCE,
+            )
+
+    cache_dir = tmp_path / "cache"
+    out = tmp_path / "out.jsonl"
+    args = ["scan", str(wheel.parent), "-o", str(out), "--cache-dir", str(cache_dir), "-q"]
+    assert main(args) == 0
+    record = read_records(out)[0]
+    assert "duplicate_member" in {error["kind"] for error in record["errors"]}
+    assert any(cache_dir.rglob("*.json"))
+
+
+def test_resume_does_not_treat_an_aborted_scan_as_already_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--resume` reads its own prior output back to decide what to skip. A wheel
+    whose only prior record is an aborted scan must be treated as still pending, the
+    same way the cache treats it, or a transient failure sticks just as permanently
+    through `--resume` as it did through the cache in #64.
+    """
+    wheel = build_wheel(
+        tmp_path / "flaky-1.0-py3-none-any.whl",
+        name="flaky",
+        version="1.0",
+        files={"flaky/__init__.py": WEAK_HASH_SOURCE},
+    )
+    calls = _flaky_collect(monkeypatch)
+    out = tmp_path / "out.jsonl"
+
+    main(["scan", str(wheel.parent), "-o", str(out), "--no-cache", "-q"])
+    first = read_records(out)
+    assert len(first) == 1
+    assert first[0]["verdict"]["class"] == "OPAQUE"
+    assert calls["n"] == 1
+
+    main(["scan", str(wheel.parent), "-o", str(out), "--no-cache", "--resume", "-q"])
+    second = read_records(out)
+    assert len(second) == 1
+    assert calls["n"] == 2, "resume must re-attempt a wheel whose only record is an aborted scan"
+    assert second[0]["verdict"]["class"] == "FIPS_BREAKING"
+
+
+def test_a_transient_member_read_failure_is_retried_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`MEMBER_READ_ERROR` is produced by the same shape of broad catch as
+    `UNEXPECTED_ERROR` -- just one layer deeper, around a single member instead of
+    the whole archive (`layers/binaries.py` here) -- so it carries the same risk: a
+    transient `MemoryError` reading one object must not calcify into a permanently
+    missing finding for that object.
+    """
+    wheel = build_wheel(
+        tmp_path / f"fakesodium-1.0-{MANYLINUX}.whl",
+        name="fakesodium",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakesodium/_ext.abi3.so": ElfBuilder(
+                needed=("libsodium.so.23", "libc.so.6"),
+                dynsyms=(DynSym("some_internal_symbol", defined=True),),
+            ).build()
+        },
+    )
+    real_read_binary = binaries_layer.read_binary
+    calls = {"n": 0}
+
+    def flaky(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise MemoryError("simulated transient failure")
+        return real_read_binary(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(binaries_layer, "read_binary", flaky)
+    context = ScanContext.build(load_ruleset())
+    monkeypatch.setattr(cli, "_CONTEXT", context)
+    monkeypatch.setattr(
+        cli,
+        "_CACHE",
+        RecordCache(
+            root=tmp_path / "cache",
+            ruleset_version=context.ruleset.version,
+            evidence_level="standard",
+        ),
+    )
+
+    first = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 1
+    assert first["binaries"] == []
+    assert [error["kind"] for error in first["errors"]] == ["member_read_error"]
+    assert first["verdict"]["class"] == "OPAQUE"
+    assert "WHEEL_MEMBER_UNREADABLE" in first["verdict"]["rule_ids"]
+
+    second = json.loads(cli._scan_path(str(wheel)))
+    assert calls["n"] == 2, "a cached record must not stop the second attempt from happening"
+    assert second["errors"] == []
+    assert len(second["binaries"]) == 1
+    assert second["verdict"]["conditions"]["libsodium_linkage"] == "system"
+    assert second["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+def test_resume_skips_a_malformed_line_instead_of_crashing_the_run(
+    corpus: Path, tmp_path: Path
+) -> None:
+    """`_scan_was_aborted` reads two levels deeper into a record than the surrounding
+    try/except originally guarded (`errors[i]["kind"]`). A line that parses as JSON
+    but not as a well-shaped record -- however that got into the output file -- must
+    still be dropped and rescanned like any other malformed line, not raise out of
+    `_run_scan` and take the rest of the wheels down with it.
+    """
+    out = tmp_path / "out.jsonl"
+    main(["scan", str(corpus), "-o", str(out), "--no-cache", "-q"])
+    lines = out.read_text(encoding="utf-8").splitlines()
+    target = next(i for i, line in enumerate(lines) if "weakhash" in line)
+    # A well-formed JSON object, wrong shape: "errors" is not a list of {"kind": ...}.
+    lines[target] = json.dumps(
+        {"wheel": {"filename": "weakhash-1.0-py3-none-any.whl"}, "errors": "x"}
+    )
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    assert main(["scan", str(corpus), "-o", str(out), "--no-cache", "--resume", "-q"]) == 0
+    records = read_records(out)
+    assert len(records) == 2
+    names = {record["wheel"]["name"] for record in records}
+    assert names == {"weakhash", "puredata"}
 
 
 # --- output targets -----------------------------------------------------------

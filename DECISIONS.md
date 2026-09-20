@@ -2382,3 +2382,146 @@ turns incomplete would be the sign `_MAX_SIZEOFCMDS` or the symbol-table budget 
 tighter than real Mach-O objects, not just tighter than an attacker's.
 
 Tracked in [#63](https://github.com/EmilienM/wheel-crypto-scan/issues/63).
+
+## A record produced without reading the wheel is never cached
+
+**Accepted.**
+
+`scan_wheel`'s outer `except Exception` -- the one AGENTS.md's "one bad wheel never
+aborts a run" names outright -- caught everything `_collect` could raise and recorded
+it under `errors.BAD_ZIP`, "Not a readable zip at all." That claim is specific and was
+wrong for this branch: a `MemoryError` under load, or any other exception `_collect`
+did not specifically anticipate, says nothing about whether the archive itself is
+readable. `cli._scan_path` then cached that record under the wheel's content hash
+unconditionally, so one transient failure made a wheel permanently `OPAQUE`: every
+later run, `--resume` included, served the same stale record back and never called
+`_collect` again, even though the condition that interrupted it was long gone.
+Reproduced directly: `_collect` monkeypatched to raise `MemoryError` on exactly its
+first call, `cli._scan_path` invoked twice against the same wheel and a fresh
+`RecordCache` -- on `main` before this fix, the second call returns the first call's
+cached line and `_collect` is never called again, even though the second attempt would
+have read the wheel correctly and found its real `hashlib.md5` call.
+
+**What changed.** Two independent pieces, both small.
+
+First, the outer `except Exception` now records `errors.UNEXPECTED_ERROR`
+(`"unexpected_error"`) instead of `errors.BAD_ZIP`. `BAD_ZIP` stays reserved for what
+it already specifically means: `WheelArchive.__init__` catching `zipfile.BadZipFile`,
+`OSError` or `ValueError` while opening the archive, and `WheelArchive.read` catching
+the same trio (plus `EOFError`) while reading a member -- both genuine, checked claims
+about the archive's own bytes, and both already routed through `errors.WheelReadError`
+rather than the broad catch. `WHEEL_SCAN_INTERRUPTED`, a sibling of `WHEEL_UNREADABLE`
+in `data/ruleset.toml` rather than an extension of it, claims the new kind: same
+`OPAQUE` verdict, same `needs_human_review`, because absence of evidence is still not
+evidence of absence regardless of why the evidence is absent -- but its own `why`, not
+`WHEEL_UNREADABLE`'s "not a readable zip at all," which would have been exactly the
+false claim this fix removes.
+
+Second, `cli._scan_path` no longer caches a record carrying one of a small set of
+kinds, and `cli._existing_records` (what `--resume` reads back) drops one the same way
+rather than treating it as already done. Both consult one fact,
+`errors.SCAN_ABORTED_KINDS`, in the shape AGENTS.md already gives `FORMAT_*` and
+`PARTIAL_REASONS`; which of them is safe to skip caching for lives in `cli.py`, where
+the caching decision was already made.
+
+**Narrow versus broad, and why broad -- and why the first version of "broad" was
+still wrong.** The issue that reported this named two options: skip caching only for
+the new kind, since that is the only one that is genuinely non-deterministic; or skip
+it for both `BAD_ZIP` and `UNEXPECTED_ERROR`, since a genuinely malformed zip is cheap
+to re-fail regardless -- nothing past `zipfile.ZipFile()` ever runs for either kind,
+so there is no real scan to redo either way. This entry originally read "skip caching
+any archive-stage error" as broader than either option and wrong, on the grounds that
+`DUPLICATE_MEMBER`, `SIZE_LIMIT_EXCEEDED`, `COMPRESSION_RATIO_EXCEEDED` and
+`MEMBER_READ_ERROR` are all recorded *alongside* a scan that otherwise ran to
+completion, so skipping the cache for any of them throws away a real, expensive answer
+for no benefit. That reasoning is right for the first three and wrong for the fourth,
+and an independent adversarial review caught it before this entry was accepted as
+final: "recorded alongside a completed scan" and "safe to cache" are not the same
+question. `DUPLICATE_MEMBER`, `SIZE_LIMIT_EXCEEDED` and `COMPRESSION_RATIO_EXCEEDED`
+(and `BINARY_TOO_LARGE`, which was never in this discussion because it never reaches
+this vocabulary from a `MEMBER_READ_ERROR`-shaped path) are computed purely from zip
+metadata already fully in hand -- a filename seen twice, a size field compared to a
+limit -- with no I/O and no broad exception catch anywhere on the path that records
+them, so the same wheel's bytes always produce the same one and caching is genuinely
+safe. `MEMBER_READ_ERROR` looks like it belongs in that group because it is also
+member-scoped rather than scan-aborting, but every site that records it
+(`wheelfile.read`, `layers/binaries.py`'s two catches around `open_member` and
+`read_binary`, `layers/metadata.py`'s three, `layers/python_ast.py`'s one) reaches it
+through a catch exactly as broad as the one this whole fix is about -- `except
+Exception`, or a name tuple wide enough to include `MemoryError` and `OSError`
+alongside a genuinely corrupt member -- so it carries the identical risk `BAD_ZIP` and
+`UNEXPECTED_ERROR` do: a transient failure permanently reads as a missing finding for
+that one object, cached and served back forever. The axis that actually decides
+whether caching a kind is safe is determinism, not "does the scan otherwise complete"
+or "is re-deriving it cheap" -- those happened to point the same way for the first
+three kinds and not for this one. `SCAN_ABORTED_KINDS` is `{BAD_ZIP, UNEXPECTED_ERROR,
+MEMBER_READ_ERROR}`: every archive- and member-stage kind this fix could find that
+cannot yet be proven deterministic, not every kind that aborts a scan or every kind
+cheap to redo, and not a claim that nothing else in the tool shares this shape. It does
+not reach `binfmt/`'s own `except Exception` catches (`binfmt/elf.py`, `macho.py`,
+`pe.py` each have several, recording `elf_parse_error`/`macho_parse_error`/
+`pe_parse_error` as `ScanError`s one layer below `MEMBER_READ_ERROR`), which have the
+identical risk and are out of this fix's scope -- see "Revisit if" below.
+`test_a_completed_scan_with_a_recorded_archive_error_is_still_cached` pins the three
+kinds that do stay cached, with a wheel carrying a genuine `duplicate_member` error
+and a real Python finding still found in the cache after the run that produced it;
+`test_a_transient_member_read_failure_is_retried_not_cached` pins the corrected
+kind, `read_binary` monkeypatched to raise `MemoryError` on exactly its first call
+against a wheel linking `libsodium.so.23` -- the first attempt records
+`member_read_error` with `binaries: []` and comes out `OPAQUE`, the second is not
+served from a cache entry the first attempt would otherwise have written, and finds
+the real linkage.
+
+**What was rejected.** Letting a `MemoryError`-class failure propagate out of
+`scan_wheel` instead of being caught at all, so the run stops rather than mislabels.
+Rejected on the same grounds `scan_wheel`'s own docstring already gives: a scan of
+tens of thousands of wheels that aborts on the first `MemoryError` loses every wheel
+after it, which is a worse outcome than one wheel temporarily `OPAQUE`. The existing
+`except Exception` stays; only what it records and whether that record is trusted as
+final changed.
+
+**What it costs.** `ANALYZER_VERSION` moves: a wheel that previously hit the broad
+`except Exception` branch serialized `errors: [{"kind": "bad_zip", ...}]` with
+`WHEEL_UNREADABLE` in `verdict.rule_ids`, and now serializes `unexpected_error` with
+`WHEEL_SCAN_INTERRUPTED` instead -- an unchanged wheel hitting that exact path
+produces a different record. That bump also has a useful side effect: it invalidates
+every cache entry written under the old, mislabelled kind, so a wheel already stuck
+`OPAQUE` from a past transient failure gets re-attempted by this fix too, not just
+wheels that fail from here on. `ruleset_version` moves for `WHEEL_SCAN_INTERRUPTED`
+itself. `schema_version` does not: `errors[].kind` is an open string with no
+enumerated values in `data/schema.json`, the same "new value, no bump" shape
+`SCHEMA.md` already documents for `partial_reasons`.
+
+Adding `MEMBER_READ_ERROR` to `SCAN_ABORTED_KINDS` moved neither version by itself.
+`ANALYZER_VERSION` governs whether an unchanged wheel produces a different *record*,
+and this correction changes only whether a record already produced gets cached --
+`scan_wheel`'s own output for a `MEMBER_READ_ERROR` wheel is exactly what it always
+was. It piggybacks on the bump above for a different reason: this whole fix was still
+an unreleased, unpushed commit when the correction landed, amended into it rather than
+shipped separately, so there was no earlier released `ANALYZER_VERSION = 27` whose
+cache entries needed invalidating -- nothing has run this code with `MEMBER_READ_ERROR`
+excluded from the skip set outside this branch. Had the narrower version already
+shipped, correcting it afterward would need the same bump the `bad_zip` ->
+`unexpected_error` relabelling took above, for the same reason: forcing re-evaluation
+of whatever the narrower version had already cached wrongly.
+
+Revisit if a real corpus run turns up a wheel where `UNEXPECTED_ERROR` or
+`MEMBER_READ_ERROR` fires repeatedly rather than transiently -- a deterministic bug
+masquerading as a transient one would mean the cache is doing pointless work
+re-attempting a wheel that will never read cleanly, which is the same admission test
+AGENTS.md asks of the `partial_reasons` carve-out, applied here to a kind instead: go
+and find a wheel this reads as "eventually fine" that never actually is. Also revisit
+if `layers/binaries.py`, `layers/metadata.py` or `layers/python_ast.py` ever grows a
+narrower catch that can tell a genuine content defect from a transient interruption
+apart for `MEMBER_READ_ERROR` specifically, the way this fix gave `_collect`'s own
+top-level catch `UNEXPECTED_ERROR` instead of leaving it inside `BAD_ZIP` -- at that
+point the narrower kind, not `MEMBER_READ_ERROR` itself, is what belongs in this set.
+
+`binfmt/elf.py`, `binfmt/macho.py` and `binfmt/pe.py` each catch broadly around their
+own parsing and record `elf_parse_error`/`macho_parse_error`/`pe_parse_error`, one layer
+below where `MEMBER_READ_ERROR` is produced -- the identical shape, not extended to here
+because it is a materially larger surface (many catch sites across three readers) than
+this fix's scope. Tracked separately in
+[#97](https://github.com/EmilienM/wheel-crypto-scan/issues/97).
+
+Tracked in [#64](https://github.com/EmilienM/wheel-crypto-scan/issues/64).
