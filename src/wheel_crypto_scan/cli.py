@@ -30,7 +30,8 @@ from .discovery import discover
 from .errors import SCAN_ABORTED_KINDS
 from .record import EVIDENCE_LEVELS, to_json_line
 from .report import render_markdown
-from .ruleset import Ruleset, load_ruleset
+from .ruleset import Ruleset
+from .ruleset_loader import load_ruleset
 from .scan import ScanContext, scan_wheel
 from .wheelfile import ArchiveLimits, hash_wheel
 

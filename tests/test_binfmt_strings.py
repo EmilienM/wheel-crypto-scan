@@ -13,7 +13,8 @@ from wheel_crypto_scan.binfmt.strings import (
     sanitize,
     scan_strings,
 )
-from wheel_crypto_scan.ruleset import StringGroup, load_ruleset
+from wheel_crypto_scan.ruleset import StringGroup
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
 

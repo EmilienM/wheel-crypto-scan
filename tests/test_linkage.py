@@ -43,7 +43,8 @@ from wheel_crypto_scan.linkage import (
     LINKAGE_UNKNOWN,
     resolve_linkage,
 )
-from wheel_crypto_scan.ruleset import LinkagePolicy, load_ruleset
+from wheel_crypto_scan.ruleset import LinkagePolicy
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 OPENSSL_BANNER = StringMatch(group="openssl_banner", value="OpenSSL 3.0.14 4 Jun 2024")
 

@@ -46,7 +46,7 @@ from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.evidence import ArtifactInventory, Evidence
 from wheel_crypto_scan.errors import RulesetError
 from wheel_crypto_scan.linkage import resolve_linkage
-from wheel_crypto_scan.ruleset import routine_reasons, load_ruleset, parse_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset, routine_reasons
 
 PATTERNS = load_ruleset().compile_patterns().binary
 

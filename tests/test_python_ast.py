@@ -14,7 +14,8 @@ import pytest
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan.layers.python_ast import scan_python_files, scan_python_source
-from wheel_crypto_scan.ruleset import PythonPatterns, load_ruleset
+from wheel_crypto_scan.ruleset import PythonPatterns
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.wheelfile import WheelArchive
 
 PATTERNS: PythonPatterns = load_ruleset().compile_patterns().python

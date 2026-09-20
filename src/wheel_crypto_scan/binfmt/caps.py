@@ -61,7 +61,7 @@ def cap(
 
     When the keys alone outnumber `limit` the lowest-sorting ones win, which is
     arbitrary -- but no more arbitrary than the truncation it replaces, and stable.
-    `ruleset.parse_ruleset` refuses a ruleset whose limits are small enough for that to
+    `ruleset_loader.parse_ruleset` refuses a ruleset whose limits are small enough for that to
     happen to the shipped groups, so reaching it means someone chose to.
     """
     ordered = sorted(items, key=lambda item: item.sort_key())

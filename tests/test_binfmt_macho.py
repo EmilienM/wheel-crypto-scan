@@ -19,7 +19,7 @@ from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import symtab
 from wheel_crypto_scan.binfmt.macho import _MAX_SIZEOFCMDS, read_macho
 from wheel_crypto_scan.errors import MACHO_PARSE_ERROR
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
 
@@ -1380,7 +1380,7 @@ def test_a_reexporting_shim_no_longer_reads_clean() -> None:
     from wheel_crypto_scan.engine import apply_rules
     from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
     from wheel_crypto_scan.linkage import resolve_linkage
-    from wheel_crypto_scan.ruleset import load_ruleset as _load_ruleset
+    from wheel_crypto_scan.ruleset_loader import load_ruleset as _load_ruleset
     from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
 
     ruleset = _load_ruleset()

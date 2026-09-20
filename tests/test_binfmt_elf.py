@@ -41,7 +41,7 @@ from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from wheel_crypto_scan.linkage import resolve_linkage
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
 
 PATTERNS = load_ruleset().compile_patterns().binary
@@ -480,7 +480,7 @@ def test_a_large_symbol_table_does_not_thrash_a_streamed_member(tmp_path) -> Non
     import zipfile
 
     from wheel_crypto_scan.binfmt.elf import read_elf
-    from wheel_crypto_scan.ruleset import load_ruleset
+    from wheel_crypto_scan.ruleset_loader import load_ruleset
     from wheel_crypto_scan.wheelfile import SeekableZipMember
 
     symbols = tuple(DynSym(f"filler_symbol_{i:06d}", defined=True) for i in range(20000))
@@ -523,7 +523,7 @@ def test_the_symbol_tables_are_read_in_the_order_they_sit_in_the_file(tmp_path) 
     import zipfile
 
     from wheel_crypto_scan.binfmt.elf import read_elf
-    from wheel_crypto_scan.ruleset import load_ruleset
+    from wheel_crypto_scan.ruleset_loader import load_ruleset
     from wheel_crypto_scan.wheelfile import SeekableZipMember
 
     symbols = tuple(DynSym(f"filler_{i:05d}", defined=True) for i in range(4000))

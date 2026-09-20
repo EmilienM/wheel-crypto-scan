@@ -27,7 +27,7 @@ from helpers.binfmt import (
 )
 from helpers.wheelbuilder import build_wheel
 
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext, scan_wheel
 
 OPENSSL_BANNER = b"OpenSSL 3.0.14 4 Jun 2024\x00"
