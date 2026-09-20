@@ -1791,3 +1791,249 @@ def test_the_plain_load_dylib_case_is_unchanged() -> None:
     assert ev.soname == "@rpath/libfoo.dylib"
     assert ev.needed == ("/usr/lib/libSystem.B.dylib", "/usr/lib/libcrypto.3.dylib")
     assert ev.partial_analysis is False
+
+
+# --- #85: LC_ID_DYLIB and LC_SYMTAB, more than one is ambiguous, not last-wins -------
+#
+# `binfmt.macho` set `soname` and `symtab` unconditionally on every `LC_ID_DYLIB` or
+# `LC_SYMTAB` it walked, so a second, decoy command silently overwrote the honest one
+# instead of being noticed. #56 closed the identical shape for ELF's section tables
+# (`elf_section_type_ambiguous`): more than one candidate of the same significant kind
+# is refused outright, not resolved by picking whichever one the walk reached last.
+
+
+def test_two_id_dylib_commands_leave_soname_unresolved() -> None:
+    """The baseline case #85 asks to mirror: a decoy `LC_ID_DYLIB` used to win outright."""
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib", extra_id_dylibs=("decoy.dylib",), symbols=(IMPORTED_OPENSSL,)
+    ).build()
+    ev, errors = _read(data)
+    assert ev.soname is None
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS,)
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+
+def test_three_id_dylib_commands_are_still_ambiguous() -> None:
+    """Adversarial probe: more than two candidates is not a special case.
+
+    The check counts occurrences rather than comparing two values, so it does not need
+    a third arm to keep refusing a third decoy.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        extra_id_dylibs=("decoy-a.dylib", "decoy-b.dylib"),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ev, errors = _read(data)
+    assert ev.soname is None
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS,)
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+
+def test_a_decoy_id_dylib_before_the_honest_one_is_also_not_trusted() -> None:
+    """Order does not matter: counting occurrences is not "first" or "last" wins.
+
+    Placed after `id_dylib` at the field level -- `MachOBuilder` has no way to write a
+    dylib-loading command *before* `id_dylib` -- but the underlying check has nothing
+    to do with which command's offset happened to be walked last, so which name is
+    honest is irrelevant to whether it is trusted.
+    """
+    data = MachOBuilder(id_dylib="decoy.dylib", extra_id_dylibs=("libfoo.dylib",)).build()
+    ev, errors = _read(data)
+    assert ev.soname is None
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+
+def test_a_second_symtab_after_the_real_one_discards_both() -> None:
+    """The shape that actually demonstrates the pre-fix bug: last-wins keeps the decoy.
+
+    `decoy_symtabs_after` writes the decoy behind the real, honest table, so a reader
+    that trusted whichever `LC_SYMTAB` it walked last used to keep the decoy's garbage
+    offsets -- losing the real table's crypto import with nothing to say so.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,), decoy_symtabs_after=1
+    ).build()
+    ev, errors = _read(data)
+    assert ev.matched_symbols == ()
+    assert ev.symtab_count == 0
+    assert ev.stripped is True
+    assert ev.partial_analysis is True
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+
+def test_a_second_symtab_also_costs_the_symtab_split() -> None:
+    """`macho_load_command_ambiguous` names *why*; `macho_symtab_incomplete` names
+    *what is missing*, the same way it already does for an absent `LC_SYMTAB` -- the
+    discarded table reads exactly like one that was never there, and both fire.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,), decoy_symtabs_after=1
+    ).build()
+    ev, _ = _read(data)
+    assert ev.partial_reasons == (
+        evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS,
+        evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE,
+    )
+
+
+def test_a_decoy_symtab_before_the_real_one_is_also_not_trusted() -> None:
+    """The other ordering: a last-wins reader would have gotten this one right by
+    accident, which is exactly why counting occurrences rather than trusting whichever
+    candidate sorts last is the check that has to hold regardless of order.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,), decoy_symtabs_before=1
+    ).build()
+    ev, _ = _read(data)
+    assert ev.matched_symbols == ()
+    assert ev.symtab_count == 0
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
+
+
+def test_two_symtab_commands_is_a_different_fact_from_one_missing_entirely() -> None:
+    """Regression guard on the ordinary "no LC_SYMTAB at all" shape: it must keep
+    reading as `macho_symtab_incomplete` alone, never picking up the ambiguity token.
+    """
+    data = MachOBuilder(id_dylib="libfoo.dylib").build()
+    ev, errors = _read(data)
+    assert ev.partial_reasons == (evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE,)
+    assert errors == ()
+
+
+def test_ambiguity_and_a_truncated_walk_combine_without_contradiction() -> None:
+    """Adversarial probe: an ambiguous `LC_ID_DYLIB` *and* #84's truncation shape in
+    the same object. Both are read from the same walk over the same commands, so
+    nothing about detecting one should stop the other from being detected too.
+
+    `MachOBuilder` always places `LC_SYMTAB` last, so the poison command -- placed,
+    like every `poison_cmdsize` fixture in this file, after the honest dependency it
+    is there to protect -- also cuts the walk off before it ever reaches the real
+    symbol table. That is `macho_symtab_incomplete`, the same #84-and-symtab
+    interaction `test_this_object_never_reads_as_no_crypto_detected` isolates
+    separately; this probe is about the other two tokens combining, not about
+    isolating every field, so it does not fight that placement.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        extra_id_dylibs=("decoy.dylib",),
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        poison_cmdsize=0x10000,
+        honest_load_dylib_after_poison="/usr/lib/libcrypto.3.dylib",
+    ).build()
+    ev, errors = _read(data)
+    assert ev.soname is None
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
+    assert {error.kind for error in errors} == {MACHO_PARSE_ERROR}
+    # Read before the poison command, so still present -- the ambiguity check costing
+    # `soname` must not also cost evidence #84 already protects.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+    # Lost to the truncation, same as #84 alone: the ambiguity fix must not resync the
+    # walk past a command that already lied about its own extent.
+    assert "/usr/lib/libcrypto.3.dylib" not in ev.needed
+
+
+def test_the_ordinary_single_id_dylib_and_symtab_case_is_unchanged() -> None:
+    """Regression guard: exactly one `LC_ID_DYLIB` and one `LC_SYMTAB`, the shape every
+    other Mach-O test in this file already builds, must read exactly as it did before.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libcrypto.3.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.soname == "libfoo.dylib"
+    assert ev.symtab_count == 1
+    assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", "imported"),)
+    assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()
+
+
+def test_an_ambiguous_install_name_never_reads_a_bundled_copy_as_clean() -> None:
+    """The issue's own reproduction, end to end: a vendored libcrypto under a neutral
+    filename, where `LC_ID_DYLIB` is the only signal tying the object to that
+    identity, corrupted by a decoy second `LC_ID_DYLIB`.
+
+    `own_base` reads `soname` first and falls back to the file name only when `soname`
+    is `None`, so once the ambiguity check refuses to guess, this object's identity is
+    unrecoverable from this evidence alone -- correctly, since the object never really
+    said which name was its own. What #85 exists to hold is that the wheel must not
+    read this as though the object had said nothing was wrong: `partial_analysis` and
+    the linkage answer both have to show the loss.
+    """
+    data = MachOBuilder(
+        id_dylib="libcrypto.3.dylib",
+        extra_id_dylibs=("innocuous_helper.dylib",),
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+    ).build()
+    ev, errors = _read(data, path="pkg/.dylibs/innocuous_helper.dylib", vendored=True)
+    assert ev.soname is None
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+    from wheel_crypto_scan.engine import apply_rules
+    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
+    from wheel_crypto_scan.linkage import resolve_linkage
+    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
+
+    ruleset = load_ruleset()
+    wheel_evidence = Evidence(
+        filename="demo-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        metadata=MetadataEvidence(name="demo", canonical_name="demo", version="1.0"),
+        binaries=(ev,),
+    )
+    linkage = resolve_linkage(ruleset, wheel_evidence)
+    # Not the definite `bundled` the honest single-command object gets (see the next
+    # test), and not silently `none` either: the object told us something was wrong,
+    # and that has to survive into the field consumers filter on.
+    assert linkage["openssl"] == "unknown"
+    findings = apply_rules(ruleset, wheel_evidence, linkage)
+    verdict = classify(ruleset, findings, linkage)
+    assert verdict.headline != NO_CRYPTO_DETECTED
+    assert verdict.needs_human_review is True
+
+
+def test_a_path_that_honestly_names_the_library_recovers_despite_the_ambiguity() -> None:
+    """The issue's other variant: the member's own file name is `libcrypto.3.dylib`,
+    unambiguous on its own, but a decoy `LC_ID_DYLIB` still corrupted the record --
+    degrading `bundled` to `mixed` and reporting a wrong install name, per the issue.
+
+    Once the ambiguity check leaves `soname` unresolved rather than trusting the
+    decoy, `own_base` falls back to the file name the same way it always has for an
+    object that never declared `LC_ID_DYLIB` at all, and recovers the correct answer
+    -- `bundled`, not corrupted, and not merely `unknown` either.
+    """
+    data = MachOBuilder(
+        id_dylib="unrelated_name.dylib", extra_id_dylibs=("another_unrelated.dylib",)
+    ).build()
+    ev, errors = _read(data, path="pkg/.dylibs/libcrypto.3.dylib", vendored=True)
+    assert ev.soname is None
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+
+    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence
+    from wheel_crypto_scan.linkage import LINKAGE_BUNDLED, resolve_linkage
+
+    ruleset = load_ruleset()
+    wheel_evidence = Evidence(
+        filename="demo-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        binaries=(ev,),
+    )
+    assert resolve_linkage(ruleset, wheel_evidence)["openssl"] == LINKAGE_BUNDLED

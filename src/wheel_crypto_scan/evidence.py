@@ -117,6 +117,21 @@ PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD = "macho_load_command_string_unread"
 # unaccounted for, not absent, which can be many commands' worth of dependencies
 # rather than one. #84. Records an error, for the same reason.
 PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED = "macho_load_command_walk_truncated"
+# More than one `LC_ID_DYLIB` or more than one `LC_SYMTAB` command in one object, so
+# which candidate is real cannot be told from the load-command walk alone: there is no
+# name to disambiguate by, the way `elf_section_type_ambiguous` cannot tell two same-type
+# sections apart either. None of the candidates is trusted: two `LC_ID_DYLIB` commands
+# leave `soname` unresolved rather than whichever one was walked last, and two
+# `LC_SYMTAB` commands leave the symbol table unread rather than whichever offsets were
+# walked last. `soname` and the symbol split read as though the slice itself never
+# declared one, the same "read as absent, not as the decoy" rule #56 drew for ELF --
+# though a fat binary can still backfill `soname` from a later, unambiguous slice, so a
+# nulled value here is not always the record's final answer. One token
+# covers both fields, the way `elf_section_type_ambiguous` covers `SHT_DYNAMIC`,
+# `SHT_DYNSYM` and `SHT_SYMTAB` alike: the failure is the same shape -- more than one
+# candidate of a kind this reader looks for -- whichever field it lands on. Records an
+# error, the same way `macho_load_command_walk_truncated` does. #85.
+PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS = "macho_load_command_ambiguous"
 # The PE header chain would not parse.
 PARTIAL_PE_HEADER_UNREAD = "pe_header_unread"
 # The section table was cut short, so an address may resolve to the wrong bytes.
@@ -174,6 +189,7 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_MACHO_FAT_SLICE_UNREAD,
         PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD,
         PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED,
+        PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS,
         PARTIAL_PE_HEADER_UNREAD,
         PARTIAL_PE_SECTION_TABLE_TRUNCATED,
         PARTIAL_PE_NO_IMPORT_DIRECTORY,

@@ -39,7 +39,7 @@ declares nothing is reported as unread rather than clean. What is still missed i
 symbol reachable only through those tables, whose name is nowhere in the string table
 either.
 
-`partial_analysis` survives for six cases: a strings read that stopped before the end
+`partial_analysis` survives for seven cases: a strings read that stopped before the end
 of the object, so a region of it was never looked at; a `LC_SYMTAB` that could not be read in
 full, whether it is absent, unreachable, names nothing we could resolve, holds nothing
 but debug records, or declares fewer entries than it carries names for, so the
@@ -49,10 +49,18 @@ unknown rather than clean; a header or set of load commands that would not parse
 all, which costs the structural read but not the strings already found; a
 dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string could not be read, so
 a dependency, the object's own install name, or an rpath entry may be missing rather
-than absent; and a load command's own `cmd`/`cmdsize` header that could not be
+than absent; a load command's own `cmd`/`cmdsize` header that could not be
 trusted, which stops the walk rather than guessing where the next one starts, so
 every later command -- an honest `LC_LOAD_DYLIB` included -- is unaccounted for
-rather than absent. #84.
+rather than absent (#84); and more than one `LC_ID_DYLIB` or more than one `LC_SYMTAB`
+command in the same object, which is not the same failure as either of the two above:
+the walk reaches every command and each one parses on its own, but there is no name to
+tell a real `LC_ID_DYLIB` or `LC_SYMTAB` from a decoy sharing its `cmd`, the way there
+is for a dylib-loading command's *string*. Neither candidate is trusted -- `soname` or
+the symbol table reads as though nothing of that kind existed, never as whichever one
+the walk reached last -- because trusting either is exactly the last-wins hazard #56
+closed for ELF's section tables, applied here to load commands instead of sections.
+#85.
 
 A universal binary is read slice by slice and merged into one record, in both the
 `FAT_MAGIC` and `FAT_MAGIC_64` forms, which differ only in the width of the arch table's
@@ -61,6 +69,15 @@ matters because most macOS wheels are universal2: while only the first slice was
 every fat object was partial, and a universal2 wheel with no crypto in it came out
 `OPAQUE` rather than `NO_CRYPTO_DETECTED`.
 """
+
+# This module carries a docstring that names every way `partial_analysis` can survive,
+# by design (AGENTS.md: every policy entry carries a `why`), and each of #59/#84/#85
+# added one more without shrinking any of the others. Disabled here rather than raising
+# `max-module-lines` project-wide a third time (#84 1000->1100, #85 1100->1200), which
+# would quietly give every OTHER module the same headroom this one earns by being
+# documentation-heavy. See DECISIONS.md, "A module-local line-count exemption instead
+# of a third global bump" (#85).
+# pylint: disable=too-many-lines
 
 from __future__ import annotations
 
@@ -251,6 +268,10 @@ class _SliceHeader:
     # A command's own `cmd`/`cmdsize` header could not be trusted, so the walk
     # stopped early: everything after is unaccounted for, not absent. #84.
     load_command_walk_truncated: bool
+    # More than one LC_ID_DYLIB or more than one LC_SYMTAB was walked, so `soname` or
+    # `symtab` above is already `None` for whichever field was ambiguous: neither
+    # candidate is trusted, rather than whichever one the walk reached last. #85.
+    load_command_ambiguous: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +286,7 @@ class _SliceEvidence:
     rpath: tuple[str, ...]
     load_command_string_unread: bool
     load_command_walk_truncated: bool
+    load_command_ambiguous: bool
     matches: frozenset[SymbolMatch]
     symtab_count: int
     stripped: bool
@@ -286,6 +308,31 @@ class _Symtab:
     nsyms: int
     stroff: int
     strsize: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ThinHeader:
+    """What one thin Mach-O header and its load-command walk yielded.
+
+    `_read_thin` returned a bare positional tuple through #59 and #84, both of which
+    grew it by one element and both of whose own `DECISIONS.md` entries predicted it
+    would keep happening. #85's ambiguity flag is the third cause to join it, which is
+    the point past which a positional tuple stops being the cheaper choice.
+    """
+
+    cputype: int
+    soname: str | None
+    needed: tuple[str, ...]
+    rpath: tuple[str, ...]
+    symtab: _Symtab | None
+    # A dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read. #59.
+    load_command_string_unread: bool
+    # A command's own cmd/cmdsize header could not be trusted, so the walk stopped
+    # early. #84.
+    load_command_walk_truncated: bool
+    # More than one LC_ID_DYLIB or more than one LC_SYMTAB was walked; `soname` and/or
+    # `symtab` above are already `None` for whichever field was ambiguous. #85.
+    load_command_ambiguous: bool
 
 
 def _strip_abi_prefix(name: str) -> str:
@@ -476,6 +523,9 @@ def read_macho(
     if any(slice_evidence.load_command_walk_truncated for slice_evidence in read):
         message = "a load command's cmd/cmdsize header could not be trusted, cutting the walk short"
         errors.append(_error(path, message))
+    if any(slice_evidence.load_command_ambiguous for slice_evidence in read):
+        message = "more than one LC_ID_DYLIB or LC_SYMTAB command in one object; neither is trusted"
+        errors.append(_error(path, message))
 
     # Every architecture has to have been read, and read in full, before this object
     # can claim it was examined. An unread slice is an unread object.
@@ -492,6 +542,8 @@ def read_macho(
         partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD)
     if any(slice_evidence.load_command_walk_truncated for slice_evidence in read):
         partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED)
+    if any(slice_evidence.load_command_ambiguous for slice_evidence in read):
+        partial.add(evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS)
 
     first = read[0]
     merged: set[SymbolMatch] = set()
@@ -628,15 +680,7 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
 
     try:
         stream.seek(slice_.offset)
-        (
-            cputype,
-            soname,
-            needed,
-            rpath,
-            symtab,
-            load_command_string_unread,
-            load_command_walk_truncated,
-        ) = _read_thin(stream, slice_.offset, slice_.size, is64, big_endian)
+        thin = _read_thin(stream, slice_.offset, slice_.size, is64, big_endian)
     except struct.error as bad:
         raise _Unreadable("mach-o header is truncated") from bad
     except _Unreadable:
@@ -646,15 +690,16 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
 
     return _SliceHeader(
         slice_=slice_,
-        cputype=cputype,
+        cputype=thin.cputype,
         is64=is64,
         big_endian=big_endian,
-        soname=soname,
-        needed=needed,
-        rpath=rpath,
-        symtab=symtab,
-        load_command_string_unread=load_command_string_unread,
-        load_command_walk_truncated=load_command_walk_truncated,
+        soname=thin.soname,
+        needed=thin.needed,
+        rpath=thin.rpath,
+        symtab=thin.symtab,
+        load_command_string_unread=thin.load_command_string_unread,
+        load_command_walk_truncated=thin.load_command_walk_truncated,
+        load_command_ambiguous=thin.load_command_ambiguous,
     )
 
 
@@ -672,7 +717,11 @@ def _read_slice_symbols(
     symtab_count = 0
     # An absent `LC_SYMTAB` is a stripped object and an incomplete read, the same two
     # answers `_SymbolRead` gives for a table that declared no entries. A read that
-    # raised is neither: a table we failed on supports no claim about the object.
+    # raised is neither: a table we failed on supports no claim about the object. More
+    # than one `LC_SYMTAB` reaches here the same way: `_read_thin` has already reset
+    # `header.symtab` to `None` rather than hand this function whichever candidate it
+    # walked last, so an ambiguous table reads exactly like an absent one -- `stripped`
+    # included -- with `macho_load_command_ambiguous` carrying the reason. #85.
     stripped = header.symtab is None
     symbols_complete = False
     symbols_shortfall: str | None = None
@@ -707,6 +756,7 @@ def _read_slice_symbols(
         rpath=header.rpath,
         load_command_string_unread=header.load_command_string_unread,
         load_command_walk_truncated=header.load_command_walk_truncated,
+        load_command_ambiguous=header.load_command_ambiguous,
         matches=frozenset(matches),
         symtab_count=symtab_count,
         stripped=stripped,
@@ -717,9 +767,7 @@ def _read_slice_symbols(
     )
 
 
-def _read_thin(
-    stream, base: int, slice_size: int, is64: bool, big_endian: bool
-) -> tuple[int, str | None, tuple[str, ...], tuple[str, ...], _Symtab | None, bool, bool]:
+def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool) -> _ThinHeader:
     """Parse one thin Mach-O header and its load commands, from the current position."""
     end = ">" if big_endian else "<"
     if is64:
@@ -756,6 +804,13 @@ def _read_thin(
     symtab: _Symtab | None = None
     load_command_string_unread = False
     load_command_walk_truncated = False
+    # How many LC_ID_DYLIB and LC_SYMTAB commands this walk actually reached, counted
+    # regardless of whether each one's own body could be read. Real Mach-O objects
+    # never carry more than one of either -- an image has one install name and one
+    # symbol table -- so more than one is a decoy, not a second slice of evidence, and
+    # which one is real cannot be told from `cmd` alone. #85.
+    id_dylib_seen = 0
+    symtab_seen = 0
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(commands):
@@ -775,6 +830,8 @@ def _read_thin(
             # compatibility_version). Only what the loader does with the name differs,
             # which is a `ruleset`-shaped question this reader has no business asking.
             name = _read_command_string(body, header_size=_DYLIB_COMMAND_HEADER_SIZE, end=end)
+            if cmd == _LC_ID_DYLIB:
+                id_dylib_seen += 1
             if name is not None:
                 if cmd == _LC_ID_DYLIB:
                     soname = name
@@ -792,19 +849,36 @@ def _read_thin(
                 rpaths.append(path)
             else:
                 load_command_string_unread = True
-        elif cmd == _LC_SYMTAB and len(body) >= _SYMTAB_COMMAND_SIZE:
-            symoff, nsyms, stroff, strsize = struct.unpack_from(end + "IIII", body, 8)
-            symtab = _Symtab(symoff=symoff, nsyms=nsyms, stroff=stroff, strsize=strsize)
+        elif cmd == _LC_SYMTAB:
+            symtab_seen += 1
+            if len(body) >= _SYMTAB_COMMAND_SIZE:
+                symoff, nsyms, stroff, strsize = struct.unpack_from(end + "IIII", body, 8)
+                symtab = _Symtab(symoff=symoff, nsyms=nsyms, stroff=stroff, strsize=strsize)
         pos += cmdsize
 
-    return (
-        cputype,
-        soname,
-        tuple(sorted(set(needed))),
-        tuple(sorted(set(rpaths))),
-        symtab,
-        load_command_string_unread,
-        load_command_walk_truncated,
+    # Neither candidate is trusted once there is more than one: picking whichever one
+    # the walk reached last is the exact hazard #56 closed for ELF's section tables,
+    # one level up -- there it was "which section is the real .dynsym", here it is
+    # "which command is the real LC_ID_DYLIB (or LC_SYMTAB)". `soname` and `symtab`
+    # read as though this slice never declared one, not as whichever candidate sorted
+    # last in the walk -- `read_macho` can still backfill `soname` from a later,
+    # unambiguous fat-binary slice (`DECISIONS.md`'s "one record, slices are merged"),
+    # so a nulled soname here is not always the record's final answer.
+    load_command_ambiguous = id_dylib_seen > 1 or symtab_seen > 1
+    if id_dylib_seen > 1:
+        soname = None
+    if symtab_seen > 1:
+        symtab = None
+
+    return _ThinHeader(
+        cputype=cputype,
+        soname=soname,
+        needed=tuple(sorted(set(needed))),
+        rpath=tuple(sorted(set(rpaths))),
+        symtab=symtab,
+        load_command_string_unread=load_command_string_unread,
+        load_command_walk_truncated=load_command_walk_truncated,
+        load_command_ambiguous=load_command_ambiguous,
     )
 
 
