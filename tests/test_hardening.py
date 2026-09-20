@@ -27,7 +27,7 @@ from helpers.binfmt import (
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import errors
-from wheel_crypto_scan.binfmt import pe
+from wheel_crypto_scan.binfmt import pe, symtab
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import SbomComponent
 from wheel_crypto_scan.ruleset import load_ruleset
@@ -466,6 +466,242 @@ def test_a_pe_whose_descriptors_share_one_thunk_array_stays_bounded(
     assert len(record["binaries"][0]["needed"]) == 512
     assert record["binaries"][0]["partial_analysis"] is True
     assert any(e["kind"] == errors.PE_PARSE_ERROR for e in record["errors"])
+
+
+# --- M5b: the ELF and Mach-O symbol-name cap and budget (#61) ----------------
+
+
+def test_an_elf_aiming_every_dynsym_at_one_over_cap_name_stays_bounded(
+    context, tmp_path: Path
+) -> None:
+    """Every row pointing at the same enormous name used to cost rows times its length.
+
+    `ElfBuilder` interns `.dynstr` by exact text, so `rows` symbols sharing one string
+    already produce the shape #61 reports with no manual re-aiming needed: every row's
+    `st_name` pointing at the same one offset. Measured on the reader before the cap:
+    243.7s for 2000 rows against a 2 MiB name. `binfmt.symtab.BoundedNames` bounds the
+    per-name search to `_MAX_NAME_BYTES`, so an over-cap name costs one O(cap) search
+    once (memoized thereafter) rather than one search per row proportional to its real
+    length.
+    """
+    rows = 2000
+    name = "X" * (2 * 1024 * 1024)
+    payload = ElfBuilder(dynsyms=tuple(DynSym(name, False) for _ in range(rows))).build()
+    wheel = build_wheel(
+        tmp_path / f"elfnames-1.0-{MANYLINUX}.whl",
+        name="elfnames",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={"elfnames/_ext.abi3.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    # Over the cap: unresolved, not truncated into the record.
+    assert record["binaries"][0]["matched_symbols"] == []
+    assert record["binaries"][0]["partial_analysis"] is True
+    assert "elf_dynsym_unread" in record["binaries"][0]["partial_reasons"]
+
+
+def test_repeated_elf_dynsym_offsets_resolve_the_same_valid_name(context, tmp_path: Path) -> None:
+    """The same shape, one name shorter: a table that legitimately repeats one index.
+
+    Without memoizing by string-table offset, each of the 2000 rows below would spend
+    its own share of `_MAX_NAME_TOTAL_BYTES` resolving the *same* already-known name,
+    exhausting the whole-table budget partway through on an object with exactly one
+    honest name in it -- turning a table that carries one valid, well-under-cap symbol
+    into one `partial_analysis` reports as incomplete. `BoundedNames` resolves an
+    offset once and returns the cached answer for every row after, so the budget is
+    spent once, not `rows` times, and the object reads as the complete, non-partial
+    read it is.
+    """
+    rows = 2000
+    name = "EVP_" + "A" * (symtab._MAX_NAME_BYTES - 100)
+    payload = ElfBuilder(dynsyms=tuple(DynSym(name, False) for _ in range(rows))).build()
+    wheel = build_wheel(
+        tmp_path / f"elfrepeat-1.0-{MANYLINUX}.whl",
+        name="elfrepeat",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={"elfrepeat/_ext.abi3.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    assert record["binaries"][0]["partial_analysis"] is False
+    assert record["binaries"][0]["partial_reasons"] == []
+    assert [m["name"] for m in record["binaries"][0]["matched_symbols"]] == [name]
+
+
+def test_a_mach_o_aiming_every_symbol_at_one_over_cap_name_stays_bounded(
+    context, tmp_path: Path
+) -> None:
+    """The Mach-O counterpart: `n_strx=1` is #61's own reproduction of the shape.
+
+    `MachOBuilder` writes every symbol's own name to the string table regardless of
+    `strx`, so the placeholder rows below each add one byte for their own empty name
+    and are then re-pointed at the first symbol's, the same "no builder flag expresses
+    this" re-aiming `test_a_pe_aiming_every_name_at_one_long_string_stays_bounded` does
+    by hand for PE.
+    """
+    rows = 2000
+    name = "_" + "X" * (2 * 1024 * 1024)
+    payload = MachOBuilder(
+        symbols=(MachOSym(name, False),) + tuple(MachOSym("", False, strx=1) for _ in range(rows))
+    ).build()
+    wheel = build_wheel(
+        tmp_path / f"machonames-1.0-{MACOS}.whl",
+        name="machonames",
+        version="1.0",
+        tags=(MACOS,),
+        files={"machonames/_ext.cpython-312-darwin.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    assert record["binaries"][0]["matched_symbols"] == []
+    assert record["binaries"][0]["partial_analysis"] is True
+    assert "macho_symtab_incomplete" in record["binaries"][0]["partial_reasons"]
+
+
+def test_repeated_mach_o_symbol_offsets_resolve_the_same_valid_name(
+    context, tmp_path: Path
+) -> None:
+    """The Mach-O counterpart of the ELF budget/memoization test above."""
+    rows = 2000
+    name = "_EVP_" + "A" * (symtab._MAX_NAME_BYTES - 100)
+    payload = MachOBuilder(
+        symbols=(MachOSym(name, False),) + tuple(MachOSym("", False, strx=1) for _ in range(rows))
+    ).build()
+    wheel = build_wheel(
+        tmp_path / f"machorepeat-1.0-{MACOS}.whl",
+        name="machorepeat",
+        version="1.0",
+        tags=(MACOS,),
+        files={"machorepeat/_ext.cpython-312-darwin.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    assert record["binaries"][0]["partial_analysis"] is False
+    assert [m["name"] for m in record["binaries"][0]["matched_symbols"]] == [name[1:]]
+
+
+def test_a_mach_o_aiming_every_alias_at_one_over_cap_target_stays_bounded(
+    context, tmp_path: Path
+) -> None:
+    """`N_INDR`'s target is a string-table offset too, and #61's first pass missed it.
+
+    `MachOBuilder` interns `indirect_to` by exact text the same way `ElfBuilder` interns
+    `.dynstr`, so `rows` symbols all aliasing one string already produce the shape: every
+    row's `n_value` pointing at the same one offset, with no manual re-aiming needed.
+    Measured on the reader after #61's first pass, before this follow-up: 200 rows
+    against a 2 MiB target cost 30.4s (linear in rows, the identical shape #61 closed
+    for `n_strx`, one call site over -- `resolver` was already in scope for this
+    function and simply was not being used here).
+    """
+    rows = 2000
+    target = "_" + "X" * (2 * 1024 * 1024)
+    symbols = tuple(
+        MachOSym(f"_local_alias_{i}", defined=True, indirect_to=target) for i in range(rows)
+    )
+    payload = MachOBuilder(symbols=symbols).build()
+    wheel = build_wheel(
+        tmp_path / f"machoalias-1.0-{MACOS}.whl",
+        name="machoalias",
+        version="1.0",
+        tags=(MACOS,),
+        files={"machoalias/_ext.cpython-312-darwin.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    # Over the cap: not evidence (the target names nothing a rule claims), and correctly
+    # not partial either -- an ordinary long non-crypto string costs nothing to leave
+    # unresolved, the same as a huge non-crypto ordinary name would. See the paired test
+    # below for a target that *is* crypto-relevant, where the object must not read clean.
+    assert record["binaries"][0]["matched_symbols"] == []
+    assert record["binaries"][0]["partial_analysis"] is False
+
+
+def test_a_mach_o_aiming_every_alias_at_one_over_cap_crypto_target_is_not_read_clean(
+    context, tmp_path: Path
+) -> None:
+    """The over-cap alias target is unaccounted evidence, not a name we quietly drop.
+
+    Unlike an ordinary unresolved name, an unresolved alias target sets no `unresolved`
+    counter of its own -- the row's own name is still fine -- but a crypto name sitting
+    unaccounted for in `strings` is exactly what `holds_a_name_not_read`'s independent
+    scan exists to catch, the same safety net an ordinary hidden name already relies on.
+    """
+    rows = 2000
+    target = "_EVP_" + "A" * (2 * 1024 * 1024)
+    symbols = tuple(
+        MachOSym(f"_local_alias_{i}", defined=True, indirect_to=target) for i in range(rows)
+    )
+    payload = MachOBuilder(symbols=symbols).build()
+    wheel = build_wheel(
+        tmp_path / f"machoaliascrypto-1.0-{MACOS}.whl",
+        name="machoaliascrypto",
+        version="1.0",
+        tags=(MACOS,),
+        files={"machoaliascrypto/_ext.cpython-312-darwin.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    assert record["binaries"][0]["matched_symbols"] == []
+    assert record["binaries"][0]["partial_analysis"] is True
+    assert "macho_symtab_incomplete" in record["binaries"][0]["partial_reasons"]
+
+
+def test_repeated_mach_o_alias_targets_resolve_the_same_valid_name(context, tmp_path: Path) -> None:
+    """The alias-target counterpart of the ordinary-name memoization test above.
+
+    Without memoizing by string-table offset, each of the 2000 aliases below would
+    spend its own share of `_MAX_NAME_TOTAL_BYTES` resolving the *same* already-known
+    target, exhausting the whole-table budget partway through an object that carries
+    exactly one real, honest, well-under-cap target.
+    """
+    rows = 2000
+    target = "_EVP_" + "A" * (symtab._MAX_NAME_BYTES - 100)
+    symbols = tuple(
+        MachOSym(f"_local_alias_{i}", defined=True, indirect_to=target) for i in range(rows)
+    )
+    payload = MachOBuilder(symbols=symbols).build()
+    wheel = build_wheel(
+        tmp_path / f"machoaliasrepeat-1.0-{MACOS}.whl",
+        name="machoaliasrepeat",
+        version="1.0",
+        tags=(MACOS,),
+        files={"machoaliasrepeat/_ext.cpython-312-darwin.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 20, f"the walk took {elapsed:.1f}s"
+    assert record["binaries"][0]["partial_analysis"] is False
+    assert [m["name"] for m in record["binaries"][0]["matched_symbols"]] == [target[1:]]
 
 
 # --- M6: record size must be bounded in member count too --------------------

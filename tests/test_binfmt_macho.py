@@ -16,6 +16,7 @@ import pytest
 from helpers.binfmt import MachOBuilder, MachOSym, build_fat
 from helpers.binfmt.macho import LC_ID_DYLIB, LC_LOAD_DYLIB
 from wheel_crypto_scan import evidence
+from wheel_crypto_scan.binfmt import symtab
 from wheel_crypto_scan.binfmt.macho import read_macho
 from wheel_crypto_scan.errors import MACHO_PARSE_ERROR
 from wheel_crypto_scan.ruleset import load_ruleset
@@ -1077,6 +1078,126 @@ def test_an_alias_row_cannot_launder_a_hidden_symbol() -> None:
     ev, errors = _read(data)
     assert errors == ()
     assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
+
+
+# --- a symbol name has a cap, and the table a whole-table budget (#61) --------
+#
+# `_iter_symbols` used to decode and `sanitize` every nlist name in full, with no
+# per-name bound and no table-wide budget: a table pointing many rows at `n_strx=1`
+# cost rows times that one name's length, all of it in `sanitize`, a per-character
+# Python pass. `binfmt.symtab.BoundedNames` ports `binfmt.pe`'s `_MAX_NAME_BYTES` /
+# `_MAX_NAME_TOTAL_BYTES` (#53) to close it. `tests/test_hardening.py` holds the
+# bounded-time and memoization-effectiveness cases; these hold the boundary itself and
+# the whole-table budget a repeated single name does not exercise.
+
+
+def _macho_crypto_name(index: int, length: int) -> str:
+    """A distinct, `openssl`-matching nlist name of exactly `length` raw bytes.
+
+    The leading underscore is Darwin's ABI prefix, stripped before matching but still
+    counted against the cap: the cap bounds what the table actually carries, before
+    `_strip_abi_prefix` ever runs. `MachOBuilder` writes each symbol's name to the
+    string table unconditionally (unlike `ElfBuilder`'s interning `.dynstr`), so
+    distinct indices are for readability here, not for correctness.
+    """
+    prefix = f"_EVP_{index:08d}_"
+    assert len(prefix) < length
+    return prefix + "A" * (length - len(prefix))
+
+
+def test_a_symbol_name_exactly_at_the_cap_is_still_read() -> None:
+    """The bound is generous, not absent: a name of exactly the cap still resolves."""
+    name = "_EVP_" + "A" * (symtab._MAX_NAME_BYTES - 5)
+    assert len(name) == symtab._MAX_NAME_BYTES
+    ev, errors = _read(MachOBuilder(symbols=(MachOSym(name, defined=False),)).build())
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert [m.name for m in ev.matched_symbols] == [name[1:]]
+
+
+def test_a_symbol_name_one_byte_over_the_cap_is_not_read() -> None:
+    """One byte further and the row is unresolved, not truncated into the record.
+
+    Raising a limit is how a limit quietly stops being one, so the far side of it is
+    pinned rather than assumed -- the same reason #53's PE test pins its own boundary.
+    """
+    name = "_EVP_" + "A" * (symtab._MAX_NAME_BYTES - 4)
+    assert len(name) == symtab._MAX_NAME_BYTES + 1
+    ev, errors = _read(MachOBuilder(symbols=(MachOSym(name, defined=False),)).build())
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE]
+    assert [e.message for e in errors] == ["mach-o symbol table names strings it does not hold"]
+
+
+def test_many_long_names_under_the_cap_exhaust_the_table_wide_budget() -> None:
+    """The per-name cap bounds one row; nothing bounds the table without a budget too.
+
+    Every name here is individually well inside `_MAX_NAME_BYTES`, but there are enough
+    of them, all distinct, that their total resolved bytes run past
+    `_MAX_NAME_TOTAL_BYTES` -- the shape a table gets from many different long names
+    rather than from one name repeated, which the cap alone does not bound.
+    """
+    length = symtab._MAX_NAME_BYTES - 200
+    count = (symtab._MAX_NAME_TOTAL_BYTES // length) + 200
+    symbols = tuple(MachOSym(_macho_crypto_name(i, length), defined=False) for i in range(count))
+    ev, errors = _read(MachOBuilder(symbols=symbols).build())
+    # Bounded, not abandoned: the names the budget could afford are read (roughly
+    # `_MAX_NAME_TOTAL_BYTES // length` of them), and the rest are unresolved rather
+    # than reported as an object with no crypto in it.
+    assert 0 < len(ev.matched_symbols) < count
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE]
+    assert [e.message for e in errors] == ["mach-o symbol table names strings it does not hold"]
+
+
+# --- the N_INDR alias target has the same cap as an ordinary name (#61 follow-up) ---
+#
+# An alias's target is a string-table offset exactly like any `n_strx`: `n_value`
+# rather than the entry's own index, but the same table, the same terminator search,
+# the same cost if a table points many rows' `n_value` at one enormous string. The
+# first pass at #61 read it straight out of `strings` with no cap, no budget and no
+# memoization -- the identical shape closed for ordinary names, one call site over.
+# These mirror the ordinary-name cap tests above, against the alias path instead.
+
+
+def test_an_alias_target_exactly_at_the_cap_is_still_read() -> None:
+    """The bound is generous, not absent: a target of exactly the cap still resolves."""
+    target = "_EVP_" + "A" * (symtab._MAX_NAME_BYTES - 5)
+    assert len(target) == symtab._MAX_NAME_BYTES
+    data = MachOBuilder(
+        symbols=(MachOSym("_local_alias", defined=True, indirect_to=target),)
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.matched_symbols == (_symbol(target[1:], evidence.BINDING_IMPORTED),)
+
+
+def test_an_alias_target_one_byte_over_the_cap_is_not_read() -> None:
+    """One byte further and the target is unresolved, not truncated into the record.
+
+    Nothing yields an `unresolved` count for an alias the way an ordinary name does --
+    the row's own name is still fine -- but the target string is still sitting in
+    `strings`, a crypto name nothing accounted for, so `holds_a_name_not_read`'s
+    independent scan finds it left over the same way it would for any other hidden
+    name, and the object is still not read clean.
+    """
+    target = "_EVP_" + "A" * (symtab._MAX_NAME_BYTES - 4)
+    assert len(target) == symtab._MAX_NAME_BYTES + 1
+    data = MachOBuilder(
+        symbols=(MachOSym("_local_alias", defined=True, indirect_to=target),)
+    ).build()
+    ev, errors = _read(data)
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [
+        evidence.PARTIAL_MACHO_SYMTAB_INCOMPLETE,
+        evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS,
+    ]
+    assert [e.message for e in errors] == [
+        "mach-o symbol table declares fewer entries than it has names"
+    ]
 
 
 # --- #59: LC_LOAD_DYLIB's siblings, and a name offset outside its own body ----
