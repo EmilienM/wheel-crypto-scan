@@ -17,7 +17,7 @@ from helpers.binfmt import MachOBuilder, MachOSym, build_fat
 from helpers.binfmt.macho import LC_ID_DYLIB, LC_LOAD_DYLIB
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import symtab
-from wheel_crypto_scan.binfmt.macho import read_macho
+from wheel_crypto_scan.binfmt.macho import _MAX_SIZEOFCMDS, read_macho
 from wheel_crypto_scan.errors import MACHO_PARSE_ERROR
 from wheel_crypto_scan.ruleset import load_ruleset
 
@@ -478,6 +478,125 @@ def test_a_string_table_that_claims_more_than_exists_is_an_error() -> None:
     ev, errors = _read(data)
     assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
     assert ev.partial_analysis is True
+
+
+def test_sizeofcmds_exactly_at_the_cap_is_read_while_one_byte_over_is_refused() -> None:
+    """`sizeofcmds` is checked against `_MAX_SIZEOFCMDS` before the load commands are
+    read at all, so the boundary is on the declared field, not on how much of the
+    object is actually there to back it up. #63.
+    """
+    base = MachOBuilder(id_dylib="libfoo.dylib", load_dylibs=("libcrypto.3.dylib",)).build()
+    header, commands = base[:32], base[32:]
+    (sizeofcmds,) = struct.unpack_from("<I", header, 20)
+    assert len(commands) == sizeofcmds, "fixture carries only its own honest commands"
+
+    def _padded_to(total: int) -> bytes:
+        patched = bytearray(header)
+        struct.pack_into("<I", patched, 20, total)
+        return bytes(patched) + commands + b"\x00" * (total - len(commands))
+
+    at_cap = _padded_to(_MAX_SIZEOFCMDS)
+    ev, errs = _read(at_cap, path="libfoo.dylib")
+    assert ev.needed == ("libcrypto.3.dylib",)
+    assert ev.soname == "libfoo.dylib"
+    assert "macho_header_unread" not in ev.partial_reasons
+    assert errs == ()
+
+    over_cap = _padded_to(_MAX_SIZEOFCMDS + 1)
+    ev2, errs2 = _read(over_cap, path="libfoo.dylib")
+    assert ev2.needed == ()
+    assert ev2.soname is None
+    assert ev2.partial_analysis is True
+    assert "macho_header_unread" in ev2.partial_reasons
+    assert [error.kind for error in errs2] == [MACHO_PARSE_ERROR]
+    # Pins the routing in `_read_slice_header`'s `except` chain: `_Unreadable` is
+    # caught and re-raised ahead of the generic `except Exception`, so this cause's
+    # own message survives rather than being rewritten to the catch-all "failed to
+    # parse mach-o load commands". Deleting that `except _Unreadable: raise` clause
+    # leaves `partial_reasons`/`error.kind` unchanged and only this assertion red.
+    assert errs2[0].message == (
+        f"sizeofcmds is {_MAX_SIZEOFCMDS + 1} bytes, over the {_MAX_SIZEOFCMDS}-byte "
+        "cap on load commands"
+    )
+
+
+def test_symtab_bytes_exactly_at_the_budget_are_read_while_one_entry_over_is_incomplete() -> None:
+    """`nsyms * entry_size` is capped against `max_strings_bytes` before `_available`
+    ever measures it against the slice, so an honest table one entry past the budget
+    is incomplete even though every byte of it is genuinely present. #63.
+    """
+    entry_size = 16  # nlist_64
+    budget = 4096
+    at_cap_count = budget // entry_size
+    over_cap_count = at_cap_count + 1
+
+    def _honest(count: int) -> bytes:
+        syms = tuple(MachOSym(f"_sym{i:03d}", defined=False) for i in range(count))
+        payload = MachOBuilder(id_dylib="libfoo.dylib", symbols=syms).build()
+        # Comfortably more than either byte count, so the slice's own size is never
+        # what would have bounded this, only the budget.
+        return payload + b"\x00" * (budget * 4)
+
+    at_cap_ev, at_cap_errs = read_macho(
+        io.BytesIO(_honest(at_cap_count)),
+        "libfoo.dylib",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=budget,
+    )
+    assert "macho_symtab_incomplete" not in at_cap_ev.partial_reasons
+    assert at_cap_errs == ()
+
+    over_cap_ev, over_cap_errs = read_macho(
+        io.BytesIO(_honest(over_cap_count)),
+        "libfoo.dylib",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=budget,
+    )
+    assert "macho_symtab_incomplete" in over_cap_ev.partial_reasons
+    assert over_cap_ev.partial_analysis is True
+    assert any(error.kind == MACHO_PARSE_ERROR for error in over_cap_errs)
+
+
+def test_strsize_exactly_at_the_budget_is_read_while_one_byte_over_is_incomplete() -> None:
+    """`strsize` is capped against `max_strings_bytes` the same way `nsyms * entry_size`
+    is above. Isolated here by keeping the symbol table itself honest and tiny -- one
+    real, non-crypto entry -- so the declared string-table byte count is the only thing
+    that can be the constraint, not `nsyms`'s own cap. #63.
+    """
+    budget = 4096
+
+    def _honest(strsize: int) -> bytes:
+        payload = MachOBuilder(
+            id_dylib="libfoo.dylib",
+            symbols=(MachOSym("_sym000", defined=False),),
+            declared_strsize=strsize,
+        ).build()
+        # Comfortably more than either byte count, so the slice's own size is never
+        # what would have bounded this, only the budget.
+        return payload + b"\x00" * (budget * 4)
+
+    at_cap_ev, at_cap_errs = read_macho(
+        io.BytesIO(_honest(budget)),
+        "libfoo.dylib",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=budget,
+    )
+    assert "macho_symtab_incomplete" not in at_cap_ev.partial_reasons
+    assert at_cap_errs == ()
+
+    over_cap_ev, over_cap_errs = read_macho(
+        io.BytesIO(_honest(budget + 1)),
+        "libfoo.dylib",
+        PATTERNS,
+        vendored=False,
+        max_strings_bytes=budget,
+    )
+    assert "macho_symtab_incomplete" in over_cap_ev.partial_reasons
+    assert over_cap_ev.partial_analysis is True
+    assert any(error.kind == MACHO_PARSE_ERROR for error in over_cap_errs)
 
 
 def test_a_symbol_table_pointed_outside_the_object_yields_nothing() -> None:

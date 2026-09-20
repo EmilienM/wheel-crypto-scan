@@ -156,6 +156,13 @@ _NLIST_SIZE = {False: 12, True: 16}
 # itself per entry, so the declared count is capped and the excess reported as unread.
 _MAX_FAT_SLICES = 32
 
+# `sizeofcmds` is a 32-bit field the header declares about itself, the same shape as
+# `nsyms` and `strsize` below: nothing before this checked it against anything but a
+# short read. Real load commands are low tens of KiB; past a generous 1 MiB a streamed
+# member paid a read proportional to what the header claimed rather than to what
+# `ncmds` real commands could possibly need, up to the whole member. #63.
+_MAX_SIZEOFCMDS = 1024 * 1024
+
 _CPU_TYPE_NAMES = {
     0x00000007: "CPU_TYPE_X86",
     0x01000007: "CPU_TYPE_X86_64",
@@ -440,7 +447,12 @@ def read_macho(
     raw = stream.read(min(size, max_strings_bytes))
     truncated_read = size > max_strings_bytes
 
-    read = [_read_slice_symbols(stream, raw, header, patterns, size=size) for header in headers]
+    read = [
+        _read_slice_symbols(
+            stream, raw, header, patterns, size=size, max_strings_bytes=max_strings_bytes
+        )
+        for header in headers
+    ]
 
     errors: list[ScanError] = []
     # One per distinct reason. `ScanError` is deduplicated and sorted on the way out, so
@@ -596,6 +608,11 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
     the way `binfmt.pe._Malformed` carries its own: "this is not a Mach-O at all" and
     "this is a Mach-O that was cut short" are different facts about the object, and a
     reader of the record can act on the difference.
+
+    `_read_thin` also raises `_Unreadable` directly, for `sizeofcmds` over
+    `_MAX_SIZEOFCMDS`: that message is caught and re-raised here rather than being
+    rewritten by the generic `except Exception` below, the same way `struct.error`
+    already gets its own, more specific text instead of the catch-all one. #63.
     """
     stream.seek(slice_.offset)
     head = stream.read(4)
@@ -622,6 +639,8 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
         ) = _read_thin(stream, slice_.offset, slice_.size, is64, big_endian)
     except struct.error as bad:
         raise _Unreadable("mach-o header is truncated") from bad
+    except _Unreadable:
+        raise
     except Exception as bad:
         raise _Unreadable("failed to parse mach-o load commands") from bad
 
@@ -640,7 +659,13 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
 
 
 def _read_slice_symbols(
-    stream, raw: bytes, header: _SliceHeader, patterns: BinaryPatterns, *, size: int
+    stream,
+    raw: bytes,
+    header: _SliceHeader,
+    patterns: BinaryPatterns,
+    *,
+    size: int,
+    max_strings_bytes: int,
 ) -> _SliceEvidence:
     """Read one slice's symbol table, once its header has already been parsed."""
     matches: set[SymbolMatch] = set()
@@ -664,6 +689,7 @@ def _read_slice_symbols(
                 end=min(size, header.slice_.offset + header.slice_.size),
                 is64=header.is64,
                 big_endian=header.big_endian,
+                max_strings_bytes=max_strings_bytes,
             )
         except Exception:
             symbols_failed = True
@@ -711,6 +737,15 @@ def _read_thin(
             end + "IIIIIII", raw
         )
 
+    if sizeofcmds > _MAX_SIZEOFCMDS:
+        # Checked before the read, not after: `stream.read(sizeofcmds)` below costs
+        # exactly what `sizeofcmds` claims, through a streamed zip member as much as an
+        # in-memory one, so refusing here is what keeps a 300 MiB member with a lying
+        # header from being read whole just to find out it lied. #63.
+        raise _Unreadable(
+            f"sizeofcmds is {sizeofcmds} bytes, over the {_MAX_SIZEOFCMDS}-byte cap on "
+            "load commands"
+        )
     commands = stream.read(sizeofcmds)
     if len(commands) < sizeofcmds:
         raise struct.error("load commands truncated")
@@ -783,6 +818,7 @@ def _read_symbols(
     end: int,
     is64: bool,
     big_endian: bool,
+    max_strings_bytes: int,
 ) -> _SymbolRead:
     """Return the matches, the entry count, completeness, and why it fell short.
 
@@ -800,13 +836,32 @@ def _read_symbols(
     Each table is read exactly once, in file order, the way `binfmt.elf._iter_symbols`
     reads its own and for the reason given there: in a zip member too large to hold in
     memory, a backwards seek costs a fresh decompression of everything before it.
+
+    `nsyms` and `strsize` are 32-bit fields the object declares about itself, and
+    `_available` alone only measures them against the slice: for a slice smaller than
+    `max_strings_bytes` that already bounds them, but for one larger -- a streamed
+    member well past the in-memory threshold -- it does not, and a lying `nsyms` buys a
+    read, and a walk over every row of it, proportional to the slice rather than to any
+    fixed budget. `max_strings_bytes` is threaded through and taken as a second,
+    fixed ceiling on what either table's *declared* size is allowed to ask `_available`
+    for. `binfmt.elf._symbol_bytes` takes the same parameter as its own
+    `max_table_bytes` for `.dynsym`/`.dynstr`, but only enforces it through
+    `_bounded_section_data`'s `compressed or SHT_NOBITS` guard (#62) -- an ordinary,
+    uncompressed `.dynsym`/`.dynstr` still reads through unbounded today (#95). This
+    cap is unconditional on `nsyms`/`strsize` themselves, so it is stricter than that
+    ELF path, not a mirror of it: nothing here depends on how the table is stored, only
+    on what it declares. `sym_wanted` and `symtab.strsize` themselves stay uncapped
+    below, in the `truncated` check: reading less than they declare -- whether the
+    slice ran out or the budget did -- is exactly what `truncated` already means, so a
+    table over budget falls into the read this function already had for one that is
+    merely short, no new branch needed. #63.
     """
     entry_size = _NLIST_SIZE[is64]
     sym_start = base + symtab.symoff
     str_start = base + symtab.stroff
     sym_wanted = symtab.nsyms * entry_size
-    sym_length = _available(sym_start, sym_wanted, end)
-    str_length = _available(str_start, symtab.strsize, end)
+    sym_length = _available(sym_start, min(sym_wanted, max_strings_bytes), end)
+    str_length = _available(str_start, min(symtab.strsize, max_strings_bytes), end)
     if sym_start <= str_start:
         table = _region(stream, raw, sym_start, sym_length)
         strings = _region(stream, raw, str_start, str_length)
