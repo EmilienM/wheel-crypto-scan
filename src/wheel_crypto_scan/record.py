@@ -13,8 +13,8 @@ See SCHEMA.md for the field-by-field documentation and the versioning rules.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, TypeVar
 
 from . import ANALYZER_VERSION, SCHEMA_VERSION, TOOL_NAME, __version__
 from .evidence import ArtifactInventory, BinaryEvidence, Evidence, MetadataEvidence, ScanError
@@ -23,6 +23,8 @@ from .ruleset import Ruleset
 from .verdict import Verdict
 
 EVIDENCE_LEVELS = ("minimal", "standard")
+
+T = TypeVar("T")
 
 
 def build_record(
@@ -42,11 +44,16 @@ def build_record(
     `max_binaries`, when given, caps only the `binaries[]` array built here, so the
     record stays bounded without the cap ever having withheld evidence from a rule.
     A finding's `locations[].path` can therefore legitimately name an object that this
-    cap left out of `binaries[]` -- see SCHEMA.md.
+    cap left out of `binaries[]`, when even the finding-aware selection below could not
+    make room for it -- see SCHEMA.md.
     """
     if evidence_level not in EVIDENCE_LEVELS:
         raise ValueError(f"unknown evidence level: {evidence_level!r}")
-    binaries = evidence.binaries if max_binaries is None else evidence.binaries[:max_binaries]
+    binaries = (
+        evidence.binaries
+        if max_binaries is None
+        else _cap_by_findings(evidence.binaries, lambda binary: binary.path, findings, max_binaries)
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {
@@ -60,12 +67,117 @@ def build_record(
             "evidence_level": evidence_level,
         },
         "wheel": _wheel_block(evidence),
-        "artifacts": _artifacts_block(evidence.artifacts),
+        "artifacts": _artifacts_block(evidence.artifacts, findings, max_binaries),
         "binaries": [_binary_block(binary, evidence_level) for binary in binaries],
         "findings": [_finding_block(finding) for finding in findings],
         "verdict": _verdict_block(verdict),
         "errors": [_error_block(error) for error in evidence.errors],
     }
+
+
+def _cap_by_findings(
+    items: Sequence[T],
+    path_of: Callable[[T], str],
+    findings: Sequence[Finding],
+    max_binaries: int,
+) -> tuple[T, ...]:
+    """Cap `items` to `max_binaries`, keeping what a finding points at first.
+
+    Shared by `binaries[]` and `artifacts.extensions`, both keyed by the object path
+    `path_of` reads off each item -- a `BinaryEvidence` for one, a bare `(path,
+    format)` pair for the other. Keeping them on one function is what keeps the two
+    arrays agreeing on which objects survive the cap, the same thing that was true of
+    them before this existed, when both were the identical plain prefix.
+
+    Mirrors `binfmt.caps.cap()`'s fix for the per-binary string/symbol/crate caps
+    (DECISIONS.md, "A cap bounds the record, it does not pick the evidence", #51), one
+    layer up: there the cap picked which *matches inside an object* a rule got to see;
+    here it only ever picked which *objects* the serialised record lists, since #55
+    made evaluation itself see every object regardless of this cap. A plain
+    path-sorted prefix has no reason to agree with where the objects a finding
+    actually names happen to sort, so a wheel whose crypto-relevant objects sort last
+    could cap them straight out of `binaries[]` while `findings[]` and `verdict` still
+    named them (#75).
+
+    Three passes fill the room in the order a reader would miss it most, the same
+    shape `binfmt.caps.cap()` uses for its own three passes:
+
+      1. One representative object per `(rule_id, subject)` a finding names, visited
+         in that order -- so a finding does not lose *every* one of its objects to an
+         unrelated finding's objects simply because its own objects' paths, or its own
+         `subject`, happen to sort later. This is the fix a flat "referenced, then
+         rest, in path order" pass was still missing: sorting the referenced set by
+         path alone just moves the same sorting problem from object paths to finding
+         subjects, and a subject like a crate name sorts exactly as arbitrarily with
+         respect to severity as a filename does.
+      2. Every other referenced object, in path order.
+      3. Everything else, in path order -- the same rule the plain prefix already used
+         for everything, when there was nothing to prefer.
+
+    A `Location.path` that names no item here (a `kind = "linkage"` rule's Hit, for
+    one, always carries the wheel's own filename, never an object path) is not part of
+    any group and cannot win a slot through this function; it was never going to be an
+    entry in `binaries[]` or `extensions` regardless of the wheel's content.
+
+    Unlike `binfmt.caps.cap()`'s per-binary caps, there is no fixed, ruleset-declared
+    vocabulary of finding subjects to guarantee room for one of: how many distinct
+    `(rule_id, subject)` groups and objects a wheel's own findings reference is data
+    the wheel supplies, not policy the ruleset declares, so nothing here can be
+    validated at load time the way `parse_ruleset` validates the string/symbol/crate
+    caps against the ruleset's own group counts. The real bound is not unbounded,
+    though: `[limits] max_locations_per_finding` already caps every finding to at most
+    ten locations before it reaches here, so the number of distinct objects any one
+    finding can put forward is small and fixed. What is not fixed is how many
+    *findings* a wheel can have naming distinct objects -- when the number of distinct
+    `(rule_id, subject)` groups alone exceeds `max_binaries`, group 1 above cannot
+    give every group its one slot, and the groups are visited in the same
+    deterministic, arbitrary order every time: sorted by `(rule_id, subject)`, so the
+    lowest-sorting groups win, the same posture `binfmt.caps.cap()` documents for its
+    own analogous case. `binaries_truncated` and `WHEEL_BINARIES_TRUNCATED` still fire
+    whenever the result is a prefix of anything, referenced or not, so this case is
+    never silent -- see DECISIONS.md and SCHEMA.md.
+    """
+    if len(items) <= max_binaries:
+        return tuple(items)
+    by_path: dict[str, T] = {path_of(item): item for item in items}
+    valid_paths = frozenset(by_path)
+
+    groups: dict[tuple[str, str | None], set[str]] = {}
+    referenced_paths: set[str] = set()
+    for finding in findings:
+        key = (finding.rule_id, finding.subject)
+        for location in finding.locations:
+            if location.path not in valid_paths:
+                continue
+            groups.setdefault(key, set()).add(location.path)
+            referenced_paths.add(location.path)
+
+    kept_paths: list[str] = []
+    seen: set[str] = set()
+
+    def _take(path: str) -> bool:
+        if len(kept_paths) >= max_binaries:
+            return False
+        if path in seen:
+            return True
+        seen.add(path)
+        kept_paths.append(path)
+        return True
+
+    for key in sorted(groups, key=lambda group_key: (group_key[0], group_key[1] or "")):
+        if not _take(min(groups[key])):
+            break
+
+    for path in sorted(referenced_paths):
+        if not _take(path):
+            break
+
+    for path in sorted(valid_paths):
+        if not _take(path):
+            break
+
+    kept = [by_path[path] for path in kept_paths]
+    return tuple(sorted(kept, key=path_of))
 
 
 def to_json_line(record: dict[str, Any]) -> str:
@@ -118,7 +230,21 @@ def _generator_block(meta: MetadataEvidence) -> dict[str, Any] | None:
     }
 
 
-def _artifacts_block(artifacts: ArtifactInventory) -> dict[str, Any]:
+def _artifacts_block(
+    artifacts: ArtifactInventory, findings: Sequence[Finding], max_binaries: int | None
+) -> dict[str, Any]:
+    # `extensions` is capped the same finding-aware way `binaries[]` is, through the
+    # same function, so the two never disagree on which objects survive the cap --
+    # they always agreed before this existed, when both were the identical plain
+    # prefix. `ArtifactInventory.extensions` itself holds the full, untruncated set;
+    # `build_inventory` stopped capping it for the same reason `_collect` stopped
+    # truncating `Evidence.binaries` for #55 -- capping it before this point would
+    # have been capping it before the cap could know what a finding cared about.
+    extensions = (
+        artifacts.extensions
+        if max_binaries is None
+        else _cap_by_findings(artifacts.extensions, lambda item: item[0], findings, max_binaries)
+    )
     return {
         "py_files": artifacts.py_files,
         "pyc_files": artifacts.pyc_files,
@@ -127,7 +253,7 @@ def _artifacts_block(artifacts: ArtifactInventory) -> dict[str, Any]:
         "binaries_truncated": artifacts.binaries_truncated,
         "record_entries": artifacts.record_entries,
         "total_uncompressed_bytes": artifacts.total_uncompressed_bytes,
-        "extensions": [{"path": path, "format": fmt} for path, fmt in artifacts.extensions],
+        "extensions": [{"path": path, "format": fmt} for path, fmt in extensions],
         "bundled_libs": list(artifacts.bundled_libs),
         "sboms": list(artifacts.sboms),
         "symlinks": [{"path": path, "target": target} for path, target in artifacts.symlinks],

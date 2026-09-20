@@ -27,6 +27,7 @@ from helpers.binfmt import (
     PEExport,
     PEImport,
     append_strtab_decoy,
+    patch_header_field,
     patch_section_header,
 )
 from helpers.wheelbuilder import build_wheel
@@ -1091,11 +1092,11 @@ def test_the_binaries_cap_still_bounds_the_serialised_record(context, tmp_path: 
 
     assert len(record["binaries"]) == context.max_binaries_per_record
     assert record["artifacts"]["binaries_truncated"] is True
-    # The crypto object sorted last, past the cap, so it is evaluated (previous test)
-    # but is not one of the objects the record actually lists.
-    assert all(binary["path"] != "pkg/_zzz_crypto.so" for binary in record["binaries"])
-    # Its finding's location still names it: a finding location is not guaranteed to
-    # appear in binaries[] once the record is capped. See SCHEMA.md.
+    # #75: the crypto object sorted last, past the plain prefix, but a finding names
+    # it, so the finding-aware selection keeps it -- at the cost of the one filler
+    # object that would otherwise have been the last one in. See the tests below and
+    # DECISIONS.md, "A cap bounds the record, it does not pick the evidence" (#51).
+    assert any(binary["path"] == "pkg/_zzz_crypto.so" for binary in record["binaries"])
     symbol_finding = next(
         f for f in record["findings"] if f["rule_id"] == "BIN_OPENSSL_SYMBOLS_DEFINED"
     )
@@ -1127,6 +1128,95 @@ def test_binaries_truncated_finding_does_not_fire_under_the_cap(context, tmp_pat
 
     assert record["artifacts"]["binaries_truncated"] is False
     assert not any(f["rule_id"] == "WHEEL_BINARIES_TRUNCATED" for f in record["findings"])
+
+
+# --- M10: binaries[] keeps what a finding points at, before filling the rest (#75) --
+
+
+def _sorts_last_referenced_objects_wheel(tmp_path: Path, filler_count: int = 300):
+    """#75's own reproduction: `filler_count` inert filler objects, plus a partial ELF
+    carrying an OpenSSL banner (`zz1_broken.so`) and an unparseable object
+    (`zz2_opaque.so`), both sorting after every filler."""
+    tiny = ElfBuilder(needed=("libc.so.6",)).build()
+    broken = patch_header_field(
+        patch_header_field(
+            ElfBuilder(rodata=b"\x00OpenSSL 3.0.14 4 Jun 2024\x00").build(), "e_shnum", 0
+        ),
+        "e_shoff",
+        0,
+    )
+    # Starts with the ELF magic, so it is sniffed as ELF, but has nothing past it for
+    # `ELFFile` to read -- `binary_unknown_format`, not a truncation this reader can
+    # name more specifically. Padded to the archive's own minimum binary-member size.
+    opaque = b"\x7fELF" + b"\x00" * 60
+    files = {f"pkg/_ext{i:04d}.so": tiny for i in range(filler_count)}
+    files["pkg/zz1_broken.so"] = broken
+    files["pkg/zz2_opaque.so"] = opaque
+    return build_wheel(
+        tmp_path / f"sortslast-1.0-{MANYLINUX}.whl",
+        name="sortslast",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+    )
+
+
+def test_finding_referenced_objects_sorting_last_still_appear_in_binaries(
+    context, tmp_path: Path
+) -> None:
+    """#75's own reproduction. #55 already made every object be evaluated regardless
+    of the cap; this is the other half -- a human reading the record must be able to
+    corroborate the verdict against the objects that actually earned it, not just
+    whichever 256 objects happened to sort first. Mirrors #51's fix for the
+    per-binary string/symbol/crate caps one layer down (DECISIONS.md, "A cap bounds
+    the record, it does not pick the evidence")."""
+    wheel = _sorts_last_referenced_objects_wheel(tmp_path)
+    record = scan_wheel(wheel, context)
+
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert record["verdict"]["needs_human_review"] is True
+    assert {"BIN_OPAQUE", "BIN_PARTIAL_FORMAT", "BIN_STATIC_OPENSSL", "BIN_UNPARSEABLE"} <= set(
+        record["verdict"]["rule_ids"]
+    )
+
+    paths = {binary["path"] for binary in record["binaries"]}
+    assert "pkg/zz1_broken.so" in paths
+    assert "pkg/zz2_opaque.so" in paths
+    # Still bounded: a cap that keeps the referenced objects must not stop being a
+    # cap. The remaining room is filled with fillers, same as the plain prefix did.
+    assert len(record["binaries"]) == context.max_binaries_per_record
+    assert record["artifacts"]["binaries_truncated"] is True
+
+
+def test_the_binaries_truncated_finding_still_fires_with_finding_aware_selection(
+    context, tmp_path: Path
+) -> None:
+    """`WHEEL_BINARIES_TRUNCATED` and `artifacts.binaries_truncated` mean "the listing
+    is a prefix of the whole set", never which objects that prefix keeps -- so a
+    finding-aware selection must not change whether, or how, they fire."""
+    wheel = _sorts_last_referenced_objects_wheel(tmp_path)
+    record = scan_wheel(wheel, context)
+
+    truncated = [f for f in record["findings"] if f["rule_id"] == "WHEEL_BINARIES_TRUNCATED"]
+    assert len(truncated) == 1
+    assert truncated[0]["verdict"] is None
+    assert truncated[0]["needs_human_review"] is False
+    assert "302" in truncated[0]["locations"][0]["evidence"]
+
+
+def test_finding_referenced_selection_is_deterministic_across_repeated_scans(
+    context, tmp_path: Path
+) -> None:
+    """#75 flagged this as unverified: the new selection must be exactly as
+    deterministic as the plain prefix it replaces. `test_parallel_output_matches_serial_output`
+    in test_cli.py pins this across `--jobs`; this pins it for the one wheel shaped to
+    actually exercise the new selection logic, independent of process scheduling."""
+    wheel = _sorts_last_referenced_objects_wheel(tmp_path)
+    first = scan_wheel(wheel, context)
+    second = scan_wheel(wheel, context)
+
+    assert first == second
+    assert first["binaries"] == second["binaries"]
 
 
 # --- L6: dedup and sort must agree -------------------------------------------
