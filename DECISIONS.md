@@ -2525,3 +2525,60 @@ this fix's scope. Tracked separately in
 [#97](https://github.com/EmilienM/wheel-crypto-scan/issues/97).
 
 Tracked in [#64](https://github.com/EmilienM/wheel-crypto-scan/issues/64).
+
+## `.exe` joins `_BINARY_SUFFIX`, and stops there
+
+**Accepted, the simpler of the two options the issue itself named.**
+
+`is_binary_member` accepted a member by suffix (`_BINARY_SUFFIX`), by vendor path, by
+living in a sniff directory with no dot in its name, or by the executable bit with no
+dot in its name. `.exe` failed every route: the wrong suffix, and its own dot
+disqualified it from both "no dot" fallbacks. It was never even sniffed for magic
+bytes, so a Windows executable shipped in a wheel was invisible to the scanner while
+the identical bytes, shipped suffix-less on the Linux build of the same tool, were
+read correctly.
+
+```
+pkg-1.0.data/scripts/openssl       (win_amd64)  -> class=CONDITIONAL  openssl_linkage=static  extensions=1
+pkg-1.0.data/scripts/openssl.exe   (win_amd64)  -> class=NO_CRYPTO_DETECTED  review=False  extensions=0
+```
+
+**What changed.** `_BINARY_SUFFIX` gained one alternative: `exe`. Nothing else in
+`layers/binaries.py` moved. `binfmt.pe` already keys a PE read on the optional
+header's magic, not on any DLL-versus-EXE distinction, so an `.exe` member is read by
+the exact same code path a `.pyd` or `.dll` already was; this is a member-
+classification fix, not a new reader.
+`tests/test_acceptance.py::test_the_exe_and_suffixless_forms_produce_the_same_record_but_for_the_path`
+pins the issue's own reproduction pair directly: the same PE bytes at
+`pkg-1.0.data/scripts/openssl` and `pkg-1.0.data/scripts/openssl.exe` now produce the
+identical verdict, linkage and extension count, differing only in the path each was
+shipped at.
+
+**What was rejected.** The issue's second option: sniffing by magic for anything
+under a sniff directory regardless of extension, which would also cover `.com`,
+`.cpl`, `.sys`-style oddities and a dotted, suffix-less Mach-O tool name. The issue
+frames its own two options as alternatives, not a pair to both take, and its concrete
+concern -- `cmake.exe`, `node.exe`, the Windows build of a tool wheel reading
+differently from its Linux build -- is a `.exe` problem, not evidence of wheels
+shipping `.com`, `.cpl` or `.sys` members. Extending the suffix regex to those three as
+well was considered and rejected too, for the same reason inverted: adding a suffix to
+policy on the strength of "it would also be covered by the alternative" rather than a
+measured, real case is exactly the kind of unmeasured addition `AGENTS.md` already
+asks every ruleset entry to justify with a `why`, and there is no `why` here beyond
+"it exists as a Windows extension." A member the scanner still does not sniff by
+suffix keeps its prior behaviour (invisible to the scanner), not a worse one, so
+nothing already working regresses by leaving them out; the full magic-sniff option
+remains available if a real wheel ever needs it.
+
+**What it costs.** `ANALYZER_VERSION` moves (27 -> 28): every wheel carrying a `.exe`
+member now produces a different record than it did, as the issue's own text notes.
+`ruleset_version` and `schema_version` do not move: no rule, symbol, library or
+verdict changed, and the record shape is unchanged, only which members are read.
+
+Revisit if a real `win_amd64` wheel is found shipping crypto-relevant evidence in a
+`.com`, `.cpl` or `.sys` member, or in a dotted, suffix-less executable of another
+format -- at that point the issue's second option, sniffing by magic under a
+recognised directory regardless of extension, is the one to take, rather than growing
+`_BINARY_SUFFIX` one exotic extension at a time.
+
+Tracked in [#65](https://github.com/EmilienM/wheel-crypto-scan/issues/65).

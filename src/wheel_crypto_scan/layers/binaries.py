@@ -19,8 +19,8 @@ from ..errors import MEMBER_READ_ERROR
 from ..ruleset import BinaryPatterns, Conventions
 from ..wheelfile import MemberInfo, WheelArchive
 
-# `.so`, `.so.3`, `.3.dylib`, `.pyd`, `.dll` and friends.
-_BINARY_SUFFIX = re.compile(r"\.(so|dylib|pyd|dll)(\.\d+)*$", re.IGNORECASE)
+# `.so`, `.so.3`, `.3.dylib`, `.pyd`, `.dll`, `.exe` and friends.
+_BINARY_SUFFIX = re.compile(r"\.(so|dylib|pyd|dll|exe)(\.\d+)*$", re.IGNORECASE)
 _VERSIONED_DYLIB = re.compile(r"\.\d+(\.\d+)*\.dylib$", re.IGNORECASE)
 # Directories where a suffix-less file is plausibly an executable or a library.
 _SNIFF_DIRS = ("bin", "lib", "lib64", "scripts", "libexec")
