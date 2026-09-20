@@ -13,6 +13,7 @@ import io
 
 from helpers.binfmt import (
     AR_MAGIC,
+    ET_REL,
     ArMember,
     DynSym,
     ElfBuilder,
@@ -26,12 +27,6 @@ from wheel_crypto_scan.errors import AR_PARSE_ERROR
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
-
-# A relocatable object's own type -- `ET_REL` -- not otherwise defined in
-# `helpers.binfmt`: nothing in `binfmt.elf` routes on `e_type` for symbol matching
-# (section *type*, `SHT_DYNSYM`/`SHT_SYMTAB`, decides that, not this field), so it is
-# not load-bearing for these tests, only documentation of what a real `.o` is.
-_ET_REL = 1
 
 IMPORTED_OPENSSL = DynSym("EVP_DigestInit_ex", defined=False)
 DEFINED_OPENSSL = DynSym("EVP_DigestInit_ex", defined=True)
@@ -274,31 +269,32 @@ def test_the_member_cap_bounds_dispatch_work_not_just_output_length(monkeypatch)
 # --- the documented gap: .symtab-only definitions are invisible to matching --------
 
 
-def test_a_symtab_only_definition_is_not_matched_the_documented_gap() -> None:
-    """#117: `binfmt.elf` matches crypto symbol groups against `.dynsym` only. A
-    relocatable `.o` -- every member of a real static archive -- normally carries no
-    `.dynsym` at all, only `.symtab`, so a genuine definition there is invisible to
-    symbol-based detection even though the object is now visible and read at all.
-    This is not a bug in `binfmt.ar`: it is `binfmt.elf`'s own, pre-existing scope,
-    demonstrated here because #99 is what first makes it reachable through a real
-    object shape. Strings-based detection (below) is unaffected.
+def test_a_symtab_only_definition_is_matched_through_an_archive_member() -> None:
+    """#117, closed: `binfmt.elf` now also matches crypto symbol groups against
+    `.symtab` when `.dynsym` is absent -- exactly the relocatable-object shape every
+    member of a real static archive has. `binfmt.ar` itself needed no change: once
+    `binfmt.elf` reads the member's `.symtab`, the archive layer above it inherits the
+    fix for free, the same as it did for every earlier `binfmt.elf` improvement.
     """
     member = ElfBuilder(
-        e_type=_ET_REL, dynsyms=(), with_symtab=True, symtab_syms=(DEFINED_OPENSSL,)
+        e_type=ET_REL, dynsyms=(), with_symtab=True, symtab_syms=(DEFINED_OPENSSL,)
     ).build()
     data = build_ar([ArMember("crypto.o", member)])
     binaries, errors = _read(data)
 
     assert errors == ()
-    assert binaries[0].matched_symbols == ()
-    assert binaries[0].symtab_count > 0, "the symbol is genuinely in .symtab, just unmatched"
+    assert binaries[0].symtab_count > 0
+    assert evidence.SymbolMatch("EVP_DigestInit_ex", "openssl", evidence.BINDING_DEFINED) in (
+        binaries[0].matched_symbols
+    )
 
 
 def test_a_banner_string_in_a_relocatable_object_is_still_found() -> None:
-    """The other half of #117's own claim: strings-based detection reads every
-    section regardless of symbol table, so it is unaffected by the `.symtab` gap.
+    """Strings-based detection reads every section regardless of symbol table, so a
+    relocatable object without a matching symbol is still not `NO_CRYPTO_DETECTED`
+    purely for that reason.
     """
-    member = ElfBuilder(e_type=_ET_REL, rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build()
+    member = ElfBuilder(e_type=ET_REL, rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build()
     data = build_ar([ArMember("crypto.o", member)])
     binaries, errors = _read(data)
 

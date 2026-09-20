@@ -401,10 +401,9 @@ removed from the verdict, arriving again through a different field.
 field linkage reads -- `needed`, `vendored_path`, the imported-versus-defined split,
 `matched_strings` -- intact. A `partial_binary` rule with no verdict names the causes
 not worth one. They are not the same question and their answers are not the same set:
-`elf_symtab_unread` is worth a verdict and costs linkage nothing, because `.symtab`
-drives `stripped` and `symbol_counts.symtab` while the split comes from `.dynsym` alone.
-A test asserts the two lists differ, so if they ever coincide the mechanism is a rename
-and should be one.
+`elf_go_buildinfo_unread` is worth a verdict and costs linkage nothing, because Go
+toolchain provenance feeds no field `linkage` reads. A test asserts the two lists
+differ, so if they ever coincide the mechanism is a rename and should be one.
 
 It is named `linkage_policy` and not `linkage` because three things here are already
 called linkage: the resolved posture per library, the matcher kind that reads those
@@ -432,13 +431,26 @@ forced. That was the tail wagging the dog, and the fix was at the other end -- t
 is a failure to read a definition, it now carries `OPAQUE`, and the exemption went with
 it. "The export half of this was wrong", above, has the measurement.
 
+**`elf_symtab_unread` was on this list too, and is not any more (#117).** Unlike
+`pe_ordinal_export`, this one was never forced by the containment -- it was exempt on
+its own claimed grounds, that `.symtab` drives only `stripped` and
+`symbol_counts.symtab` while the imported-versus-defined split comes from `.dynsym`
+alone. That stopped being true once `.symtab` became a relocatable object's *only*
+symbol table for matching, when `.dynsym` is genuinely absent. The cause name cannot
+say which of the two shapes -- an ordinary object where only `.symtab`'s count failed,
+or a relocatable one where the split itself did -- produced it, so the same safe
+default this vocabulary already takes for a cause it has never seen applies: it now
+costs the linkage answer unconditionally, even for the ordinary case that was
+genuinely safe before. `ruleset_version` moves for the same reason dropping any
+exemption does.
+
 The containment helped, in one direction only, and it is worth being exact about which.
 The loader refuses `routine` that is not a subset of `exclude_reasons`, so dropping the
 exemption forces the re-rating. It does not refuse the converse -- re-rating the verdict
 while leaving the exemption in place loads clean, because a cause being worth a verdict
-and costing linkage nothing is legitimate and is what `elf_symtab_unread` is. What holds
-that side is the exact-set assertion in `tests/test_linkage.py`, which is a test over
-the shipped ruleset and so does not reach a `--ruleset` user. That is the weaker
+and costing linkage nothing is legitimate and is what `elf_go_buildinfo_unread` is. What
+holds that side is the exact-set assertion in `tests/test_linkage.py`, which is a test
+over the shipped ruleset and so does not reach a `--ruleset` user. That is the weaker
 mechanism, and it is weaker on purpose: there is nothing here to enforce.
 
 `pe_no_import_directory` is exempt on plainer grounds. It fires when the optional header
@@ -1230,11 +1242,13 @@ cover all three of `.dynamic`, `.dynsym` and `.symtab` for this shape too.
 
 **It costs the linkage answer, on purpose.** `elf_section_table_absent` and
 `elf_section_type_ambiguous` are not in `[linkage_policy] exclude_reasons`. The three
-causes already excluded --
-`elf_symtab_unread`, `elf_go_buildinfo_unread`, `pe_no_import_directory` -- each leave
-every field `linkage` reads intact: `.symtab` and `.go.buildinfo` feed nothing `linkage`
-touches, and an absent PE import directory is a declaration the object really did make.
-None of that holds for either new cause. `needed`, the imported/defined split and
+causes already excluded, at the time --
+`elf_symtab_unread`, `elf_go_buildinfo_unread`, `pe_no_import_directory` -- each left
+every field `linkage` reads intact: `.symtab` and `.go.buildinfo` fed nothing `linkage`
+touched, and an absent PE import directory is a declaration the object really did
+make. (`elf_symtab_unread` left this list later, #117, once `.symtab` started driving
+the imported/defined split too for an object with no `.dynsym` -- see that entry.)
+None of that held for either new cause. `needed`, the imported/defined split and
 `matched_strings` are what `linkage` reads, and a sectionless or ambiguous object has
 answered none of them -- `needed` is not "no dependencies", it is "we could not ask" or
 "we cannot tell which answer is real". Excluding either would read `openssl_linkage:
@@ -1242,9 +1256,9 @@ none` off an object that told us nothing, the same failure `DECISIONS.md`'s "A s
 table is checked against the string table, not taken at its word" entry already
 measured for a lying `nsyms`. The reused tokens -- a forged `sh_type` folding into
 `elf_dynamic_unread`, `elf_dynsym_unread` or `elf_symtab_unread` -- were already costing
-the linkage answer (two of the three) or already excluded for an unrelated reason
-(`elf_symtab_unread`, which never fed `linkage` in the first place); reusing them
-changes nothing about that table.
+the linkage answer (two of the three, at the time) or already excluded for an unrelated
+reason (`elf_symtab_unread`, which had not yet fed `linkage` at all); reusing them
+changed nothing about that table.
 
 **What was rejected.** Reading `PT_DYNAMIC` and the program headers directly -- the
 issue's option 3 -- as the primary or a fallback mechanism. It is the more complete fix,
@@ -4309,6 +4323,13 @@ should apply only when `.dynsym` is absent or always, and on a real corpus check
 it does not change output for the ordinary case. Filed separately, found while scoping
 this fix: [#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117).
 
+**Closed since**, by `binfmt.elf` matching `.symtab` whenever `.dynsym` is genuinely
+absent -- see "`.symtab` is matched for crypto symbols when `.dynsym` is genuinely
+absent" below. `binfmt.ar` needed no change of its own: it calls `read_binary` per
+member regardless, so it inherited the fix the moment `binfmt.elf` had it. The two
+tests this paragraph named were rewritten in place to pin the closed state instead of
+the gap; see that entry for the design this fix's own scoping deferred.
+
 `ANALYZER_VERSION` moves: a wheel shipping a `.a`/`.lib` now produces real evidence
 where it previously produced none. `ruleset_version` moves: `ar_parse_error` joins
 `BIN_UNPARSEABLE`'s `error_kinds`, the same rule `elf_parse_error`/`macho_parse_error`/
@@ -4466,3 +4487,148 @@ tends to miss. Filed separately, found while verifying this fix:
 [#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
 
 Tracked in [#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76).
+
+## `.symtab` is matched for crypto symbols when `.dynsym` is genuinely absent
+
+**Accepted. `ANALYZER_VERSION` moves.**
+
+`binfmt.elf`'s crypto symbol matching read `.dynsym` only. Correct for a shared object
+or executable, where `.dynsym` is what the dynamic linker actually uses -- but a
+relocatable object (`ET_REL`, a `.o`/`.obj` before linking, the shape every member of
+a `.a`/`.lib` static archive has, see #99) normally has no `.dynsym` at all, only
+`.symtab`. Fed through the unmodified reader, such an object's `matched_symbols` came
+back empty even when it genuinely defined a crypto symbol like `EVP_DigestInit_ex`,
+with no accompanying string banner to fall back on -- invisible to the tool's primary
+detection mechanism for "compiled straight into the extension, no library file, no
+dependency", the shape `cryptography` 42+ relies on.
+
+**Scoped to only when `.dynsym` is genuinely absent, not always alongside it.** Every
+shared object and executable already carries a live `.dynsym` -- `strip` cannot remove
+it without breaking dynamic linking -- so gating on absence means this reader's output
+for the entire existing corpus of shared objects and executables is unaffected *by
+construction*, not by a corpus check this repo has no wheel corpus to run locally.
+Matching `.symtab` unconditionally was considered and rejected for exactly that reason:
+it would touch every already-scanned ELF object with a live `.symtab`, most of which
+also carry local, non-exported symbols a linker kept for debugging that `.dynsym` never
+exposed, with no way to verify here that doing so does not introduce new matches or
+duplicate findings on the ordinary case.
+
+"Absent" means genuinely, cleanly absent, not merely `dynsym is None`: an ambiguous
+`.dynsym` (more than one `SHT_DYNSYM` section) or one forged away from its own type
+also makes the type-based lookup return `None`, but neither means the object has no
+`.dynsym` -- both mean it has one this reader cannot trust which candidate is real, or
+cannot trust the type of. Falling back to `.symtab` for either would read a crafted
+object's debug table as though it were a relocatable object's own, and only, symbol
+table, which it is not. `dynsym_absent` is computed explicitly as `dynsym is None and
+not dynsym_ambiguous and not dynsym_type_mismatch`, and both edge cases have their own
+test confirming `.symtab` is not consulted when they fire.
+
+**Binding and the cross-check reuse `.dynsym`'s own machinery unchanged.**
+`_iter_symbols` already operates on raw bytes against the shared `Elf32_Sym`/`Elf64_Sym`
+layout, deriving imported/defined from `st_shndx == SHN_UNDEF` -- a fact the ELF spec
+defines identically for both tables, so the function needed no change at all. The same
+is true of the understated-rows and unresolved-name cross-checks: `holds_a_name_not_read`
+already took the string bytes and the read-crypto set as plain arguments, with no
+`.dynsym`-specific assumption baked in.
+
+**The one piece that could not be reused as-is: `.symtab`'s string table has a
+different trust model than `.dynsym`'s, and mixing them would have applied the wrong
+one to one of the two callers.** `.dynsym`'s `sh_link` is not what the dynamic linker
+trusts -- it uses `.dynamic`'s `DT_STRTAB` instead -- so `_validated_strtab` exists
+specifically because a decoy `sh_link` could disagree with what the loader actually
+resolves, and refuses to trust `sh_link` without cross-checking it against `DT_STRTAB`.
+`.symtab` has no such hazard: nothing but a section-header-reading tool ever resolves a
+`.symtab` name at all, the dynamic linker never touches it, and a relocatable object
+normally carries no `.dynamic` section to cross-check against in the first place --
+`sh_link` naming the associated string table *is* the ELF spec's own definition of what
+`.symtab`'s string table is, not a hint a loader might disagree with. `_symtab_strtab`
+is a new, separate function for this: it keeps the one check that generalises (`sh_link`
+must resolve to a section really typed `SHT_STRTAB`) and drops the cross-check that does
+not apply. `_symbol_bytes`, previously `.dynsym`-specific (`dt_strtab_addr` threaded
+through from `.dynamic`), now takes an already-resolved `strtab: Section | None` from
+either trust model instead, so the two callers' resolution logic never risks blending.
+
+**What was rejected.** Reading `ar`'s own GNU symbol-index member to shortcut this
+instead of matching through the archive member's own `.symtab`: already rejected for
+#99 on the same grounds -- the index carries no binding and trusting it without
+cross-checking against the object it claims to describe is the exact hazard
+`binfmt.symtab`'s cross-check exists to close.
+
+**What `binfmt.ar` needed to change: nothing, for an ELF member.** It calls
+`read_binary` per member regardless of format, so the fix applies to every ELF
+archive member automatically once `binfmt.elf` has it -- the same inheritance every
+earlier `binfmt.elf` correction already gave `binfmt.ar` for free. Left open: a
+Windows `.lib`'s `.obj` members are COFF, not ELF, and `binfmt.pe` deliberately does
+not read the COFF symbol table at all (every modern linker strips it in favour of a
+PDB); such a member stays `FORMAT_UNKNOWN`, strings-only, unaffected by this fix.
+
+**Severe findings from two rounds of adversarial review plus a targeted verification
+pass over the fixes themselves, all fixed before merge.**
+
+- **A decoy `.strtab` defeated the new path entirely, and the object read clean, not
+  `OPAQUE`.** `_symtab_strtab` has no independent authority to corroborate `sh_link`
+  against -- that is the whole reason it does not attempt `_validated_strtab`'s
+  address cross-check -- so a `.symtab` repointed at an appended, all-NUL `SHT_STRTAB`
+  resolved every name to `""`: `st_name == 0` and an index into an all-NUL table both
+  read as "no name, resolved successfully" rather than unresolved, so `symtab_unresolved`
+  stayed `0`, the fabricated `.strtab` held no crypto name to flag, and the *real*
+  `.strtab`, sitting untouched elsewhere in the section table, was never asked. Reproduced
+  independently by both reviewers on an `ET_REL` object genuinely defining
+  `EVP_DigestInit_ex`: `matched_symbols=() partial_analysis=False errors=[]`, exactly the
+  "unreadable means `OPAQUE`, never `NO_CRYPTO_DETECTED`" failure this whole invariant
+  exists to prevent, and exploitable on purpose by a crafted wheel wanting to hide a
+  crypto symbol from this tool. Fixed by not trusting the one table `sh_link` names at
+  all for this check: `_any_strtab_holds_a_name_not_read` asks every `SHT_STRTAB`
+  section in the object, so the real `.strtab` still gets to contradict the decoy
+  regardless of which one `.symtab` claims to point at.
+- **That fix had its own gap, found dispatching a fork to verify it rather than
+  trusting the fix on inspection.** The first version of `_any_strtab_holds_a_name_not_read`
+  skipped a `SHT_STRTAB` section it could not fully read within the byte budget --
+  reasonable-looking, since an unread section holds nothing this pass can confirm
+  either way, but wrong: it reopened the identical decoy under a second construction.
+  A *small* decoy `.symtab`'s `sh_link` is happy to point at (so the primary read
+  stays clean and cheap), placed beside the genuine `.strtab` with its own declared
+  `sh_size` inflated past the budget elsewhere in the section table -- the one section
+  that could have contradicted the decoy was silently skipped rather than flagged as
+  unchecked, and the object read clean again. Reproduced. Fixed by making an unread
+  `SHT_STRTAB` section count as a hit, the same as finding an unclaimed name would:
+  "unreadable means `OPAQUE`" applies to a string table this function could not fully
+  examine exactly as it does to one that spelled a name out.
+- **`dynsym_absent`'s three-way gate missed a fourth shape.** A `.dynsym` whose own
+  section header fails to parse never reaches `sections` at all (`elf_sections_unread`),
+  so `dynsym is None`, `dynsym_ambiguous` is `False`, and `dynsym_type_mismatch` is
+  also `False` -- the mismatch check scans the same truncated `sections` list and
+  misses it the identical way. Reproduced on an ordinary shared object with a corrupted
+  `.dynsym` `sh_link`: `.symtab` matching fired and added evidence to an already-partial
+  record. Bounded impact (evidence added, not lost, to a record already flagged
+  partial), but the documented "unaffected by construction" claim was incomplete.
+  Fixed: `dynsym_absent` now also requires `PARTIAL_ELF_SECTIONS_UNREAD not in reasons`.
+- **`"unaffected by construction" was false for a statically linked executable.`** Only
+  a *dynamically* linked shared object or executable is guaranteed a live `.dynsym`;
+  a static `ET_EXEC` has none either, and reproducibly now gets `.symtab` matched --
+  wheels shipping Go binaries are exactly this shape, which is why `binfmt.golang.py`
+  exists at all. The behaviour is desirable, not a bug: a statically linked executable
+  defining a crypto symbol should not stay invisible any more than a relocatable
+  object should. What was wrong was the claim of *no* corpus impact; corrected in the
+  module docstring and here to scope "unaffected by construction" to dynamically
+  linked objects only, and name the static-executable case as the fix's intended
+  further reach, not an oversight.
+- **`.symtab` carries symbol types `.dynsym` never does.** `STT_FILE` (a source-file
+  pseudo-symbol) and `STT_SECTION` entries are names too, and a file literally called
+  `EVP_md5.c` or `blake3_dispatch.c` matched a group by nothing but coincidence of a
+  filename with the code it happens to implement -- reproduced. `_iter_symbols` now
+  yields each entry's `st_info`-derived type (`ELF32_ST_TYPE`, identical layout in
+  both classes); the `.symtab` matching loop skips `STT_FILE`/`STT_SECTION`, and the
+  `.dynsym` loop, which has never needed this since a dynamic symbol table does not
+  normally carry either type, ignores the new field.
+
+`ANALYZER_VERSION` moves: an unchanged `.o`/`.obj`-holding wheel, or a statically
+linked executable, that previously read `matched_symbols: []` for lack of `.dynsym`
+can now report real crypto symbol matches for the identical bytes. `ruleset_version`
+also moves, for a related but distinct reason this fix surfaced: `elf_symtab_unread`
+used to leave `[linkage_policy] exclude_reasons` unconditionally, on the premise that
+`.symtab` only ever drove `stripped`/`symbol_counts.symtab` -- a premise this fix
+breaks. See "Sections are found by type, not by a name nobody checks", the paragraph
+beginning "`elf_symtab_unread` was on this list too, and is not any more (#117)".
+
+Tracked in [#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117).

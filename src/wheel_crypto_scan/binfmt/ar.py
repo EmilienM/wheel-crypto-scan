@@ -41,13 +41,15 @@ loses the object's evidence to what is only a labelling failure: "unreadable mea
 `OPAQUE`, never `NO_CRYPTO_DETECTED`" applies to a name exactly as much as to a
 structure. See #99's adversarial review.
 
-What this module deliberately does not do: read `.symtab` for crypto symbol
-matching. A relocatable object's own symbol table is not `.dynsym`, and
-`binfmt.elf`'s matcher only ever reads `.dynsym` -- so a `.o` member that *defines* a
-crypto symbol with no accompanying string banner is still invisible to symbol-based
-detection even once this module makes the archive's contents visible at all.
-Strings/banner-based detection (which reads every section regardless of symbol
-table) is unaffected. See #117.
+This module needed no change to close #117, for an ELF member: a `.o`'s own symbol
+table is `.symtab`, not `.dynsym`, and `binfmt.elf` now matches crypto symbol groups
+against `.symtab` whenever `.dynsym` is genuinely absent -- exactly the shape every
+relocatable ELF archive member has. Once `read_binary` (called on each member above)
+picked that up, this module inherited the fix for free, the same as every earlier
+`binfmt.elf` improvement. Left open: a Windows `.lib`'s `.obj` members are COFF, not
+ELF, and `binfmt.pe` deliberately does not read the COFF symbol table at all (every
+modern linker strips it in favour of a PDB); such a member is read as `FORMAT_UNKNOWN`,
+strings-only, and #117 does nothing for it.
 
 Archive-derived evidence never confirms another object's `needed` entry as resolving
 inside the wheel: `BinaryEvidence.from_archive` marks every member this module

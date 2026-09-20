@@ -184,8 +184,9 @@ class LinkagePolicy:
 
     Which causes those are is policy, so the list lives in `ruleset.toml` beside the
     one `BIN_PARTIAL_ROUTINE` draws for verdicts. They are two different questions
-    over one vocabulary and their answers differ: `elf_symtab_unread` is worth a
-    verdict and costs linkage nothing, because the split comes from `.dynsym`.
+    over one vocabulary and their answers differ: `elf_go_buildinfo_unread` is worth a
+    verdict and costs linkage nothing, because Go toolchain provenance feeds no field
+    `linkage` reads.
     """
 
     exclude_reasons: frozenset[str] = frozenset()

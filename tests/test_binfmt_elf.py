@@ -21,11 +21,13 @@ from helpers.binfmt import (
     E_SHNUM_OFFSET,
     EM_S390,
     EM_X86_64,
+    ET_REL,
     SHF_COMPRESSED,
     SHT_DYNAMIC,
     SHT_DYNSYM,
     SHT_PROGBITS,
     SHT_SYMTAB,
+    STB_GLOBAL,
     DynSym,
     ElfBuilder,
     append_duplicate_dynsym_section,
@@ -444,7 +446,7 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
 
     from elftools.elf.elffile import ELFFile
 
-    from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes
+    from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes, _validated_strtab
     from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
 
     for elfclass, big_endian in ((64, False), (32, False), (64, True), (32, True)):
@@ -464,9 +466,12 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
         # `ElfBuilder` always writes DT_STRTAB and every section's sh_addr as 0, so 0
         # is the value that corroborates `.dynstr` here -- this test is about the fast
         # reader agreeing with pyelftools, not about the sh_link/DT_STRTAB check.
-        table, dynstr, _unread = _symbol_bytes(elf, section, 0, MAX_STRINGS_BYTES)
+        dynstr_section = _validated_strtab(elf, section["sh_link"], 0)
+        table, dynstr, _unread = _symbol_bytes(elf, section, dynstr_section, MAX_STRINGS_BYTES)
         read = _iter_symbols(elf, table, dynstr)
-        actual = [(name, undefined) for name, undefined, resolved in read if resolved and name]
+        actual = [
+            (name, undefined) for name, undefined, resolved, _symtype in read if resolved and name
+        ]
         assert actual == expected, f"mismatch for elfclass={elfclass} big_endian={big_endian}"
 
 
@@ -1737,3 +1742,234 @@ def test_a_decoy_string_table_cannot_fabricate_a_needed_dependency() -> None:
     assert fabricated not in ev.needed
     assert ev.needed == ()
     assert any(e.kind == ELF_PARSE_ERROR for e in errors)
+
+
+# --- .symtab matching, only when .dynsym is genuinely absent (#117) ----------------
+
+
+def test_a_relocatable_object_matches_a_defined_symtab_crypto_symbol() -> None:
+    """The reproduction #117 was filed over: a `.o` -- a relocatable object, the shape
+    every member of a real `.a`/`.lib` static archive has -- normally carries no
+    `.dynsym` at all, only `.symtab`. A genuine definition there was invisible to
+    symbol-based detection before this.
+    """
+    honest = ElfBuilder(
+        e_type=ET_REL,
+        dynsyms=(),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    ev, errors = _read(honest)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert list(ev.matched_symbols) == [
+        evidence.SymbolMatch("EVP_DigestInit_ex", "openssl", evidence.BINDING_DEFINED)
+    ]
+
+
+def test_a_relocatable_object_matches_an_imported_symtab_crypto_symbol() -> None:
+    """The other binding: an external reference in `.symtab` is `SHN_UNDEF`, the
+    identical bit `.dynsym`'s own imported/defined split already reads."""
+    honest = ElfBuilder(
+        e_type=ET_REL,
+        dynsyms=(),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=False),),
+    ).build()
+    ev, errors = _read(honest)
+    assert errors == ()
+    assert list(ev.matched_symbols) == [
+        evidence.SymbolMatch("EVP_DigestInit_ex", "openssl", evidence.BINDING_IMPORTED)
+    ]
+
+
+def test_symtab_matching_is_not_consulted_when_dynsym_is_present() -> None:
+    """The safety property the whole design rests on: every shared object and
+    executable already carries a live `.dynsym`, so `.symtab` -- which can hold
+    unrelated local symbols a linker kept for debugging -- must never be searched for
+    matches once `.dynsym` has already answered the question. A crypto name planted in
+    `.symtab` alone, beside an unrelated `.dynsym`, must not appear in
+    `matched_symbols`: this is what makes the whole existing corpus unaffected by
+    construction rather than by a corpus check this reader cannot run.
+    """
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("some_unrelated_export", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    ev, errors = _read(honest)
+    assert errors == ()
+    assert ev.matched_symbols == ()
+
+
+def test_an_ambiguous_dynsym_does_not_fall_back_to_symtab_matching() -> None:
+    """`dynsym is None` is also true for an ambiguous `.dynsym` -- but the object is
+    not claiming to have none: this reader cannot trust which of several candidates is
+    real, which is not the same fact a genuinely relocatable object's absence is.
+    Falling back to `.symtab` here would read a crafted object's debug table as though
+    it were a relocatable object's only symbol table.
+    """
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("some_unrelated_export", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    ev, errors = _read(append_duplicate_dynsym_section(honest))
+    assert ev.matched_symbols == ()
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS]
+
+
+def test_a_forged_dynsym_type_does_not_fall_back_to_symtab_matching() -> None:
+    """The other shape `dynsym is None` does not mean genuinely absent: a section
+    still named `.dynsym` whose `sh_type` was forged away, which exists and cannot be
+    trusted rather than being absent."""
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("some_unrelated_export", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    forged = patch_section_header(honest, ".dynsym", "sh_type", SHT_PROGBITS)
+    ev, errors = _read(forged)
+    assert ev.matched_symbols == ()
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
+
+
+def test_a_symtab_size_that_stops_short_of_the_rows_is_not_a_clean_read() -> None:
+    """The `.symtab` mirror of `.dynsym`'s own understated-rows check: `.strtab` still
+    holds every name, which is what gives a truncated `.symtab` away."""
+    honest = ElfBuilder(e_type=ET_REL, dynsyms=(), with_symtab=True, symtab_syms=_HIDDEN).build()
+    ev, errors = _read(patch_section_header(honest, ".symtab", "sh_size", 24))
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["elf_symtab_unread", "symtab_understates_rows"]
+    assert [e.message for e in errors] == [
+        ".symtab declares fewer entries than .strtab holds names for"
+    ]
+
+
+def test_a_strtab_that_does_not_hold_the_names_symtab_points_at_is_not_a_clean_read() -> None:
+    """The `.symtab` mirror of the `.dynstr`-shrink check: every row stays,
+    `symbol_counts.symtab` is unaffected, and pyelftools reads the table without
+    complaint -- the names simply are not reachable any more.
+    """
+    honest = ElfBuilder(e_type=ET_REL, dynsyms=(), with_symtab=True, symtab_syms=_HIDDEN).build()
+    for size in (0, 8, 16):
+        ev, errors = _read(patch_section_header(honest, ".strtab", "sh_size", size))
+        assert ev.symtab_count == 4, size
+        assert ev.matched_symbols == (), size
+        assert ev.partial_analysis is True, size
+        assert [e.message for e in errors] == [".symtab names strings .strtab does not hold"]
+
+
+def test_a_decoy_strtab_repointed_from_symtab_does_not_read_completely_clean() -> None:
+    """The severe finding two independent adversarial reviews reproduced: `.symtab`
+    has no `.dynsym`-style address authority to corroborate `sh_link` against, so a
+    `.symtab` repointed at a decoy, all-NUL `SHT_STRTAB` resolved every name to `""`
+    -- not unresolved, resolved -- and the real `.strtab`, sitting untouched elsewhere
+    in the section table, was never asked. A crafted object could hide a genuine
+    `EVP_DigestInit_ex` definition and read completely clean: `matched_symbols=()`,
+    `partial_analysis=False`, no error. `_any_strtab_holds_a_name_not_read` closes it
+    by asking every `SHT_STRTAB` section, not just the one `sh_link` names, so the
+    real `.strtab` still gets to contradict the decoy.
+    """
+    honest = ElfBuilder(
+        e_type=ET_REL,
+        dynsyms=(),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    decoyed, decoy_index = append_strtab_decoy(honest, b"\x00" * 512)
+    attacked = patch_section_header(decoyed, ".symtab", "sh_link", decoy_index)
+    ev, errors = _read(attacked)
+
+    assert ev.matched_symbols == (), "the decoy hid a real crypto symbol definition"
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["elf_symtab_unread", "symtab_understates_rows"]
+    assert [e.message for e in errors] == [
+        ".symtab declares fewer entries than .strtab holds names for"
+    ]
+
+
+def test_a_small_decoy_beside_an_over_budget_real_strtab_is_still_not_a_clean_read() -> None:
+    """A second construction of the same attack, found verifying the fix above: a
+    *small* decoy `.symtab` is happy to point at (so the primary read is clean),
+    sitting beside the genuine `.strtab` with its own declared `sh_size` inflated past
+    the budget. An earlier version of `_any_strtab_holds_a_name_not_read` silently
+    skipped a section it could not fully read rather than treating that as suspicious,
+    so the one section that could have contradicted the decoy was never actually
+    checked. Skipping must count as a hit, not nothing to worry about.
+    """
+    from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
+
+    honest = ElfBuilder(
+        e_type=ET_REL,
+        dynsyms=(),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    decoyed, decoy_index = append_strtab_decoy(honest, b"\x00" * 64)
+    attacked = patch_section_header(decoyed, ".symtab", "sh_link", decoy_index)
+    inflated = patch_section_header(attacked, ".strtab", "sh_size", MAX_STRINGS_BYTES + 1000)
+    ev, errors = _read(inflated)
+
+    assert ev.matched_symbols == (), "the decoy hid a real crypto symbol definition"
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == ["elf_symtab_unread", "symtab_understates_rows"]
+    assert [e.message for e in errors] == [
+        ".symtab declares fewer entries than .strtab holds names for"
+    ]
+
+
+def test_an_stt_file_pseudo_symbol_does_not_match_by_coincidence_of_its_name() -> None:
+    """`.symtab` carries symbol types `.dynsym` never does. A source-file pseudo-symbol
+    named `EVP_md5.c` -- ordinary in a real relocatable object -- must not match the
+    `openssl` group by nothing but a filename's coincidence with the code it
+    implements. Also must not be reported as an unclaimed crypto name the object
+    understates: it was read and accounted for, only excluded from evidence by type.
+    """
+    file_symbol = DynSym("EVP_md5.c", defined=True, info=(STB_GLOBAL << 4) | 4)  # STT_FILE
+    honest = ElfBuilder(
+        e_type=ET_REL, dynsyms=(), with_symtab=True, symtab_syms=(file_symbol,)
+    ).build()
+    ev, errors = _read(honest)
+
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is False
+    assert errors == ()
+
+
+def test_an_stt_section_pseudo_symbol_is_also_excluded_from_matching() -> None:
+    section_symbol = DynSym("crypto_box_section", defined=True, info=(STB_GLOBAL << 4) | 3)
+    honest = ElfBuilder(
+        e_type=ET_REL, dynsyms=(), with_symtab=True, symtab_syms=(section_symbol,)
+    ).build()
+    ev, errors = _read(honest)
+
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is False
+    assert errors == ()
+
+
+def test_a_dynsym_whose_own_section_header_failed_does_not_fall_back_to_symtab_matching() -> None:
+    """A fourth shape `dynsym is None` does not mean genuinely absent: a `.dynsym`
+    section header that fails to read at all -- an `sh_link` field pointing past the
+    section count, so `elf.get_section` itself raises -- never reaches `sections`, so
+    neither the ambiguity check nor the type-mismatch check (which both scan the same
+    already-truncated list) ever see it. This is an ordinary shared object, not a
+    relocatable one, and must not have its `.symtab` matched just because its
+    `.dynsym` could not be read.
+    """
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("some_unrelated_export", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    attacked = patch_section_header(honest, ".dynsym", "sh_link", 0xFFFFFF)
+    ev, errors = _read(attacked)
+
+    assert ev.matched_symbols == ()
+    assert evidence.PARTIAL_ELF_SECTIONS_UNREAD in ev.partial_reasons
