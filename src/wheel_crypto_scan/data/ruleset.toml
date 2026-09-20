@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "18"
+ruleset_version = "19"
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +162,6 @@ exclude_reasons = [
     # exists to remove and WS2_32 is bound this way on every socket-using extension.
     # A test pins the shape that is given up.
     "pe_ordinal_import",
-    # `.symtab` drives `stripped` and `symbol_counts.symtab` and nothing else. The
-    # imported-versus-defined split linkage turns on comes from `.dynsym` alone, which
-    # has a cause of its own and is not on this list.
-    "elf_symtab_unread",
     # `.go.buildinfo` carries Go toolchain provenance and feeds the `go` object. No
     # field linkage reads comes from it.
     "elf_go_buildinfo_unread",

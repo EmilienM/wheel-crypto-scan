@@ -61,10 +61,37 @@ is a name we could not resolve rather than whatever bytes happen to be there.
 `binfmt.symtab` holds the cross-check, shared with `binfmt.macho`, which makes both of
 the same checks of `nsyms` and `strsize`.
 
-`.symtab`'s size is still believed. It drives `stripped` and `symbol_counts.symtab` and
-nothing else -- the imported-versus-defined split this reader exists to draw comes from
-`.dynsym` alone -- so a lie there costs a field that is recorded rather than a finding.
+`.symtab`'s size is still believed, and it always drives `stripped` and
+`symbol_counts.symtab`. When `.dynsym` is present that is the whole story, the
+imported-versus-defined split comes from `.dynsym` alone. When `.dynsym` is genuinely
+absent -- a relocatable object (`ET_REL`, a `.o`/`.obj` before linking, the shape
+every member of a `.a`/`.lib` static archive has, see `binfmt.ar`), or a statically
+linked executable, neither of which has any dynamic linking information to carry --
+`.symtab` is the object's only symbol table and is read and matched the same way, with
+its own cross-check, because a symbol compiled straight into it with no accompanying
+string banner was otherwise invisible to symbol-based detection. `.symtab`'s own
+string table is trusted through its `sh_link` directly, unlike `.dynsym`'s: nothing
+but a section-header-reading tool ever resolves a `.symtab` name, so there is no
+`.dynamic`-equivalent authority to cross-check `sh_link` against, and `sh_link` naming
+it is the ELF spec's own definition of what `.strtab` is -- which is cheaper to
+attack, not safer, so the cross-check spans every `SHT_STRTAB` section in the object
+rather than trusting the one `sh_link` names (`_any_strtab_holds_a_name_not_read`).
+Gating on `.dynsym`'s absence, rather than matching `.symtab` unconditionally, means a
+*dynamically* linked shared object or executable -- which always carries a live
+`.dynsym`, since `strip` cannot remove it without breaking dynamic linking -- is
+unaffected by construction; a statically linked executable is not, and its output can
+change under this fix, which is the intended target, not an incidental side effect.
+See #117.
 """
+
+# This module documents every way an attacker-controlled label can win a lookup and
+# every cross-check that closes one, by design (AGENTS.md: every policy entry carries
+# a `why`), and #56's chain plus #117 each added more without shrinking any of the
+# others. Disabled here rather than raising `max-module-lines` project-wide, which
+# would quietly give every OTHER module the same headroom this one earns by being
+# documentation-heavy. See DECISIONS.md, "A module-local line-count exemption instead
+# of a third global bump" (#85), the precedent this follows.
+# pylint: disable=too-many-lines
 
 from __future__ import annotations
 
@@ -152,11 +179,14 @@ def _unparsed(
     return result, (_error(path, kind, message),)
 
 
-# ELF symbol table entry layout: offsets of the two fields we need, by class.
+# ELF symbol table entry layout: offsets of the fields we need, by class.
 # 64-bit: st_name(4) st_info(1) st_other(1) st_shndx(2) st_value(8) st_size(8)
 # 32-bit: st_name(4) st_value(4) st_size(4) st_info(1) st_other(1) st_shndx(2)
-_SYM_LAYOUT = {64: (24, 0, 6), 32: (16, 0, 14)}
+_SYM_LAYOUT = {64: (24, 0, 4, 6), 32: (16, 0, 12, 14)}
 _SHN_UNDEF = 0
+# `ELF32_ST_TYPE(st_info)`: the low 4 bits, identical layout in both classes.
+_STT_SECTION = 3
+_STT_FILE = 4
 
 
 def _validated_strtab(elf, sh_link: int, dt_strtab_addr: int | None) -> Section | None:
@@ -281,10 +311,71 @@ def _bounded_section_data(
     return section.data(), False
 
 
+def _symtab_strtab(elf, sh_link: int) -> Section | None:
+    """The section `.symtab`'s own `sh_link` names, trusted once it really is one.
+
+    No `_validated_strtab`-style *address* cross-check applies: nothing but a
+    section-header-reading tool ever resolves a `.symtab` name, so there is no
+    `.dynamic`-equivalent authority to corroborate `sh_link` against the way
+    `DT_STRTAB` corroborates `.dynsym`'s. That does not make `sh_link` safe to trust
+    outright, only cheaper to attack: a `sh_link` repointed at an appended, all-NUL
+    `SHT_STRTAB` resolves every name to `""`, the identical decoy `_validated_strtab`
+    exists to close for `.dynsym` -- this function alone cannot see it, because the
+    real `.strtab` is simply never asked about. `_any_strtab_holds_a_name_not_read`,
+    the caller's cross-check, is what actually closes it: it does not trust one
+    resolved table, it asks every `SHT_STRTAB` section in the object, so the real
+    `.strtab` still gets a chance to contradict the decoy. The one check kept here on
+    its own: a `sh_link` resolving to a section that is not really `SHT_STRTAB` could
+    not be `.strtab`.
+    """
+    try:
+        section = elf.get_section(sh_link)
+    except Exception:
+        return None
+    if section is None or section["sh_type"] != "SHT_STRTAB":
+        return None
+    return section
+
+
+def _any_strtab_holds_a_name_not_read(
+    sections: Sequence[Section], patterns: BinaryPatterns, read: set[str], max_bytes: int
+) -> bool:
+    """Whether any `SHT_STRTAB` section in the object -- not just the one `.symtab`'s
+    `sh_link` names -- holds a crypto-group name no entry read from `.symtab` resolved
+    to, or could not be fully checked for one.
+
+    `_symtab_strtab` has no independent authority to confirm `sh_link` really names
+    `.strtab`, unlike `.dynsym`'s `DT_STRTAB`-corroborated read, so a crafted object can
+    repoint it at a decoy `SHT_STRTAB` -- appended, all-NUL, resolving every name to
+    `""` -- and pass a check that only ever looks at the table `sh_link` claims. This
+    closes it the way `holds_a_name_not_read` already closes the honest case: the real
+    `.strtab`, wherever it sits in the section table, still spells the name out and is
+    still read here, decoy or not.
+
+    A section over `max_bytes` counts as a hit, not a skip: an earlier version treated
+    it as nothing to worry about, which reopened the identical decoy under a second
+    construction -- a small decoy `.symtab` is happy to point at, sitting beside the
+    genuine `.strtab` with its own declared `sh_size` inflated past the budget, reads
+    completely clean, because the one section that could have contradicted the decoy
+    was silently skipped rather than flagged as unchecked. "Unreadable means `OPAQUE`,
+    never `NO_CRYPTO_DETECTED`" applies to a string table this function could not fully
+    examine exactly as it does to one that spelled a name out.
+    """
+    for section in sections:
+        if section["sh_type"] != "SHT_STRTAB":
+            continue
+        data, unread = _bounded_section_data(section, max_bytes)
+        if unread:
+            return True
+        if holds_a_name_not_read(data, patterns, read):
+            return True
+    return False
+
+
 def _symbol_bytes(
-    elf, section, dt_strtab_addr: int | None, max_table_bytes: int
+    elf, section, strtab: Section | None, max_table_bytes: int
 ) -> tuple[bytes, bytes, bool]:
-    """A symbol table and its string table, each read once, in that order.
+    """A symbol table and its already-resolved string table, each read once, in that order.
 
     pyelftools' `get_symbol()` seeks per symbol, alternating between the two. On a
     member too large to hold in memory those seeks run backwards through a zip stream,
@@ -299,21 +390,19 @@ def _symbol_bytes(
     through a zip member is one more full decompression pass. `binfmt.macho` sorts its
     two regions for the same reason.
 
-    `dt_strtab_addr` is threaded through from `.dynamic`, and `_validated_strtab`
-    reads `None` for it as "nothing to corroborate against" rather than "anything
-    goes": an object whose `.dynamic` could not be read has no witness for `.dynsym`'s
-    string table either, so this falls back to no names found, the same as any other
-    unresolved `sh_link` -- never to trusting whatever `sh_link` names outright.
+    `strtab` is resolved by the caller, not here: `.dynsym` and `.symtab` trust their
+    own `sh_link` under different rules (`_validated_strtab` vs. `_symtab_strtab`), and
+    mixing either's trust model into this function would apply the wrong one to the
+    other's caller. `None` means no string table could be trusted at all.
 
-    `max_table_bytes` is `_bounded_section_data`'s ceiling for both reads: `.dynsym`
-    and its string table are read through the identical `.data()` call `.rodata` is,
-    so a `SHF_COMPRESSED` `.dynsym` or `.dynstr` is the same exposure one level over,
-    and the caller's own budget (`max_strings_bytes`) is what already bounds how much
-    of this object it is willing to inflate. The third return value is `True` when
-    either read was refused for that reason; the caller folds it into
-    `elf_dynsym_unread` the same way an actual decompression failure already does.
+    `max_table_bytes` is `_bounded_section_data`'s ceiling for both reads: the symbol
+    table and its string table are read through the identical `.data()` call `.rodata`
+    is, so a `SHF_COMPRESSED` one is the same exposure one level over, and the caller's
+    own budget (`max_strings_bytes`) is what already bounds how much of this object it
+    is willing to inflate. The third return value is `True` when either read was
+    refused for that reason; the caller folds it into its own unread reason the same
+    way an actual decompression failure already does.
     """
-    strtab = _validated_strtab(elf, section["sh_link"], dt_strtab_addr)
     if strtab is not None and strtab["sh_offset"] < section["sh_offset"]:
         names, names_unread = _bounded_section_data(strtab, max_table_bytes)
         data, data_unread = _bounded_section_data(section, max_table_bytes)
@@ -325,8 +414,8 @@ def _symbol_bytes(
     return data, names, data_unread or names_unread
 
 
-def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, bool]]:
-    """Yield (name, is_undefined, name_resolved) for a symbol table already in hand.
+def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, bool, int]]:
+    """Yield (name, is_undefined, name_resolved, symbol_type) for a table already in hand.
 
     `names` has to be the same bytes the caller cross-checks against, or the two are
     asking about different string tables: `_symbol_bytes` returns both together for
@@ -344,8 +433,16 @@ def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, b
     guarantee a decoy table could otherwise spend effort forging. `BoundedNames` is
     built fresh here, once per call, because its cache is only sound over the one
     string table this call was handed -- see its docstring.
+
+    `symbol_type` is `st_info`'s low four bits, `ELF32_ST_TYPE`, identical in both
+    classes. `.dynsym` callers have never needed it: a dynamic symbol table does not
+    normally carry `STT_FILE`/`STT_SECTION` entries. `.symtab` does -- a source-file
+    pseudo-symbol or a per-section entry is a name, and one named `EVP_md5.c` or
+    `blake3_dispatch.c` would otherwise match a group by nothing but coincidence of a
+    filename with the code it happens to implement, in the one field this whole tool
+    turns on. The caller decides what to do with it; this reads the byte regardless.
     """
-    entry_size, name_offset, shndx_offset = _SYM_LAYOUT[elf.elfclass]
+    entry_size, name_offset, info_offset, shndx_offset = _SYM_LAYOUT[elf.elfclass]
     end = "<" if elf.little_endian else ">"
     u32 = struct.Struct(end + "I")
     u16 = struct.Struct(end + "H")
@@ -353,12 +450,13 @@ def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, b
 
     for base in range(0, len(data) - entry_size + 1, entry_size):
         st_name = u32.unpack_from(data, base + name_offset)[0]
+        st_type = data[base + info_offset] & 0xF
         undefined = u16.unpack_from(data, base + shndx_offset)[0] == _SHN_UNDEF
         if st_name == 0:
-            yield "", undefined, True
+            yield "", undefined, True, st_type
             continue
         name, resolved = resolver.resolve(st_name)
-        yield name, undefined, resolved
+        yield name, undefined, resolved, st_type
 
 
 def _find_section(sections: Sequence[Section], name: str) -> Section | None:
@@ -594,6 +692,7 @@ def read_elf(
             needed, soname, rpath, runpath = (), None, (), ()
 
     dynsym, dynsym_ambiguous = _find_section_by_type(sections, "SHT_DYNSYM")
+    dynsym_type_mismatch = False
     if dynsym_ambiguous:
         errors.append(
             _error(
@@ -603,11 +702,25 @@ def read_elf(
             )
         )
         reasons.add(evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS)
-    elif _type_mismatch(sections, ".dynsym", "SHT_DYNSYM"):
-        errors.append(
-            _error(path, ELF_PARSE_ERROR, ".dynsym exists but its sh_type is not SHT_DYNSYM")
-        )
-        reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
+    else:
+        dynsym_type_mismatch = _type_mismatch(sections, ".dynsym", "SHT_DYNSYM")
+        if dynsym_type_mismatch:
+            errors.append(
+                _error(path, ELF_PARSE_ERROR, ".dynsym exists but its sh_type is not SHT_DYNSYM")
+            )
+            reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
+    # `.symtab` matching (below) is gated on this: only genuinely absent, never
+    # ambiguous, forged away from its type, or unreachable because a section header
+    # failed to parse at all -- all three mean the object's own section table cannot
+    # be trusted about whether `.dynsym` exists, not that it genuinely has none. A
+    # `.dynsym` whose own header failed to read never reaches `sections` in the first
+    # place, so `dynsym is None` alone cannot tell that case apart from real absence.
+    dynsym_absent = (
+        dynsym is None
+        and not dynsym_ambiguous
+        and not dynsym_type_mismatch
+        and evidence.PARTIAL_ELF_SECTIONS_UNREAD not in reasons
+    )
     dynsym_count = 0
     symbol_matches: set[SymbolMatch] = set()
     if dynsym is not None:
@@ -623,8 +736,9 @@ def read_elf(
             # table, for a question only ever asked about the handful a group claims.
             read_crypto: set[str] = set()
             unresolved = 0
+            dynstr_section = _validated_strtab(elf, dynsym["sh_link"], dt_strtab_addr)
             table, dynstr, symtab_bytes_unread = _symbol_bytes(
-                elf, dynsym, dt_strtab_addr, max_strings_bytes
+                elf, dynsym, dynstr_section, max_strings_bytes
             )
             if symtab_bytes_unread:
                 # `.dynsym` or its string table (or both) declares more bytes than
@@ -662,7 +776,7 @@ def read_elf(
                 )
                 reasons.add(evidence.PARTIAL_ELF_DYNSYM_UNREAD)
             else:
-                for name, undefined, resolved in _iter_symbols(elf, table, dynstr):
+                for name, undefined, resolved, _symtype in _iter_symbols(elf, table, dynstr):
                     if not resolved:
                         unresolved += 1
                         continue
@@ -726,6 +840,67 @@ def read_elf(
             reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
             symtab_count = 0
     stripped = symtab is None or symtab_count == 0
+
+    if dynsym_absent and symtab is not None:
+        # Reached only for a relocatable object with no `.dynsym` at all -- see the
+        # module docstring and #117.
+        try:
+            symtab_read_crypto: set[str] = set()
+            symtab_unresolved = 0
+            strtab_section = _symtab_strtab(elf, symtab["sh_link"])
+            table, strtab, strtab_bytes_unread = _symbol_bytes(
+                elf, symtab, strtab_section, max_strings_bytes
+            )
+            if strtab_bytes_unread:
+                errors.append(
+                    _error(
+                        path,
+                        ELF_PARSE_ERROR,
+                        ".symtab or its string table declares more bytes than the budget allows",
+                    )
+                )
+                reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
+            else:
+                for name, undefined, resolved, symtype in _iter_symbols(elf, table, strtab):
+                    if not resolved:
+                        symtab_unresolved += 1
+                        continue
+                    groups = patterns.symbol_groups_for(name) if name else ()
+                    if not groups:
+                        continue
+                    # Read and accounted for either way, so the understated-rows
+                    # cross-check below must not see this name as missed -- only
+                    # skipped from evidence, by type, below.
+                    symtab_read_crypto.add(name)
+                    if symtype in (_STT_FILE, _STT_SECTION):
+                        # A source-file or per-section pseudo-symbol, not code: naming
+                        # one `EVP_md5.c` must not match a group by coincidence of a
+                        # filename with what it happens to implement. `.dynsym` never
+                        # carries these, so this has no counterpart above.
+                        continue
+                    binding = evidence.BINDING_IMPORTED if undefined else evidence.BINDING_DEFINED
+                    for group in groups:
+                        symbol_matches.add(SymbolMatch(name=name, group=group, binding=binding))
+                if symtab_unresolved:
+                    errors.append(
+                        _error(path, ELF_PARSE_ERROR, ".symtab names strings .strtab does not hold")
+                    )
+                    reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
+                elif _any_strtab_holds_a_name_not_read(
+                    sections, patterns, symtab_read_crypto, max_strings_bytes
+                ):
+                    errors.append(
+                        _error(
+                            path,
+                            ELF_PARSE_ERROR,
+                            ".symtab declares fewer entries than .strtab holds names for",
+                        )
+                    )
+                    reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
+                    reasons.add(evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS)
+        except Exception:
+            errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the symbol table"))
+            reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
 
     matched_symbols, symbols_truncated = cap(symbol_matches, patterns.limits.max_symbols_per_binary)
 

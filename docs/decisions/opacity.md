@@ -211,8 +211,9 @@ through a different field.
 `[linkage_policy] exclude_reasons` names the causes that leave every field linkage reads —
 `needed`, `vendored_path`, the imported-versus-defined split, `matched_strings` — intact. A
 `partial_binary` rule with no verdict names the causes not worth one. They are not the same
-question: `elf_symtab_unread` is worth a verdict and costs linkage nothing. A test asserts the
-two lists differ, so if they ever coincide the mechanism is a rename and should be one.
+question: `elf_go_buildinfo_unread` is worth a verdict and costs linkage nothing (Go toolchain
+provenance feeds no field `linkage` reads). A test asserts the two lists differ, so if they
+ever coincide the mechanism is a rename and should be one.
 
 **One containment holds, and the loader refuses a ruleset that breaks it.** Every cause a
 verdict-less rule claims must be exempt here too. A cause recorded without a verdict has
@@ -224,9 +225,18 @@ The containment holds in one direction only, and it is worth being exact about w
 loader refuses a verdict-less cause that is not exempt, so dropping an exemption forces the
 re-rating. It does not refuse the converse — re-rating the verdict while leaving the exemption
 in place loads clean, because a cause being worth a verdict and costing linkage nothing is
-legitimate and is what `elf_symtab_unread` is. What holds that side is an exact-set assertion
-in the test suite, which does not reach a `--ruleset` user. That is the weaker mechanism, and
-it is weaker on purpose: there is nothing here to enforce.
+legitimate and is what `elf_go_buildinfo_unread` is. What holds that side is an exact-set
+assertion in the test suite, which does not reach a `--ruleset` user. That is the weaker
+mechanism, and it is weaker on purpose: there is nothing here to enforce.
+
+**`elf_symtab_unread` was on the exemption list and is not any more (#117).** It was exempt
+because `.symtab` used to drive only `stripped` and `symbol_counts.symtab`, never the
+imported-versus-defined split — a fact that stopped being true once `.symtab` became this
+reader's only symbol table for a relocatable object with no `.dynsym`. The cause name alone
+cannot say which of the two shapes produced it, so the safe direction this list already takes
+for a cause it has never seen applies here too: it now costs the linkage answer unconditionally,
+even for the ordinary shared-object case where `.dynsym` was fine and only `.symtab`'s own
+count failed. `ruleset_version` moves for the same reason any exemption change does.
 
 **Absence of the table derives it, rather than emptying it.** An empty default is
 conservative read on its own and self-contradicting read in composition: a custom ruleset

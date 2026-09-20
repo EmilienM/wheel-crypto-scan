@@ -11,8 +11,9 @@ from dataclasses import dataclass, replace
 
 # --- ELF constants (only the ones this builder emits or the reader consumes) -------
 
-ET_DYN = 3
+ET_REL = 1
 ET_EXEC = 2
+ET_DYN = 3
 
 EM_X86_64 = 62
 EM_386 = 3

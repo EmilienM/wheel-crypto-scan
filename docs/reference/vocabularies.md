@@ -134,8 +134,10 @@ into memory and each one can run short.
 - A `partial_binary` rule with no verdict names the causes that are **not worth a verdict**.
   Today: `pe_ordinal_import`.
 - `[linkage_policy] exclude_reasons` names the causes that **leave a linkage posture
-  answerable**. Today: `pe_ordinal_import`, `elf_symtab_unread`, `elf_go_buildinfo_unread`,
-  `pe_no_import_directory`.
+  answerable**. Today: `pe_ordinal_import`, `elf_go_buildinfo_unread`,
+  `pe_no_import_directory`. (`elf_symtab_unread` was on this list and is not any more,
+  #117: `.symtab` now drives the imported/defined split too for an object with no
+  `.dynsym`, so it can no longer be said to leave that field intact unconditionally.)
 
 The first must be a subset of the second, and the loader refuses a ruleset where it is not.
 A test asserts the two are not equal, so if they ever coincide the mechanism is a rename and

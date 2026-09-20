@@ -1,6 +1,6 @@
 # ELF
 
-Two entries about `binfmt/elf.py`. The first is the longest chain of review findings in the
+Three entries about `binfmt/elf.py`. The first is the longest chain of review findings in the
 project — five rounds, each one closing a hole and each one opening the next through a
 different field — and the pattern behind all five is worth internalising before reading any
 of them: **an attacker-controlled label winning a lookup, so the check meant to catch a
@@ -234,3 +234,58 @@ different, larger one.
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#a-compressed-section-is-checked-before-it-is-inflated) ·
 [#62](https://github.com/EmilienM/wheel-crypto-scan/issues/62) ·
 [#95](https://github.com/EmilienM/wheel-crypto-scan/issues/95)
+
+---
+
+## `.symtab` is matched for crypto symbols when `.dynsym` is genuinely absent
+
+**Accepted. `ANALYZER_VERSION` and `ruleset_version` both move.**
+
+Crypto symbol matching read `.dynsym` only — correct for a dynamically linked object,
+where `.dynsym` is what the dynamic linker actually uses, but a relocatable object
+(`ET_REL`, a `.o`/`.obj` before linking, the shape every static archive member has) or
+a statically linked executable normally has no `.dynsym` at all, only `.symtab`. A
+genuine `EVP_DigestInit_ex` definition there, with no accompanying string banner, was
+invisible to the tool's primary detection mechanism.
+
+Scoped to only when `.dynsym` is genuinely absent, never alongside it: a *dynamically*
+linked shared object or executable always carries a live `.dynsym` (`strip` cannot
+remove it without breaking dynamic linking), so this reader's output for that part of
+the corpus is unaffected by construction. A statically linked executable is not
+unaffected — it gets matched too, which is the fix's intended reach, not an
+incidental side effect. "Genuinely absent" excludes an ambiguous or type-forged
+`.dynsym`, and a `.dynsym` whose own section header failed to parse and so never
+reached the section list at all — all three make the lookup return `None` without the
+object genuinely having none.
+
+**Severe findings from two independent adversarial reviews plus a verification pass
+over the fixes themselves, all fixed before merge.** A `.symtab` repointed at a decoy,
+appended, all-NUL `SHT_STRTAB` resolved every name to `""` — not unresolved,
+*resolved* — so a crafted object could hide a genuine crypto definition and read
+completely clean, the identical decoy `_validated_strtab` exists to close for
+`.dynsym`, reachable here because `.symtab` has no independent authority to
+corroborate `sh_link` against. Closed by not trusting the one table `sh_link` names:
+the cross-check now asks every `SHT_STRTAB` section in the object, so the real
+`.strtab` still gets to contradict the decoy regardless of which one `.symtab`
+claims. That fix had its own gap, found by dispatching a fork to verify it rather than
+trusting it on inspection: it skipped a `SHT_STRTAB` section it could not fully read
+within budget, which reopened the identical decoy under a second construction — a
+small decoy plus a genuine `.strtab` inflated past the budget elsewhere. An unread
+`SHT_STRTAB` now counts as a hit, not a skip. Separately, `.symtab` carries
+`STT_FILE`/`STT_SECTION` pseudo-symbols `.dynsym` never does — a source file named
+`EVP_md5.c` matched a group by filename coincidence alone; now filtered by type, while
+still counted as read for the understated-rows check, so filtering evidence does not
+itself manufacture a false "the object understates its own rows" claim.
+
+`binfmt.ar` needed no change of its own for an ELF member: it calls `read_binary` per
+member regardless of format, so the fix applies to every ELF archive member
+automatically. A Windows `.lib`'s COFF members are untouched; `binfmt.pe` deliberately
+does not read the COFF symbol table at all.
+
+**A real, pre-existing bug this surfaced, unrelated to `.symtab` matching itself:**
+`elf_symtab_unread` was wrongly exempt from costing the linkage answer. See "Sections
+are found by type, not by a name nobody checks", the paragraph beginning
+"`elf_symtab_unread` was on this list too, and is not any more".
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#symtab-is-matched-for-crypto-symbols-when-dynsym-is-genuinely-absent) ·
+[#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117)

@@ -16,7 +16,6 @@ from wheel_crypto_scan.evidence import (
     FORMAT_MACHO,
     FORMAT_PE,
     PARTIAL_ELF_GO_BUILDINFO_UNREAD,
-    PARTIAL_ELF_SYMTAB_UNREAD,
     PARTIAL_MACHO_HEADER_UNREAD,
     PARTIAL_MACHO_SYMTAB_INCOMPLETE,
     PARTIAL_PE_DELAY_LOAD,
@@ -1289,14 +1288,21 @@ def test_a_cause_the_policy_does_not_name_costs_the_answer(ruleset) -> None:
 
     Written against the whole vocabulary rather than one token, so a cause added to
     `PARTIAL_REASONS` and forgotten here is still covered. The excluded ones are
-    asserted to be exactly the four the ruleset names, so widening that list has to
+    asserted to be exactly the three the ruleset names, so widening that list has to
     be done on purpose.
+
+    `PARTIAL_ELF_SYMTAB_UNREAD` was on this list and is not any more (#117):
+    `.symtab` now drives the imported-versus-defined split too, for a relocatable
+    object with no `.dynsym`, so a cause that used to cost only `stripped` and
+    `symbol_counts.symtab` can now cost the split linkage reads as well. The ruleset
+    cannot tell, from the cause name alone, which of the two shapes fired -- so the
+    safe direction this vocabulary already takes elsewhere (a cause added later costs
+    the answer until someone decides otherwise) applies here too.
     """
     excluded = ruleset.linkage_policy.exclude_reasons
     assert excluded == frozenset(
         {
             PARTIAL_PE_ORDINAL_IMPORT,
-            PARTIAL_ELF_SYMTAB_UNREAD,
             PARTIAL_ELF_GO_BUILDINFO_UNREAD,
             PARTIAL_PE_NO_IMPORT_DIRECTORY,
         }

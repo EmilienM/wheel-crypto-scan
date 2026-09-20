@@ -122,7 +122,8 @@ PARTIAL_ELF_DYNSYM_UNREAD = "elf_dynsym_unread"
 # `.symtab` would not read, or a section named `.symtab` exists whose declared
 # `sh_type` is not `SHT_SYMTAB` and so cannot be trusted as one, so `stripped` and
 # `symbol_counts.symtab` describe a table we failed on rather than one the object does
-# not have.
+# not have. Also costs the imported/defined split, but only for an object with no
+# `.dynsym` at all: `.symtab` is matched for crypto symbols exactly then (#117).
 PARTIAL_ELF_SYMTAB_UNREAD = "elf_symtab_unread"
 # `.go.buildinfo` would not read, so Go toolchain provenance is missing.
 PARTIAL_ELF_GO_BUILDINFO_UNREAD = "elf_go_buildinfo_unread"

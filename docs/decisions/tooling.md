@@ -205,11 +205,11 @@ error naming why. Archive-derived evidence is marked `from_archive` and excluded
 `linkage.member_stem_counts`, so a bundled object's `SONAME` can never confirm a
 sibling extension's `DT_NEEDED` entry as system-resolved.
 
-**What this does not close.** `binfmt.elf`'s symbol matching reads `.dynsym` only,
-never `.symtab` — the table a relocatable `.o` normally carries. A genuine crypto
-symbol *definition* with no accompanying string banner is still invisible even once
-the archive and its members are visible and read. Filed separately:
-[#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117).
+**What this did not close, at the time.** `binfmt.elf`'s symbol matching read `.dynsym`
+only, never `.symtab` — the table a relocatable `.o` normally carries. Filed as
+[#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117), and closed since:
+`binfmt.elf` now also matches `.symtab` whenever `.dynsym` is genuinely absent, and
+`binfmt.ar` needed no change of its own to inherit it.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader) ·
 [#99](https://github.com/EmilienM/wheel-crypto-scan/issues/99)
