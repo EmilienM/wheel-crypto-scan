@@ -17,7 +17,7 @@ from wheel_crypto_scan import TOOL_NAME, cli, scan
 from wheel_crypto_scan.cache import RecordCache
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.layers import binaries as binaries_layer
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext
 
 WEAK_HASH_SOURCE = b"import hashlib\n\ndigest = hashlib.md5()\n"

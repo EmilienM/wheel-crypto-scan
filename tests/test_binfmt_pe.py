@@ -18,7 +18,7 @@ from helpers.binfmt import IMAGE_FILE_MACHINE_I386, PEBuilder, PEExport, PEImpor
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt.pe import read_pe
 from wheel_crypto_scan.errors import PE_PARSE_ERROR
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
 

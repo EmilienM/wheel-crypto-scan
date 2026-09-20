@@ -11,7 +11,7 @@ from wheel_crypto_scan.binfmt import _READERS, read_binary
 from wheel_crypto_scan.binfmt.detect import SNIFF_BYTES, detect_format
 from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
 from wheel_crypto_scan.errors import PE_PARSE_ERROR
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 PATTERNS = load_ruleset().compile_patterns().binary
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from wheel_crypto_scan.layers.binaries import is_binary_member
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.wheelfile import MemberInfo
 
 CONVENTIONS = load_ruleset().conventions

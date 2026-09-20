@@ -54,6 +54,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 |---|---|
 | `data/ruleset.toml` | All policy: packages, symbols, strings, crates, libraries, verdicts, linkage |
 | `engine.py`, `ruleset.py` | Rule dispatch and matchers |
+| `ruleset_loader.py` | Parses and validates the TOML into the `Ruleset` object model `ruleset.py` defines |
 | `layers/` | Evidence gathering: wheel metadata, Python AST, binaries, archive inventory |
 | `binfmt/` | ELF, Mach-O, PE, Go and Rust readers, the shared strings pass, the shared symbol-table cross-check, the shared evidence-preserving cap, the fallback |
 | `wheelfile.py` | In-memory zip reading with the bounded decompression window |

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from wheel_crypto_scan.binfmt.rust import find_rust_crates
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 _PATTERN = load_ruleset().conventions.cargo_path_regex
 

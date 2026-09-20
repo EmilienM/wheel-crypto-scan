@@ -37,7 +37,7 @@ from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.binfmt.macho import read_macho
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import SbomComponent
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext, scan_wheel
 from wheel_crypto_scan.wheelfile import ArchiveLimits, WheelArchive
 

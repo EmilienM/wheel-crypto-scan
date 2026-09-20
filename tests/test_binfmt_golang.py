@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from wheel_crypto_scan.binfmt.golang import build_go_info, parse_go_buildinfo
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 _PATTERNS = load_ruleset().compile_patterns().binary
 

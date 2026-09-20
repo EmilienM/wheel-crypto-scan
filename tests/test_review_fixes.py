@@ -12,7 +12,7 @@ from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.errors import ERROR_KINDS
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext, scan_wheel
 
 MANYLINUX = "cp39-abi3-manylinux_2_28_x86_64"

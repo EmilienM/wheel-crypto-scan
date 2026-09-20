@@ -2582,3 +2582,82 @@ recognised directory regardless of extension, is the one to take, rather than gr
 `_BINARY_SUFFIX` one exotic extension at a time.
 
 Tracked in [#65](https://github.com/EmilienM/wheel-crypto-scan/issues/65).
+
+## The loader moves to `ruleset_loader.py`, a sibling module, not a package
+
+**Accepted. Pure refactor: no rule, symbol, library or verdict changed.**
+
+`ruleset.py` had grown to four responsibilities in one file: the object model
+(`Rule`, `Conventions`, `Ruleset` and the rest), the prefilter (`_symbol_locator`,
+next to `SymbolGroup.matches` it mirrors, per `AGENTS.md`), the compiled-pattern
+builder (`Ruleset.compile_patterns`, `BinaryPatterns`/`PythonPatterns`), and the TOML
+parser and validator (`parse_ruleset`, `load_ruleset`, and everything only they call).
+The file had reached 1000 lines against pylint's default `max-module-lines`, and a
+later, unrelated fix (#84) raised the limit to 1100 to give `binfmt/macho.py` room --
+which also gave this file slack it hadn't earned. The issue's own point survives that:
+raising the limit again papers over four responsibilities sharing one file, it doesn't
+reduce them.
+
+**What changed.** The parser -- `_parse_conventions`, `_parse_linkage_policy`,
+`_parse_rule`, `_parse_matches`, every `_validate_*` and `_entry_*` helper,
+`_check_limits_leave_room_for_every_key`, `parse_ruleset`, `load_ruleset`, and the two
+generic helpers only they used (`_require`, `_check`) -- moved to a new sibling module,
+`ruleset_loader.py`. `ruleset.py` keeps the object model, the vocabulary constants
+(`MATCHER_KINDS`, `SEVERITIES`, `ENTRY_TABLES`, `ROUTED_KINDS`, and the rest -- read
+by the loader's `_check` calls and by the test suite that pins them, but describing the
+schema rather than how to walk it, so they stayed with the model they describe), and
+`_symbol_locator` beside
+`SymbolGroup.matches`. `ruleset.py` is now 541 lines; `ruleset_loader.py` is 500.
+Both sit well under the old 1000-line default, with headroom to spare before either
+approaches it again.
+
+**Sibling module, not a `ruleset/` package.** The issue sanctioned both. `binfmt/` and
+`layers/` are packages in this codebase because each holds several *parallel* things --
+one reader per binary format, one extractor per evidence layer. This split isn't
+parallel siblings, it's one concern (the ruleset) divided by responsibility (model vs.
+parser), the same shape as `record.py`/`verdict.py` already sitting as flat sibling
+modules. A package would have meant an equivalent two-file split one directory deeper
+for no structural gain, so the sibling module matched the existing convention better.
+
+**Re-exporting from `ruleset.py` was tried and rejected.** The obvious way to keep
+every `from .ruleset import load_ruleset` working unchanged is to import
+`ruleset_loader`'s functions back into `ruleset.py`. That was implemented first: a
+bottom-of-file `from .ruleset_loader import load_ruleset as load_ruleset` (the
+self-alias PEP 484 uses for explicit re-exports), needed at the bottom rather than the
+top because `ruleset_loader` needs the object model above it to exist first. It parsed,
+ran, and produced byte-identical output -- `tox` was fully green under it -- but
+`pylint` correctly called it what it is: `wheel_crypto_scan.ruleset` and
+`wheel_crypto_scan.ruleset_loader` import each other, a genuine cycle
+(`cyclic-import`), on top of a `wrong-import-position` and a `useless-import-alias` the
+self-alias idiom needs at every call site to silence. Suppressing four separate,
+stacked warnings to keep one import direction working is worse than the thing it
+avoids: touching call sites. The loader depending on the model it validates against is
+the natural direction; asking the model to import back from its own validator is what
+manufactured the cycle, not the split itself.
+
+**What it costs.** Every import of `load_ruleset`, `parse_ruleset` or
+`routine_reasons` moved to `from .ruleset_loader import ...` (or
+`wheel_crypto_scan.ruleset_loader` in tests): one line in `cli.py`, and one import
+line each in 20 test files (a handful needed the import split across two lines because
+they'd imported an object-model name and a loader name together, e.g.
+`from wheel_crypto_scan.ruleset import PythonPatterns, load_ruleset`). No test's
+assertions or fixtures changed, only their imports. Everything that already imported
+only object-model names -- `Ruleset`, `Conventions`, `BinaryPatterns`, `StringGroup`,
+`Limits`, the vocabulary constants -- needed no change at all, since none of that
+moved.
+
+**What was rejected.** Raising `max-module-lines` again, which is the option the issue
+itself argues against: the file was fragile to the next three-line addition, not
+short on numeric slack. The `ruleset/` package layout, for the reason above. Re-export
+via the bottom-import/self-alias trick, for the cyclic-import reason above. Option 2
+from the issue -- pulling `Conventions`/`SonameInfo` (~115 lines) into their own
+`conventions.py` -- was also considered and left alone: option 1 alone leaves
+`ruleset.py` under half the old limit, `linkage.py` and `engine.py` already import
+`Conventions` by name, and a further split neither of them asked for would be moving
+code to move it rather than fixing a real fragility.
+
+**Revisit if** `ruleset.py` or `ruleset_loader.py` approaches 1000 lines again on its
+own -- at that point option 2 (splitting `Conventions`/`SonameInfo` out) is the next
+lever, not a bigger `max-module-lines`.
+
+Tracked in [#66](https://github.com/EmilienM/wheel-crypto-scan/issues/66).

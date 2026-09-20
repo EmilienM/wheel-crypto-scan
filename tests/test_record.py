@@ -21,7 +21,7 @@ from wheel_crypto_scan.evidence import (
 )
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.record import build_record, to_json_line
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.verdict import classify
 
 

@@ -33,7 +33,7 @@ from wheel_crypto_scan.evidence import (
     SymbolMatch,
 )
 from wheel_crypto_scan.linkage import resolve_linkage
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 RULESET = load_ruleset()
 PATTERNS = RULESET.compile_patterns().binary

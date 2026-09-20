@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from wheel_crypto_scan.findings import Finding, Location
-from wheel_crypto_scan.ruleset import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
 
 

@@ -15,9 +15,8 @@ from wheel_crypto_scan.ruleset import (
     MATCHER_KINDS,
     ROUTED_KINDS,
     SymbolGroup,
-    load_ruleset,
-    parse_ruleset,
 )
+from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset
 
 
 def minimal(**overrides: Any) -> dict[str, Any]:
