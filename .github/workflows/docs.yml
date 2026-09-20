@@ -1,0 +1,67 @@
+name: Docs
+
+# Builds the MkDocs Material site and publishes it to GitHub Pages.
+#
+# Pages tracks `main`: there is no docs-specific release cadence to couple to, and a
+# published page that lags the default branch is worse than one that rebuilds more often
+# than it needs to.
+#
+# The build runs with `--strict`, so a broken internal link fails this workflow rather
+# than shipping a 404. `ci.yml`'s own `docs` job runs the same `--strict` build on every
+# pull request; this workflow only re-runs it and deploys, on a push to `main`.
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+# Only one deployment at a time, and never cancel one in flight: a cancelled
+# `deploy-pages` can leave the Pages site on a half-published version.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  build:
+    name: build the site
+    runs-on: ubuntu-latest
+    steps:
+      # No fetch-depth or fetch-tags here, unlike the other workflows: the docs
+      # environment is `skip_install`, so nothing derives a version from the tags.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - name: Build the site
+        run: uvx --with tox-uv tox -e docs
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    # Same guard the publish workflow uses: a fork's push to `main` still gets the
+    # --strict build above, but does not try to deploy to a Pages site it has not set up.
+    if: ${{ github.repository_owner == 'EmilienM' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

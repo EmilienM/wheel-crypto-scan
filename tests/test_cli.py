@@ -17,6 +17,7 @@ from wheel_crypto_scan import TOOL_NAME, cli, scan
 from wheel_crypto_scan.binfmt import elf, macho, pe
 from wheel_crypto_scan.cache import RecordCache
 from wheel_crypto_scan.cli import main
+from wheel_crypto_scan.evidence import PARTIAL_REASONS
 from wheel_crypto_scan.layers import binaries as binaries_layer
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext
@@ -822,6 +823,15 @@ def test_the_schema_matches_what_the_scanner_actually_emits(
     required = set(schema["properties"]["binaries"]["items"]["required"])
     for binary in binaries:
         assert required <= set(binary)
+
+
+def test_docs_output_schema_page_lists_every_partial_reason() -> None:
+    """docs/output-schema.md is a human copy of SCHEMA.md's `partial_reasons` table; a
+    token added to PARTIAL_REASONS without updating that page would go stale silently."""
+    page = Path(__file__).parent.parent / "docs" / "output-schema.md"
+    text = page.read_text(encoding="utf-8")
+    missing = sorted(token for token in PARTIAL_REASONS if f"`{token}`" not in text)
+    assert not missing, f"docs/output-schema.md is missing partial_reasons tokens: {missing}"
 
 
 def test_the_schema_has_no_passing_class(capsys: pytest.CaptureFixture[str]) -> None:

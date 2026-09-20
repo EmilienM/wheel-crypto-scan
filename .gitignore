@@ -7,6 +7,8 @@ dist/
 .venv/
 .pytest_cache/
 .ruff_cache/
+# Built documentation site, produced by `tox -e docs`.
+site/
 # Local scan corpus and outputs, never committed.
 .corpus/
 *.jsonl
