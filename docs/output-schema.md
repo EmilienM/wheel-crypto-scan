@@ -71,10 +71,14 @@ missing key.
 true when the wheel has more native objects than fit in the `extensions` list above
 and the top-level `binaries[]` array, so a wheel with thousands of objects cannot
 produce an unbounded record. **It means the listing is incomplete, never that the
-evaluation was.** Every object the archive holds is decompressed, read and fed to
-linkage and every rule regardless of this cap; only the arrays a consumer reads back
-out of the JSON are capped, and `extensions` and `binaries[]` are always capped to the
-same set of objects, so the two never disagree on which ones they list. Neither is a
+evaluation was.** Every object that became part of this record's binary evidence is
+fed to linkage and every rule regardless of this cap -- not that each one was read in
+full (`partial_analysis` says that, per object) or that every archive member got this
+far: one refused by a limit is in `skipped` above, one that failed to open or read is
+an error instead. Only the arrays a consumer reads back out of the JSON are capped for
+the objects that did become evidence, and `extensions` and `binaries[]` are always
+capped to the same set of objects, so the two never disagree on which ones they list.
+Neither is a
 plain path-sorted prefix: the objects any `findings[].locations[]` names are kept
 first (one per distinct `(rule_id, subject)` a finding names, before any finding gets
 a second object), and the remaining room is filled with the rest in path order. A

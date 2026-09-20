@@ -35,7 +35,15 @@ import warnings
 from collections.abc import Iterator
 
 from .. import errors
-from ..evidence import STAGE_PYTHON, PySite, ScanError
+from ..evidence import (
+    STAGE_PYTHON,
+    USED_FOR_SECURITY_ABSENT,
+    USED_FOR_SECURITY_FALSE,
+    USED_FOR_SECURITY_TRUE,
+    USED_FOR_SECURITY_UNRESOLVED,
+    PySite,
+    ScanError,
+)
 from ..ruleset import PythonPatterns
 from ..wheelfile import WheelArchive
 
@@ -538,9 +546,9 @@ def _hashlib_usedforsecurity(call: ast.Call) -> str:
         if keyword.arg != "usedforsecurity":
             continue
         if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, bool):
-            return "true" if keyword.value.value else "false"
-        return "unresolved"
-    return "absent"
+            return USED_FOR_SECURITY_TRUE if keyword.value.value else USED_FOR_SECURITY_FALSE
+        return USED_FOR_SECURITY_UNRESOLVED
+    return USED_FOR_SECURITY_ABSENT
 
 
 def _ctypes_load_sites(

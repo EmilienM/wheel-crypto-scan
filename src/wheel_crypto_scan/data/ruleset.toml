@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "14"
+ruleset_version = "15"
 
 
 # ---------------------------------------------------------------------------
@@ -1196,7 +1196,7 @@ severity = "info"
 confidence = "high"
 needs_human_review = false
 title = "Not every native object is listed in the record"
-why = "The wheel has more native objects than max_binaries_per_record, so binaries[] and artifacts.extensions do not list all of them. This is not a gap in the evidence: every object was read in full and every rule above ran over all of it, so the verdict already reflects the whole wheel. The objects any finding above names are kept first; what is missing is only some of the rest of the per-object listing a human would read back out of the JSON, and this says so rather than leaving artifacts.binaries_truncated as the only trace."
+why = "The wheel has more native objects than max_binaries_per_record, so binaries[] and artifacts.extensions do not list all of them. This is not a gap in the evidence: every object that became part of this record's binary evidence ran through every rule above, so the verdict already reflects everything evaluated -- not that each one was read in full (partial_analysis says that, per object) or that every archive member got this far (one refused by a limit is in artifacts.skipped; one that failed to open or read is an error). The objects any finding above names are kept first; what is missing is only some of the rest of the per-object listing a human would read back out of the JSON, and this says so rather than leaving artifacts.binaries_truncated as the only trace."
 [rule.match]
 kind = "binaries_truncated"
 

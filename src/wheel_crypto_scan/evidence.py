@@ -29,6 +29,27 @@ FORMAT_UNKNOWN = "unknown"
 # refuse a `[[string_group]]` substring that could never match extracted text.
 PRINTABLE = range(0x20, 0x7F)
 
+# The only four values `layers.python_ast._hashlib_usedforsecurity` can ever produce,
+# and so the only ones a `py_call` rule's `usedforsecurity` field can ever compare
+# equal to. One definition, the same reason `PRINTABLE` is one: `python_ast` imports
+# each name below and returns only these, `ruleset_loader` imports the frozenset to
+# refuse a `usedforsecurity` value that could never match anything
+# `_hashlib_usedforsecurity` produces. Named individually, the way `PARTIAL_REASONS`
+# names each of its members, so the producer returns the constant rather than a second
+# spelling of the same string that could drift from it silently.
+USED_FOR_SECURITY_ABSENT = "absent"
+USED_FOR_SECURITY_TRUE = "true"
+USED_FOR_SECURITY_FALSE = "false"
+USED_FOR_SECURITY_UNRESOLVED = "unresolved"
+USED_FOR_SECURITY_VALUES = frozenset(
+    {
+        USED_FOR_SECURITY_ABSENT,
+        USED_FOR_SECURITY_TRUE,
+        USED_FOR_SECURITY_FALSE,
+        USED_FOR_SECURITY_UNRESOLVED,
+    }
+)
+
 # Why one object was not read in full. `BinaryEvidence.partial_analysis` is a single
 # boolean with a score of causes behind it, and six of them record no `ScanError` at
 # all,

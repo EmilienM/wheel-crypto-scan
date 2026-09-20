@@ -8,7 +8,10 @@ from typing import Any
 
 import pytest
 
+from wheel_crypto_scan import engine
 from wheel_crypto_scan.errors import RulesetError
+from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, PySite
+from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset import (
     DEFAULTABLE_TABLES,
     ENTRY_TABLES,
@@ -90,7 +93,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "14"
+    assert ruleset.version == "15"
     assert len(ruleset.rules) > 20
 
 
@@ -687,3 +690,319 @@ def test_a_partial_binary_rule_may_name_neither_key() -> None:
     assert [dict(m) for m in ruleset.rule("BIN_PARTIAL_TEST").matches] == [
         {"kind": "partial_binary"}
     ]
+
+
+# --- matcher kind drift -------------------------------------------------------------
+
+
+def test_every_matcher_kind_has_a_dispatch_function() -> None:
+    """`MATCHER_KINDS` is what the loader accepts; `engine._MATCHERS` is what actually
+    runs. A kind added to one without the other loads clean and either silently
+    matches nothing (`engine.apply_rules` skips a match whose kind
+    `_MATCHERS.get(...)` returns `None` for) or leaves the loader refusing a kind the
+    engine can dispatch. Nothing else pins the two in step, so this does.
+    """
+    # pylint: disable=protected-access
+    assert set(MATCHER_KINDS) == set(engine._MATCHERS)
+
+
+# --- py_call match fields ------------------------------------------------------------
+
+
+def _with_py_call_rule(**match) -> dict:
+    """`minimal()` plus one `py_call` rule, so the existing one keeps its table.
+
+    `targets` defaults to a non-empty list, since it is required, so a test about some
+    other field does not also have to spell it out.
+    """
+    match.setdefault("targets", ["hashlib.md5"])
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "PY_CALL_TEST",
+            "layer": "python",
+            "category": "crypto-usage",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": False,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "py_call", **match},
+        }
+    )
+    return data
+
+
+def test_a_py_call_rule_with_a_scalar_usedforsecurity_loads_clean() -> None:
+    ruleset = parse_ruleset(_with_py_call_rule(usedforsecurity="absent"))
+    assert ruleset.rule("PY_CALL_TEST").matches[0]["usedforsecurity"] == "absent"
+
+
+def test_a_py_call_rule_with_a_list_usedforsecurity_loads_clean() -> None:
+    ruleset = parse_ruleset(_with_py_call_rule(usedforsecurity=["absent", "true"]))
+    assert ruleset.rule("PY_CALL_TEST").matches[0]["usedforsecurity"] == ["absent", "true"]
+
+
+def test_an_unknown_scalar_usedforsecurity_value_is_rejected() -> None:
+    """A typo'd token loads clean today and never matches anything, silently."""
+    with pytest.raises(RulesetError, match="unknown usedforsecurity value"):
+        parse_ruleset(_with_py_call_rule(usedforsecurity="tru"))
+
+
+def test_an_unknown_usedforsecurity_list_element_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="unknown usedforsecurity value"):
+        parse_ruleset(_with_py_call_rule(usedforsecurity=["absent", "tru"]))
+
+
+def test_a_boolean_usedforsecurity_is_rejected_rather_than_crashing_at_scan_time() -> None:
+    """#82: a bare TOML `true` parses to a Python bool, and `attrs.get(...) not in
+    want_used` raises `TypeError: argument of type 'bool' is not a container or
+    iterable` at scan time when `usedforsecurity` is that bool. The loader must catch
+    this shape instead of letting a custom ruleset load clean and then crash the CLI.
+    """
+    with pytest.raises(RulesetError, match="usedforsecurity must be a string or list of strings"):
+        parse_ruleset(_with_py_call_rule(usedforsecurity=True))
+
+
+def test_a_non_boolean_non_string_usedforsecurity_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="usedforsecurity must be a string or list of strings"):
+        parse_ruleset(_with_py_call_rule(usedforsecurity=42))
+
+
+def test_a_dict_usedforsecurity_is_rejected() -> None:
+    """A dict is `Iterable` and iterating it yields its keys, so a naive `Iterable`
+    check would let `usedforsecurity = {"absent" = true}` through as if it were the
+    list `["absent"]`. It must be refused instead."""
+    with pytest.raises(RulesetError, match="usedforsecurity must be a string or list of strings"):
+        parse_ruleset(_with_py_call_rule(usedforsecurity={"absent": True}))
+
+
+def test_an_empty_usedforsecurity_list_is_rejected() -> None:
+    """`attrs.get(...) not in []` is always true, so this would load clean and never
+    match anything -- the same silent failure as a typo, spelled differently."""
+    with pytest.raises(RulesetError, match="usedforsecurity must not be an empty list"):
+        parse_ruleset(_with_py_call_rule(usedforsecurity=[]))
+
+
+def test_a_boolean_targets_is_rejected_rather_than_crashing_at_scan_time() -> None:
+    """#82: `frozenset(match.get("targets", ()))` raises the identical `TypeError` when
+    `targets` is a bool."""
+    with pytest.raises(RulesetError, match="targets must be a list of strings"):
+        parse_ruleset(_with_py_call_rule(targets=True))
+
+
+def test_a_non_string_element_in_targets_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="targets must be a list of strings"):
+        parse_ruleset(_with_py_call_rule(targets=["hashlib.md5", 3]))
+
+
+def test_a_bare_string_targets_is_rejected() -> None:
+    """`targets` has no scalar-string shorthand the way `usedforsecurity` does, so a
+    bare string here is not one target, it is `frozenset()` silently iterating its
+    characters."""
+    with pytest.raises(RulesetError, match="targets must be a list of strings"):
+        parse_ruleset(_with_py_call_rule(targets="hashlib.md5"))
+
+
+def test_a_missing_targets_is_rejected() -> None:
+    """Without `targets`, `_target_matches` never returns true for any site, so the
+    rule would load clean and never fire."""
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "PY_CALL_TEST",
+            "layer": "python",
+            "category": "crypto-usage",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": False,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "py_call"},
+        }
+    )
+    with pytest.raises(RulesetError, match="missing required field 'targets'"):
+        parse_ruleset(data)
+
+
+def test_an_empty_targets_list_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="targets must not be an empty list"):
+        parse_ruleset(_with_py_call_rule(targets=[]))
+
+
+def test_a_valid_targets_list_loads_clean() -> None:
+    ruleset = parse_ruleset(_with_py_call_rule(targets=["hashlib.md5", "*.encrypt"]))
+    assert ruleset.rule("PY_CALL_TEST").matches[0]["targets"] == ["hashlib.md5", "*.encrypt"]
+
+
+def test_a_non_string_algorithm_is_rejected() -> None:
+    """`algorithm` is an open vocabulary -- any hash name a wheel's source might use --
+    so only its type is checked here, never its value against a closed list."""
+    with pytest.raises(RulesetError, match="algorithm must be a string"):
+        parse_ruleset(_with_py_call_rule(algorithm=True))
+
+
+def test_a_strong_algorithm_name_not_in_weak_hash_algorithms_loads_clean() -> None:
+    """`algorithm` matching a rule intentionally naming a strong hash must not be
+    rejected just because it is absent from `conventions.weak_hash_algorithms`, the
+    same way the shipped `PY_WEAK_HASH_UNRESOLVED` rule's `algorithm = "unresolved"`
+    match (`data/ruleset.toml`) is not a member of that set either."""
+    ruleset = parse_ruleset(_with_py_call_rule(algorithm="sha3_256"))
+    assert ruleset.rule("PY_CALL_TEST").matches[0]["algorithm"] == "sha3_256"
+
+
+def test_a_boolean_weak_algorithms_only_loads_clean() -> None:
+    ruleset = parse_ruleset(_with_py_call_rule(weak_algorithms_only=True))
+    assert ruleset.rule("PY_CALL_TEST").matches[0]["weak_algorithms_only"] is True
+
+
+def test_a_string_weak_algorithms_only_is_rejected() -> None:
+    """#82's crash class, one field over: `weak_only = bool(match.get(...))` makes
+    `weak_algorithms_only = "false"` evaluate to `True`, the opposite of what a rule
+    author who wrote that string almost certainly meant, with no crash and no error to
+    notice it by."""
+    with pytest.raises(RulesetError, match="weak_algorithms_only must be a boolean"):
+        parse_ruleset(_with_py_call_rule(weak_algorithms_only="false"))
+
+
+def test_a_py_attr_rule_requires_attributes() -> None:
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "PY_ATTR_TEST",
+            "layer": "python",
+            "category": "crypto-usage",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": False,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "py_attr"},
+        }
+    )
+    with pytest.raises(RulesetError, match="missing required field 'attributes'"):
+        parse_ruleset(data)
+
+
+def _with_py_attr_rule(**match) -> dict:
+    match.setdefault("attributes", ["check_hostname"])
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "PY_ATTR_TEST",
+            "layer": "python",
+            "category": "crypto-usage",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": False,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "py_attr", **match},
+        }
+    )
+    return data
+
+
+def test_a_boolean_attributes_is_rejected_rather_than_crashing_at_scan_time() -> None:
+    """#82's crash class also applies to `_match_py_attr`'s `frozenset(match.get(
+    "attributes", ()))`."""
+    with pytest.raises(RulesetError, match="attributes must be a list of strings"):
+        parse_ruleset(_with_py_attr_rule(attributes=True))
+
+
+def test_a_boolean_values_is_rejected_rather_than_crashing_at_scan_time() -> None:
+    """`_match_py_attr` does `_attrs(site).get("value") not in values`, the identical
+    `TypeError` shape as `py_call`'s `usedforsecurity`, when `values` is a bool."""
+    with pytest.raises(RulesetError, match="values must be a list of strings"):
+        parse_ruleset(_with_py_attr_rule(values=True))
+
+
+def test_an_empty_values_list_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="values must not be an empty list"):
+        parse_ruleset(_with_py_attr_rule(values=[]))
+
+
+def test_a_valid_py_attr_rule_loads_clean() -> None:
+    ruleset = parse_ruleset(_with_py_attr_rule(attributes=["check_hostname"], values=["False"]))
+    assert ruleset.rule("PY_ATTR_TEST").matches[0]["values"] == ["False"]
+
+
+def test_a_py_constant_rule_requires_constants() -> None:
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "PY_CONSTANT_TEST",
+            "layer": "python",
+            "category": "crypto-usage",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": False,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "py_constant"},
+        }
+    )
+    with pytest.raises(RulesetError, match="missing required field 'constants'"):
+        parse_ruleset(data)
+
+
+def test_a_boolean_constants_is_rejected_rather_than_crashing_at_scan_time() -> None:
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "PY_CONSTANT_TEST",
+            "layer": "python",
+            "category": "crypto-usage",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": False,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "py_constant", "constants": True},
+        }
+    )
+    with pytest.raises(RulesetError, match="constants must be a list of strings"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize("key", ["targets", "attributes", "constants"])
+def test_generic_match_sequence_keys_are_shape_checked_on_any_kind(key: str) -> None:
+    """`Ruleset.compile_patterns` reads `GENERIC_MATCH_SEQUENCE_KEYS` off every match
+    table regardless of kind, so a stray boolean in any of the three crashes it even
+    for a kind, such as `dist_name`, that never reads the field itself. Parametrized
+    over all three keys rather than just `targets`, so deleting the loop for any one
+    of them fails here instead of only being covered for the key one test happened to
+    pick.
+    """
+    data = minimal()
+    data["rule"][0]["match"] = {"kind": "dist_name", "table": "crypto_distribution", key: True}
+    with pytest.raises(RulesetError, match=f"{key} must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_a_valid_py_call_rule_still_matches_evidence_end_to_end() -> None:
+    """Validation must not reject a shape it should allow: a `py_call` rule with
+    well-typed `targets`, `algorithm` and a list `usedforsecurity` still produces a
+    finding against a wheel carrying the matching evidence."""
+    data = _with_py_call_rule(
+        targets=["hashlib.new"], algorithm="md5", usedforsecurity=["absent", "true"]
+    )
+    ruleset = parse_ruleset(data)
+    evidence = Evidence(
+        filename="demo-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+        py_sites=(
+            PySite(
+                path="demo/mod.py",
+                line=1,
+                kind="py_call",
+                target="hashlib.new",
+                detail="hashlib.new(...) at line 1",
+                attrs=(("algorithm", "md5"), ("usedforsecurity", "absent")),
+            ),
+        ),
+    )
+    findings = engine.apply_rules(ruleset, evidence, resolve_linkage(ruleset, evidence))
+    assert [finding.rule_id for finding in findings] == ["PY_CALL_TEST"]

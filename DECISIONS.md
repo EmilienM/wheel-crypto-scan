@@ -4003,3 +4003,76 @@ from the other direction.
 
 Tracked in [#67](https://github.com/EmilienM/wheel-crypto-scan/issues/67) and
 [#70](https://github.com/EmilienM/wheel-crypto-scan/issues/70).
+
+## `py_call`/`py_attr`/`py_constant` match fields are validated, and their subject
+fields made required
+
+**Accepted. Closes a crash, not just a silent-match-nothing gap.**
+
+`_validate_match_references` had arms for `dynamic_symbol`, `binary_string`,
+`scan_error`, `partial_binary` and `linkage` but none for `py_call`, `py_attr` or
+`py_constant` -- the three kinds that read Python-source evidence. Two failure modes
+existed for all three, both unguarded: a typo'd or wrongly-shaped field loaded clean
+and either matched nothing a rule author expected (the ordinary case every other kind
+was already guarded against), or, for `py_call`'s `usedforsecurity` specifically,
+crashed the scan outright. `_match_py_call` does `attrs.get("usedforsecurity") not in
+want_used`; a bare TOML boolean (`usedforsecurity = true`) parses to a Python `bool`,
+and `x not in True` raises `TypeError: argument of type 'bool' is not a container or
+iterable` mid-scan, aborting the whole CLI run with no output file for what should
+have been a rule that simply doesn't match. The identical shape crashes
+`frozenset(match.get("targets", ()))` in the same function, and
+`Ruleset.compile_patterns` reads `targets`/`attributes`/`constants` off *every* match
+table regardless of kind, so the same crash was reachable through a stray key on an
+unrelated rule, such as `targets = true` on a `dist_name` match.
+
+**The fix, in `ruleset_loader.py`.** `usedforsecurity` (scalar or list) is checked
+against the closed set `evidence.USED_FOR_SECURITY_VALUES` -- the only four values
+`layers.python_ast._hashlib_usedforsecurity` can ever produce. `targets`, `attributes`,
+`constants` and `values` are shape-checked (a list of strings, never a bool/dict/bare
+string) wherever any match table carries one of them, via
+`ruleset.GENERIC_MATCH_SEQUENCE_KEYS`, the same tuple `compile_patterns` iterates to
+build `py_call_targets`/`py_attributes`/`py_constants` -- one definition read by both,
+rather than the check silently drifting from what it protects if `compile_patterns`
+ever grows a fourth generic key. `targets`, `attributes` and `constants` are each
+required for their own kind (previously optional, defaulting to an empty tuple): a
+`py_call` rule with no `targets` can never match anything, `_target_matches` has no
+wildcard that reaches an empty set, so an omitted field was already a dead rule, never
+a legitimate "match every call site" shape. Every shipped rule of these three kinds
+already carries its subject field; the tightening changes nothing about the shipped
+ruleset, only what a malformed custom one is allowed to load as.
+
+**Why `algorithm` is checked for type only, never against a closed vocabulary.**
+Unlike `usedforsecurity`, `algorithm` is open-ended: `_hashlib_algorithm` returns
+whatever string literal a wheel's source passes to `hashlib.new(...)`, lowercased,
+which could be any hash name that exists or will ever exist. Checking it against
+`ruleset.conventions.weak_hash_algorithms` would refuse a rule intentionally naming a
+*strong* algorithm -- a real, existing shape: the shipped `PY_WEAK_HASH_UNRESOLVED`
+rule's own `algorithm = "unresolved"` match is not a member of that set either. Only
+`isinstance(algorithm, str)` is checked.
+
+**The `usedforsecurity` vocabulary's own drift risk, found and closed on review.** The
+first pass introduced `USED_FOR_SECURITY_VALUES` in `evidence.py` with a comment
+claiming `layers.python_ast` imports it "for extraction" -- untrue at the time: that
+module still returned four bare string literals of its own, so the constant had one
+consumer, not two, and a fifth value added to `_hashlib_usedforsecurity` without a
+matching update to the frozenset would have made the loader wrongly refuse a rule that
+should have matched. Closed by naming each of the four values individually in
+`evidence.py` (`USED_FOR_SECURITY_ABSENT`/`_TRUE`/`_FALSE`/`_UNRESOLVED`, the same
+shape `PARTIAL_REASONS` names each of its own members) and having
+`_hashlib_usedforsecurity` return those constants instead of re-spelling the strings,
+plus a test in `tests/test_python_ast.py` pinning that the four shapes it can produce
+are exactly `USED_FOR_SECURITY_VALUES`, no more and no fewer -- mutation-confirmed to
+fail when one return value is changed without updating the set.
+
+**What was rejected.** A per-kind allowed-key set on `[rule.match]` tables -- refusing
+any key a kind doesn't recognise, the way `_parse_linkage_policy` already refuses an
+unknown key on `[linkage_policy]` -- would close the stray-key crash and a typo'd field
+name in one mechanism, rather than the field-by-field shape checks this fix adds. Not
+attempted here: it is a larger change to what every existing match table is allowed to
+carry, worth its own issue rather than riding inside this one.
+
+Tracked in [#82](https://github.com/EmilienM/wheel-crypto-scan/issues/82), alongside
+[#77](https://github.com/EmilienM/wheel-crypto-scan/issues/77)'s `MATCHER_KINDS`-vs-
+`engine._MATCHERS` drift test and its `WHEEL_BINARIES_TRUNCATED` wording correction
+(also fixed in `SCHEMA.md` and `docs/output-schema.md`, which repeated the same
+overstatement).
