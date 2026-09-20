@@ -62,6 +62,38 @@ def test_a_symlinked_exe_is_still_never_read_as_a_binary() -> None:
 
 
 # --------------------------------------------------------------------------
+# #99: `.a` and `.lib` are now recognized suffixes, so a static archive is opened at
+# all -- whether `layers.binaries.scan_binaries` then reads it as an `ar` archive or
+# falls through to the ordinary strings-only path is decided later, by sniffing the
+# opened member's magic, not by this suffix check.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pkg/libcrypto.a",
+        "pkg/libcrypto.A",
+        "pkg/vendor/openssl.lib",
+        "pkg/vendor/openssl.LIB",
+        # The suffix alone is enough: no sniff directory, no vendor path, no
+        # executable bit.
+        "somewhere/random/archive.a",
+    ],
+)
+def test_a_static_archive_member_is_now_recognized(name: str) -> None:
+    assert is_binary_member(member(name, mode=_MODE_FILE), CONVENTIONS) is True
+
+
+def test_a_static_archive_below_the_sniff_floor_is_still_skipped() -> None:
+    assert is_binary_member(member("lib.a", size=8), CONVENTIONS) is False
+
+
+def test_a_symlinked_static_archive_is_still_never_read_as_a_binary() -> None:
+    assert is_binary_member(member("lib.a", is_symlink=True), CONVENTIONS) is False
+
+
+# --------------------------------------------------------------------------
 # Regression: the suffixes `.exe` joins were already recognized, and stay recognized
 # --------------------------------------------------------------------------
 

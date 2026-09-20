@@ -3,9 +3,14 @@
 This is the layer that tells a wheel linking the system OpenSSL apart from one that
 ships or statically links its own: everything else in the tool depends on the
 `needed`/`soname` and `matched_symbols` binding this package produces. `read_binary`
-is the single entry point; it sniffs the format and dispatches to the reader
-registered for it, or to `binfmt.fallback` when none is, so a wheel can never look
-clean merely because we cannot read it.
+is the entry point for a single native object: it sniffs the format and dispatches to
+the reader registered for it, or to `binfmt.fallback` when none is, so a wheel can
+never look clean merely because we cannot read it. `binfmt.ar` is the one exception,
+for the one input this package's contract does not fit: an `ar`-format archive
+(`.a`/`.lib`) holds several separate objects, not one, so it is not in `_READERS` and
+is never reached through `read_binary`'s own dispatch -- `layers.binaries` calls it
+directly, once it has sniffed the archive's own magic. See `binfmt.ar`'s module
+docstring.
 
 Every reader here answers to one contract about failure: a structure that does not
 parse costs that structure, never the evidence already gathered. A reader that cannot
@@ -105,4 +110,8 @@ def read_binary(
     return reader(stream, path, patterns, vendored=vendored, max_strings_bytes=max_strings_bytes)
 
 
+# read_ar_members is deliberately absent: it is never dispatched through read_binary,
+# so re-exporting it here would only invite a caller to reach for this module's
+# single-object contract and get a container reader instead. Import it from
+# binfmt.ar, where its own docstring says what it does and does not cover.
 __all__ = ["read_binary", "read_elf", "read_macho", "read_pe"]

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from helpers.binfmt import (
+    ArMember,
     DynSym,
     ElfBuilder,
     MachOBuilder,
@@ -23,6 +24,7 @@ from helpers.binfmt import (
     PEBuilder,
     PEExport,
     PEImport,
+    build_ar,
     build_fat,
 )
 from helpers.wheelbuilder import build_wheel
@@ -1005,3 +1007,58 @@ def test_a_pyd_member_is_unaffected_by_the_exe_fix(context, tmp_path: Path) -> N
     record = scan(context, wheel)
     assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
     assert len(record["artifacts"]["extensions"]) == 1
+
+
+# --------------------------------------------------------------------------
+# #99: a `.a`/`.lib` static archive is no longer invisible to the scanner
+# --------------------------------------------------------------------------
+
+
+def test_a_vendored_static_archive_is_no_longer_invisible(context, tmp_path: Path) -> None:
+    """Before #99: `.a` matched no route into `is_binary_member`, so a wheel whose
+    only crypto evidence is a version banner inside an archive member -- a vendored
+    `libcrypto.a` bundled for downstream linking, the issue's own motivating example
+    -- read `NO_CRYPTO_DETECTED` with nothing recorded at all. The archive's member is
+    now a real, separate object in `binaries[]`, and its banner (a `.o` file's
+    `.rodata`, findable regardless of `.dynsym`/`.symtab`) is found.
+    """
+    archive = build_ar([ArMember("libcrypto.o", ElfBuilder(rodata=OPENSSL_BANNER).build())])
+    wheel = build_wheel(
+        tmp_path / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"VALUES = [1, 2, 3]\n",
+            "fakecrypto/vendor/libcrypto.a": archive,
+        },
+    )
+    record = scan(context, wheel)
+    paths = [b["path"] for b in record["binaries"]]
+    assert paths == ["fakecrypto/vendor/libcrypto.a(libcrypto.o)"]
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+    assert any(m["group"] == "openssl_banner" for m in record["binaries"][0]["matched_strings"])
+
+
+def test_a_malformed_dot_a_member_still_falls_back_to_strings(context, tmp_path: Path) -> None:
+    """A `.a` suffix whose bytes are not actually `ar`-format (an older MSVC import
+    library, say) is opened -- the suffix now says it is worth trying -- and falls
+    through to the same strings-only fallback any other unrecognised format gets,
+    rather than being misread as a broken archive.
+    """
+    wheel = build_wheel(
+        tmp_path / f"fakecrypto-1.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"VALUES = [1, 2, 3]\n",
+            "fakecrypto/vendor/legacy.lib": b"\x00\x00not-ar-format"
+            + b"\x00" * 64
+            + OPENSSL_BANNER,
+        },
+    )
+    record = scan(context, wheel)
+    assert record["errors"] == []
+    assert record["binaries"][0]["format"] == "unknown"
+    assert any(m["group"] == "openssl_banner" for m in record["binaries"][0]["matched_strings"])

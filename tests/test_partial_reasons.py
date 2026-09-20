@@ -41,6 +41,8 @@ from helpers.binfmt.macho import LC_LOAD_DYLIB
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import elf as elf_module
 from wheel_crypto_scan.binfmt import read_binary
+from wheel_crypto_scan.binfmt.ar import MAGIC as AR_MAGIC
+from wheel_crypto_scan.binfmt.ar import read_ar_members
 from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.evidence import ArtifactInventory, Evidence
@@ -246,6 +248,14 @@ _REACHABILITY: dict[str, bytes] = {
         decoy_symtabs_after=1,
     ).build(),
 }
+
+# `read_ar_members` is never reached through `read_binary`'s own dispatch (#99: it
+# returns several `BinaryEvidence` entries, not the one every registered reader
+# promises), so `PARTIAL_AR_MEMBER_TABLE_UNREAD` cannot be reached via `_read` the way
+# every other token in `_CASES`/`_REACHABILITY` is. The magic alone, with not even one
+# full member header after it, is the archive whose table never yields a single real
+# member -- the fallback case that produces this reason.
+_AR_TABLE_UNREADABLE = AR_MAGIC + b"short"
 
 
 def test_the_boolean_and_the_reasons_never_disagree() -> None:
@@ -547,6 +557,11 @@ def test_every_reason_is_reachable_from_some_object() -> None:
     # object in the suite.
     ev, _ = _read_bounded(_BANNER_AT_THE_END, len(_BANNER_AT_THE_END) - 2048)
     produced |= set(ev.partial_reasons)
+    # `read_ar_members` directly, not `_read`: see `_AR_TABLE_UNREADABLE`'s own comment.
+    (ar_ev,), _ = read_ar_members(
+        io.BytesIO(_AR_TABLE_UNREADABLE), "lib.a", PATTERNS, vendored=False
+    )
+    produced |= set(ar_ev.partial_reasons)
     # The handlers bytes cannot reach, run for real rather than named as literals: a
     # token asserted into this set could not fail the guard it exists for.
     with pytest.MonkeyPatch.context() as patch:

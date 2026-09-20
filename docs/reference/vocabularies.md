@@ -50,6 +50,7 @@ with no rule behind it is how a wheel reads clean for a reason nobody decided.
 | `binary_truncated` | The object is shorter than its own headers claim. |
 | `binary_too_large` | The object is over the per-member limit. |
 | `binary_unknown_format` | The magic bytes match no reader. |
+| `ar_parse_error` | An `ar`-format archive's (`.a`/`.lib`) member table could not be walked to completion. |
 
 ### Python stage
 

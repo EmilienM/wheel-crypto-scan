@@ -41,6 +41,9 @@ PE_PARSE_ERROR = "pe_parse_error"
 BINARY_TRUNCATED = "binary_truncated"
 BINARY_TOO_LARGE = "binary_too_large"
 BINARY_UNKNOWN_FORMAT = "binary_unknown_format"
+# An `ar`-format archive's (`.a`/`.lib`) member table could not be walked to
+# completion. See evidence.PARTIAL_AR_MEMBER_TABLE_UNREAD.
+AR_PARSE_ERROR = "ar_parse_error"
 
 # Python source.
 PYTHON_SYNTAX_ERROR = "python_syntax_error"
@@ -82,6 +85,7 @@ ERROR_KINDS: frozenset[str] = frozenset(
         BINARY_TRUNCATED,
         BINARY_TOO_LARGE,
         BINARY_UNKNOWN_FORMAT,
+        AR_PARSE_ERROR,
         PYTHON_SYNTAX_ERROR,
         PYTHON_DECODE_ERROR,
         PYTHON_TOO_LARGE,

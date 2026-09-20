@@ -1,7 +1,8 @@
 # Scanning, caching and layout
 
-Three entries that are not about a binary format: what the cache is allowed to remember,
-which members count as native objects, and where the ruleset loader lives.
+Entries that are not about one binary format: what the cache is allowed to remember,
+which members count as native objects, where the ruleset loader lives, and how a
+container of several objects fits a scanner built around reading one at a time.
 
 ## A record produced without reading the wheel is never cached
 
@@ -175,3 +176,40 @@ no change at all.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#the-loader-moves-to-ruleset_loaderpy-a-sibling-module-not-a-package) ·
 [#66](https://github.com/EmilienM/wheel-crypto-scan/issues/66)
+
+## `binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader
+
+**Accepted.**
+
+A `.a`/`.lib` static archive — the `ar` container format bundling several `.o`/`.obj`
+relocatable objects for downstream linking — matched no route into `is_binary_member`
+at all: not suffix, vendor path, sniff directory or executable bit. A wheel vendoring a
+static crypto library was invisible to the scanner, with nothing in the record to say
+so.
+
+Every existing reader answers to "one stream in, one `BinaryEvidence` out"; an archive
+holds several separate, independently-linkable objects a consumer wants told apart, so
+`binfmt.ar.read_ar_members` is not one more entry in the reader table. It is called
+directly by `layers.binaries.scan_binaries`, once a `.a`/`.lib`-suffixed member's own
+magic confirms it is really `ar`-format, and dispatches each real member it finds to
+the same per-format readers everything else in the wheel goes through.
+
+The container format itself — magic, 60-byte member headers, the GNU long-name table,
+odd-size padding — was verified against real archives from this host's own `ar`, not
+only the documented spec, before being written. A member table that cannot be walked
+to completion keeps whatever real members were already found; only when none were
+found at all does the whole archive fall back to one strings-only record, the same
+shape a format with no registered reader already gets. A member is never dropped for
+having an unresolvable name — it is still read under a synthetic path, with its own
+error naming why. Archive-derived evidence is marked `from_archive` and excluded from
+`linkage.member_stem_counts`, so a bundled object's `SONAME` can never confirm a
+sibling extension's `DT_NEEDED` entry as system-resolved.
+
+**What this does not close.** `binfmt.elf`'s symbol matching reads `.dynsym` only,
+never `.symtab` — the table a relocatable `.o` normally carries. A genuine crypto
+symbol *definition* with no accompanying string banner is still invisible even once
+the archive and its members are visible and read. Filed separately:
+[#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117).
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader) ·
+[#99](https://github.com/EmilienM/wheel-crypto-scan/issues/99)
