@@ -481,6 +481,110 @@ def test_a_nobits_named_go_buildinfo_does_not_allocate(context) -> None:
     assert errs != ()
 
 
+# --- #95: an ordinary, uncompressed section is checked against the budget too -------
+#
+# `_bounded_section_data` only refused before `.data()` ran when the section was
+# `compressed` or `SHT_NOBITS`, the two shapes #62 measured. An ordinary, honest,
+# uncompressed section -- an honestly large `.rodata`, or `.dynsym`/`.dynstr` from a
+# real symbol table -- fell through that `and` entirely and reached `.data()` with no
+# budget check at all: read in full regardless of size, with only the *accumulated*
+# buffer cut afterwards. The issue's own reproduction: an honest 8 MiB `.rodata`
+# against a 64 KiB budget reads it whole (largest single `read()` 8388608 bytes, peak
+# 8605805) and reports `strings_bytes_unread` -- truncated after the fact, not refused
+# before it; an honest `.dynsym`/`.dynstr` from 200,000 real symbols (~4.8 MiB
+# `.dynstr`) reads whole the same way and comes back `partial_analysis: False` -- a
+# fully clean, complete record, paid for at the size of the honest table rather than
+# the budget.
+
+
+def test_an_ordinary_elf_rodata_declaring_more_than_the_budget_does_not_allocate(
+    context,
+) -> None:
+    """The uncompressed counterpart of the compressed `.rodata` hardening test above,
+    at the issue's own scale: an honest 8 MiB `.rodata` against a 64 KiB budget, with
+    an OpenSSL banner at offset 0 -- comfortably inside the budget -- the same shape
+    an independent review of this fix found reachable on a real host library
+    (`libLLVM.so`, 68 MiB of eligible sections against the 64 MiB default budget):
+    bounding the *read* must not cost the *evidence* a smaller, honest read would
+    still recover.
+    """
+    banner = b"OpenSSL 3.0.14 4 Jun 2024\x00"
+    body = banner + b"\x00" * (8 * 1024 * 1024 - len(banner))
+    data = ElfBuilder(rodata=body).build()
+    stream = _CountingReadStream(data)
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_elf(
+        stream,
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=64 * 1024,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    # Comfortably above the budget's own bookkeeping, nowhere near the 8 MiB an
+    # unfixed reader would have to read to reach the same declared size.
+    assert peak < 2 * 1024 * 1024, f"peaked at {peak} bytes"
+    assert stream.largest_read < 1024 * 1024, (
+        f"largest single read() was {stream.largest_read} bytes"
+    )
+    assert errs == ()
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == ("strings_bytes_unread",)
+    assert [m.value for m in ev.matched_strings] == ["OpenSSL 3.0.14 4 Jun 2024"]
+
+
+def test_an_honest_large_dynsym_and_dynstr_does_not_allocate(context) -> None:
+    """The `.dynsym`/`.dynstr` half of the same exposure, for an honest, real symbol
+    table rather than a crafted lie -- the issue's own reproduction, scaled down only
+    in how the fixture is built (200,000 distinct real names, the same count the issue
+    itself measured, builds in well under a second).
+
+    Correctness matters as much as cost here: pre-fix this reads in full regardless of
+    `max_strings_bytes` and comes back `partial_analysis: false`, a fully clean,
+    complete record -- silently losing the fact that a crypto-matching name in this
+    table was never actually resolved. Refusing the read must not regress into the
+    same silence from the other direction: it has to flag `elf_dynsym_unread`, not
+    just cost less.
+    """
+    names = (DynSym("EVP_DigestInit_ex", defined=False),) + tuple(
+        DynSym(f"sym_{i:07d}_padding_out_a_realistic_name", defined=False) for i in range(200_000)
+    )
+    data = ElfBuilder(dynsyms=names).build()
+    stream = _CountingReadStream(data)
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_elf(
+        stream,
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=64 * 1024,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert peak < 4 * 1024 * 1024, f"peaked at {peak} bytes"
+    assert stream.largest_read < 1024 * 1024, (
+        f"largest single read() was {stream.largest_read} bytes"
+    )
+    assert ev.partial_analysis is True
+    assert "elf_dynsym_unread" in ev.partial_reasons
+    # Refused, not silently shortened: no row from this table is reported as read,
+    # crypto-matching or not, which is the honest answer for a table this reader
+    # refused rather than the empty-but-clean one it used to give.
+    assert ev.matched_symbols == ()
+    assert errs != ()
+
+
 def test_a_mach_o_that_declares_a_giant_symbol_table_does_not_allocate(
     context, tmp_path: Path
 ) -> None:

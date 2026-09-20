@@ -69,7 +69,12 @@ PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS = "elf_section_type_ambiguous"
 PARTIAL_ELF_SECTIONS_UNREAD = "elf_sections_unread"
 # A section's bytes could not be read, so the strings pass ran over less than the
 # object holds. On its own this used to be silent, which made a wheel whose only
-# evidence was a `.rodata` banner able to come back with no findings at all.
+# evidence was a `.rodata` banner able to come back with no findings at all. An
+# ordinary `.rodata`/`.comment` over this reader's own budget (#95) does not reach
+# this cause: its in-budget prefix is kept and the object reads `strings_bytes_unread`
+# instead, not this token -- reserved for a section whose bytes really could not be
+# produced at all: a compressed or `SHT_NOBITS` section refused outright, or a genuine
+# read failure.
 PARTIAL_ELF_SECTION_DATA_UNREAD = "elf_section_data_unread"
 # `.dynamic` would not resolve, or a section named `.dynamic` exists whose declared
 # `sh_type` is not `SHT_DYNAMIC` and so cannot be trusted as one, so `needed`, `soname`,
@@ -77,9 +82,12 @@ PARTIAL_ELF_SECTION_DATA_UNREAD = "elf_section_data_unread"
 # object declares none.
 PARTIAL_ELF_DYNAMIC_UNREAD = "elf_dynamic_unread"
 # `.dynsym` would not read, named strings `.dynstr` does not hold, declared fewer
-# entries than `.dynstr` holds names for, or a section named `.dynsym` exists whose
-# declared `sh_type` is not `SHT_DYNSYM` and so cannot be trusted as one, so the
-# imported-versus-defined split is missing or partial.
+# entries than `.dynstr` holds names for, a section named `.dynsym` exists whose
+# declared `sh_type` is not `SHT_DYNSYM` and so cannot be trusted as one, or (#95)
+# `.dynsym` or `.dynstr` declares more bytes than this reader's own budget is willing
+# to read -- the honest table may be entirely present in the object, and this does not
+# mean it lied, only that the reader stopped short of it -- so the imported-versus-
+# defined split is missing or partial.
 PARTIAL_ELF_DYNSYM_UNREAD = "elf_dynsym_unread"
 # `.symtab` would not read, or a section named `.symtab` exists whose declared
 # `sh_type` is not `SHT_SYMTAB` and so cannot be trusted as one, so `stripped` and

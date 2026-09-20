@@ -2727,7 +2727,211 @@ reached regardless of this fix; `.comment` is the one named unconditionally and 
 plausible carrier if any is. Revisit if a real wheel is found on the triage list for
 this and nothing else.
 
-Tracked in [#62](https://github.com/EmilienM/wheel-crypto-scan/issues/62).
+**#95 closes the follow-up this entry's own scope left open: the same check, without
+the `compressed or SHT_NOBITS` narrowing, for an ordinary section.** The fix above only
+refused `_bounded_section_data`'s call to `.data()` when `section.compressed or
+section["sh_type"] == "SHT_NOBITS"`, the two shapes this issue's own reproduction
+measured -- an ordinary, uncompressed, file-backed section (or `.dynsym`/`.dynstr` from
+a real symbol table, read through the identical call) fell through that `and` entirely
+and reached `.data()` unconditionally, at whatever size `sh_size` names, with only the
+*accumulated* buffer cut afterwards. `section.data_size` means the same thing here as
+it does for the compressed and `SHT_NOBITS` cases above: `sh_size` itself, the field
+pyelftools' `Section.__init__` sets `_decompressed_size` from whenever `compressed` is
+false -- genuinely file-backed for an ordinary section, but that is exactly the
+exposure: reading it costs whatever `sh_size` names before this reader's own budget
+gets a say. The fix drops the `and` entirely: `if section.data_size > max_bytes: return
+b"", True`, applied to every section regardless of shape.
+
+**Reproduced at the issue's own scale, the same 8 MiB/64 KiB shape measured above for
+the compressed case.** An honest, uncompressed 8 MiB `.rodata` against a 64 KiB budget:
+unfixed, one `stream.read()` of 8388608 bytes, `tracemalloc` peaking at 8605805, and a
+record that reads `strings_bytes_unread` -- correct, per the issue's own framing ("the
+record is correct either way... this is cost, not evidence"), but only after the whole
+section was read to get there. `.dynsym`/`.dynstr` from 200,000 real, distinct symbol
+names (~4.8 MiB `.dynstr`, and a `.dynsym` of the identical size, 24 bytes per
+`Elf64_Sym` entry) against the same 64 KiB budget: unfixed, `partial_analysis: false`
+-- a fully clean, complete record, paid for at the size of the honest table rather than
+the budget, with no way for a consumer to tell this table cost more than it should
+have. Fixed, both `.dynsym` and `.dynstr` are checked independently against the same
+budget (`_symbol_bytes` already threaded `max_table_bytes` through to both calls, as
+its own docstring above already promised), either one over budget refuses the whole
+table, and `elf_dynsym_unread` fires -- the honest symbol this fix's own test carries is
+not silently dropped; the record has to say it was not read rather than stay clean.
+
+**`.dynsym`'s own declared size was never checked before, independent of `.dynstr`'s.**
+The issue names both explicitly ("a `.dynsym`/`.dynstr` from a real symbol table ...
+falls through the `and` condition"), and closing the gap for `.dynstr` alone would have
+left an honest `.dynsym` of any size read in full regardless of budget -- the shape
+`#61`'s own per-name cap and this entry's own budget exist to bound. This has one
+visible side effect on existing fixtures: a `.dynsym` with even a single real symbol is
+two `Elf64_Sym` entries, not one -- index 0 is always the reserved null entry -- so 48
+bytes (`Elf64_Sym`'s own 24, twice), not 24, is the floor a "declares exactly the
+budget" boundary test now has to clear for `.dynsym` to be read at all alongside its
+string table. `tests/test_binfmt_elf.py`'s existing `.dynstr`-only boundary tests were
+sized against `.dynstr` alone and needed the same 48-byte floor to keep resolving
+post-fix; not a behavioural regression, since the object under test is a two-entry
+`.dynsym` either way, only a test fixture that had never had a reason to notice.
+
+**An independent adversarial review of this fix found two further gaps before it was
+accepted as final, both closed in the same pass.**
+
+**The first was blocking: a refused `.dynsym` or `.dynstr` reached the existing
+`unresolved`/`holds_a_name_not_read` cross-check with no guard against it, and could
+fabricate `symtab_understates_rows` -- a specific, checkable claim ("every structural
+check passes and the count is simply not the truth", per `SCHEMA.md`) -- against a
+table that was never shown to lie, only left unread.** When `.dynsym` alone is refused
+for budget, `table` is empty, so `_iter_symbols` yields no rows and `unresolved` stays
+0; the `elif holds_a_name_not_read(dynstr, patterns, read_crypto):` branch then finds
+whatever real crypto name sits in an honest, in-budget `.dynstr` unclaimed by any row
+`read_crypto` never got the chance to populate, and reports it as an understated
+symbol count. Reproduced directly: 101 `.dynsym` entries (100 short-named padding
+rows plus one real `SSL_new`) against a 600-byte budget -- `.dynstr` (509 bytes) reads
+fine, `.dynsym` (2448 bytes) is refused -- read as `('elf_dynsym_unread',
+'symtab_understates_rows')` with the error `".dynsym declares fewer entries than
+.dynstr holds names for"`, both false: the object's row count was correct throughout.
+A companion, lower-severity shape reaches the sibling branch instead: `.dynstr` alone
+refused (a real `.dynsym` entry, an oversized honest decoy `.dynstr`) means every row
+resolves against an empty string table, so `unresolved > 0` fires
+`".dynsym names strings .dynstr does not hold"` -- not exactly false (`.dynstr` really
+does hold nothing, being empty) but redundant and misleading alongside the correct
+budget error, and not the claim `unresolved` exists to make (the object lying about
+`.dynstr`'s own contents). Fixed the same way `binfmt.macho`'s own `_SymbolRead`
+already orders `truncated` ahead of its `unresolved`/understated pair: `read_elf` now
+checks `symtab_bytes_unread` first and skips the entire per-symbol walk and both
+follow-on branches when it is true, keeping only the `elf_dynsym_unread` error and
+reason the refusal itself already sets -- there is nothing correct left for either
+branch to add once a read was refused rather than completed. Skipping the walk also
+means neither shape pays for iterating rows or resolving names that cannot answer
+either question anyway, the same "cheapest question first, walk skipped for a table
+already known to have fallen short" ordering `binfmt.macho`'s own comment gives it.
+`tests/test_binfmt_elf.py::test_a_refused_dynsym_with_an_honest_dynstr_does_not_fabricate_understated_rows`
+and `::test_a_refused_dynstr_with_an_honest_dynsym_does_not_fabricate_a_second_error`
+pin both shapes, confirmed to fail -- the fabricated reason and the redundant message
+both reappear, on the same assertions -- with the guard reverted by hand and restored
+to pass again.
+
+**The second, real-world reachable rather than synthetic: an ordinary section refused
+for being over budget discarded its ENTIRE content, not just the excess, unlike every
+other reader in this codebase and unlike this fix's own first version's intent.**
+`binfmt/macho.py`, `binfmt/pe.py` and `binfmt/fallback.py` all read
+`min(size, max_strings_bytes)` and keep the in-budget prefix; the first version of this
+fix instead refused an over-budget ordinary section outright, `(b"", True)`, the same
+shape a compressed section still must (an all-or-nothing `zlib` call with no cheap
+partial-read) but for a plain file-backed section with no such constraint. Reproduced
+against a real host library, `/usr/lib64/libLLVM.so.22.1` (68.3 MB of eligible sections
+against the 64 MiB default budget): `main` reads it `strings_bytes_unread`, no errors;
+the first version of this fix read it `elf_section_data_unread` plus a spurious
+`elf_parse_error`, which fires `BIN_UNPARSEABLE` ("Truncated, corrupt or an
+unrecognised format") over `BIN_STATIC_OPENSSL` -- a false-positive-shaped downgrade on
+a perfectly ordinary, healthy object, at a size range ML/scientific wheels (`libxul`,
+`libnode`, `pyarrow`'s `libarrow`) commonly reach. Fixed by giving
+`_bounded_section_data` a `keep_prefix` parameter: an over-budget ordinary section
+still refuses past the budget, but for `.rodata`/`.comment`/`.go.buildinfo` -- the
+callers that pass `keep_prefix=True` -- it hands back `max_bytes` of its own real
+content first, one plain `stream.seek`/`.read()` at the section's own offset, no
+decompression and no second reader involved. `_collect_string_bytes` then treats a
+non-empty recovered prefix as `truncated`, not `unread`: the object told the truth
+about its bytes, this reader simply ran out of budget partway through them, which is
+exactly what `strings_bytes_unread` (no error) already names for the pre-existing
+"budget exhausted across several smaller sections" case -- restoring, at this call
+site, the same record `main` already produced for an ordinary oversized section, now
+at the cost of a single bounded read instead of a full one. `libLLVM.so.22.1` reads
+`strings_bytes_unread`, no errors, one matched string, after the fix -- the same record
+`main` gives it. `.go.buildinfo` keeps its existing `elf_go_buildinfo_unread` error
+whenever refused, prefix or not (see "What was rejected" below for why), but the
+recovered prefix is no longer discarded before reaching `build_go_info`: an honest Go
+version sitting near the section's own 32-byte header, comfortably inside the budget,
+still parses even though the section as a whole did not read in full.
+`.dynsym`/`.dynstr` do not pass `keep_prefix` and keep refusing outright (see "What was
+rejected" below).
+
+**What was rejected, for the prefix-recovery half.** Applying `keep_prefix` to
+`.dynsym`/`.dynstr` too: rejected, on the strength of the same guard fix above --
+a byte-bounded prefix of a symbol table is not a set of complete rows, an entry near
+the cut is as likely to point past a truncated string table as into it, and reading
+one without a row-aware cap reopens a narrower version of the exact fabrication the
+guard fix above exists to close (a partial table that iterates some real rows and some
+garbage ones, with no way here to tell which is which). The honest way to bound a
+symbol table without losing rows to that ambiguity already exists one layer over, in
+`binfmt.macho`'s own per-slice `nsyms`/`strsize` cap (#63): porting that shape to ELF
+is a real fix, but a different, larger one than this pass, and is left open rather than
+half-built here. Compressed and `SHT_NOBITS` sections keep the original all-or-nothing
+refusal regardless of `keep_prefix`: a compressed section has no cheap partial read
+(#62's own "What was rejected" above already declines a second, `max_length`-bounded
+decompression path for exactly this reason), and an `SHT_NOBITS` "prefix" is `b"\\0"`
+bytes carrying no evidence either way, so there is nothing a keep-prefix path would
+recover for either shape. Giving `.go.buildinfo`'s refusal the same "no error" treatment
+`.rodata`/`.comment` now get: rejected, because `strings_bytes_unread` is specifically
+the *strings pass* running short across the sections `_collect_string_bytes`
+concatenates, and `.go.buildinfo` is parsed separately, outside that pass; reusing the
+token for a question it was not built to answer is the same "one vocabulary, two
+questions, do not assume they are equal" hazard `AGENTS.md` already names for
+`PARTIAL_REASONS`, so `.go.buildinfo` keeps its own token and its own error whenever
+the declared size is not honoured, prefix recovered or not -- a smaller, more
+conservative change there than for the strings pass, and the one this pass makes.
+
+**A second, quieter effect of the unconditional check itself, independent of the two
+gaps above: `_collect_string_bytes`'s post-read truncation branch
+(`if len(data) > remaining: buf.extend(data[:remaining]); truncated = True`) is now
+unreachable.** `_bounded_section_data` already guarantees `len(data) <= max_bytes`
+whenever it does not refuse -- for a compressed section (pyelftools raises
+`ELFCompressionError` rather than return a mismatched length, caught one level up as
+`unread`), for `SHT_NOBITS` (`data_size` bytes of zero, always), and now for an
+ordinary one too (`stream.read(n)` never returns more than `n`). A section whose own
+declared size is refused already `continue`s before reaching this check; one that is
+not refused cannot produce more bytes than the budget it was measured against. This
+was already true for the compressed and `SHT_NOBITS` cases; this fix makes it true for
+the one case -- an ordinary section -- that could previously still reach it. Left in
+place rather than deleted: it is confirmed dead by this fix's own logic, not by
+omission, and removing it is a separate, purely-internal cleanup this fix did not need
+to make to close #95.
+
+**What was rejected, for the unconditional check itself.** Keeping the `and` and
+adding a second, separate check for the ordinary case: rejected for the reason this
+entry's own docstring already gives the compressed/`SHT_NOBITS` split -- `data_size`
+means the same 64-bit self-declared size question regardless of shape, so a second
+check would just be the same predicate typed twice, the identical objection `#61`'s
+own "what was rejected" above raises against a second reader for one fact. Checking
+`.dynstr` alone and leaving `.dynsym`'s own size unwidened: rejected above, for
+reopening the exact door this fix exists to close on the symbol-table side.
+
+**What it costs.** `ANALYZER_VERSION` moves. An object whose `.dynsym` or `.dynstr`
+declares an uncompressed size over `max_strings_bytes` now reads `elf_dynsym_unread`
+where it previously read whatever a full, unbounded read produced -- for `.dynsym`
+specifically, this is a genuinely new check where none existed in any form before. An
+object whose eligible `.rodata`/`.comment` declares an uncompressed size over the
+remaining strings budget reads exactly as it did before this fix existed --
+`strings_bytes_unread`, no error, whatever fits the budget kept -- now at the cost of
+one bounded read instead of a full one; that record is unchanged by this fix, only how
+cheaply it is reached. `.go.buildinfo` keeps its existing `elf_go_buildinfo_unread` and
+error whenever refused, now with its own recovered prefix reaching `build_go_info`
+rather than being discarded first. No `ruleset.toml` change: every token this reuses
+was already policy.
+
+**Same class of fix as #63's Mach-O counterpart, ported the other direction.** #63
+closes `sizeofcmds` and the symbol/string-table size the same way -- a declared size
+checked against a fixed budget before the read it would buy, not clamped to the member
+afterwards -- and its own entry below notes explicitly that ELF's
+`_bounded_section_data` had not yet closed this for the ordinary case, filing it as
+this issue rather than folding it in. This fix is that filing closed. The
+prefix-keeping half is also the same choice #63's own entry below draws for Mach-O's
+symbol table -- "a capped read is a truncated read, not a refused one" -- applied here
+to `.rodata`/`.comment`/`.go.buildinfo` rather than to a symbol table, which is exactly
+the boundary "What was rejected" above draws for why `.dynsym`/`.dynstr` do not get the
+same treatment yet.
+
+Revisit if a real wheel is found on the triage list whose only incompleteness is an
+ordinary section refused by this widened check -- the same admission test `AGENTS.md`
+and this entry's own compressed-case revisit note above ask: an honest object this
+generous a budget turns incomplete would be the sign the budget itself, not this check,
+is too tight for real wheels. Also revisit if a real `.dynsym`/`.dynstr` is found on the
+triage list large enough that refusing it outright, rather than capping it the way
+`binfmt.macho` caps its own symbol table, costs real symbols a smaller, row-aware cap
+would have kept -- the open door "What was rejected" above leaves for porting #63's own
+shape to ELF's symbol table.
+
+Tracked in [#62](https://github.com/EmilienM/wheel-crypto-scan/issues/62) and
+[#95](https://github.com/EmilienM/wheel-crypto-scan/issues/95).
 
 ## sizeofcmds and the symbol table are capped, not just clamped to the member
 
