@@ -31,9 +31,29 @@ _HASH_CHUNK = 1 << 20
 class ArchiveLimits:
     """Bounds on what we are willing to read out of an untrusted archive.
 
-    Memory use is roughly `jobs * max_in_memory_bytes` in the worst case, so the
-    in-memory threshold is deliberately far below the per-member ceiling: anything
-    larger is streamed instead of held.
+    `max_in_memory_bytes` is what this module itself holds: a member no larger than
+    that is read into `bytes` outright, and anything larger is streamed instead
+    through `SeekableZipMember`. That bounds only this module's own choice, not the
+    total memory reading one member costs -- a reader built on top of the stream adds
+    its own overhead pulling bytes through it, so "roughly `jobs * max_in_memory_bytes`"
+    undercounts the real worst case rather than stating it. Measured end to end, a
+    real per-worker peak runs closer to `max_in_memory_bytes` plus a small multiple of
+    `binfmt.strings.MAX_STRINGS_BYTES` -- each `binfmt.macho` object can hold up to
+    three such budgets at once (a strings prefix, a symbol table, a string table) --
+    and for `binfmt.elf` it can still run higher than that, unbounded by any fixed
+    multiple, for the one shape #95 has not yet closed: an ordinary, uncompressed
+    section larger than the budget.
+
+    A reader built on top of a streamed member has to bound what it pulls through the
+    stream itself, or streaming a member buys nothing. `binfmt.macho` does, against
+    `binfmt.strings.MAX_STRINGS_BYTES` by default, as of #63, which closed the one
+    place this had quietly stopped being true: `sizeofcmds` and `LC_SYMTAB`'s `nsyms`
+    and `strsize`, self-reported sizes that used to be measured only against the
+    member's own bytes, letting a streamed member be read close to whole regardless
+    of `max_in_memory_bytes`. `binfmt.elf` bounds a *compressed* or `SHT_NOBITS`
+    section the same way (#62), but not yet an ordinary, uncompressed one -- an
+    honestly large `.rodata`, or a large `.dynsym`/`.dynstr`, still reads in full
+    through `section.data()` before any budget applies. Tracked in #95.
     """
 
     max_total_uncompressed_bytes: int = 8 * 1024**3

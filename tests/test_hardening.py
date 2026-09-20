@@ -34,6 +34,7 @@ from helpers.wheelbuilder import build_wheel
 from wheel_crypto_scan import errors
 from wheel_crypto_scan.binfmt import pe, symtab
 from wheel_crypto_scan.binfmt.elf import read_elf
+from wheel_crypto_scan.binfmt.macho import read_macho
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import SbomComponent
 from wheel_crypto_scan.ruleset import load_ruleset
@@ -505,6 +506,151 @@ def test_a_mach_o_that_declares_a_giant_symbol_table_does_not_allocate(
     # The entry that was really there is still evidence, and the object stays partial.
     assert record["binaries"][0]["matched_symbols"]
     assert record["binaries"][0]["partial_analysis"] is True
+
+
+class _CountingReadStream(io.BytesIO):
+    """Remembers the largest single `read()` call it was ever asked to satisfy.
+
+    #63's own reproduction technique: proving a read is bounded by a fixed cap, rather
+    than by how large the object happens to be, is cheapest measured at the call the
+    reader actually makes, not by building an object large enough to feel the
+    difference in wall-clock time or `tracemalloc`.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.largest_read = 0
+
+    def read(self, size: int | None = -1, /) -> bytes:  # type: ignore[override]
+        chunk = super().read(size)
+        self.largest_read = max(self.largest_read, len(chunk))
+        return chunk
+
+
+def test_a_mach_o_with_a_giant_sizeofcmds_does_not_read_it(context) -> None:
+    """`sizeofcmds` is the load-command version of the same 32-bit self-declared-size
+    attack `nsyms` has a test for above, closed the same way #62 closed it for a
+    compressed ELF section: checked before the read, not clamped after it. #63.
+
+    Scaled down from the issue's 300 MiB member: the property under test is that the
+    single `read()` call `_read_thin` makes for the load commands is bounded by
+    `_MAX_SIZEOFCMDS`, not by how much padding follows the header, so a few MiB of
+    padding proves the same shape the issue measured at three hundred -- and with the
+    cap in place that read is never attempted at all, so the largest read anywhere in
+    the whole call is `max_strings_bytes`, from the strings fallback this failure
+    falls back to.
+    """
+    budget = 64 * 1024
+    base = MachOBuilder(load_dylibs=("libcrypto.3.dylib",)).build()
+    buf = bytearray(base)
+    struct.pack_into("<I", buf, 20, 0xFFFFFFFF)  # mach_header_64.sizeofcmds
+    payload = bytes(buf) + b"\x00" * (8 * 1024 * 1024)
+
+    stream = _CountingReadStream(payload)
+    start = time.monotonic()
+    ev, errs = read_macho(
+        stream, "libfoo.dylib", context.patterns.binary, vendored=False, max_strings_bytes=budget
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert stream.largest_read == budget, f"largest single read() was {stream.largest_read} bytes"
+    assert ev.partial_analysis is True
+    assert "macho_header_unread" in ev.partial_reasons
+    assert any(e.kind == errors.MACHO_PARSE_ERROR for e in errs)
+
+
+def test_a_mach_o_symbol_table_declaring_more_than_the_budget_does_not_allocate(context) -> None:
+    """`nsyms` bought a read (and a walk) proportional to what the header claimed once
+    `_available` clamped it only to the slice, never to a fixed budget -- the second
+    half of #63, sibling to the compressed ELF `.dynsym`/`.dynstr` budget
+    `_bounded_section_data` already enforces above. `strsize` shares the same shape and
+    is capped the same way.
+
+    Scaled down from the issue's 300 MiB member / 664 MiB peak: `nsyms` only has to
+    clear a small budget, not 64 MiB, to prove the read is capped rather than clamped
+    to the member -- and the member is padded well past that budget so the fixed cap,
+    not the slice's own size, is what is doing the work.
+    """
+    budget = 64 * 1024
+    entry_size = 16  # nlist_64
+    over_budget_nsyms = (budget // entry_size) + (128 * 1024)  # ~2 MiB of declared rows
+    payload = MachOBuilder(
+        id_dylib="@rpath/_ext.cpython-312-darwin.so",
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+        declared_nsyms=over_budget_nsyms,
+    ).build()
+    # Comfortably more than `over_budget_nsyms * entry_size`, so the slice's own size
+    # is not what would have bounded this even before the fix.
+    payload += b"\x00" * (4 * 1024 * 1024)
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_macho(
+        io.BytesIO(payload),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=budget,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert peak < 1024 * 1024, f"peaked at {peak} bytes"
+    assert ev.partial_analysis is True
+    assert "macho_symtab_incomplete" in ev.partial_reasons
+    assert any(e.kind == errors.MACHO_PARSE_ERROR for e in errs)
+    # The real symbol sits at the start of the table, well inside the budget, so the
+    # cap costs the declared tail of the table, not the evidence that was reachable.
+    assert ev.matched_symbols
+
+
+def test_a_mach_o_string_table_declaring_more_than_the_budget_does_not_allocate(context) -> None:
+    """`strsize` has the identical shape `nsyms` does above -- a 32-bit, self-declared
+    byte count `_available` alone only measures against the slice -- and reading it
+    unbounded costs exactly the same way: `_region` serves however many bytes
+    `min(symtab.strsize, max_strings_bytes)` asks for, and without that `min` this
+    would cost as much as `symtab.strsize` claims, up to the whole member.
+
+    A review of the first version of this fix found this half of the cap had no test
+    of its own: reverting only `str_length`'s `min(symtab.strsize, max_strings_bytes)`
+    back to plain `symtab.strsize`, leaving `sym_length`'s own cap untouched, left the
+    full suite green. This closes that gap.
+    """
+    budget = 64 * 1024
+    over_budget_strsize = budget + (2 * 1024 * 1024)
+    payload = MachOBuilder(
+        id_dylib="@rpath/_ext.cpython-312-darwin.so",
+        symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
+        declared_strsize=over_budget_strsize,
+    ).build()
+    # Comfortably more than `over_budget_strsize`, so the slice's own size is not what
+    # would have bounded this even before the fix.
+    payload += b"\x00" * (4 * 1024 * 1024)
+
+    tracemalloc.start()
+    start = time.monotonic()
+    ev, errs = read_macho(
+        io.BytesIO(payload),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=budget,
+    )
+    elapsed = time.monotonic() - start
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert peak < 1024 * 1024, f"peaked at {peak} bytes"
+    assert ev.partial_analysis is True
+    assert "macho_symtab_incomplete" in ev.partial_reasons
+    assert any(e.kind == errors.MACHO_PARSE_ERROR for e in errs)
+    # `nsyms` is honest here -- one real entry, well inside the budget -- so the real
+    # symbol is still reachable; only the declared string-table tail costs anything.
+    assert ev.matched_symbols
 
 
 def test_a_pe_that_declares_a_giant_export_table_does_not_allocate(context, tmp_path: Path) -> None:

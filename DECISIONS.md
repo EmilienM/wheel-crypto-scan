@@ -2141,3 +2141,244 @@ plausible carrier if any is. Revisit if a real wheel is found on the triage list
 this and nothing else.
 
 Tracked in [#62](https://github.com/EmilienM/wheel-crypto-scan/issues/62).
+
+## sizeofcmds and the symbol table are capped, not just clamped to the member
+
+**Accepted. The same class of fix as #61 and #62, ported to the two places in
+`binfmt.macho` that were still measuring a declared 32-bit size against the member
+rather than against a fixed budget.**
+
+`_read_thin` read `commands = stream.read(sizeofcmds)` straight from the header's own
+`sizeofcmds` field, with only a short-read check after the fact -- no cap before it. A
+300 MiB member declaring `sizeofcmds = 0xFFFFFFFF` cost a 300 MiB single read for a
+structure that is, honestly, low tens of KiB. `_read_symbols`'s `nsyms` and `strsize`
+had the same shape one level down: `_available` -- "measured against the bytes that
+exist," per `_Slice`'s own docstring -- clamps a declared table size to the *slice*,
+which is exactly right for a slice smaller than any fixed budget and does nothing at
+all for one larger. A streamed member well past `wheelfile.ArchiveLimits.
+max_in_memory_bytes` is exactly that: `nsyms = 0x0FFFFFFF` over a 300 MiB member cost
+24.5s and 664 MiB peak walking roughly twenty million 16-byte rows, each individually
+classified as unresolved -- a wrong record (`partial_analysis: true`,
+`macho_symtab_incomplete`, the same answer either way), paid for at full member cost.
+
+**Measured, reusing the issue's own numbers plus this fix's own.** Scaled down for a
+test suite that can afford to exercise the unfixed path directly: an object declaring
+`sizeofcmds = 0xFFFFFFFF` over an honestly-small header, padded to 8 MiB, reads that
+whole 8 MiB in one `stream.read()` call unfixed (measured with a `BytesIO` subclass
+that records its largest single `read()`, the issue's own reproduction technique) and
+`max_strings_bytes` (64 KiB in the test) fixed -- the `sizeofcmds` read is never
+attempted at all once it is over cap. A lying `nsyms` over a 4 MiB pad peaks at 4.19
+MiB unfixed and under 1 MiB fixed, in both cases well under the wall-clock ceiling
+either way at this scale, which is why the memory ceiling is the assertion that
+actually discriminates -- the same choice #61 and #62's own bounded-resource tests
+make, for the same reason: 300 MiB's worth of wall-clock cost is real at the issue's
+own scale but does not reproduce as a reliable *test* signal at a size small enough to
+run in a suite, while the byte count read does not need to be flaky to prove the point.
+
+**Two caps, at the two places the issue named.** `_MAX_SIZEOFCMDS` (1 MiB, `binfmt/
+macho.py`) is checked in `_read_thin` before `stream.read(sizeofcmds)` runs at all --
+real load commands are low tens of KiB even for the busiest fixture #59's or #84's own
+tests build, a handful of dylib-loading commands at most, so a cap two orders of
+magnitude above that is generous headroom, not a tight fit against anything a real
+object does. Past it, `_read_thin` raises `_Unreadable` the same way a truncated
+header or unparseable load commands already do, which `_read_slice_header` had one
+exception clause rewriting into a generic "failed to parse mach-o load commands" --
+now caught and re-raised first, the same special-casing `struct.error` already got,
+so the record keeps this cause's own message rather than the catch-all one. No new
+`partial_reasons` token: for a thin object this is the one slice that failed to
+parse, so `read_macho` falls into the existing `headers` == [] path and reports
+`macho_header_unread`, exactly the case that token already names ("the Mach-O header
+... would not parse"); for one slice of a fat binary the object already treats any
+per-slice `_Unreadable` as `macho_fat_slice_unread` for that slice while the others
+still contribute, and this cause is not special enough to want different treatment
+than a slice whose magic nobody recognises already gets.
+
+The symbol-table half reuses `max_strings_bytes` itself rather than inventing a
+second constant: already threaded into `read_macho` for the strings pass, it is
+threaded two calls further down into `_read_slice_symbols` and `_read_symbols` and
+taken as a second ceiling on what `nsyms * entry_size` and `strsize` may ask
+`_available` for -- `sym_length = _available(sym_start, min(sym_wanted,
+max_strings_bytes), end)`, and `strsize` the same way. `sym_wanted` and
+`symtab.strsize` themselves stay uncapped in the `truncated` check below
+(`len(table) != sym_wanted or len(strings) != symtab.strsize`), so reading less than
+declared -- because the slice ran out or because the budget did -- both land exactly
+where a genuinely short table already did, `macho_symtab_incomplete`, and the message
+it carries ("mach-o symbol table is truncated") is honestly what happened either way.
+No new token, no new message, and no new branch.
+
+**This is stricter than `binfmt.elf._symbol_bytes`, not a port of it, and that
+difference was found and corrected by review rather than assumed away.** An early
+draft of this entry (and the code comment beside it) described the two as mirroring
+one another, because `_symbol_bytes` takes the identical `max_table_bytes` parameter
+for `.dynsym`/`.dynstr`. Threading the same parameter through is a real parallel;
+enforcing it is not the same fact. `_symbol_bytes` reaches every declared table
+through `_bounded_section_data`, whose refusal only fires when `section.compressed or
+section["sh_type"] == "SHT_NOBITS"` -- #62's own scope, the shapes that reproduction
+measured. An ordinary, uncompressed `.dynsym`/`.dynstr` skips that `and` entirely and
+reaches `section.data()` unconditionally, so a large *honest* symbol table is read in
+full regardless of `max_strings_bytes` today: reproduced directly against `main` at
+200,000 real symbols (~4.8 MiB `.dynstr`), `max_strings_bytes=64 KiB`, reads in one
+~4.8 MiB call and comes back `partial_analysis: false` -- a fully clean, complete
+record, paid for at the size of the honest table rather than the budget. This
+reader's cap has no such condition: it applies to `nsyms`/`strsize` unconditionally,
+honest table or not, which is what closes it for Mach-O where ELF's own version does
+not yet close it for ELF. Filed separately rather than folded in here, the same way
+#93 was during #62's own review: #95.
+
+**The walk is bounded per slice, not just the allocation per slice -- and that
+qualifier is load-bearing, not decoration.** The issue is explicit that reading the
+whole table and then deciding it is too much does not close the cost that mattered
+most -- 24.5s of it was the row-by-row walk, not the read. Because the cap here is
+applied to `wanted` *before* `_available` ever runs, `table` itself is never longer
+than `min(sym_wanted, max_strings_bytes, available)`, so `_iter_symbols` -- the loop
+that classified twenty million rows in the issue's own reproduction -- never sees more
+than the budget's worth of them for *that slice* to begin with. There is no separate
+"read it all, then stop walking partway" step to get wrong within one slice.
+
+That bound does not extend to the object as a whole. `read_macho` calls
+`_read_slice_symbols` once per slice, up to `_MAX_FAT_SLICES` (32), and nothing pools
+a budget across them -- each slice independently gets up to `max_strings_bytes` worth
+of symbol-table walk, so a crafted 32-slice universal binary, each slice lying about
+`nsyms` the way the single-slice reproduction above does, still costs on the order of
+`_MAX_FAT_SLICES * max_strings_bytes` of walking in total. An independent adversarial
+review of this fix measured that shape directly: a crafted 32-slice object costs
+roughly 49s post-fix against roughly 54s pre-fix -- the per-slice cap barely moves the
+total, because `_MAX_FAT_SLICES` itself, not this cap, is what was already bounding
+slice *count*, and slice count times a per-slice budget is still a real number. Memory
+does not have the same gap: nothing keeps more than one slice's buffers alive at once,
+so peak memory stays flat regardless of slice count, which is the half of "bounded,
+not just allocated" that does hold end to end. Left open rather than folded into this
+fix: pooling one `max_strings_bytes`-sized budget across every slice of one object,
+rather than granting each slice its own, would close the CPU half too, but changes the
+shape AGENTS.md already gives fat-binary slices ("independent passes ... over regions
+the slices are free to share") and was out of scope for the two reads the issue named.
+
+**A capped read is a truncated read, not a refused one, and that is a deliberate
+difference from #62's own choice.** `_bounded_section_data` refuses an oversized ELF
+section outright, `(b"", True)`, because `.data()` is an all-or-nothing zlib call with
+no cheap way to keep a prefix. Mach-O's symbol and string tables are read through
+plain byte-offset slicing, the same mechanism `_available`/`_region` already use for
+"the slice ran out," so capping `wanted` to the budget costs nothing extra and keeps
+whatever prefix the budget affords, real evidence rather than none: the honest symbol
+this fix's own test builds sits at the start of the table, comfortably inside any
+budget worth using, and stays in `matched_symbols` after the cap where a "refuse
+outright" version of this fix would have thrown it away along with the twenty million
+garbage rows. This is the same reading `AGENTS.md` already gives "a structure that
+does not parse costs that structure, never the evidence already gathered," applied one
+level down: a table that reads over budget costs its own tail, not its own head.
+
+**Interaction checked, not assumed.** #59's dylib-loading-command tests and #84's
+load-command-walk tests build a handful of commands each, nowhere near `_MAX_SIZEOFCMDS`;
+none needed adjusting and the full suite (`uvx --with tox-uv tox`) stayed green
+unmodified except for the new tests themselves. Three boundary pairs pin all three
+caps at their own edge, `nsyms` and `strsize` each isolated from the other by keeping
+the sibling field honest and small: `sizeofcmds` exactly at `_MAX_SIZEOFCMDS` reads
+its commands in full (`needed` and `soname` both survive, no error), one byte over is
+refused before the read is attempted; an honestly-declared symbol table whose byte
+count lands exactly on the budget reads complete, one real entry more is
+`macho_symtab_incomplete` even though every byte of it is genuinely present in the
+object; a string table declared exactly at the budget, over an honest and otherwise
+tiny symbol table, reads complete the same way, one byte more is
+`macho_symtab_incomplete` too -- the same "more than, not at least" boundary #62's own
+entry above drew for the identical shape of check, now drawn for all three.
+
+**The `strsize` half of the cap shipped without a test of its own in the first version
+of this fix, and an independent adversarial review caught it before this entry was
+accepted as final.** Reverting only `str_length`'s `min(symtab.strsize,
+max_strings_bytes)` back to plain `symtab.strsize`, leaving `sym_length`'s cap and the
+`sizeofcmds` cap both untouched, left the entire suite green -- the `nsyms` boundary
+test above only ever varied `nsyms`, so nothing exercised `strsize`'s own edge.
+`test_strsize_exactly_at_the_budget_is_read_while_one_byte_over_is_incomplete`
+(`tests/test_binfmt_macho.py`) and
+`test_a_mach_o_string_table_declaring_more_than_the_budget_does_not_allocate`
+(`tests/test_hardening.py`) close that: reproduced directly, `strsize` declaring 2 MiB
+over a 64 KiB budget peaks at 4.19 MiB unfixed against under 1 MiB fixed, the same
+shape and the same ceiling the `nsyms` hardening test above already uses, and both new
+tests were confirmed to fail cleanly, on the same assertions, with the cap reverted by
+hand and restored to pass again afterward.
+
+**The `except _Unreadable: raise` routing clause was similarly untested on its own.**
+Deleting it left the suite green too: `partial_reasons` and `error.kind` are unchanged
+either way, because a generic `except Exception` still produces `macho_header_unread`
+from the same `_unparsed` path. What the clause actually buys is the recorded error
+*message* -- `"sizeofcmds is N bytes, over the M-byte cap on load commands"` instead of
+the catch-all `"failed to parse mach-o load commands"` -- which nothing was asserting
+on. `test_sizeofcmds_exactly_at_the_cap_is_read_while_one_byte_over_is_refused` now
+pins the exact message text for the over-cap case, and was confirmed to fail with the
+clause removed and pass with it restored.
+
+**What was rejected.** A single shared constant for both caps: `sizeofcmds` and the
+symbol/string tables are declared by different fields for different reasons, and
+tying them to one number would make changing either bound to fit real load commands or
+real symbol tables risk moving the other for no reason connected to it -- `_MAX_SIZEOFCMDS`
+stays its own constant, sized off load commands; the symbol-table budget reuses
+`max_strings_bytes`, the parameter this reader was already threading through for
+exactly this kind of question, rather than adding a `_MAX_SYMTAB_BYTES` beside it that
+could only ever drift from it. Refusing the whole symbol/string table outright once
+`nsyms`/`strsize` is over budget, `_bounded_section_data`'s own shape: rejected above,
+for losing evidence a bounded prefix read does not have to.
+
+**What it costs.** `ANALYZER_VERSION` moves: a Mach-O object whose `sizeofcmds` or
+whose symbol/string table declares more than these caps now reads incomplete at the
+cap rather than after paying to read the whole declared size, which for a real,
+honestly-small object changes nothing -- the caps sit two to three orders of magnitude
+above what #59's and #84's own fixtures need. Nothing in `ruleset.toml` changes: both
+tokens this reuses were already policy, so `ruleset_version` does not move.
+
+**`macho_header_unread`'s wording needed nothing new; `macho_symtab_incomplete`'s
+needed one clause, and an earlier version of this entry claimed neither did, on
+reasoning that held for one token and not the other.** "Would not parse" already
+covers a header refused for declaring more than this reader will read, the same
+conclusion #62's own entry draws for "refused before" and "raised inside" being the
+same fact for a consumer -- that part of the earlier claim was right. It does not
+carry over to `macho_symtab_incomplete`: its existing wording ("declared entries this
+reader could not take at their word: unreachable, naming strings it does not hold,
+holding nothing but debug records, or declaring fewer entries than the string table
+holds names for") is a closed list of ways the *object* fell short, and none of them
+describe an honest, fully-present table the *reader* chose to stop reading at its own
+budget. Read literally, the existing sentence would tell a consumer every occurrence
+of this token means the object lied, which stops being true the moment a cap can fire
+on an honest table. SCHEMA.md and `data/schema.json` (kept in step, per `AGENTS.md`)
+both gained one added clause covering the budget case, naming it as a reader-side
+stop rather than an object-side fault.
+
+**`wheelfile.ArchiveLimits`'s docstring is corrected, not fully closed -- an earlier
+draft of this entry, and of the docstring itself, overclaimed the second half and was
+caught by an independent adversarial review before being accepted as written.** The
+docstring's original claim was that streaming instead of holding a member whole is
+what bounds memory past `max_in_memory_bytes` -- true of this module's own choice
+between `io.BytesIO` and `SeekableZipMember`, and never what was broken. What was
+broken is one level up: a reader built on top of a correctly-streamed member could
+still pull most of it through the stream into its own retained `bytes`, which defeats
+the point of streaming even though `WheelArchive` itself never lied. The docstring now
+says so explicitly, and points at `binfmt.strings.MAX_STRINGS_BYTES` as the budget a
+reader is expected to hold itself to on top of the streaming decision.
+
+That is true of `binfmt.macho` as of this fix. It is **not** true of `binfmt.elf`
+today: an early version of this entry claimed it was, on the strength of the issue's
+own line that "the ELF strings pass is bounded by `max_strings_bytes`" -- true of the
+*accumulated* buffer `_collect_string_bytes` builds across sections, and not the claim
+that matters here, which is whether any *single* section's read is bounded before it
+happens. It is not, for an ordinary uncompressed section: `_bounded_section_data`
+(#62) only refuses before `.data()` runs when the section is `compressed` or
+`SHT_NOBITS`, so a large honest `.rodata` or `.dynsym`/`.dynstr` still reads in full
+first and only the running total gets cut afterward -- reproduced directly against
+`main` post-#63 at an honest 8 MiB `.rodata` (`max_strings_bytes=64 KiB`): one 8 MiB
+`read()`, 8.6 MiB peak, in a record `_collect_string_bytes` still reports as merely
+`strings_bytes_unread`. The corrected docstring says this plainly rather than
+asserting the gap closed, and points at #95, filed to track it rather than folded into
+this fix -- the same "found a related gap, filed separately" shape #62's own review
+gave #93. Closing #95 is not this fix's job: the two reads this issue named are
+Mach-O's `sizeofcmds` and `nsyms`/`strsize`, and both are closed. Nothing about this
+fix required falling back to the issue's own honest-ceiling formula, `jobs *
+(max_member_bytes + max_strings_bytes)`, for Mach-O specifically; the docstring's
+worst-case sentence is written in terms of the still-open ELF gap instead, which is
+the more honest number until #95 lands.
+
+Revisit if a real Mach-O object is found on the triage list whose only incompleteness is
+one of these two caps -- the same admission test `AGENTS.md` asks of the carve-out list,
+applied here to a cap rather than an exemption: an honest object this generous a cap
+turns incomplete would be the sign `_MAX_SIZEOFCMDS` or the symbol-table budget is
+tighter than real Mach-O objects, not just tighter than an attacker's.
+
+Tracked in [#63](https://github.com/EmilienM/wheel-crypto-scan/issues/63).
