@@ -107,6 +107,18 @@ Two of those read the Python-side vocabularies rather than a table:
   `exclude_reasons`, so the ruleset decides which causes are worth a verdict rather than
   the engine treating them alike.
 
+Three more read Python source evidence, and each has a required field naming what it
+matches on, refused if missing or empty: `kind = "py_call"` takes `targets` (dotted
+callable names, `*.method` wildcards allowed), plus an optional `usedforsecurity`
+(`"absent"`, `"true"`, `"false"` or `"unresolved"`, scalar or list), an optional
+`algorithm` (any hash name a call might pass — never checked against a closed list, since
+a rule naming a *strong* algorithm on purpose is a real shape), and an optional boolean
+`weak_algorithms_only`. `kind = "py_attr"` takes `attributes`, plus an optional `values`
+list. `kind = "py_constant"` takes `constants`. A `targets`/`attributes`/`constants`/
+`values`/`usedforsecurity` of the wrong shape (not a string or list of strings, or an
+empty list) is refused at load time rather than silently matching nothing or, for
+`usedforsecurity` specifically, crashing the scan outright.
+
 A token named by a rule is validated at load time, so a typo is a load error rather than a
 rule that silently matches nothing. The vocabularies themselves are in
 [Vocabularies](reference/vocabularies.md), and why they live in Python rather than here is
@@ -116,6 +128,10 @@ in [Invariants](invariants.md#working-rules).
 
 `--ruleset PATH` on `scan` and `rules` reads an alternative file. It goes through the same
 loader and the same validation, including the coherence check between a verdict-less
-`partial_binary` rule and `[linkage_policy] exclude_reasons`, and the printable-ASCII check
-on every `[[string_group]]` substring, both load errors rather than a test precisely so
-that `--ruleset` users are inside the guard too.
+`partial_binary` rule and `[linkage_policy] exclude_reasons`, the printable-ASCII check
+on every `[[string_group]]` substring, and the shape checks on `py_call`/`py_attr`/
+`py_constant`'s `targets`/`attributes`/`constants`/`values`/`usedforsecurity` fields
+described above -- all load errors rather than a test precisely so that `--ruleset`
+users are inside the guard too. A `[rule.match]` missing its kind's required field, or
+carrying one of the wrong shape, refuses the *whole* file at load time rather than
+silently dropping just that one rule.

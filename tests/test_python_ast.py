@@ -13,6 +13,7 @@ import pytest
 
 from helpers.wheelbuilder import build_wheel
 
+from wheel_crypto_scan.evidence import USED_FOR_SECURITY_VALUES
 from wheel_crypto_scan.layers.python_ast import scan_python_files, scan_python_source
 from wheel_crypto_scan.ruleset import PythonPatterns
 from wheel_crypto_scan.ruleset_loader import load_ruleset
@@ -108,6 +109,29 @@ def test_md5_call_usedforsecurity_unresolved():
     assert len(calls) == 1
     assert calls[0].attrs == (("algorithm", "md5"), ("usedforsecurity", "unresolved"))
     assert calls[0].detail == "hashlib.md5(...), usedforsecurity=unresolved"
+
+
+def test_every_usedforsecurity_shape_produces_a_value_ruleset_loader_accepts():
+    """`ruleset_loader` refuses a `usedforsecurity` value outside
+    `evidence.USED_FOR_SECURITY_VALUES` (#82), on the assumption that those are the
+    only values `_hashlib_usedforsecurity` can ever produce. The four tests above pin
+    each shape's literal string; this pins that the four literals are exactly that
+    set, not a superset or a subset of it, so a fifth shape added to
+    `_hashlib_usedforsecurity` without a matching update to `USED_FOR_SECURITY_VALUES`
+    fails here instead of making the loader wrongly refuse (or wrongly accept) a
+    value the extractor can genuinely produce.
+    """
+    absent = b"import hashlib\nhashlib.md5()\n"
+    false = b"import hashlib\nhashlib.md5(usedforsecurity=False)\n"
+    true = b"import hashlib\nhashlib.md5(usedforsecurity=True)\n"
+    unresolved = b"import hashlib\nflag = True\nhashlib.md5(usedforsecurity=flag)\n"
+
+    produced = set()
+    for src in (absent, false, true, unresolved):
+        sites, _errors = scan_python_source(src, "m.py", PATTERNS)
+        produced.add(dict(_kinds(sites, "py_call")[0].attrs)["usedforsecurity"])
+
+    assert produced == USED_FOR_SECURITY_VALUES
 
 
 def test_hashlib_new_literal_and_variable_algorithm():

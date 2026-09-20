@@ -19,12 +19,13 @@ from typing import Any
 from packaging.utils import canonicalize_name
 
 from .errors import ERROR_KINDS, RulesetError
-from .evidence import PARTIAL_REASONS, PRINTABLE
+from .evidence import PARTIAL_REASONS, PRINTABLE, USED_FOR_SECURITY_VALUES
 from .ruleset import (
     BINDINGS,
     CONFIDENCES,
     DEFAULTABLE_TABLES,
     ENTRY_TABLES,
+    GENERIC_MATCH_SEQUENCE_KEYS,
     LAYERS,
     LINKAGE_VALUES,
     MATCHER_KINDS,
@@ -55,6 +56,49 @@ def _check(value: Any, allowed: Iterable[str], label: str, where: str) -> str:
     if value not in allowed:
         raise RulesetError(f"{where}: unknown {label} {value!r}")
     return str(value)
+
+
+def _check_used_for_security(value: Any, where: str) -> None:
+    """`usedforsecurity` as `_match_py_call` reads it: a bare string is one value,
+    anything else must be a list of strings, each checked against the closed set
+    `USED_FOR_SECURITY_VALUES`. A bool, dict or other non-list is exactly what crashes
+    `attrs.get("usedforsecurity") not in want_used` at scan time, so it is refused here
+    instead of reaching that point. An empty list is refused too: `not in []` is always
+    true, so it would load clean and silently never match anything -- the same failure
+    mode as a typo'd value, just spelled differently.
+    """
+    if isinstance(value, str):
+        _check(value, USED_FOR_SECURITY_VALUES, "usedforsecurity value", where)
+        return
+    if not isinstance(value, (list, tuple)):
+        raise RulesetError(f"{where}: usedforsecurity must be a string or list of strings")
+    if not value:
+        raise RulesetError(f"{where}: usedforsecurity must not be an empty list")
+    for item in value:
+        if not isinstance(item, str):
+            raise RulesetError(f"{where}: usedforsecurity must be a string or list of strings")
+        _check(item, USED_FOR_SECURITY_VALUES, "usedforsecurity value", where)
+
+
+def _check_string_sequence(value: Any, label: str, where: str, *, allow_empty: bool = True) -> None:
+    """Shape check for an open-vocabulary `py_call`/`py_attr`/`py_constant` field: a
+    list of strings, not a bool, dict, int or bare string that would crash
+    `frozenset(...)` (`targets`, `attributes`, `constants`) or a `not in` check
+    (`values`) at scan time. The values themselves are never checked against anything
+    here -- they are open names this ruleset has no closed vocabulary for.
+
+    `allow_empty=False` additionally refuses an empty list, for a field that is the
+    thing a rule matches on: an empty `targets`, `attributes` or `values` loads clean
+    and can never match anything, the same silent-typo failure `usedforsecurity`
+    above is refused for.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise RulesetError(f"{where}: {label} must be a list of strings")
+    if not allow_empty and not value:
+        raise RulesetError(f"{where}: {label} must not be an empty list")
+    for item in value:
+        if not isinstance(item, str):
+            raise RulesetError(f"{where}: {label} must be a list of strings")
 
 
 def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
@@ -274,6 +318,52 @@ def _validate_match_references(
         else:
             for value in values:
                 _check(value, LINKAGE_VALUES, "linkage value", where)
+    elif kind == "py_call":
+        used_for_security = match.get("usedforsecurity")
+        if used_for_security is not None:
+            _check_used_for_security(used_for_security, where)
+        # `targets` is what a `py_call` rule matches on (`_target_matches`); without it,
+        # or with an empty list, the rule can load clean and never fire.
+        _check_string_sequence(
+            _require(match, "targets", where), "targets", where, allow_empty=False
+        )
+        # Type-checked only, deliberately never checked against
+        # `ruleset.conventions.weak_hash_algorithms`: `algorithm` names whatever a
+        # wheel's source passes to `hashlib.new(...)`, open-ended by construction, and
+        # a rule intentionally naming a *strong* algorithm is a real, existing shape --
+        # the shipped `PY_WEAK_HASH_UNRESOLVED` rule's `algorithm = "unresolved"` is
+        # not a member of that set either. See DECISIONS.md.
+        algorithm = match.get("algorithm")
+        if algorithm is not None and not isinstance(algorithm, str):
+            raise RulesetError(f"{where}: algorithm must be a string")
+        weak_algorithms_only = match.get("weak_algorithms_only")
+        if weak_algorithms_only is not None and not isinstance(weak_algorithms_only, bool):
+            raise RulesetError(f"{where}: weak_algorithms_only must be a boolean")
+    elif kind == "py_attr":
+        # `attributes` is what a `py_attr` rule matches on; same reasoning as `targets`
+        # above. `values`, when given, is a filter on top of it and is refused empty
+        # for the same reason `usedforsecurity` is: `not in []` is always true.
+        _check_string_sequence(
+            _require(match, "attributes", where), "attributes", where, allow_empty=False
+        )
+        values = match.get("values")
+        if values is not None:
+            _check_string_sequence(values, "values", where, allow_empty=False)
+    elif kind == "py_constant":
+        _check_string_sequence(
+            _require(match, "constants", where), "constants", where, allow_empty=False
+        )
+
+    # `Ruleset.compile_patterns` reads `GENERIC_MATCH_SEQUENCE_KEYS` off every match
+    # table regardless of kind, so a bool or other non-list shape here crashes it even
+    # on a kind that never reads the field itself, such as a `dist_name` match
+    # carrying a stray `targets` key. This re-checks the same key a kind-specific arm
+    # above may have already required and shape-checked with its own message (`py_call`
+    # re-checks `targets`, for instance) -- harmless, and what keeps every OTHER kind
+    # covered too, on the same shared list `compile_patterns` itself reads.
+    for key in GENERIC_MATCH_SEQUENCE_KEYS:
+        if key in match:
+            _check_string_sequence(match[key], key, where)
 
     libraries = {entry["name"] for entry in ruleset_data["crypto_library"]}
     for key in ("library", "name"):

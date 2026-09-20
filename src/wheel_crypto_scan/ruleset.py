@@ -55,6 +55,17 @@ LAYERS = frozenset({"metadata", "binary", "python", "derived"})
 BINDINGS = frozenset({"imported", "defined", "any"})
 LINKAGE_VALUES = frozenset({"system", "bundled", "static", "mixed", "none", "unknown"})
 
+# The open-vocabulary sequence fields `compile_patterns` reads off every match table,
+# regardless of `kind` -- a `py_call`/`py_attr`/`py_constant`-only meaning, but read
+# generically because the alternative is three copies of the same collection loop.
+# `ruleset_loader._validate_match_references` imports this same tuple to shape-check
+# whichever of these keys a match table carries, on any kind, so a stray boolean here
+# cannot crash `compile_patterns` even on a kind that never reads the field itself.
+# One definition: a fourth key added to the loop below without a matching update here
+# would silently stop being validated, the same drift `MATCHER_KINDS`/`engine._MATCHERS`
+# guards against for matcher kinds themselves.
+GENERIC_MATCH_SEQUENCE_KEYS = ("targets", "attributes", "constants")
+
 ENTRY_TABLES = (
     "crypto_distribution",
     "crypto_library",
@@ -505,14 +516,12 @@ class Ruleset:
         )
         locator = _symbol_locator(prefixes | set(exact_index))
 
-        targets: set[str] = set()
-        attributes: set[str] = set()
-        constants: set[str] = set()
+        sequences: dict[str, set[str]] = {key: set() for key in GENERIC_MATCH_SEQUENCE_KEYS}
         for rule in self.rules:
             for match in rule.matches:
-                targets.update(match.get("targets", ()))
-                attributes.update(match.get("attributes", ()))
-                constants.update(match.get("constants", ()))
+                for key, values in sequences.items():
+                    values.update(match.get(key, ()))
+        targets, attributes, constants = (sequences[key] for key in GENERIC_MATCH_SEQUENCE_KEYS)
 
         return ScanPatterns(
             binary=BinaryPatterns(
