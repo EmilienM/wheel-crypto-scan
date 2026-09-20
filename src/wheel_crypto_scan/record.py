@@ -276,6 +276,16 @@ def _artifacts_block(
         else _cap_by_findings(artifacts.bundled_libs, lambda path: path, findings, max_binaries)
     )
     bundled_libs_truncated = max_binaries is not None and len(artifacts.bundled_libs) > max_binaries
+    # `skipped` and `symlinks` are plain inventory listings, like `bundled_libs` before
+    # #76: no `Finding.locations` ever names one of their paths, so unlike
+    # `binaries[]`/`extensions`/`bundled_libs` there is nothing for a finding-aware cap
+    # to prefer -- a plain sorted prefix (they arrive pre-sorted from
+    # `layers.inventory.build_inventory`) is the whole job. See DECISIONS.md, "A plain
+    # cap for the two inventory listings no finding references" (#119).
+    skipped = artifacts.skipped if max_binaries is None else artifacts.skipped[:max_binaries]
+    skipped_truncated = max_binaries is not None and len(artifacts.skipped) > max_binaries
+    symlinks = artifacts.symlinks if max_binaries is None else artifacts.symlinks[:max_binaries]
+    symlinks_truncated = max_binaries is not None and len(artifacts.symlinks) > max_binaries
     return {
         "py_files": artifacts.py_files,
         "pyc_files": artifacts.pyc_files,
@@ -288,8 +298,10 @@ def _artifacts_block(
         "bundled_libs": list(bundled_libs),
         "bundled_libs_truncated": bundled_libs_truncated,
         "sboms": list(artifacts.sboms),
-        "symlinks": [{"path": path, "target": target} for path, target in artifacts.symlinks],
-        "skipped": [{"path": path, "reason": reason} for path, reason in artifacts.skipped],
+        "symlinks": [{"path": path, "target": target} for path, target in symlinks],
+        "symlinks_truncated": symlinks_truncated,
+        "skipped": [{"path": path, "reason": reason} for path, reason in skipped],
+        "skipped_truncated": skipped_truncated,
     }
 
 

@@ -175,7 +175,9 @@
         "bundled_libs_truncated",
         "sboms",
         "symlinks",
-        "skipped"
+        "symlinks_truncated",
+        "skipped",
+        "skipped_truncated"
       ],
       "properties": {
         "py_files": {
@@ -251,6 +253,10 @@
             }
           }
         },
+        "symlinks_truncated": {
+          "type": "boolean",
+          "description": "True when the wheel has more symlinked members than fit in symlinks, so it is capped -- independently of binaries_truncated and bundled_libs_truncated, since symlinks is not referenced by any finding and is capped by a plain sorted prefix rather than a finding-aware selection."
+        },
         "skipped": {
           "type": "array",
           "items": {
@@ -268,6 +274,10 @@
               }
             }
           }
+        },
+        "skipped_truncated": {
+          "type": "boolean",
+          "description": "True when the wheel has more members refused by a limit than fit in skipped, so it is capped -- independently of errors_truncated, since skipped and errors[] are capped separately even though both are fed by the same underlying archive errors for a member-refusal wheel."
         },
         "py_files_unparsed": {
           "type": "integer",

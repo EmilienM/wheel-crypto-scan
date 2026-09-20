@@ -4484,9 +4484,66 @@ is unnecessary weight; a plain sorted-and-capped prefix, `bundled_libs`'s origin
 shape before this issue existed, is probably enough), and doing it well needs the same
 scrutiny this entry's `pinned_at` and `schema_version` corrections show a first pass
 tends to miss. Filed separately, found while verifying this fix:
-[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119), closed by "A plain
+cap for the two inventory listings no finding references" below.
 
 Tracked in [#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76).
+
+## A plain cap for the two inventory listings no finding references
+
+**Accepted. A new pair of record fields, `symlinks_truncated` and `skipped_truncated`.
+`ANALYZER_VERSION` moves.**
+
+`artifacts.skipped` (`{path, reason}`, for members refused by a limit) and
+`artifacts.symlinks` (`{path, target}`) were the same unbounded shape the previous
+entry fixed for `bundled_libs` and `errors[]`, and were found still uncapped while
+verifying that fix: 3000 members refused by `ArchiveLimits.max_member_bytes` produced
+a correctly capped `errors: 256` sitting next to an uncapped `artifacts.skipped: 3003`
+-- a 220 KB record whose own `errors_truncated` gave no hint that `skipped` was also
+incomplete, since the two arrays are fed by the same underlying `archive.errors` for a
+member-refusal wheel but capped separately. `tests/test_hardening.py` reproduces both:
+3000 refused `.so` members bound `skipped` to `max_binaries_per_record`, and 3000
+symlinked members do the same for `symlinks`, each under a third of the pre-fix, 274 KB
+measurement the previous entry took for `bundled_libs` at the same order of magnitude.
+
+**Why a plain prefix, not `_cap_by_findings` or `binfmt.caps.cap`.** Both arrays are
+plain inventory listings: no `Finding.locations[].path` ever names a skipped or
+symlinked member (a rule matches evidence read *from* an object, and a refused or
+symlinked member was never read as one), so there is no "which object does a finding
+care about" question for a finding-aware cap to answer, unlike `bundled_libs` -- which
+*is* a subset of `binaries[]`/`extensions`, objects findings do reference. And unlike
+`errors[]`, dropping a `skipped` or `symlinks` entry costs a reader nothing about *why*
+the wheel was classified the way it was: both are `layers.inventory.build_inventory`'s
+own pre-sorted tuples, so `artifacts.skipped[:max_binaries]` and
+`artifacts.symlinks[:max_binaries]` are the whole fix -- the same plain-prefix shape
+`bundled_libs` itself had before the previous entry, before either array had a finding
+to prefer. Both share `max_binaries_per_record`, the same knob every cap in this family
+uses, for the same reason: this is the "keep one record bounded" concern, not a
+separate policy question per array.
+
+**Why not reuse `binaries_truncated` for either.** Same reasoning as `bundled_libs_truncated`:
+`skipped` and `symlinks` can each be capped independently of the full object count
+`binaries_truncated` bounds, and a wheel that never approaches either of *this* pair's
+caps must not report truncation it never actually did.
+
+**What was rejected.** Reusing `binfmt.caps.cap()` for either, the way `errors[]` does
+through `ScanError.cap_key`: that machinery exists to keep one representative of each
+kind before a flood of another crowds it out, which only matters when *what kind of
+member this is* is itself worth preserving evidence of. Every `skipped` or `symlinks`
+entry is already fully specific (one exact path and one exact reason or target), so
+there is no group of interchangeable entries a plain prefix could crowd out unfairly --
+unlike `errors[]`, where three thousand identical `binary_unknown_format` entries really
+could crowd out one rare `bad_zip`. Reaching for the finding-aware or cap-key machinery
+here anyway would be solving a starvation problem that does not exist for these two
+arrays.
+
+`ANALYZER_VERSION` moves: every record now carries `symlinks_truncated` and
+`skipped_truncated`. `schema_version` does not, for the same reason the previous entry's
+new keys did not move it: `SCHEMA.md`'s versioning table already covers "a new key that
+is always present." `ruleset_version` does not move: no rule, symbol, library or
+verdict changed.
+
+Closes [#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
 
 ## `.symtab` is matched for crypto symbols when `.dynsym` is genuinely absent
 

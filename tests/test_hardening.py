@@ -1642,3 +1642,129 @@ def test_exactly_the_cap_worth_of_errors_is_not_reported_as_truncated(
     record = scan_wheel(wheel, context)
     assert len(record["errors"]) == count
     assert record["errors_truncated"] is False
+
+
+# --- M12: skipped and symlinks are capped too (#119) -------------------------
+
+
+@pytest.fixture(scope="module")
+def tiny_member_context() -> ScanContext:
+    """A separate context, not the module's shared `context`: a `max_member_bytes` this
+    small would make every other test's fixtures unreadable."""
+    return ScanContext.build(load_ruleset(), archive_limits=ArchiveLimits(max_member_bytes=8))
+
+
+def test_a_wheel_with_thousands_of_refused_members_produces_a_bounded_skipped_list(
+    tiny_member_context, tmp_path: Path
+) -> None:
+    """#119: `artifacts.skipped` had no cap of its own -- found while verifying #76's
+    fix, a wheel with 3000 members refused by `ArchiveLimits.max_member_bytes` produced
+    a correctly capped `errors: 256` beside an uncapped `artifacts.skipped: 3003`, a
+    220 KB record whose own `errors_truncated` gave no hint that `skipped` was also
+    incomplete."""
+    files = {f"many/_ext{index:05d}.so": b"x" * 100 for index in range(3000)}
+    wheel = build_wheel(
+        tmp_path / f"many-1.0-{MANYLINUX}.whl",
+        name="many",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+        include_metadata=False,
+        include_wheel=False,
+        record=False,
+    )
+    record = scan_wheel(wheel, tiny_member_context)
+    assert len(json.dumps(record)) < 200_000, "skipped is not actually bounded"
+    assert len(record["artifacts"]["skipped"]) == tiny_member_context.max_binaries_per_record
+    assert record["artifacts"]["skipped_truncated"] is True
+
+
+def test_a_small_number_of_refused_members_does_not_report_skipped_truncated(
+    tiny_member_context, tmp_path: Path
+) -> None:
+    """The negative half of the same guard: a wheel that never hits the cap must not
+    claim it did."""
+    wheel = build_wheel(
+        tmp_path / f"small-1.0-{MANYLINUX}.whl",
+        name="small",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={"small/_ext.so": b"x" * 100},
+        include_metadata=False,
+        include_wheel=False,
+        record=False,
+    )
+    record = scan_wheel(wheel, tiny_member_context)
+    assert record["artifacts"]["skipped"] == [
+        {"path": "small/_ext.so", "reason": "binary_too_large"}
+    ]
+    assert record["artifacts"]["skipped_truncated"] is False
+
+
+def test_exactly_the_cap_worth_of_skipped_is_not_reported_as_truncated(
+    tiny_member_context, tmp_path: Path
+) -> None:
+    """The same boundary as `bundled_libs`/`errors[]`: landing precisely on
+    `max_binaries_per_record` refused members must not read as truncated."""
+    count = tiny_member_context.max_binaries_per_record
+    files = {f"exact/_ext{index:05d}.so": b"x" * 100 for index in range(count)}
+    wheel = build_wheel(
+        tmp_path / f"exact-1.0-{MANYLINUX}.whl",
+        name="exact",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files=files,
+        include_metadata=False,
+        include_wheel=False,
+        record=False,
+    )
+    record = scan_wheel(wheel, tiny_member_context)
+    assert len(record["artifacts"]["skipped"]) == count
+    assert record["artifacts"]["skipped_truncated"] is False
+
+
+def _build_symlink_wheel(path: Path, count: int, *, target: bytes = b"libfoo.so.1") -> Path:
+    """A wheel whose only members are symlinks -- no metadata needed, since only
+    `artifacts.symlinks` is under test here, the same minimal shape
+    `test_an_oversized_symlink_does_not_bloat_the_record` (H3) already uses."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index in range(count):
+            info = zipfile.ZipInfo(f"many/lib{index:05d}.so", date_time=FIXED_DATE)
+            info.create_system = 3
+            info.external_attr = 0o120777 << 16
+            archive.writestr(info, target)
+    return path
+
+
+def test_a_wheel_with_thousands_of_symlinks_produces_a_bounded_symlinks_list(
+    context, tmp_path: Path
+) -> None:
+    """#119: `artifacts.symlinks` is the same uncapped shape #76 fixed for
+    `bundled_libs`/`errors[]` -- a wheel with thousands of symlinked members produced a
+    correspondingly unbounded array."""
+    wheel = _build_symlink_wheel(tmp_path / f"many-1.0-{MANYLINUX}.whl", 3000)
+    record = scan_wheel(wheel, context)
+    assert len(json.dumps(record)) < 200_000, "symlinks is not actually bounded"
+    assert len(record["artifacts"]["symlinks"]) == context.max_binaries_per_record
+    assert record["artifacts"]["symlinks_truncated"] is True
+
+
+def test_a_small_number_of_symlinks_does_not_report_symlinks_truncated(
+    context, tmp_path: Path
+) -> None:
+    wheel = _build_symlink_wheel(tmp_path / f"small-1.0-{MANYLINUX}.whl", 1)
+    record = scan_wheel(wheel, context)
+    assert record["artifacts"]["symlinks"] == [
+        {"path": "many/lib00000.so", "target": "libfoo.so.1"}
+    ]
+    assert record["artifacts"]["symlinks_truncated"] is False
+
+
+def test_exactly_the_cap_worth_of_symlinks_is_not_reported_as_truncated(
+    context, tmp_path: Path
+) -> None:
+    count = context.max_binaries_per_record
+    wheel = _build_symlink_wheel(tmp_path / f"exact-1.0-{MANYLINUX}.whl", count)
+    record = scan_wheel(wheel, context)
+    assert len(record["artifacts"]["symlinks"]) == count
+    assert record["artifacts"]["symlinks_truncated"] is False

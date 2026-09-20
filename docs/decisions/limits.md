@@ -1,7 +1,7 @@
 # Caps, budgets and record size
 
 A record has to be bounded: one wheel with thousands of objects must not produce an
-unbounded JSON line. Five entries about that, and they share one theme — **a limit that
+unbounded JSON line. Six entries about that, and they share one theme — **a limit that
 exists to bound output kept deciding what the tool found**, because it was applied in the
 place that also decides what a rule gets to see, and because the sort key it cut on had
 nothing to do with what a match is worth.
@@ -342,7 +342,29 @@ Both share `max_binaries_per_record`, the same knob that already bounds
 and were found still uncapped while verifying this fix — a wheel with 3000 refused
 members produces a correctly capped `errors: 256` beside an uncapped
 `artifacts.skipped: 3003`. Filed as
-[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119), closed by the next
+entry.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#bundled_libs-and-errors-get-their-own-caps-not-binaries_truncateds) ·
 [#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76)
+
+---
+
+## A plain cap for the two inventory listings no finding references
+
+**Accepted. A new pair of record fields, `symlinks_truncated` and `skipped_truncated`.**
+
+`artifacts.skipped` and `artifacts.symlinks` were the same unbounded shape the previous
+entry fixed for `bundled_libs`/`errors[]`, found while verifying that fix. Both are
+plain inventory listings no `Finding.locations[].path` ever names — a rule matches
+evidence read *from* an object, and a refused or symlinked member was never read as
+one — so neither needs the finding-aware selection `bundled_libs` uses, or the
+per-kind representative `errors[]` uses: every `skipped`/`symlinks` entry is already
+fully specific, so there is no group of interchangeable entries a plain prefix could
+crowd out unfairly. `artifacts.skipped[:max_binaries]` and
+`artifacts.symlinks[:max_binaries]` are the whole fix, since both arrive pre-sorted
+from `layers.inventory.build_inventory` — the same plain-prefix shape `bundled_libs`
+itself had before the previous entry existed.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#a-plain-cap-for-the-two-inventory-listings-no-finding-references) ·
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119)
