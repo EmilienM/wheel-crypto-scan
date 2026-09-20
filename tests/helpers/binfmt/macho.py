@@ -121,8 +121,10 @@ class MachOBuilder:
     # Distinct from `malformed_dylib_cmd`, whose `cmdsize` is honest and only the name
     # offset inside it is bad: that command's `cmd`/`cmdsize` can be trusted, so the
     # walk continues past it. `poison_cmdsize` is the value under test: `< 8` (too
-    # small to hold the header) or large enough to run past the end of the load
-    # commands.
+    # small to hold the header), large enough to run past the end of the load
+    # commands, or -- #90 -- internally consistent by both of those measures yet not a
+    # multiple of the ABI's own alignment (8 on a 64-bit object, 4 on a 32-bit one),
+    # which desyncs every command after it without tripping either check above.
     poison_cmdsize: int | None = None
     poison_cmd: int = LC_LOAD_DYLIB
     # #84: one honest `LC_LOAD_DYLIB`, written immediately after the poison command --
@@ -211,11 +213,26 @@ class MachOBuilder:
             commands += header[: self.malformed_dylib_cmdsize]
             ncmds += 1
         if self.malformed_rpath_name_offset is not None:
-            commands += struct.pack(end + "III", LC_RPATH, 12, self.malformed_rpath_name_offset)
+            # No string payload at all, so the padding is pure trailing NUL bytes --
+            # `_cmdsize_pad` is safe here the same way it is for `all_nonprintable_dylib_name`
+            # below, since there is no name to prematurely terminate. #90.
+            rpath_pad = self._cmdsize_pad(12, b"")
+            cmdsize = 12 + len(rpath_pad)
+            commands += (
+                struct.pack(end + "III", LC_RPATH, cmdsize, self.malformed_rpath_name_offset)
+                + rpath_pad
+            )
             ncmds += 1
         if self.unterminated_dylib_name is not None:
-            name_bytes = self.unterminated_dylib_name.encode("utf-8", "surrogateescape")
+            # Deliberately NOT run through `_cmdsize_pad`: its trailing NUL bytes would
+            # terminate the very run this fixture exists to leave unterminated. Any
+            # padding #90's alignment check still requires has to be non-NUL filler
+            # instead, so the run stays open all the way to the command's own edge.
             header_len = 24
+            name_bytes = self.unterminated_dylib_name.encode("utf-8", "surrogateescape")
+            alignment = self._cmd_alignment()
+            pad = (-(header_len + len(name_bytes))) % alignment
+            name_bytes += b"\xff" * pad
             cmdsize = header_len + len(name_bytes)
             commands += (
                 struct.pack(end + "IIIIII", LC_LOAD_DYLIB, cmdsize, header_len, 0, 0, 0)
@@ -223,8 +240,11 @@ class MachOBuilder:
             )
             ncmds += 1
         if self.all_nonprintable_dylib_name:
-            name_bytes = b"\x01\x02\x03\x00"  # control bytes, then the terminating NUL
             header_len = 24
+            # control bytes, then the terminating NUL, then #90's alignment padding --
+            # safe here because the name is already NUL-terminated before the padding
+            # starts, unlike `unterminated_dylib_name` above.
+            name_bytes = self._cmdsize_pad(header_len, b"\x01\x02\x03\x00")
             cmdsize = header_len + len(name_bytes)
             commands += (
                 struct.pack(end + "IIIIII", LC_LOAD_DYLIB, cmdsize, header_len, 0, 0, 0)
@@ -350,22 +370,32 @@ class MachOBuilder:
         table, strtab = self._symbol_tables(">" if self.big_endian else "<")
         return len(data) - len(table) - len(strtab), len(data) - len(strtab)
 
-    @staticmethod
-    def _pad4(data: bytes) -> bytes:
-        pad = (-len(data)) % 4
-        return data + b"\x00" * pad
+    def _cmd_alignment(self) -> int:
+        # #90: the ABI itself requires `cmdsize` to be a multiple of 8 on a 64-bit
+        # object, 4 on a 32-bit one -- not just a multiple of 4 regardless of bitness,
+        # which is what every command here padded to before #90's alignment check
+        # existed to notice the difference.
+        return 8 if self.is64 else 4
+
+    def _cmdsize_pad(self, header_len: int, payload: bytes) -> bytes:
+        # A "well-formed" fixture has to actually honour `_cmd_alignment`, or the new
+        # check reads every ordinary 64-bit command in this file as malformed.
+        pad = (-(header_len + len(payload))) % self._cmd_alignment()
+        return payload + b"\x00" * pad
 
     def _dylib_command(self, cmd: int, name: str, end: str) -> bytes:
         # `surrogateescape`, the way `MachOSym.name` is encoded above, so a test can
         # plant a byte that is not valid UTF-8 in an install name or a dependency name.
-        name_bytes = self._pad4(name.encode("utf-8", "surrogateescape") + b"\x00")
         header_len = 24
+        name_bytes = self._cmdsize_pad(
+            header_len, name.encode("utf-8", "surrogateescape") + b"\x00"
+        )
         cmdsize = header_len + len(name_bytes)
         return struct.pack(end + "IIIIII", cmd, cmdsize, header_len, 0, 0, 0) + name_bytes
 
     def _rpath_command(self, path: str, end: str) -> bytes:
-        path_bytes = self._pad4(path.encode("ascii") + b"\x00")
         header_len = 12
+        path_bytes = self._cmdsize_pad(header_len, path.encode("ascii") + b"\x00")
         cmdsize = header_len + len(path_bytes)
         return struct.pack(end + "III", LC_RPATH, cmdsize, header_len) + path_bytes
 

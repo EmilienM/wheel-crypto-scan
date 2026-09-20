@@ -487,22 +487,36 @@ def test_sizeofcmds_exactly_at_the_cap_is_read_while_one_byte_over_is_refused() 
     """
     base = MachOBuilder(id_dylib="libfoo.dylib", load_dylibs=("libcrypto.3.dylib",)).build()
     header, commands = base[:32], base[32:]
+    (ncmds,) = struct.unpack_from("<I", header, 16)
     (sizeofcmds,) = struct.unpack_from("<I", header, 20)
     assert len(commands) == sizeofcmds, "fixture carries only its own honest commands"
 
-    def _padded_to(total: int) -> bytes:
+    def _padded_to(total: int, *, honest: bool) -> bytes:
         patched = bytearray(header)
+        pad_len = total - len(commands)
         struct.pack_into("<I", patched, 20, total)
-        return bytes(patched) + commands + b"\x00" * (total - len(commands))
+        if not honest:
+            # Rejected on `sizeofcmds` alone before the load commands are even read
+            # (#63's own check), so this padding is never walked and does not need a
+            # command of its own to account for it.
+            return bytes(patched) + commands + b"\x00" * pad_len
+        # #90: padding has to be a load command `ncmds` accounts for, not dead bytes
+        # past what the walk consumes -- raw zero bytes here would trip #90's own new
+        # "ncmds understated the real count" check for a reason this test has nothing
+        # to do with. `cmd` 0 is not one this reader treats specially, so the walk
+        # reads it and moves on, the same as any other command type it does not know.
+        struct.pack_into("<I", patched, 16, ncmds + 1)
+        filler = struct.pack("<II", 0, pad_len) + b"\x00" * (pad_len - 8)
+        return bytes(patched) + commands + filler
 
-    at_cap = _padded_to(_MAX_SIZEOFCMDS)
+    at_cap = _padded_to(_MAX_SIZEOFCMDS, honest=True)
     ev, errs = _read(at_cap, path="libfoo.dylib")
     assert ev.needed == ("libcrypto.3.dylib",)
     assert ev.soname == "libfoo.dylib"
     assert "macho_header_unread" not in ev.partial_reasons
     assert errs == ()
 
-    over_cap = _padded_to(_MAX_SIZEOFCMDS + 1)
+    over_cap = _padded_to(_MAX_SIZEOFCMDS + 1, honest=False)
     ev2, errs2 = _read(over_cap, path="libfoo.dylib")
     assert ev2.needed == ()
     assert ev2.soname is None
@@ -1791,6 +1805,210 @@ def test_the_plain_load_dylib_case_is_unchanged() -> None:
     assert ev.soname == "@rpath/libfoo.dylib"
     assert ev.needed == ("/usr/lib/libSystem.B.dylib", "/usr/lib/libcrypto.3.dylib")
     assert ev.partial_analysis is False
+
+
+# --- #90: a misaligned cmdsize or an understated ncmds also truncates the walk ------
+#
+# #84 added the walk's two break sites -- a `cmd`/`cmdsize` pair with no bytes left to
+# hold it, and a `cmdsize` that runs past the end of the load commands -- but neither
+# one fires for a `cmdsize` that stays inside the commands and is at least 8 while
+# still lying about its own extent by not landing on the ABI's own alignment (8 bytes
+# on a 64-bit object, 4 on a 32-bit one), or for a header whose own `ncmds` undercounts
+# how many commands the object actually carries. Both desync the walk exactly the way
+# #84's two shapes do, just without either of #84's checks ever seeing the lie. Reuses
+# `macho_load_command_walk_truncated` rather than minting a new token: both are still
+# "the walk did not honestly account for all its bytes", the same claim #84's token
+# already makes -- see DECISIONS.md's #84 entry, extended for #90.
+
+
+def test_a_misaligned_cmdsize_desyncs_the_walk_rather_than_landing_clean() -> None:
+    """#90(i): a `cmdsize` that is internally consistent by #84's own two checks --
+    at least 8, and not running past the end of the load commands -- but not a
+    multiple of the ABI's 8-byte (64-bit) alignment silently desyncs every command
+    read after it. Before this fix, neither of #84's breaks ever fired for this shape:
+    the walk read on, landed on the wrong offset for the honest `LC_LOAD_DYLIB` naming
+    libcrypto that followed, and the object read as though nothing were wrong.
+
+    `poison_cmdsize=12` writes only the 8-byte `cmd`/`cmdsize` pair `MachOBuilder`
+    always writes for this fixture, so the claimed 12-byte extent runs 4 bytes into
+    the next command's own bytes once the walk advances `pos` by it -- the same
+    "written bytes for a poison command are shorter than its claimed cmdsize" shape
+    #84's other `poison_cmdsize` fixtures already use, just aligned instead of too
+    small or overrunning.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        poison_cmdsize=12,  # >= 8, does not overrun -- just not a multiple of 8
+        honest_load_dylib_after_poison="/usr/lib/libcrypto.3.dylib",
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
+    # The break happens the moment the lie is read, before any later byte is ever
+    # reinterpreted as a command of its own -- so a misaligned cmdsize cannot desync
+    # the walk into misreading subsequent bytes as a decoy `LC_ID_DYLIB` and firing
+    # #85's ambiguity check for the wrong reason.
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS not in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # Lost, not fabricated: its true extent is unknown, so nothing past the poison
+    # command can be trusted enough to resync on.
+    assert "/usr/lib/libcrypto.3.dylib" not in ev.needed
+    # Not lost: it was read before the poison command was ever reached.
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+    assert ev.soname == "libfoo.dylib"
+
+
+@pytest.mark.parametrize("cmdsize", [9, 10, 11, 13, 14, 15])
+def test_every_misaligned_offset_around_the_8_byte_boundary_truncates_the_walk(
+    cmdsize: int,
+) -> None:
+    """Adversarial sweep: not just 12, every value near the 8-byte boundary that is
+    `>= 8` and does not overrun must trip #90's check, not just the one value the
+    main reproduction above happens to use.
+    """
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        poison_cmdsize=cmdsize,
+        honest_load_dylib_after_poison="/usr/lib/libcrypto.3.dylib",
+    ).build()
+    ev, errors = _read(data)
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    assert "/usr/lib/libcrypto.3.dylib" not in ev.needed
+
+
+def test_ncmds_understating_the_real_count_drops_a_real_command_silently() -> None:
+    """#90(ii): the header's own `ncmds` undercounts how many commands the object
+    actually carries. The loop simply stops after `ncmds` iterations with real command
+    bytes still unread -- no command lied about its own header, so neither of #84's
+    breaks fires, and nothing before #90 checked `ncmds` against `sizeofcmds` at all.
+
+    Mirrors `test_this_object_never_reads_as_no_crypto_detected`'s splicing technique:
+    a real, honest `LC_LOAD_DYLIB` naming libcrypto is appended after a complete,
+    already-read `LC_SYMTAB`, patching `symoff`/`stroff` for the bytes inserted ahead
+    of them, so the object that reaches the end of its declared `ncmds` has already
+    read a complete symbol table -- isolating #90(ii)'s own effect from the
+    absent-`LC_SYMTAB` cause the same way that test isolates #84's. `sizeofcmds` grows
+    to cover the new command's real bytes; `ncmds` does not, which is the lie under
+    test: the header says 3 commands (`LC_ID_DYLIB`, one `LC_LOAD_DYLIB`, `LC_SYMTAB`)
+    and the object carries 4.
+    """
+    end = "<"
+    data = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ncmds, sizeofcmds = struct.unpack_from(end + "II", data, 16)
+    assert ncmds == 3, "fixture is LC_ID_DYLIB, one LC_LOAD_DYLIB, LC_SYMTAB"
+    commands = data[32 : 32 + sizeofcmds]
+    cmd, cmdsize, symoff, nsyms, stroff, strsize = struct.unpack_from(
+        end + "IIIIII", commands, len(commands) - 24
+    )
+    honest = MachOBuilder()._dylib_command(LC_LOAD_DYLIB, "/usr/lib/libcrypto.3.dylib", end)
+    delta = len(honest)
+    patched_symtab = struct.pack(
+        end + "IIIIII", cmd, cmdsize, symoff + delta, nsyms, stroff + delta, strsize
+    )
+    new_commands = commands[:-24] + patched_symtab + honest
+    # `ncmds` is left at its ORIGINAL value: the object now carries one more real
+    # command than the header admits to. `sizeofcmds` is honest about the real length.
+    header = data[:16] + struct.pack(end + "II", ncmds, len(new_commands)) + data[24:32]
+    tail = data[32 + sizeofcmds :]  # nlist + strtab, byte-identical, just further out now
+    ev, errors = _read(header + new_commands + tail)
+    # The symbol table read in full: this is not the absent-`LC_SYMTAB` cause, and
+    # isolates #90(ii)'s own effect the same way #84's own version of this test does.
+    assert ev.stripped is False
+    assert ev.symtab_count == 1
+    assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
+    assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED,)
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    # Lost, not fabricated: `ncmds` never admitted this command exists, so nothing past
+    # the declared count can be trusted enough to resync on.
+    assert "/usr/lib/libcrypto.3.dylib" not in ev.needed
+    assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
+    assert ev.soname == "libfoo.dylib"
+
+
+def test_misalignment_and_understated_ncmds_combine_without_contradiction() -> None:
+    """Interaction check: a fat object whose two slices each trip a *different* #90
+    cause -- one a misaligned `cmdsize`, the other an understated `ncmds` -- still
+    reads as one shared `macho_load_command_walk_truncated` reason and one error
+    message, not two contradictory or duplicated ones. Same shape #85's own entry
+    checks against #84's truncation ("neither one swallowing the other"), here
+    checking #90's two causes against each other instead.
+    """
+    misaligned_slice = MachOBuilder(
+        id_dylib="libfoo.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+        poison_cmdsize=12,
+        honest_load_dylib_after_poison="/usr/lib/libcrypto.3.dylib",
+    ).build()
+
+    end = "<"
+    base = MachOBuilder(
+        id_dylib="libbar.dylib",
+        load_dylibs=("/usr/lib/libSystem.B.dylib",),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ncmds, sizeofcmds = struct.unpack_from(end + "II", base, 16)
+    commands = base[32 : 32 + sizeofcmds]
+    cmd, cmdsize, symoff, nsyms, stroff, strsize = struct.unpack_from(
+        end + "IIIIII", commands, len(commands) - 24
+    )
+    honest = MachOBuilder()._dylib_command(LC_LOAD_DYLIB, "/usr/lib/libcrypto.3.dylib", end)
+    delta = len(honest)
+    patched_symtab = struct.pack(
+        end + "IIIIII", cmd, cmdsize, symoff + delta, nsyms, stroff + delta, strsize
+    )
+    new_commands = commands[:-24] + patched_symtab + honest
+    header = base[:16] + struct.pack(end + "II", ncmds, len(new_commands)) + base[24:32]
+    tail = base[32 + sizeofcmds :]
+    understated_slice = header + new_commands + tail
+
+    fat = build_fat([misaligned_slice, understated_slice])
+    ev, errors = _read(fat, path="fat.dylib")
+    assert ev.partial_analysis is True
+    assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
+    # Not duplicated: `partial_reasons` names the cause once even though two different
+    # slices each independently earned it.
+    assert ev.partial_reasons.count(evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED) == 1
+    assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
+    assert len(errors) == 1
+
+
+@pytest.mark.parametrize("is64", [True, False])
+@pytest.mark.parametrize(
+    "name",
+    ["a", "ab", "abc", "abcd", "abcde", "abcdef", "abcdefg", "/usr/lib/libSystem.B.dylib"],
+)
+def test_a_properly_aligned_cmdsize_of_every_boundary_length_reads_clean(
+    is64: bool, name: str
+) -> None:
+    """Boundary sweep for #90(i): every dependency-name length long enough to push
+    `cmdsize` across each padding boundary, on both 32- and 64-bit objects, must not
+    falsely trip the new alignment check now that `MachOBuilder` pads each command to
+    the ABI's own boundary (8 bytes on 64-bit, 4 on 32-bit) rather than always 4.
+    """
+    data = MachOBuilder(
+        is64=is64,
+        big_endian=not is64,  # the pairing the rest of this file already uses
+        id_dylib="libfoo.dylib",
+        load_dylibs=(name,),
+        symbols=(IMPORTED_OPENSSL,),
+    ).build()
+    ev, errors = _read(data)
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()
+    assert name in ev.needed
 
 
 # --- #85: LC_ID_DYLIB and LC_SYMTAB, more than one is ambiguous, not last-wins -------
