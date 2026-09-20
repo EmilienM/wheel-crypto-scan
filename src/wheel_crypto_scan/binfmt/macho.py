@@ -76,7 +76,7 @@ from .caps import cap
 from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
-from .symtab import holds_a_name_not_read
+from .symtab import BoundedNames, holds_a_name_not_read
 
 _MH_MAGIC_32 = 0xFEEDFACE
 _MH_CIGAM_32 = 0xCEFAEDFE
@@ -830,7 +830,9 @@ def _read_symbols(
         if alias is not None:
             # An alias names its target through `n_value`, so the target is a name no
             # entry's own index points at and the cross-check below would otherwise
-            # find it left over in the string table.
+            # find it left over in the string table. `_iter_symbols` already resolved,
+            # stripped and sanitised it through the same `BoundedNames` ordinary names
+            # go through, so there is nothing left to decode here.
             #
             # It goes through the matcher rather than straight into `read_crypto`, for
             # the same reason the debug rows below do not: a name counted as read has
@@ -839,13 +841,12 @@ def _read_symbols(
             # evidence in its own right -- the object reaches that symbol through the
             # indirection -- and `imported`, because an alias resolves to code this
             # object does not carry under that name.
-            aliased = sanitize(_strip_abi_prefix(alias.decode("utf-8", "replace")))
-            groups = patterns.symbol_groups_for(aliased) if aliased else ()
+            groups = patterns.symbol_groups_for(alias) if alias else ()
             if groups:
-                read_crypto.add(aliased)
+                read_crypto.add(alias)
                 for group in groups:
                     matches.add(
-                        SymbolMatch(name=aliased, group=group, binding=evidence.BINDING_IMPORTED)
+                        SymbolMatch(name=alias, group=group, binding=evidence.BINDING_IMPORTED)
                     )
         if not name:
             continue
@@ -950,41 +951,54 @@ def _region(stream, raw: bytes, start: int, length: int) -> bytes:
 
 def _iter_symbols(
     table: bytes, strings: bytes, entry_size: int, big_endian: bool
-) -> Iterator[tuple[str, bool, bool, bool, bytes | None]]:
+) -> Iterator[tuple[str, bool, bool, bool, str | None]]:
     """Yield (name, is_undefined, name_resolved, is_debug, alias) for each table entry.
 
     Every entry is reported, including the ones with nothing usable in them: an entry
-    whose `n_strx` points past the end of the string table is the difference between
-    "no crypto here" and "we could not read the names", and only the caller can tell
-    those two apart. `name` is empty for index 0, which is how nlist spells "this entry
-    has no name", and for an entry whose name sanitises away to nothing.
+    whose `n_strx` points past the end of the string table, into a run the table never
+    closes, or past the per-name cap `binfmt.symtab.BoundedNames` enforces, is the
+    difference between "no crypto here" and "we could not read the names", and only the
+    caller can tell those two apart. `name` is empty for index 0, which is how nlist
+    spells "this entry has no name", and for an entry whose name sanitises away to
+    nothing.
+
+    `alias` is already resolved, ABI-prefix-stripped and sanitised here -- the same
+    `resolver` ordinary names go through, not a second, unguarded read of `strings`.
+    An `N_INDR` row's target is a string table offset exactly like any `n_strx`, so a
+    table pointing many rows' `n_value` at one enormous target had the identical
+    unbounded cost #61 closed for `n_strx`, one call site over: `resolver` was already
+    in scope here and simply was not being used for it. `alias` is `None` both when a
+    row has none and when its target could not be resolved (over the cap, over the
+    budget, past the table, or into a run it never closes) -- the caller cannot
+    tell, and does not need to: a crypto name an unresolved alias hides is still a
+    name `binfmt.symtab.holds_a_name_not_read`'s independent scan of `strings` finds
+    left over and unaccounted for, the same safety net an ordinary unresolved name
+    already relies on.
+
+    `BoundedNames` is built fresh here, once per call, because its cache is only sound
+    over the one string table this call was handed: `_read_symbols` makes one call per
+    slice of a universal binary, never one shared across slices. #61.
     """
     order = ">" if big_endian else "<"
     head = struct.Struct(order + "IBB")
     value = struct.Struct(order + ("Q" if entry_size == _NLIST_SIZE[True] else "I"))
+    resolver = BoundedNames(strings)
     for base in range(0, len(table) - entry_size + 1, entry_size):
         n_strx, n_type, _n_sect = head.unpack_from(table, base)
         undefined = (n_type & _N_TYPE) == _N_UNDF
         debug = bool(n_type & _N_STAB)
-        if n_strx >= len(strings):
+        name, resolved = resolver.resolve(n_strx, normalise=_strip_abi_prefix)
+        if not resolved:
             yield "", undefined, False, debug, None
             continue
-        stop = strings.find(b"\x00", n_strx)
-        if stop == -1:
-            # A run the table never closes. Taking the bytes that are there would put a
-            # name in the record the object does not carry: a string table cut mid-name
-            # would report `EVP_Dig` as an imported symbol, and report it as read.
-            yield "", undefined, False, debug, None
-            continue
-        name = sanitize(_strip_abi_prefix(strings[n_strx:stop].decode("utf-8", "replace")))
         # An alias names its target through `n_value`, so that target is a string no
         # entry's own index points at. Yielded so the caller can count it as read.
-        alias: bytes | None = None
+        alias: str | None = None
         if not debug and (n_type & _N_TYPE) == _N_INDR:
             (target,) = value.unpack_from(table, base + 8)
-            cut = strings.find(b"\x00", target) if target < len(strings) else -1
-            if cut != -1:
-                alias = strings[target:cut]
+            aliased, alias_resolved = resolver.resolve(target, normalise=_strip_abi_prefix)
+            if alias_resolved:
+                alias = aliased
         yield name, undefined, True, debug, alias
 
 

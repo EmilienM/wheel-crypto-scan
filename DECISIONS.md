@@ -1782,3 +1782,176 @@ override (1100, in `pyproject.toml`) if the module keeps growing at this rate --
 the docstring alone accounts for most of it.
 
 Tracked in [#84](https://github.com/EmilienM/wheel-crypto-scan/issues/84).
+
+## A symbol name is capped like PE's already are
+
+**Accepted. Ports #53's PE fix to ELF and Mach-O rather than inventing a second one.**
+
+`binfmt.elf._iter_symbols` and `binfmt.macho._iter_symbols` found a name's terminator,
+decoded the full slice and ran `sanitize` -- a per-character Python pass -- over it for
+every row, with no per-name bound and no whole-table budget. `binfmt.pe` had exactly
+this problem for PE's export and import tables and closed it in #53 with two bounds:
+`_MAX_NAME_BYTES`, a per-name cap past which a name is unresolved rather than
+truncated into the record, and `_MAX_NAME_TOTAL_BYTES`, a whole-object budget the cap
+alone does not cover because nothing stops many rows pointing at one name, or many rows
+pointing at many different long ones. Neither ELF nor Mach-O had either bound.
+
+**Measured, reusing the issue's own numbers.** 2000 `.dynsym`/`LC_SYMTAB` rows all
+pointing at one 2 MiB name cost 243.7s on `main`. Post-fix, the equivalent case --
+built the same way, through `tests/test_hardening.py`'s full `scan_wheel` path, not a
+microbenchmark of `_iter_symbols` alone -- runs in 0.02s for ELF and 0.11s for Mach-O.
+The cost was never the row count; it was rows times the bytes each row's `sanitize`
+call was asked to look at, and both bounds now hold that product down regardless of
+how the rows are laid out.
+
+**The two bounds, ported at PE's own values.** `_MAX_NAME_BYTES` (8 KiB) and
+`_MAX_NAME_TOTAL_BYTES` (8 MiB) now live in `binfmt.symtab`, shared rather than
+duplicated into both readers, sized off PE's own corpus measurement (#53: 30,835 real
+export names, the longest an MSVC-mangled 1027-byte C++ name) for lack of an ELF or
+Mach-O corpus of our own. Nothing here argues for a different number: an
+Itanium-mangled C++ name or a legacy Rust symbol (a full module path plus a hash) grows
+unbounded the same way MSVC's mangling does, so reusing PE's value is the same bet PE
+made, not a smaller one. Revisit if a real ELF or Mach-O wheel is found on the triage
+list with its only incompleteness a name past this cap, the same "and nothing else"
+test the whole-table string budget's own entry above already asks.
+
+A name of exactly `_MAX_NAME_BYTES` still resolves; one byte more does not. This
+differs from PE's own `cstring`, which searches `[offset, offset + window)` for a
+window equal to the cap and so silently stops resolving one byte short of it -- an
+implementation detail of that reader, never written down as the bound's actual
+meaning. `binfmt.symtab.BoundedNames` searches `[offset, offset + cap + 1)` instead, so
+the cap means what its name says: the most a name may carry, not the most a name may
+carry minus one. PE is not revisited here; its existing tests only pin behaviour past
+its cap, never dead on it, so nothing there is disturbed by this reader defining the
+edge differently.
+
+**The same "+1" reasoning applies to the budget, and an early draft of `window` missed
+it.** `window` was first `min(_MAX_NAME_BYTES + 1, available, self._budget)` -- the "+1"
+covers the cap but not the budget it sits beside, so a name of exactly `self._budget`
+content bytes has its terminator at `offset + self._budget`, one byte past a window
+sized to `self._budget` itself. A table with `_MAX_NAME_BYTES` left in its budget could
+resolve every name shorter than that but not one landing exactly on the amount
+remaining -- fails safe (the row reads unresolved, `partial_analysis: true`, never a
+name it did not carry), so this was not a correctness hole, but it silently spent a
+name's budget one byte more conservatively than the number in `_MAX_NAME_TOTAL_BYTES`
+says. `_resolve_uncached` now takes `min` of the cap and the budget *first*
+(`max_len = min(_MAX_NAME_BYTES, self._budget)`) and only then turns that into a search
+span (`window = min(max_len + 1, available)`), so the "+1" is applied once, to whichever
+of the two is actually binding, not to the cap alone regardless of which one is.
+`tests/test_binfmt_symtab.py::test_a_name_exactly_as_long_as_the_remaining_budget_still_resolves`
+pins it by setting `_budget` directly rather than spending it down row by row, which
+would need thousands of rows to reach a boundary this exact for no reason connected to
+what the test checks.
+
+**The second bound this issue asked for, that PE does not have: memoization by
+string-table offset.** `BoundedNames` caches `(name, resolved)` by the raw offset a
+row's `st_name`/`n_strx` names, so a repeated offset costs the decode once. This closes
+a case the cap and the budget do not close between them: many rows honestly repeating
+one *valid*, well-under-cap name would otherwise spend the whole-table budget once per
+row, exhausting it partway through an object that carries exactly one real symbol and
+turning it `partial_analysis: true` for no reason but that its own string table was
+walked more than once. `tests/test_hardening.py`'s
+`test_repeated_elf_dynsym_offsets_resolve_the_same_valid_name` and its Mach-O
+counterpart pin this the same way the budget test pins the opposite failure: reverting
+memoization (verified by hand, not committed) does not make either test slow -- 2000
+rows through an 8 KiB-ish name is fast either way, since the cap alone already keeps
+each row's search cheap -- it makes `partial_analysis` flip from `false` to `true`, a
+correctness assertion rather than a stopwatch race. The bounded-time tests beside them
+still assert a wall-clock ceiling, generously above the fixed cost, the same way #53's
+own PE tests do; only the memoization guard specifically needed a non-timing signal to
+fail reliably, since the cap alone already makes the over-cap case fast regardless of
+whether repeats are memoized.
+
+**The cache that makes memoization work has its own cap, found by asking what it costs
+against a table shaped to dodge the byte budget rather than repeat an offset.** The
+whole-table budget only shrinks for an offset that resolves to real bytes; an offset
+past the table, into an unclosed run, or naming an empty string costs it nothing at
+all, so a table of many rows -- one per row, each a distinct such offset -- would grow
+`BoundedNames`'s cache by one entry per row with neither the per-name cap nor the byte
+budget ever engaging to stop it. That is the exact cost `binfmt.elf` and `binfmt.macho`
+already avoid elsewhere, by keeping only the crypto names actually read (`read_crypto:
+set[str]`) rather than every name a table carries -- the comment beside it measures a
+half-million-symbol table at 24 MiB remembered whole. `_MAX_CACHE_ENTRIES` (65536,
+`binfmt.pe`'s `_MAX_THUNKS` scale) bounds the cache the same way: past it, `resolve`
+still answers every row correctly, it simply stops remembering, which only gives up the
+speedup for offsets beyond the cap, never an answer. `tests/test_binfmt_symtab.py`
+pins this directly against `BoundedNames`, since exercising it through either reader
+would need enough distinct offsets to make a full `scan_wheel` construction slow for
+no reason connected to what the test checks.
+
+**Correction: `binfmt.macho`'s `N_INDR` alias resolution was first left uncapped, on
+two justifications that did not survive review, and is now covered by the same
+mechanism.** The first pass at this fix read an alias's target straight out of
+`strings` with no cap, no budget and no memoization -- the identical shape just closed
+for `n_strx`, one call site over in the same `_iter_symbols` -- on the reasoning that an
+`N_INDR` row is rarer by construction than an ordinary name, and that closing it would
+change a function signature `_iter_symbols` already returns five values from.
+
+Neither held. Every row in a reproduction is free to be `N_INDR`; frequency is not a
+property a fixed-cost format has to have, and a table shaped to exploit this looks
+exactly like the ordinary-name case, one field renamed. And the arity does not change:
+`alias`'s *type* moves from `bytes | None` to `str | None` -- already-resolved,
+ABI-stripped and sanitised, the way ordinary names already come back from `resolver` --
+which is a one-line change at the single call site that used to `.decode()` it, not a
+signature change at all. `resolver` was already in scope in `_iter_symbols` for
+ordinary names; the alias branch simply was not calling it.
+
+Measured the same way: 200 `N_INDR` rows aliasing one 2 MiB target cost 30.4s before
+this correction (linear in rows, the same shape as the `n_strx` measurement above), and
+2000 rows against a 4 MiB target run in well under a second after it.
+
+The one asymmetry that is real, not a gap: an ordinary unresolved name always sets
+`unresolved`, unconditionally, because the caller cannot tell in advance whether an
+unreadable name would have been crypto-relevant. An alias whose target fails to
+resolve sets nothing of its own -- the row's own name, from `n_strx`, is still fine,
+and `alias` is simply `None`, the same value a row with no alias at all yields. This
+is not a hole: the target string is still sitting in `strings` either way, and
+`holds_a_name_not_read`'s independent scan already exists to find any crypto name
+sitting there unaccounted for in `read_crypto`, regardless of *why* it went
+unaccounted -- alias failure, an ordinary index past the string table, or a lying
+`nsyms`, all read the same to that check. A non-crypto target that happens to be
+over-cap costs nothing and is correctly not partial, the same way a huge non-crypto
+ordinary name would not be; a crypto-matching one still is, via the existing
+`macho_symtab_incomplete` / `symtab_understates_rows` pair, no new token needed.
+`tests/test_hardening.py::test_a_mach_o_aiming_every_alias_at_one_over_cap_crypto_target_is_not_read_clean`
+pins the case that matters; the sibling test beside it pins that a merely-long,
+non-crypto target does not falsely turn the object partial.
+
+**Where the two bounds are checked, and what they interact with.** Over the cap or over
+budget, a row comes back `resolved=False`, the same signal an index past the string
+table's end or into a run it never closes already produced -- `_iter_symbols`'s callers
+in both readers already fold that into `unresolved` and, from there, into
+`elf_dynsym_unread` or `macho_symtab_incomplete`, so no new `partial_reasons` token was
+needed and none was added. ELF's index-0 short-circuit ("no name", unconditional by the
+format's own definition) stays ahead of `BoundedNames` rather than folded into it: index
+0 is "no name" regardless of what byte a decoy table puts there, which is a different
+claim from "the table's own bytes say this name ends here," and collapsing the two
+would let a forged byte at offset 0 answer a question the format does not leave open.
+Mach-O's `n_strx == 0` case was never special-cased before this fix and is not special-
+cased now -- it already fell out of the general path correctly, so changing that would
+have been an unrelated behaviour change riding along with this one.
+
+**What was rejected.** A per-format cap and budget, duplicated into `binfmt.elf` and
+`binfmt.macho` the way the cross-check they already share (`holds_a_name_not_read`) was
+not: `binfmt.symtab` already exists for exactly this, a check "the same in both readers"
+that "drifts" if written twice, and the bounded-read logic is the same fact about a
+string table the cross-check already is. A shared budget threaded across a fat Mach-O's
+slices, rather than one `BoundedNames` per `_read_symbols` call: `AGENTS.md` already
+treats a universal binary's slices as independent passes up to `_MAX_FAT_SLICES`, over
+regions the slices are free to share, so a per-slice budget is the existing shape, not
+a new one -- and a budget shared across slices would need threading extra state through
+`_SymbolRead`'s return shape for a benefit no reproduction here shows: nothing in `#61`
+or its own reproduction points at a fat binary as the multiplier.
+
+**What it costs.** `ANALYZER_VERSION` moves: an ELF or Mach-O wheel whose symbol table
+carries a name past the per-name cap, or whose table-wide budget the walk exhausts, now
+reads `partial_analysis: true` where it previously read whatever the (slow, but
+accurate) full decode produced -- most likely clean, since a name that long matching a
+ruleset group by accident is not the shape any real wheel has shown, but no longer
+taken on faith either way. This is a cost the same direction #48's string-budget entry
+already accepted for the same reason: the honest answer for an object this expensive to
+read in full is that it was never read, not a guess dressed as one. Nothing in
+`ruleset.toml` changes: both partial-reasons tokens this reuses were already policy, so
+`ruleset_version` does not move.
+
+Tracked in [#61](https://github.com/EmilienM/wheel-crypto-scan/issues/61).

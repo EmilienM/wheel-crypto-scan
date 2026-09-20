@@ -34,6 +34,7 @@ from helpers.binfmt import (
     patch_u16,
 )
 from wheel_crypto_scan import evidence
+from wheel_crypto_scan.binfmt import symtab
 from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
@@ -842,6 +843,75 @@ def test_a_leading_underscore_is_a_name_here_not_an_abi_prefix() -> None:
     assert errors == ()
     assert ev.partial_analysis is False
     assert ev.matched_symbols == ()
+
+
+# --- a symbol name has a cap, and the table a whole-table budget (#61) --------
+#
+# `_iter_symbols` used to decode and `sanitize` every dynsym name in full, with no
+# per-name bound and no table-wide budget: a table pointing many rows at one enormous
+# name cost rows times that name's length, all of it in `sanitize`, a per-character
+# Python pass. `binfmt.symtab.BoundedNames` ports `binfmt.pe`'s `_MAX_NAME_BYTES` /
+# `_MAX_NAME_TOTAL_BYTES` (#53) to close it. `tests/test_hardening.py` holds the
+# bounded-time and memoization-effectiveness cases; these hold the boundary itself and
+# the whole-table budget a repeated single name does not exercise.
+
+
+def _crypto_name(index: int, length: int) -> str:
+    """A distinct, `openssl`-matching dynsym name of exactly `length` bytes.
+
+    `ElfBuilder` interns `.dynstr` by exact text (`_StrTab.add`), so two symbols
+    sharing one string share one table entry -- distinct indices are what keeps this a
+    table of many different names, rather than one name many rows point at.
+    """
+    prefix = f"EVP_{index:08d}_"
+    assert len(prefix) < length
+    return prefix + "A" * (length - len(prefix))
+
+
+def test_a_dynsym_name_exactly_at_the_cap_is_still_read() -> None:
+    """The bound is generous, not absent: a name of exactly the cap still resolves."""
+    name = "EVP_" + "A" * (symtab._MAX_NAME_BYTES - 4)
+    assert len(name) == symtab._MAX_NAME_BYTES
+    ev, errors = _read(ElfBuilder(dynsyms=(DynSym(name, defined=False),)).build())
+    assert errors == ()
+    assert ev.partial_analysis is False
+    assert [m.name for m in ev.matched_symbols] == [name]
+
+
+def test_a_dynsym_name_one_byte_over_the_cap_is_not_read() -> None:
+    """One byte further and the row is unresolved, not truncated into the record.
+
+    Raising a limit is how a limit quietly stops being one, so the far side of it is
+    pinned rather than assumed -- the same reason #53's PE test pins its own boundary.
+    """
+    name = "EVP_" + "A" * (symtab._MAX_NAME_BYTES - 3)
+    assert len(name) == symtab._MAX_NAME_BYTES + 1
+    ev, errors = _read(ElfBuilder(dynsyms=(DynSym(name, defined=False),)).build())
+    assert ev.matched_symbols == ()
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
+    assert [e.message for e in errors] == [".dynsym names strings .dynstr does not hold"]
+
+
+def test_many_long_names_under_the_cap_exhaust_the_table_wide_budget() -> None:
+    """The per-name cap bounds one row; nothing bounds the table without a budget too.
+
+    Every name here is individually well inside `_MAX_NAME_BYTES`, but there are enough
+    of them, all distinct, that their total resolved bytes run past
+    `_MAX_NAME_TOTAL_BYTES` -- the shape a table gets from many different long names
+    rather than from one name repeated, which the cap alone does not bound.
+    """
+    length = symtab._MAX_NAME_BYTES - 200
+    count = (symtab._MAX_NAME_TOTAL_BYTES // length) + 200
+    dynsyms = tuple(DynSym(_crypto_name(i, length), defined=False) for i in range(count))
+    ev, errors = _read(ElfBuilder(dynsyms=dynsyms).build())
+    # Bounded, not abandoned: the names the budget could afford are read (roughly
+    # `_MAX_NAME_TOTAL_BYTES // length` of them), and the rest are unresolved rather
+    # than reported as an object with no crypto in it.
+    assert 0 < len(ev.matched_symbols) < count
+    assert ev.partial_analysis is True
+    assert list(ev.partial_reasons) == [evidence.PARTIAL_ELF_DYNSYM_UNREAD]
+    assert [e.message for e in errors] == [".dynsym names strings .dynstr does not hold"]
 
 
 # --- sections are found by type, not by a name nobody checks (#56) -----------

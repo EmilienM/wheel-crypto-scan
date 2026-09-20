@@ -83,7 +83,7 @@ from .caps import cap
 from .fallback import read_strings_only
 from .golang import build_go_info
 from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
-from .symtab import holds_a_name_not_read
+from .symtab import BoundedNames, holds_a_name_not_read
 
 _SHF_ALLOC = 0x2
 _SHF_EXECINSTR = 0x4
@@ -242,15 +242,23 @@ def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, b
     that reason.
 
     Every entry is reported, including the ones with nothing usable in them. An index
-    past the end of the string table, or into a run that never terminates, is the
-    difference between "no crypto here" and "we could not read the names", and only the
-    caller can tell those apart. `name` is empty for index 0, which is how ELF spells
-    "this entry has no name", and for a name that sanitises away to nothing.
+    past the end of the string table, into a run that never terminates, or past the
+    per-name cap `binfmt.symtab.BoundedNames` enforces, is the difference between "no
+    crypto here" and "we could not read the names", and only the caller can tell those
+    apart. `name` is empty for index 0, which is how ELF spells "this entry has no
+    name", and for a name that sanitises away to nothing.
+
+    Index 0 is checked before `names` is asked about it at all, unconditionally: ELF
+    defines index 0 as "no name" regardless of what byte actually sits there, the same
+    guarantee a decoy table could otherwise spend effort forging. `BoundedNames` is
+    built fresh here, once per call, because its cache is only sound over the one
+    string table this call was handed -- see its docstring.
     """
     entry_size, name_offset, shndx_offset = _SYM_LAYOUT[elf.elfclass]
     end = "<" if elf.little_endian else ">"
     u32 = struct.Struct(end + "I")
     u16 = struct.Struct(end + "H")
+    resolver = BoundedNames(names)
 
     for base in range(0, len(data) - entry_size + 1, entry_size):
         st_name = u32.unpack_from(data, base + name_offset)[0]
@@ -258,14 +266,8 @@ def _iter_symbols(elf, data: bytes, names: bytes) -> Iterator[tuple[str, bool, b
         if st_name == 0:
             yield "", undefined, True
             continue
-        stop = names.find(b"\x00", st_name)
-        if st_name >= len(names) or stop == -1:
-            # Past the end, or a run the table never closes. Taking the bytes that are
-            # there would put a name in the record that the object does not carry: a
-            # `.dynstr` cut to 24 bytes reported `EVP_DigestI` as an imported symbol.
-            yield "", undefined, False
-            continue
-        yield sanitize(names[st_name:stop].decode("utf-8", "replace")), undefined, True
+        name, resolved = resolver.resolve(st_name)
+        yield name, undefined, resolved
 
 
 def _find_section(sections: Sequence[Section], name: str) -> Section | None:
