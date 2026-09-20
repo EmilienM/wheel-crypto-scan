@@ -109,6 +109,14 @@ PARTIAL_MACHO_FAT_SLICE_UNREAD = "macho_fat_slice_unread"
 # Records an error, the same way a PE import or export directory that could not be
 # walked in full does.
 PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD = "macho_load_command_string_unread"
+# A load command's own `cmd`/`cmdsize` header could not be trusted -- too short to
+# hold that 8-byte header, or a `cmdsize` claiming to run past the end of the load
+# commands -- so the walk stopped there rather than guessing where the next command
+# starts. Different from `macho_load_command_string_unread`, which loses one command's
+# name while the walk continues past it: here every command after the bad one is
+# unaccounted for, not absent, which can be many commands' worth of dependencies
+# rather than one. #84. Records an error, for the same reason.
+PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED = "macho_load_command_walk_truncated"
 # The PE header chain would not parse.
 PARTIAL_PE_HEADER_UNREAD = "pe_header_unread"
 # The section table was cut short, so an address may resolve to the wrong bytes.
@@ -165,6 +173,7 @@ PARTIAL_REASONS: frozenset[str] = frozenset(
         PARTIAL_MACHO_SYMTAB_INCOMPLETE,
         PARTIAL_MACHO_FAT_SLICE_UNREAD,
         PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD,
+        PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED,
         PARTIAL_PE_HEADER_UNREAD,
         PARTIAL_PE_SECTION_TABLE_TRUNCATED,
         PARTIAL_PE_NO_IMPORT_DIRECTORY,

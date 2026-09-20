@@ -108,6 +108,27 @@ class MachOBuilder:
     # bytes, an unguarded offset into this range reads a name the object never spelt
     # out, rather than the empty string zero bytes there would produce.
     malformed_dylib_header_fields: tuple[int, int, int] = (0, 0, 0)
+    # #84: a load command whose own `cmd`/`cmdsize` header cannot be trusted, written
+    # after `load_dylibs` and its siblings and before `honest_load_dylib_after_poison`,
+    # so a test can assert that the ones before it survive and the one after it does
+    # not. Only `cmd` and `cmdsize` are ever written -- the header lies about its own
+    # size, so a reader has no basis to read anything past it as this command's body.
+    # Distinct from `malformed_dylib_cmd`, whose `cmdsize` is honest and only the name
+    # offset inside it is bad: that command's `cmd`/`cmdsize` can be trusted, so the
+    # walk continues past it. `poison_cmdsize` is the value under test: `< 8` (too
+    # small to hold the header) or large enough to run past the end of the load
+    # commands.
+    poison_cmdsize: int | None = None
+    poison_cmd: int = LC_LOAD_DYLIB
+    # #84: one honest `LC_LOAD_DYLIB`, written immediately after the poison command --
+    # the concrete dependency a truncated walk drops. Naming the system library the
+    # way the issue's own reproduction does, so a test can assert it is gone.
+    honest_load_dylib_after_poison: str | None = None
+    # #84: raw bytes shorter than the 8-byte `cmd`/`cmdsize` header, appended after
+    # every other command and counted as one more in `ncmds` -- the
+    # `pos + 8 > len(commands)` trigger, distinct from a `cmdsize` that parses but
+    # lies about its own extent.
+    dangling_command_bytes: bytes | None = None
     # The `LC_RPATH` counterpart: `rpath_command`'s fixed header is 12 bytes, with no
     # payload of its own.
     malformed_rpath_name_offset: int | None = None
@@ -151,6 +172,16 @@ class MachOBuilder:
         for name in self.reexport_dylibs:
             commands += self._dylib_command(LC_REEXPORT_DYLIB, name, end)
             ncmds += 1
+        if self.poison_cmdsize is not None:
+            # After any honest command already written above (`load_dylibs` and its
+            # siblings), and before `honest_load_dylib_after_poison`: a reader that
+            # abandons the walk here has already seen the ones before it, and loses
+            # only the ones placed after.
+            commands += struct.pack(end + "II", self.poison_cmd, self.poison_cmdsize)
+            ncmds += 1
+        if self.honest_load_dylib_after_poison is not None:
+            commands += self._dylib_command(LC_LOAD_DYLIB, self.honest_load_dylib_after_poison, end)
+            ncmds += 1
         if self.malformed_dylib_cmd is not None:
             header = struct.pack(
                 end + "IIIIII",
@@ -191,6 +222,14 @@ class MachOBuilder:
         if has_symtab:
             # Reserved now, filled in once the offsets it has to name are known.
             commands += b"\x00" * SYMTAB_COMMAND_SIZE
+            ncmds += 1
+        if self.dangling_command_bytes is not None:
+            # After LC_SYMTAB too, so this is genuinely the last thing in the command
+            # list: nothing can follow it and still be readable, which is the point.
+            # Placed before LC_SYMTAB's reservation, its bytes would bleed into what
+            # gets parsed as the "next" command instead of leaving too few bytes for
+            # one at all.
+            commands += self.dangling_command_bytes
             ncmds += 1
 
         sizeofcmds = len(commands)
