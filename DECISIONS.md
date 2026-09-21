@@ -4908,18 +4908,12 @@ setting at all, so a build that opted out reads as the stock build it is.
 does not mean it is in force: `GODEBUG=fips140` can be set back to off at run time, and
 which validated version the toolchain carried is not something the wheel states.
 
-The suppression is per wheel rather than per object, inherited from the BoringCrypto rule
-it sits beside, and this is a worse trade there than here: a wheel carrying one
-BoringCrypto and one stock Go object is exotic, while a wheel shipping a self-built CLI
-beside a vendored prebuilt one is not. Suppression drops the whole finding, so a wheel
-with both reports `CONDITIONAL` and `NON_APPROVED_CRYPTO` is gone from `classes`
-entirely, not demoted. What survives is per object and has to be read there: the stock
-object's `matched_strings` carry `go_stock_crypto` alone, and the surviving finding's
-`locations` name only the FIPS objects. A string match is also not proof a setting was
-recorded -- a binary that merely mentions `GOFIPS140=` in help text matches, and
-suppresses a real stock finding on another object the same way. That is the concrete
-cost, not an abstract one, and it is accepted because the alternative list of accepted
-values goes stale in silence.
+The suppression is per object, inherited from the BoringCrypto rule it sits beside: a
+wheel carrying one FIPS-built and one stock Go binary reports both `CONDITIONAL` and
+`NON_APPROVED_CRYPTO` in `classes`, and the stock finding's `locations` name only the
+stock object. A string match is still not proof a setting was recorded -- a binary that
+merely mentions `GOFIPS140=` in help text matches too, but per object that only
+suppresses that same binary's own stock finding, not a real one on a binary beside it.
 
 One property falls the safe way and is worth stating: `_collect_string_bytes` walks
 sections in header order until the byte budget is spent, and `.go.buildinfo` sits after
@@ -5388,3 +5382,89 @@ the wheel's own code defines, when a wheel has both.
 dominate a wheel's headline the same way, or a consumer asks to tell an exported symbol
 from a local definition -- either is the moment for a co-occurrence match kind or a
 third binding value, measured over a wider corpus than this one.
+
+
+## Suppression is keyed on rule, subject and object
+
+**Accepted.**
+
+`suppressed_by` keys on the hit, not the rule id: a hit is suppressed only where a
+suppressing hit fired on the same `Location.path`. That gives a FIPS-built and a stock
+Go binary in one wheel each their own finding, with the stock one's `locations` naming
+only the stock object, and it gives two subjects of the same rule -- an AWS-LC build
+compiled against `aws-lc-sys` and one compiled against `aws-lc-fips-sys`, both reported
+by `BIN_RUST_CRYPTO_CRATE` -- a way to relate to each other. Keying wheel-wide, on the
+rule id alone, would instead drop the suppressed rule's whole finding, not just the
+locations that earned it, the moment the suppressor fired anywhere in the wheel. An
+object read out of a static archive has its own path (`lib.a(member.o)`), so a
+suppressor in one archive member never suppresses a finding in another; that over-flags,
+the direction this tool is built to err in. Being keyed on the hit's path also means a
+suppressor whose hits are located on a different kind of path never suppresses, because
+their hits never share a path -- and what a rule's hits locate on follows its matcher
+kind, not its `layer`, and not "wheel-scoped versus per-object" either: most
+binary-layer `linkage` rules (`BIN_STATIC_OPENSSL`, `BIN_LINKED_CRYPTO_LIBRARY`,
+`BIN_OPENSSL_LINKAGE_UNKNOWN`) locate on the wheel's own filename, not on the object
+they describe, and that is the one path they share with `no_source` and
+`binaries_truncated` -- not with `dist_name`, `requires_dist`, `wheel_generator` or
+`sbom_component`, each of which locates on a path of its own (`<dist-info>`,
+`<dist-info>/METADATA`, `<dist-info>/WHEEL` -- or the wheel's own filename for all
+three when it ships no dist-info directory -- and the SBOM component's own recorded
+source, respectively), shared only with another rule of the same kind. A `linkage`
+match with `object_values` set is the exception: it locates per object instead, one
+`Hit` per object whose own posture matched, at that object's own path.
+`DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` is the shipped example, so it *does* share a
+path with a per-object binary rule on the same object. So a relation naming one of the
+wheel-located `linkage` rules against a per-object binary rule (`dt_needed`,
+`binary_string`, `rust_crate` and the rest) is just as dead as a cross-layer one would
+be, and so is one between, say, `dist_name` and `requires_dist`, despite both being
+wheel-scoped. The loader accepts any of these without complaint; check what each side
+locates on, not which layer, wheel-scoped kind, or bare matcher kind it is in.
+
+A `[[rust_crate]]` entry carries its own optional `suppressed_by`, naming other
+`[[rust_crate]]` entries, so two subjects of one rule can relate the way two whole rules
+already can. The loader resolves each name to the finding key it stands for --
+`(owning rule id, crate name)` -- through that crate's own routing or the table's default
+rule, and refuses a name that is unknown, self-referential, owned by no single rule, or
+carried by a crate with no single owner of its own. Scope stops at `[[rust_crate]]`: it
+is the only table a real relation has been measured for, and the loader refuses the
+field on any other table. `aws-lc-rs` carries `suppressed_by = ["aws-lc-fips-sys"]`: its
+default build compiles against `aws-lc-sys`, and its `fips` feature swaps in
+`aws-lc-fips-sys`, so aws-lc-rs beside aws-lc-fips-sys in one object is the FIPS build,
+and the FIPS crate's own `CONDITIONAL` finding is the one that should stand. `aws-lc-sys`
+gets no such entry: its presence beside `aws-lc-fips-sys` means the stock AWS-LC is
+compiled in too, so nothing about it should be dropped. Nor does `rustls`: it says
+something its provider crate does not, that a TLS stack ignores the system crypto
+policy, and whether it runs in FIPS mode is a runtime configuration choice a
+provider-crate relation cannot answer.
+
+Suppression is non-cascading: what fired is read once, from every candidate finding,
+before anything is dropped, so a suppressor that is itself suppressed still suppresses.
+The per-object, per-subject key keeps that one-pass shape, which means a cycle (rule A
+suppressed by rule B, B suppressed by A; the same shape between two crates; or a mix of
+the two) would drop every member of it when all of them fire, losing evidence rather
+than choosing the more specific finding. The loader refuses a `suppressed_by` cycle
+across rules and crates at load time instead, including one closed by a crate that
+carries the field itself with no owning rule of its own.
+
+**Accepted over-flag: `sbom_component` does not honour entry-level `suppressed_by`.**
+`kind = "sbom_component"` can name `"rust_crate"` in its `tables` and takes a component's
+verdict from the same `[[rust_crate]]` entry the `rust_crate` matcher reads, but it does
+not copy that entry's `suppressed_by` onto the `Hit` it builds, so aws-lc-rs beside
+aws-lc-fips-sys in one SBOM still reports both `NON_APPROVED_CRYPTO` and `CONDITIONAL`,
+where the same pair in a binary's cargo paths reports only the FIPS build's
+`CONDITIONAL`. The resolved key an entry's `suppressed_by` carries is `(owning rule id,
+crate name)`, naming the `rust_crate` matcher's own finding for that crate; an SBOM
+component's finding is a different kind of evidence, from a different rule and a
+different location (the SBOM document's path, not the object the crate was compiled
+into), so honouring the same key there would either suppress across two unrelated
+sources of evidence at the same wheel-level path or need a second, SBOM-specific key
+nothing has measured a need for. Left as documented over-flagging, the direction this
+tool is built to err in, rather than given a fix that widens what the key means without
+a measured case to widen it for.
+
+**Revisit if** a table other than `[[rust_crate]]` needs a subject-level relation, a
+cross-layer suppressor turns out worth catching at load time rather than documenting, a
+real wheel shows aws-lc-rs beside aws-lc-fips-sys with no cargo path for the FIPS crate
+(which would mean the FIPS build's own evidence cannot be trusted to survive its
+suppressor's absence), or a real SBOM-only wheel shows the aws-lc-rs/aws-lc-fips-sys
+over-flag above and the noise is worth the second key.

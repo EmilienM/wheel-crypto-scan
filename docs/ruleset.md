@@ -90,7 +90,7 @@ These are the things a rule can point at. Each is an array of tables.
 | `[[crypto_library]]` | A native library: its `sonames`, and optionally the `symbol_group` and `string_group` that let the linkage resolver recognise it compiled straight into an extension, where there is no library file and no dependency to find. Optionally `copy_string_group`, strings only a compiled-in copy carries: a `string_group` match on an object that imports the library from a system dependency, was read in full, and matches nothing in it is header text and does not count as a copy. Optionally `crates`, the `[[rust_crate]]` entries that bind it: a crate says an object uses the library, not which copy, so on an object with no other evidence it gives `unknown` rather than `none`. `openssl` is the one reported unconditionally. |
 | `[[symbol_group]]` | Named groups of dynamic symbols, by `prefixes` and `exact` names. Imported means the wheel calls into a library it does not ship; defined means it carries that code itself. |
 | `[[string_group]]` | Named groups of read-only-data substrings. Version banners land here, and for a statically linked extension the banner is often the entire evidence. Substrings must be printable ASCII: an extracted run only ever holds printable ASCII, so anything else could never match, and the one non-printable character a rule author might reach for by mistake is the separator the matcher joins runs with internally. |
-| `[[rust_crate]]` | Crates inferred from the embedded cargo registry paths, each with its own `verdict` and `severity`. |
+| `[[rust_crate]]` | Crates inferred from the embedded cargo registry paths, each with its own `verdict` and `severity`. An entry can optionally carry its own `suppressed_by`, naming other `[[rust_crate]]` entries. |
 | `[[python_module]]` | Module names the AST layer watches for on import. |
 | `[[ctypes_library]]` | Substrings that mean crypto is being reached at runtime by name, which no static dependency graph would show. |
 
@@ -137,6 +137,45 @@ A token named by a rule is validated at load time, so a typo is a load error rat
 rule that silently matches nothing. The vocabularies themselves are in
 [Vocabularies](reference/vocabularies.md), and why they live in Python rather than here is
 in [Invariants](invariants.md#working-rules).
+
+`suppressed_by` drops a rule's finding on an object where one of the named rules also
+fired there: it is per object, never per wheel, and non-cascading, so a suppressor that
+is itself suppressed still suppresses. "Per object" means the same `Location.path`, and
+what a rule locates on follows its matcher *kind*, not its `layer`, and "wheel-scoped"
+is not one path either: a per-object matcher (`bundled_library`, `dt_needed`,
+`dynamic_symbol`, `binary_string`, `rust_crate`, `opaque_binary`, `partial_binary`, the
+`py_*` kinds) locates on the binary or source file it read; `no_source`,
+`binaries_truncated` and most `linkage` matches locate on the wheel's own filename, so
+those share a path with each other. A `linkage` match with `object_values` set is the
+exception: it locates per object instead, one `Hit` per object whose own posture
+matched, at that object's own path -- the same path a per-object binary rule shares.
+`DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` is the shipped example, so a relation naming
+it against a `dt_needed` or `binary_string` rule on the same object does suppress. And
+`dist_name`, `requires_dist`, `wheel_generator` and `sbom_component` each locate on a
+path of their own -- `<dist-info>`, `<dist-info>/METADATA`, `<dist-info>/WHEEL` (or the
+wheel's own filename for all three when it ships no dist-info directory) and the SBOM
+component's own recorded source, respectively -- shared only with another rule of the
+same kind. `BIN_STATIC_OPENSSL` and `BIN_OPENSSL_LINKAGE_UNKNOWN`, by contrast, are
+`linkage` rules with no `object_values`, located on the wheel's filename, so a
+same-layer relation naming one of *them* against a `dt_needed` or `binary_string` rule
+never suppresses, the same as a cross-layer relation would -- and naming `dist_name`
+against `requires_dist` is just as dead, despite both being wheel-scoped and both
+`layer = "metadata"`. (`scan_error` and `record_mismatch` are the exceptions: their path
+is whichever stage or archive member the error or mismatch concerns, so whether they
+coincide with an object-located rule depends on the specific error, not the kind
+alone.) The loader accepts a relation between rules that can never share a path without
+complaint; check what each side locates on, not which layer or matcher kind alone
+promises. A `[[rust_crate]]` entry can carry the same field,
+naming other `[[rust_crate]]` entries, for a relation between two subjects of one rule
+rather than between two whole rules; entry-level `suppressed_by` is only defined on
+`[[rust_crate]]`, and is refused on any other table. Only the `rust_crate` matcher
+honours it: `kind = "sbom_component"` can also take a verdict from a `[[rust_crate]]`
+entry, but does not read its `suppressed_by`, so an SBOM naming both a crate and its
+suppressor still reports both findings (see [Suppression is keyed on rule, subject and
+object](decisions/policy.md#suppression-is-keyed-on-rule-subject-and-object) for why
+that is accepted rather than fixed). An unknown name, a name referring to itself, a name
+no rule owns (or, for a `[[rust_crate]]` entry, a crate with no owner of its own naming
+one), and a `suppressed_by` cycle across rules and crates are all refused at load time.
 
 ## Using a different ruleset
 

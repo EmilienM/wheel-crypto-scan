@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "26"
+ruleset_version = "27"
 
 
 # ---------------------------------------------------------------------------
@@ -646,7 +646,8 @@ why = "Stock Go crypto package paths. Go implements its own primitives in Go; th
 # missed. A PEP 770 SBOM, when present, is the higher-confidence source.
 #
 # An entry's optional `rule` sends that crate's finding to a rule of its own instead of
-# to the default rust_crate rule.
+# to the default rust_crate rule. An entry's optional `suppressed_by` names other
+# [[rust_crate]] entries whose finding, on the same object, drops this one.
 # ---------------------------------------------------------------------------
 
 [[rust_crate]]
@@ -679,7 +680,8 @@ name = "aws-lc-rs"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
-why = "Rust API over AWS-LC. Which underlying build it compiled against determines the answer, so confirm before concluding."
+suppressed_by = ["aws-lc-fips-sys"]
+why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so on an object that also carries aws-lc-fips-sys this finding is dropped and the FIPS build's CONDITIONAL finding stands. Without that crate in the same object the object does not say which build it compiled against, so confirm before concluding. aws-lc-fips-sys can contribute no cargo path and leave this finding in place, which over-flags. suppressed_by is read by the rust_crate matcher only: an SBOM naming both crates over sbom_component still reports this finding beside aws-lc-fips-sys's, which over-flags the same way and is accepted for the same reason (see DECISIONS.md)."
 
 [[rust_crate]]
 name = "aws-lc-fips-sys"
@@ -1034,8 +1036,27 @@ why = "Any of these names appearing in a ctypes load means crypto is being reach
 #   py_constant        a named constant such as ssl.CERT_NONE
 #   py_ctypes_load     ctypes.CDLL / cdll.LoadLibrary naming a library
 #
-# `suppressed_by` drops this rule when another rule already fired, so a more
-# specific finding can replace a broader one.
+# `suppressed_by` drops this rule's finding on an object where one of the named
+# rules also fired, so a more specific finding replaces a broader one. It is per
+# object (location path), never per wheel. A suppressor whose hits are located on
+# a different path never suppresses -- and what a rule locates on follows its
+# matcher kind, not its layer: most binary-layer `linkage` rules (BIN_STATIC_OPENSSL,
+# BIN_LINKED_CRYPTO_LIBRARY, BIN_OPENSSL_LINKAGE_UNKNOWN) locate on the wheel path,
+# not on the object they describe, so a same-layer relation naming one of them
+# against a per-object binary rule (dt_needed, binary_string, rust_crate, ...) is
+# just as dead as a cross-layer one. A `linkage` match with `object_values` set is
+# the exception (DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM is the shipped one): it
+# locates per object instead, the same path a per-object binary rule shares. The
+# loader does not catch any of this, so check what each side locates on, not which
+# layer it is in.
+#
+# A [[rust_crate]] entry can carry its own `suppressed_by`, naming other [[rust_crate]]
+# entries, for a relation between two subjects of the same rule. No other table reads
+# entry-level `suppressed_by`; the loader refuses it there.
+#
+# Suppression is non-cascading: what fired is read before anything is dropped, so a
+# suppressed suppressor still suppresses. A cycle is refused at load time rather than
+# left to silently drop every member of it.
 #
 # Routing. An entry in [[crypto_distribution]], [[crypto_library]], [[rust_crate]] or
 # [[python_module]] can name a `rule`, sending that entry's finding to that rule rather
@@ -1680,7 +1701,7 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Go binary using stock Go crypto"
-why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto or the Go FIPS 140-3 module is detected, because both builds still contain the stock package paths: measured on go1.27.1, a GOFIPS140 build carries crypto/sha256. and crypto/aes. exactly as often as a stock one, so without the suppression a binary whose crypto goes through the validated module read as non-approved. Suppression is per wheel rather than per object, so a wheel shipping one FIPS-built and one stock Go binary reports only the condition; that is the same trade BoringCrypto has always carried here."
+why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto or the Go FIPS 140-3 module is detected, because both builds still contain the stock package paths: measured on go1.27.1, a GOFIPS140 build carries crypto/sha256. and crypto/aes. exactly as often as a stock one, so without the suppression a binary whose crypto goes through the validated module read as non-approved. Suppression is per object, so a wheel shipping one FIPS-built and one stock Go binary reports both, with the stock finding located on the stock object alone."
 suppressed_by = ["BIN_GO_BORING_CRYPTO", "BIN_GO_FIPS140"]
 [rule.match]
 kind = "binary_string"

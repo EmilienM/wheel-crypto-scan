@@ -350,6 +350,201 @@ def test_a_rust_crate_carries_its_own_verdict(ruleset) -> None:
     assert verdicts == {"ring": "NON_APPROVED_CRYPTO", "blake3": "CONTEXT_DEPENDENT"}
 
 
+def test_the_fips_build_of_aws_lc_supersedes_the_aws_lc_rs_finding_on_the_same_object(
+    ruleset,
+) -> None:
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_rs.so",
+                rust_crates=(
+                    RustCrate("aws-lc-rs", "1.13.0"),
+                    RustCrate("aws-lc-fips-sys", "0.13.0"),
+                ),
+            ),
+        )
+    )
+    findings = [f for f in run(ruleset, evidence) if f.rule_id == "BIN_RUST_CRYPTO_CRATE"]
+    subjects = {finding.subject for finding in findings}
+    assert subjects == {"aws-lc-fips-sys"}
+    assert one(findings, "BIN_RUST_CRYPTO_CRATE").verdict == "CONDITIONAL"
+
+
+def test_aws_lc_fips_sys_in_another_object_does_not_supersede_aws_lc_rs(ruleset) -> None:
+    evidence = wheel(
+        binaries=(
+            binary("demo/_rs.so", rust_crates=(RustCrate("aws-lc-rs", "1.13.0"),)),
+            binary("demo/_fips.so", rust_crates=(RustCrate("aws-lc-fips-sys", "0.13.0"),)),
+        )
+    )
+    findings = [f for f in run(ruleset, evidence) if f.rule_id == "BIN_RUST_CRYPTO_CRATE"]
+    subjects = {finding.subject for finding in findings}
+    assert subjects == {"aws-lc-rs", "aws-lc-fips-sys"}
+
+
+def test_aws_lc_sys_is_not_superseded_by_the_fips_build(ruleset) -> None:
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_rs.so",
+                rust_crates=(
+                    RustCrate("aws-lc-sys", "0.30.0"),
+                    RustCrate("aws-lc-fips-sys", "0.13.0"),
+                ),
+            ),
+        )
+    )
+    findings = [f for f in run(ruleset, evidence) if f.rule_id == "BIN_RUST_CRYPTO_CRATE"]
+    subjects = {finding.subject: finding.verdict for finding in findings}
+    assert subjects["aws-lc-sys"] == "NON_APPROVED_CRYPTO"
+
+
+def test_aws_lc_rs_is_superseded_even_when_the_fips_crate_is_routed_to_its_own_rule() -> None:
+    """The resolved suppressor key names the finding the *named* crate's own routing
+    produces, not whichever rule the suppressed entry belongs to. Routing
+    aws-lc-fips-sys to a rule of its own must not silently break the aws-lc-rs
+    relation -- which is exactly what a loader that keyed on the suppressed entry's
+    own owner, instead of the named crate's, would do."""
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry("BIN_AWS_LC_FIPS", {"kind": "rust_crate", "table": "rust_crate"})
+    )
+    for entry in data["rust_crate"]:
+        if entry["name"] == "aws-lc-fips-sys":
+            entry["rule"] = "BIN_AWS_LC_FIPS"
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_rs.so",
+                rust_crates=(
+                    RustCrate("aws-lc-rs", "1.13.0"),
+                    RustCrate("aws-lc-fips-sys", "0.13.0"),
+                ),
+            ),
+        )
+    )
+    owners = {
+        (finding.rule_id, finding.subject)
+        for finding in run(parse_ruleset(data), evidence)
+        if finding.subject in {"aws-lc-rs", "aws-lc-fips-sys"}
+    }
+    assert owners == {("BIN_AWS_LC_FIPS", "aws-lc-fips-sys")}
+
+
+def test_a_fips_go_binary_does_not_hide_a_stock_one_beside_it(ruleset) -> None:
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/fips.so",
+                matched_strings=(
+                    StringMatch("go_fips140", "GOFIPS140=v1.0.0"),
+                    StringMatch("go_stock_crypto", "crypto/sha256."),
+                ),
+            ),
+            binary(
+                "demo/stock.so",
+                matched_strings=(StringMatch("go_stock_crypto", "crypto/sha256."),),
+            ),
+        )
+    )
+    findings = run(ruleset, evidence)
+    assert "BIN_GO_FIPS140" in ids(findings)
+    stock = one(findings, "BIN_GO_STOCK_CRYPTO")
+    assert [location.path for location in stock.locations] == ["demo/stock.so"]
+    assert stock.occurrences == 1
+
+
+def test_suppression_does_not_cascade() -> None:
+    data = shipped_data()
+    by_id = {rule["id"]: rule for rule in data["rule"]}
+    by_id["BIN_GO_STOCK_CRYPTO"]["suppressed_by"] = ["BIN_GO_BORING_CRYPTO"]
+    by_id["BIN_GO_BORING_CRYPTO"]["suppressed_by"] = ["BIN_GO_FIPS140"]
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_go.so",
+                matched_strings=(
+                    StringMatch("go_stock_crypto", "crypto/sha256."),
+                    StringMatch("go_boring", "crypto/internal/boring"),
+                    StringMatch("go_fips140", "GOFIPS140=v1.0.0"),
+                ),
+            ),
+        )
+    )
+    findings = ids(run(parse_ruleset(data), evidence))
+    assert findings & {"BIN_GO_STOCK_CRYPTO", "BIN_GO_BORING_CRYPTO", "BIN_GO_FIPS140"} == {
+        "BIN_GO_FIPS140"
+    }
+
+
+def test_a_suppressor_on_a_different_layer_never_fires() -> None:
+    """`suppressed_by` keys on `Location.path`, so a metadata-layer rule and a
+    binary-layer rule, whose hits never land on the same path, cannot suppress each
+    other even when the ruleset names the relation. The loader accepts it (it has no
+    way to know two rules can never share a path); this pins that it stays a no-op
+    documented in `docs/ruleset.md` and `DECISIONS.md`, not a silent drop."""
+    data = shipped_data()
+    by_id = {rule["id"]: rule for rule in data["rule"]}
+    by_id["DIST_NON_APPROVED_CRYPTO"]["suppressed_by"] = ["BIN_GO_FIPS140"]
+    evidence = wheel(
+        metadata=metadata(name="PyNaCl", version="1.5.0"),
+        binaries=(
+            binary(
+                "demo/_go.so",
+                matched_strings=(StringMatch("go_fips140", "GOFIPS140=v1.0.0"),),
+            ),
+        ),
+    )
+    findings = ids(run(parse_ruleset(data), evidence))
+    assert {"DIST_NON_APPROVED_CRYPTO", "BIN_GO_FIPS140"} <= findings
+
+
+def test_a_suppressor_locating_on_a_different_matcher_kind_in_the_same_layer_never_fires() -> None:
+    """Same point as the test above, but staying inside one `layer`: keeping a relation
+    within one layer is not enough on its own. `BIN_RUST_CRYPTO_CRATE` (kind
+    `rust_crate`) locates on the binary that carries the crate; `BIN_OPENSSL_LINKAGE_UNKNOWN`
+    (kind `linkage`, also `layer = "binary"`) locates on the wheel path instead. A
+    relation between the two follows "keep `suppressed_by` within one layer" to the
+    letter and is still a no-op, because what decides it is `Location.path`, not
+    `layer`."""
+    data = shipped_data()
+    by_id = {rule["id"]: rule for rule in data["rule"]}
+    by_id["BIN_OPENSSL_LINKAGE_UNKNOWN"]["suppressed_by"] = ["BIN_RUST_CRYPTO_CRATE"]
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_rust.abi3.so",
+                needed=("libc.so.6",),
+                dynsym_count=1,
+                rust_crates=(RustCrate("openssl-sys", "0.9.117"),),
+            ),
+        )
+    )
+    findings = ids(run(parse_ruleset(data), evidence))
+    assert {"BIN_RUST_CRYPTO_CRATE", "BIN_OPENSSL_LINKAGE_UNKNOWN"} <= findings
+
+
+def test_two_wheel_scoped_rules_of_different_kinds_never_share_a_path_either() -> None:
+    """Wheel-scoped is not one path either. `DIST_NON_APPROVED_CRYPTO` (kind
+    `dist_name`) locates on `<dist-info>`; `DIST_DEPENDS_ON_CRYPTO` (kind
+    `requires_dist`) locates on `<dist-info>/METADATA`. Both are metadata-layer and
+    both are wheel-scoped, but naming one in the other's `suppressed_by` is just as
+    dead as a cross-layer relation, because their hits still never share a
+    `Location.path`."""
+    data = shipped_data()
+    by_id = {rule["id"]: rule for rule in data["rule"]}
+    by_id["DIST_DEPENDS_ON_CRYPTO"]["suppressed_by"] = ["DIST_NON_APPROVED_CRYPTO"]
+    evidence = wheel(
+        metadata=metadata(
+            name="PyNaCl",
+            version="1.5.0",
+            requires_dist_names=("cryptography",),
+        )
+    )
+    findings = ids(run(parse_ruleset(data), evidence))
+    assert {"DIST_NON_APPROVED_CRYPTO", "DIST_DEPENDS_ON_CRYPTO"} <= findings
+
+
 def test_an_openssl_crate_alone_is_unresolved_linkage_beside_its_crate_finding(ruleset) -> None:
     """The record for the object `test_linkage` pins as `unknown`: the crate finding, and
     the rule saying OpenSSL is used and its provider could not be resolved."""

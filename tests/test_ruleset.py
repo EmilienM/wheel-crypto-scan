@@ -99,12 +99,31 @@ def minimal(**overrides: Any) -> dict[str, Any]:
     return data
 
 
+def rust_crate_ruleset() -> dict[str, Any]:
+    """`minimal()` plus a default `[[rust_crate]]` rule and a second crate, `boring`.
+
+    Both `ring` and `boring` fall to the default rule, so a `suppressed_by` naming
+    either resolves to an owner without any entry naming `rule` explicitly.
+    """
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_RUST_CRYPTO_CRATE",
+            layer="binary",
+            match={"kind": "rust_crate", "table": "rust_crate", "default": True},
+        )
+    )
+    data["rust_crate"].append({"name": "boring", "severity": "high", "why": "boring"})
+    return data
+
+
 # --- loading the shipped ruleset -------------------------------------------
 
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "26"
+    assert ruleset.version == "27"
     assert len(ruleset.rules) > 20
 
 
@@ -368,6 +387,193 @@ def test_a_crate_entry_naming_a_missing_rule_is_rejected() -> None:
     data["rust_crate"][0]["rule"] = "BIN_TYPO"
     with pytest.raises(RulesetError, match="unknown rule"):
         parse_ruleset(data)
+
+
+def test_a_crate_entry_with_no_name_is_rejected() -> None:
+    """The `suppressed_by` pre-pass reads every entry's name before the per-entry
+    `_require` in the main loop runs, so it must raise the same RulesetError itself
+    rather than a bare KeyError."""
+    data = minimal()
+    data["rust_crate"].append({"verdict": "NON_APPROVED_CRYPTO", "why": "no name"})
+    with pytest.raises(RulesetError, match="missing required field 'name'"):
+        parse_ruleset(data)
+
+
+# --- crate-level suppressed_by ----------------------------------------------
+
+
+def test_a_crate_entry_naming_an_unknown_crate_in_suppressed_by_is_rejected() -> None:
+    data = rust_crate_ruleset()
+    data["rust_crate"][0]["suppressed_by"] = ["typo-crate"]
+    with pytest.raises(RulesetError, match="unknown crate"):
+        parse_ruleset(data)
+
+
+def test_a_crate_entry_naming_itself_in_suppressed_by_is_rejected() -> None:
+    data = rust_crate_ruleset()
+    data["rust_crate"][0]["suppressed_by"] = ["ring"]
+    with pytest.raises(RulesetError, match="names itself"):
+        parse_ruleset(data)
+
+
+def test_a_crate_entry_naming_an_ownerless_crate_in_suppressed_by_is_rejected() -> None:
+    """`ring` has no `rule` and `minimal()` declares no default rust_crate rule."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_RUST_CRYPTO_CRATE",
+            layer="binary",
+            match={"kind": "rust_crate", "table": "rust_crate"},
+        )
+    )
+    data["rust_crate"].append(
+        {
+            "name": "sub",
+            "rule": "BIN_RUST_CRYPTO_CRATE",
+            "severity": "high",
+            "why": "w",
+            "suppressed_by": ["ring"],
+        }
+    )
+    with pytest.raises(RulesetError, match="no rule owns"):
+        parse_ruleset(data)
+
+
+def test_an_ownerless_crate_carrying_suppressed_by_is_rejected() -> None:
+    """The mirror of the "no rule owns" check above: this time the *subject* of
+    `suppressed_by`, not the name it points at, has no owning rule. An ownerless
+    crate fires in every `rust_crate` rule (`_owns(..., unowned=True)`), so its
+    finding is not the single key a `suppressed_by` relation needs either, and
+    letting it carry the field can close a cycle `_check_suppression_acyclic` never
+    sees because it skips ownerless crates entirely."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_RUST_CRYPTO_CRATE",
+            layer="binary",
+            match={"kind": "rust_crate", "table": "rust_crate"},
+        )
+    )
+    data["rust_crate"][0]["suppressed_by"] = ["sub"]
+    data["rust_crate"].append(
+        {"name": "sub", "rule": "BIN_RUST_CRYPTO_CRATE", "severity": "high", "why": "w"}
+    )
+    with pytest.raises(RulesetError, match="no rule owns this crate"):
+        parse_ruleset(data)
+
+
+def test_two_crates_suppressing_each_other_form_a_cycle() -> None:
+    data = rust_crate_ruleset()
+    data["rust_crate"][0]["suppressed_by"] = ["boring"]
+    data["rust_crate"][1]["suppressed_by"] = ["ring"]
+    with pytest.raises(
+        RulesetError,
+        match=re.escape(
+            "suppressed_by forms a cycle: crate 'boring' -> crate 'ring' -> crate 'boring'"
+        ),
+    ):
+        parse_ruleset(data)
+
+
+def test_two_rules_suppressing_each_other_form_a_cycle() -> None:
+    data = minimal()
+    data["rule"][0]["suppressed_by"] = ["OTHER"]
+    other = dict(data["rule"][0])
+    other["id"] = "OTHER"
+    other["suppressed_by"] = ["DIST_NON_APPROVED_CRYPTO"]
+    data["rule"].append(other)
+    with pytest.raises(RulesetError, match="forms a cycle"):
+        parse_ruleset(data)
+
+
+def test_crates_and_rules_mixed_together_form_a_cycle() -> None:
+    """Crate x, owned by rule S, is suppressed by crate y, owned by rule R; R is
+    suppressed by S. That closes a cycle through S -> x -> y -> S."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="RULE_R",
+            layer="binary",
+            match={"kind": "rust_crate", "table": "rust_crate"},
+            suppressed_by=["RULE_S"],
+        )
+    )
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="RULE_S",
+            layer="binary",
+            match={"kind": "rust_crate", "table": "rust_crate"},
+        )
+    )
+    data["rust_crate"] = [
+        {"name": "x", "rule": "RULE_S", "severity": "high", "why": "w", "suppressed_by": ["y"]},
+        {"name": "y", "rule": "RULE_R", "severity": "high", "why": "w"},
+    ]
+    with pytest.raises(RulesetError, match="forms a cycle"):
+        parse_ruleset(data)
+
+
+def test_a_one_directional_relation_between_two_crates_of_the_same_rule_loads_clean() -> None:
+    """The aws-lc-rs / aws-lc-fips-sys shape: both owned by one rule, one direction
+    only. The cycle check must not flag this as a self-rule false positive."""
+    data = rust_crate_ruleset()
+    data["rust_crate"][0]["suppressed_by"] = ["boring"]
+    parse_ruleset(data)
+
+
+def test_a_bare_string_suppressed_by_on_a_rule_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["suppressed_by"] = "DIST_NON_APPROVED_CRYPTO"
+    with pytest.raises(RulesetError, match="suppressed_by must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_a_bare_string_suppressed_by_on_a_crate_entry_is_rejected() -> None:
+    data = rust_crate_ruleset()
+    data["rust_crate"][0]["suppressed_by"] = "boring"
+    with pytest.raises(RulesetError, match="suppressed_by must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_suppressed_by_on_a_crypto_distribution_entry_is_rejected() -> None:
+    """Only `[[rust_crate]]` reads entry-level `suppressed_by`; the natural-looking
+    analogy on another table would load clean and do nothing, which is the typo
+    trap the loader exists to catch."""
+    data = minimal()
+    data["crypto_distribution"][0]["suppressed_by"] = ["whatever"]
+    with pytest.raises(
+        RulesetError, match=r"suppressed_by is only supported on \[\[rust_crate\]\]"
+    ):
+        parse_ruleset(data)
+
+
+def test_suppressed_by_on_a_crypto_library_entry_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["suppressed_by"] = ["whatever"]
+    with pytest.raises(
+        RulesetError, match=r"suppressed_by is only supported on \[\[rust_crate\]\]"
+    ):
+        parse_ruleset(data)
+
+
+def test_suppressed_by_on_a_python_module_entry_is_rejected() -> None:
+    data = minimal()
+    data["python_module"][0]["suppressed_by"] = ["whatever"]
+    with pytest.raises(
+        RulesetError, match=r"suppressed_by is only supported on \[\[rust_crate\]\]"
+    ):
+        parse_ruleset(data)
+
+
+def test_aws_lc_rs_suppressed_by_resolves_to_the_fips_sys_finding_key() -> None:
+    ruleset = load_ruleset()
+    assert ruleset.rust_crates["aws-lc-rs"].suppressed_by == (
+        ("BIN_RUST_CRYPTO_CRATE", "aws-lc-fips-sys"),
+    )
 
 
 def test_a_library_naming_a_crate_the_crate_table_lacks_is_rejected() -> None:

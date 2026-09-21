@@ -127,3 +127,34 @@ headline when a wheel carries both; the object's own `matched_symbols` is what t
 them apart.
 
 Full argument: [`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md).
+
+
+## Suppression is keyed on rule, subject and object
+
+**Accepted.**
+
+`suppressed_by` keys on the object a hit fired on, not the whole wheel: a suppressor on
+one binary never drops a finding on a different one. Because of that, a suppressor whose
+hits are located on a different kind of path than the rule it names never suppresses it,
+since their hits never share a path; what a rule locates on follows its matcher kind, not
+its `layer` -- most binary-layer `linkage` rules locate on the wheel path, not on the
+binary they describe, so a same-layer relation naming one of them against a per-object
+binary rule is just as dead as a cross-layer one. A `linkage` match with `object_values`
+set is the exception: it locates per object instead, so a relation naming that rule
+against a per-object binary rule on the same object does suppress. The loader accepts
+either shape without complaint, so check what each side locates on rather than which
+layer or matcher kind alone promises.
+A `[[rust_crate]]` entry can also carry its own
+`suppressed_by`, naming another crate entry, so two subjects of the same rule --
+`aws-lc-rs` and its FIPS build `aws-lc-fips-sys` -- can relate the way two whole rules
+already can; no other table reads entry-level `suppressed_by`, and the loader refuses it
+there. Only the `rust_crate` matcher honours it, though: `sbom_component` takes a
+component's verdict from the same `[[rust_crate]]` entry but not its `suppressed_by`, so
+an SBOM naming both aws-lc-rs and aws-lc-fips-sys still reports both, an accepted
+over-flag. Suppression stays non-cascading, and the loader refuses a `suppressed_by`
+cycle across rules and crates, including one closed by an ownerless crate, rather than
+silently dropping every member of one.
+
+Full argument, including why `aws-lc-sys` and `rustls` get no such relation, and why the
+SBOM gap is left as an accepted over-flag rather than fixed:
+[`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md).
