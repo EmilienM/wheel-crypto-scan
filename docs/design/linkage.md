@@ -127,10 +127,17 @@ exists to draw.
 **Every `bundled` has a rule, by enumeration.** Every `bundled` posture `_binary_posture`
 can produce has a rule behind it, audited one branch at a time. But `system` has an
 aggregate-level backstop that no per-mechanism enumeration needs to keep in step, and
-`bundled` does not: nothing would notice if a fourth mechanism were added without a fourth
-rule. The cheap close is a behavioural invariant test asserting that no definite
-`openssl_linkage` value reaches the record without a contributing rule having fired. It costs
-nothing and is worth adding regardless.
+`bundled` does not: no aggregate rule stands behind it the way `DERIVED_SYSTEM_OPENSSL_ONLY`
+stands behind `system`. Behavioural invariant tests hold the enumeration instead of
+trusting it by inspection: `test_every_definite_openssl_posture_has_a_finding_on_its_object`
+asserts every object reading a definite posture carries a finding on it, in a category that
+fits, `test_every_definite_return_in_the_posture_functions_is_reached_by_a_fixture` fails
+when `_binary_posture` or `needed_posture` gains a definite `return` no fixture reaches, a
+pair of tests drops rules together to hold the category and subject filters to account
+rather than only the object's location, and `test_aggregate_never_returns_a_definite_posture_without_one`
+runs `_aggregate` over its whole input space to hold that `unanswered`/`declared` can never
+manufacture a definite posture on their own. A new mechanism needs a fixture before it can
+need a rule.
 
 ### An absolute `needed` entry is never resolved by basename
 

@@ -1511,31 +1511,68 @@ literal-rename path (`BIN_NEEDED_MANGLED_CRYPTO`), and the resolves-within-the-w
 `_binary_posture` reaches `LINKAGE_BUNDLED`. But `system` has an aggregate-level
 backstop no per-mechanism enumeration needs to keep in step -- `DERIVED_SYSTEM_OPENSSL_ONLY`
 fires off `linkage.get("openssl") == "system"` directly, whatever mechanism produced it
--- and `bundled` does not: nothing here would notice if a fourth mechanism were added to
-`_binary_posture` without a fourth rule to match it. That asymmetry holds for every
+-- and `bundled` does not: no aggregate rule stands behind it the way
+`DERIVED_SYSTEM_OPENSSL_ONLY` stands behind `system`. That asymmetry holds for every
 mechanism; `BIN_BUNDLED_OPENSSL` and `BIN_NEEDED_MANGLED_CRYPTO` work the same way.
 
-**Two ways to close it, both deferred, both measured rather than assumed.** An
-aggregate `openssl` "bundled" rule, mirroring `DERIVED_SYSTEM_OPENSSL_ONLY`, breaks
-exactly one test -- an id-enumeration test, not a behavioural one -- and the objection
-that it cannot name which object resolved `bundled` is weaker than it first reads:
-`DERIVED_SYSTEM_OPENSSL_ONLY` carries the identical limitation (it cannot name which
-object resolved system either) and fires *alongside* the mechanism-specific rule rather
-than replacing it, so the aggregate rule would cost nothing that `system` does not
-already cost. The cheaper option is not a new rule at all but a behavioural invariant
-test -- the same species of guard as the `partial_analysis`/`partial_reasons` agreement
-test and the test asserting every recordable failure maps to a rule -- asserting that no
-definite `openssl_linkage` value reaches the record without at least one contributing
-rule having fired for it. That test changes no output and costs nothing to add; it is
-not written yet, and it stands on its own. A change to `_binary_posture` that adds a
-fourth path to `bundled` should read this paragraph before assuming the existing rules
-still enumerate every case, and should prefer adding the invariant test over trusting
-enumeration again.
+**What holds the enumeration is a behavioural invariant, not the audit alone.** The
+same species of guard as the `partial_analysis`/`partial_reasons` agreement test:
+several tests in `tests/test_linkage.py` stand in for re-reading `_binary_posture` by
+hand every time it changes. `test_every_definite_openssl_posture_has_a_finding_on_its_object`
+asserts that every object whose own posture is `system`, `bundled`, `static` or `mixed`
+carries a finding on that same object, in a rule category that fits the posture --
+per object, not per wheel, because a wheel-level check ("some finding fired
+somewhere") is satisfied vacuously: by the vendored member's own `BIN_BUNDLED_OPENSSL`
+finding when the object actually reading `bundled` is a different one, or by
+`BIN_OPENSSL_SYMBOLS_IMPORTED` on an object that only ever imports the library.
+`test_every_definite_return_in_the_posture_functions_is_reached_by_a_fixture` traces
+`_binary_posture` and `needed_posture` while their fixtures run and fails when either
+function gains a definite `return` no fixture's evidence reaches, so a fourth
+mechanism cannot silently join the three above without first earning a fixture and
+then, if that fixture is unexplained, a rule. Two more tests hold the per-object check
+itself to its subject and category conditions rather than trusting the map by
+inspection: `test_dropping_both_system_rules_leaves_the_header_banner_object_unexplained`
+drops both rules that can explain `system` from one fixture that also carries its own
+`BIN_OPENSSL_BANNER` finding in the wrong category, and
+`test_dropping_the_bundled_openssl_rule_leaves_only_a_libsodium_finding` drops
+the rule that explains an object's `bundled` openssl posture while a same-object,
+same-category finding for a *different* library survives it -- each proving that the
+category and the subject filter, not just the object's location, are load-bearing.
+A last test, `test_aggregate_never_returns_a_definite_posture_without_one`, closes
+the wheel-level check's gap: it runs `_aggregate` directly over every subset
+of the postures `_binary_posture`/`needed_posture` can produce, crossed with
+`unanswered` and `declared`, and asserts that a result in `_DEFINITE_POSTURES` always
+traces back to a definite posture already in the input -- so `unanswered`/`declared`
+promoting a wheel straight to `bundled` with no object explaining it, which no fixture
+above can exercise because none carries an SBOM or an unreadable member beside an
+otherwise silent wheel, fails here instead of only being asserted.
+
+**An aggregate `openssl` "bundled" rule, mirroring `DERIVED_SYSTEM_OPENSSL_ONLY`,
+stays the unadopted alternative.** It breaks exactly one test -- an id-enumeration
+test, not a behavioural one -- and the objection that it cannot name which object
+resolved `bundled` is weaker than it first reads: `DERIVED_SYSTEM_OPENSSL_ONLY`
+carries the identical limitation and fires *alongside* the mechanism-specific rule
+rather than replacing it, so the aggregate rule would cost nothing that `system` does
+not already cost. It is not needed now because the invariant test above closes the
+same gap without adding a rule id or a line to any record.
+
+**The category map the invariant test uses is its own, and coarse.** `system` accepts
+either `system-crypto-link` rule that can explain it, `bundled` and `static` both
+accept `bundled-crypto`, and `mixed` accepts either -- so an object that both imports
+the library and carries a banner satisfies `system` through
+`BIN_OPENSSL_SYMBOLS_IMPORTED` alone, without needing the `needed`-entry rule too, and
+a bundled path reached only beside a system signal, so it is always `mixed`, is
+explained by either category's rule on its own. Because the map is coarse, a fixture
+carrying extra evidence would let an unrelated rule in the same category mask a
+mechanism whose own rule was removed, so the fixtures each carry only the evidence
+their own branch needs.
 
 Revisit if a fourth mechanism is ever added to `_binary_posture`'s `bundled` branches,
-or if the two-file basename collision is seen in a real wheel often enough that the
-imprecision, rather than just the silence, needs closing. The invariant test above is
-worth adding regardless: it is free.
+if the two-file basename collision is seen in a real wheel often enough that the
+imprecision, rather than just the silence, needs closing, or if a second library is
+ever set `always_report`: the invariant test's fixtures and its
+`test_openssl_is_the_only_library_always_reported` guard are both written for
+`openssl` alone.
 
 ### An absolute `needed` entry is never resolved by basename
 
