@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "21"
+ruleset_version = "22"
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +602,11 @@ why = "BLAKE2 and BLAKE3 markers in read-only data, for the common case where th
 name = "go_boring"
 substrings = ["crypto/internal/boring", "GOEXPERIMENT=boringcrypto", "boringcrypto"]
 why = "A Go binary built with the BoringCrypto backend rather than stock Go crypto."
+
+[[string_group]]
+name = "go_fips140"
+substrings = ["GOFIPS140=", "fips140=on"]
+why = "Build settings a Go binary records in .go.buildinfo when it was built against Go's own FIPS 140-3 module: GOFIPS140 names the module version, and DefaultGODEBUG=fips140=on says the build defaults to enforcing it. Measured on go1.27.1: a GOFIPS140=v1.0.0 build carries both and a stock build carries neither, while crypto/internal/fips140 package paths appear in both (381 in the stock binary, 334 in the FIPS one) and so cannot tell them apart."
 
 [[string_group]]
 name = "go_stock_crypto"
@@ -1612,6 +1617,20 @@ kind = "binary_string"
 group = "go_boring"
 
 [[rule]]
+id = "BIN_GO_FIPS140"
+layer = "binary"
+category = "go-crypto"
+severity = "medium"
+confidence = "medium"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Go binary built against the Go FIPS 140-3 module"
+why = "Since Go 1.24 the standard library routes its crypto through crypto/internal/fips140, and a build with GOFIPS140 set compiles the validated module in and defaults GODEBUG to fips140=on. That is a condition rather than an answer: the module is in force only if the deployment does not turn GODEBUG back off, and which validated version was compiled in is a property of the toolchain this wheel does not state. Matched on the build settings rather than on the package paths, which a stock build carries too."
+[rule.match]
+kind = "binary_string"
+group = "go_fips140"
+
+[[rule]]
 id = "BIN_GO_STOCK_CRYPTO"
 layer = "binary"
 category = "go-crypto"
@@ -1620,8 +1639,8 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Go binary using stock Go crypto"
-why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto is detected, because a BoringCrypto build still contains the stock package paths."
-suppressed_by = ["BIN_GO_BORING_CRYPTO"]
+why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto or the Go FIPS 140-3 module is detected, because both builds still contain the stock package paths: measured on go1.27.1, a GOFIPS140 build carries crypto/sha256. and crypto/aes. exactly as often as a stock one, so without the suppression a binary whose crypto goes through the validated module read as non-approved. Suppression is per wheel rather than per object, so a wheel shipping one FIPS-built and one stock Go binary reports only the condition; that is the same trade BoringCrypto has always carried here."
+suppressed_by = ["BIN_GO_BORING_CRYPTO", "BIN_GO_FIPS140"]
 [rule.match]
 kind = "binary_string"
 group = "go_stock_crypto"

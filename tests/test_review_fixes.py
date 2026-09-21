@@ -426,3 +426,89 @@ def test_cargo_paths_are_read_whichever_separator_built_the_wheel(
     record = scan_wheel(wheel, context)
     crates = [crate["name"] for binary in record["binaries"] for crate in binary["rust_crates"]]
     assert crates == ["ring"]
+
+
+# --- a Go binary built against the FIPS module is not "stock Go crypto" ------
+
+
+def _go_buildinfo(version: str, settings: str) -> bytes:
+    """A Go 1.18+ buildinfo section: header, inline version, then modinfo.
+
+    The modinfo string is where `go version -m` reads its `build KEY=VALUE` lines
+    from, and it is what a FIPS build differs from a stock one by. Shaped after a real
+    go1.27.1 section rather than invented: 32-byte header with the inline-strings flag,
+    a uvarint-prefixed version, then a uvarint-prefixed blob the toolchain wraps in
+    16-byte sentinels.
+    """
+
+    def uvarint(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            out.append(byte | 0x80 if value else byte)
+            if not value:
+                return bytes(out)
+
+    header = b"\xff Go buildinf:" + bytes([8, 0x2]) + b"\x00" * 16
+    modinfo = b"\xf9\xff\xff\xff\xff\xff\xff\xff" * 2 + settings.encode() + b"\xf9" * 16
+    return header + uvarint(len(version)) + version.encode() + uvarint(len(modinfo)) + modinfo
+
+
+_GO_STOCK_RODATA = b"\x00crypto/sha256.block\x00crypto/aes.NewCipher\x00"
+_GO_FIPS_SETTINGS = (
+    "build\t-tags=fips140v1.0\nbuild\tDefaultGODEBUG=fips140=on\nbuild\tGOFIPS140=v1.0.0-c2097c7c\n"
+)
+
+
+def _go_wheel(tmp_path: Path, name: str, buildinfo: bytes) -> Path:
+    return build_wheel(
+        tmp_path / f"{name}-1.0-{MANYLINUX}.whl",
+        name=name,
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            f"{name}/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",), rodata=_GO_STOCK_RODATA, go_buildinfo=buildinfo
+            ).build()
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "settings"),
+    [
+        # go1.27.1 with GOFIPS140=v1.0.0 records both of these, but they are
+        # independent signals and each is pinned on its own: a build can name the
+        # module version while a //go:debug directive turns enforcement off, and a
+        # build can enforce the in-tree module without GOFIPS140 naming a version.
+        ("both", _GO_FIPS_SETTINGS),
+        ("module version only", "build\tGOFIPS140=v1.0.0-c2097c7c\n"),
+        ("godebug default only", "build\tDefaultGODEBUG=fips140=on\n"),
+    ],
+)
+def test_a_go_fips140_build_is_a_condition_not_a_non_approved_primitive(
+    context, tmp_path: Path, label: str, settings: str
+) -> None:
+    """Since Go 1.24 the standard library runs its crypto through the fips140
+    packages, so a GOFIPS140 build carries the stock package paths exactly as a stock
+    build does: measured on go1.27.1, `crypto/sha256.` appears 9 times in both. Keying
+    on the paths alone reported a binary whose crypto goes through the validated
+    module as NON_APPROVED_CRYPTO, with nothing to suppress it (#126).
+    """
+    wheel = _go_wheel(tmp_path, "gofips", _go_buildinfo("go1.27.1", settings))
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_GO_FIPS140" in record["verdict"]["rule_ids"]
+    assert "BIN_GO_STOCK_CRYPTO" not in record["verdict"]["rule_ids"]
+
+
+def test_a_stock_go_build_is_unchanged(context, tmp_path: Path) -> None:
+    """The other half of the pair: suppression must not reach a build that never
+    named the module, or the fix would have bought a false clean."""
+    settings = "build\t-buildmode=exe\nbuild\tGOARCH=amd64\n"
+    wheel = _go_wheel(tmp_path, "gostock", _go_buildinfo("go1.27.1", settings))
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "BIN_GO_STOCK_CRYPTO" in record["verdict"]["rule_ids"]
+    assert "BIN_GO_FIPS140" not in record["verdict"]["rule_ids"]

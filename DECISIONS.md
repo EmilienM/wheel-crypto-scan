@@ -4843,3 +4843,51 @@ narrow ones, and the crate names no pattern can close at all. A capability earns
 when the enumeration cannot express the match, not when the list is long.
 
 Tracked in [#123](https://github.com/EmilienM/wheel-crypto-scan/issues/123).
+
+## A Go FIPS build is told from a stock one by its build settings, not its package paths
+
+**Accepted.**
+
+`go_stock_crypto` matches `crypto/sha256.`, `crypto/aes.`, `crypto/rsa.` and
+`crypto/ecdsa.`, and `BIN_GO_STOCK_CRYPTO` turns that into `NON_APPROVED_CRYPTO`. Since
+Go 1.24 the standard library implements those packages on top of
+`crypto/internal/fips140`, so a binary built against the validated module still carries
+every one of those paths and read as non-approved with nothing to suppress it. That is a
+wrong verdict rather than a missing one, which is the worse direction: the wheel that did
+the right thing is the one that gets flagged.
+
+**Measured rather than reasoned, on go1.27.1**, building one program two ways:
+
+| | stock | `GOFIPS140=v1.0.0` |
+|---|---|---|
+| `crypto/sha256.` occurrences | 9 | 9 |
+| `crypto/aes.` occurrences | 6 | 6 |
+| `crypto/internal/fips140` occurrences | 381 | 334 |
+| `GOFIPS140=` in `.go.buildinfo` | absent | present |
+| `fips140=on` in `.go.buildinfo` | absent | present |
+
+The package paths cannot tell them apart, and the count going *down* in the FIPS build
+rules out any threshold on them too. What separates the two is what `go version -m`
+prints: `build GOFIPS140=v1.0.0-c2097c7c` and `build DefaultGODEBUG=fips140=on`, both of
+which the toolchain writes into the `.go.buildinfo` section, which is `SHF_ALLOC` and so
+already reaches the strings pass.
+
+**Why this needed no reader change.** The issue was filed expecting one: parse the
+modinfo blob, add a field to `GoBuildInfo`, bump `ANALYZER_VERSION`. Measuring first made
+that unnecessary. The settings are printable strings in a section the ELF reader already
+scans, so a `[[string_group]]` and a rule reach them, and the fix is policy, where this
+project says policy belongs. The two substrings are matched independently on purpose: a
+build can name a module version while a `//go:debug` directive turns enforcement off, and
+a build can enforce the in-tree module without `GOFIPS140` naming a version. A test pins
+each one alone, because a fixture carrying both would pass with either half deleted.
+
+**What it costs.** `CONDITIONAL`, never anything passing. The module being compiled in
+does not mean it is in force: `GODEBUG=fips140` can be set back to off at run time, and
+which validated version the toolchain carried is not something the wheel states. The
+suppression is also per wheel rather than per object, inherited from the BoringCrypto
+rule it sits beside, so a wheel shipping one FIPS-built and one stock Go binary reports
+only the condition. A string match is likewise not proof a setting was recorded: a binary
+that merely mentions `GOFIPS140` matches. Both failure directions land on "a human looks
+at this", which is the safe one.
+
+Tracked in [#126](https://github.com/EmilienM/wheel-crypto-scan/issues/126).
