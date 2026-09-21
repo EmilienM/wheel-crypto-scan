@@ -220,7 +220,7 @@ def _scan_was_aborted(record: dict[str, Any]) -> bool:
     as done on `--resume`, would serve the same stale non-answer forever even after a
     later attempt would read the wheel correctly, or read the rest of it that a
     transient failure on one member cost the first time. See DESIGN.md, "A record
-    produced without reading the wheel is never cached."
+    produced without reading the wheel is never cached".
     """
     return any(error["kind"] in SCAN_ABORTED_KINDS for error in record.get("errors", ()))
 

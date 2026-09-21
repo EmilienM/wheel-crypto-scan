@@ -155,7 +155,7 @@ ERROR_KINDS: frozenset[str] = frozenset(
 # covers `layers/python_ast.py` only, and the blast radius differs (one SBOM, not the
 # whole wheel's Python evidence).
 #
-# See DESIGN.md, "A record produced without reading the wheel is never cached."
+# See DESIGN.md, "A record produced without reading the wheel is never cached".
 SCAN_ABORTED_KINDS: frozenset[str] = frozenset(
     {
         BAD_ZIP,
