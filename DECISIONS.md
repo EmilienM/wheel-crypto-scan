@@ -4722,3 +4722,68 @@ breaks. See "Sections are found by type, not by a name nobody checks", the parag
 beginning "`elf_symtab_unread` was on this list too, and is not any more (#117)".
 
 Tracked in [#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117).
+
+## `openssl_banner` names every major digit, not the majors that shipped
+
+**Accepted.**
+
+`[[string_group]] openssl_banner` listed `OpenSSL 3.`, `OpenSSL 1.1.` and `OpenSSL 1.0.`
+OpenSSL 4.0 shipped, and the current PyPI wheel of the package this tool was written
+for compiles it in: `cryptography` 50.0.1 carries `OpenSSL 4.0.2 25 Aug 2026` in the
+read-only data of `cryptography/hazmat/bindings/_rust.abi3.so`, declares no `DT_NEEDED`
+on libcrypto or libssl, exports no OpenSSL symbol from `.dynsym` (its 776 `EVP_*`
+definitions are local entries in `.symtab`, which nothing consults while `.dynsym` is
+present), and names `openssl-sys 0.9.117` in its cargo paths. The banner was the entire
+evidence, the banner was not listed, and the wheel came out `openssl_linkage: none`: a
+wheel carrying its own OpenSSL read exactly like a wheel with none in it. Nothing
+failed while it did. The object parsed, every structural check passed, and the record
+was clean, which is what makes this worth writing down rather than quietly extending
+the list.
+
+**Why a digit is still required.** `OpenSSL ` on its own also matches prose. The same
+`_rust.abi3.so` carries `OpenSSL 3's legacy provider failed to load`, and so does a
+build that links the system library, while a banner is one of the two things that make
+an object read `static`. Requiring a digit and a dot rules that string out. The
+residual over-match, a string like `requires OpenSSL 3.0 or newer` on an object that
+also resolves the system library, resolves to `mixed` through `_binary_posture`'s
+`sum(...) > 1` branch rather than to a false clean.
+
+**Why all ten digits rather than the four that exist.** A major nobody has listed yet
+is the bug above, waiting. Listing 0 through 9 costs one line, no code, and no
+measurable time (the alternation is compiled once per process), and it cannot
+over-match a version that does not exist. Measured over 18 native wheels off PyPI
+(`cryptography`, `psycopg-binary`, `confluent-kafka`, `awscrt`, `grpcio`, `curl_cffi`,
+`PyNaCl`, `argon2-cffi-bindings`, `pyzmq`, `hf-xet`, `lxml`, `scipy`, `aiohttp`,
+`uvloop`, `zstandard`, `bcrypt`, `pycryptodome`, `requests`): exactly one record
+changes, `cryptography` from `none` to `static` with `BIN_STATIC_OPENSSL` added, and
+the other seventeen are byte-identical. Three of them carry banners (majors 3 and 4);
+none gains a match it did not already have. An independent review run over 81 wheels
+found the same: no verdict and no banner-match differences beyond the intended one.
+
+**What was rejected.** Letting a `[[string_group]]` carry a bounded pattern
+(`OpenSSL \d+\.`) is the same answer with a code change behind it. `ruleset_loader.py`
+refuses a non-printable substring precisely so `match_string_groups`' claimed-run
+optimization can assume no pattern spans `RUN_SEPARATOR` (see "A `[[string_group]]`
+substring must be printable ASCII"), and a pattern voids that assumption unless the
+loader also refuses one that can match `"\n"`; `tests/test_binfmt_strings.py` derives
+its separator-crossing inputs from `group.substrings`, which a pattern group would
+leave with nothing to derive from. Ten literals buy the same decades and touch none of
+it. Also rejected: the `why` telling whoever maintains the ruleset to add the next
+major when it ships. This file has refused that remedy before ("A cause added later
+matches no include list", and the enumeration risk recorded for #57): a list that
+depends on somebody remembering is the failure, not the fix.
+
+**What it costs.** A banner for a major past 9. That is the same silent shape as
+before, and the argument for accepting it is that OpenSSL took 23 years to reach 3.
+
+`ruleset_version` moves and `ANALYZER_VERSION` does not. Both salt the cache key, so
+re-evaluation of already-scanned wheels is already bought by the bump that was made;
+`ANALYZER_VERSION` states in the record that extraction changed, and here only policy
+did.
+
+**Revisit if** another `[[string_group]]` needs the same treatment. `nss` (`NSS 3.`)
+has the identical shape and survives only because its two other arms carry no version.
+A second case is the point at which a pattern capability stops being more machinery
+than the problem deserves.
+
+Tracked in [#123](https://github.com/EmilienM/wheel-crypto-scan/issues/123).

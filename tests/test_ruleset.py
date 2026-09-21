@@ -93,7 +93,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "19"
+    assert ruleset.version == "20"
     assert len(ruleset.rules) > 20
 
 
@@ -101,6 +101,22 @@ def test_shipped_ruleset_knows_the_bundled_openssl_rule() -> None:
     rule = load_ruleset().rule("BIN_BUNDLED_OPENSSL")
     assert rule.verdict == "CONDITIONAL"
     assert [match["kind"] for match in rule.matches] == ["bundled_library"]
+
+
+def test_the_shipped_banner_group_matches_every_openssl_major() -> None:
+    """A major this group does not name is a static copy that reads as no OpenSSL.
+
+    Written against the property rather than against the group's own substrings: a
+    test that reads the list back and matches each entry against itself passes
+    whatever the list says, which is how this group came to stop at major 3 while
+    cryptography's own PyPI wheels already compiled 4 in (#123). The negative case is
+    the string that rules out the cheaper fix -- `OpenSSL ` with no digit also claims
+    prose that a wheel linking the system library carries.
+    """
+    pattern = load_ruleset().compile_patterns().binary.string_group("openssl_banner").pattern
+    for major in range(10):
+        assert pattern.search(f"OpenSSL {major}.0.14 4 Jun 2024"), major
+    assert pattern.search("OpenSSL 3's legacy provider failed to load") is None
 
 
 def test_rules_can_be_selected_by_matcher_kind() -> None:
