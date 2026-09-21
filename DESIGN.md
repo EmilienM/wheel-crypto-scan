@@ -5400,7 +5400,11 @@ The class and linkage help text shown in the page -- `CLASS_HELP` and `LINKAGE_H
 `report.py` -- are plain constants rather than a ruleset addition, so no HTML-only text
 can affect a verdict or need a `ruleset_version` bump. `CLASS_HELP` is verbatim from
 SCHEMA.md's "Verdict classes" table, held to that by a test that parses the table
-directly rather than only asserting the claim in prose.
+directly rather than only asserting the claim in prose. `LINKAGE_HELP` is a short form
+of the `conditions.openssl_linkage` table instead, since several of its rows run to a
+paragraph; a test holds it to the same set of values and requires each short form to
+name the SBOM exactly when its row does, so a tooltip cannot send the reader to the
+binaries for evidence that came from the wheel's SBOM.
 
 **What was rejected, and why.**
 

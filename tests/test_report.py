@@ -434,6 +434,26 @@ def test_class_help_matches_the_output_schema_verdict_table() -> None:
     assert documented == CLASS_HELP
 
 
+def test_linkage_help_follows_the_output_schema_linkage_table() -> None:
+    """`LINKAGE_HELP` is a short form of SCHEMA.md's `conditions.openssl_linkage` table,
+    not a verbatim copy: several of that table's rows run to a paragraph, too long for
+    a tooltip. What a short form cannot lose is an input the field is read from, because
+    a tooltip that omits one sends the reader looking in the wrong place -- a wheel that
+    reads `unknown` only because its own SBOM names the library has nothing to find in
+    its binaries. Parse the table directly and check each value's short form names the
+    SBOM exactly when its SCHEMA.md row does, the same drift-detection approach as
+    `test_class_help_matches_the_output_schema_verdict_table` above."""
+    schema = Path(__file__).parent.parent / "SCHEMA.md"
+    text = schema.read_text(encoding="utf-8")
+    section = text.split("### `conditions.openssl_linkage`", 1)[1].split("\n### ", 1)[0]
+    rows = re.findall(r"^\|\s*`(\w+)`\s*\|\s*(.+)\s*\|\s*$", section, re.MULTILINE)
+    documented = dict(rows)
+    assert documented, "no linkage rows parsed from SCHEMA.md"
+    assert set(documented) == set(LINKAGE_HELP)
+    for value, meaning in documented.items():
+        assert ("SBOM" in meaning) == ("SBOM" in LINKAGE_HELP[value]), value
+
+
 def test_html_is_self_contained() -> None:
     ruleset = load_ruleset(None)
     page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
