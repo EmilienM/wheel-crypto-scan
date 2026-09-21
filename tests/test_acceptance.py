@@ -953,6 +953,8 @@ def test_a_pep_770_sbom_is_read(context, tmp_path: Path) -> None:
         if finding["rule_id"] == "SBOM_CRYPTO_COMPONENT"
     }
     assert subjects == {"ring", "openssl"}
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "unknown"
+    assert "OPAQUE" in record["verdict"]["classes"]
 
 
 # --------------------------------------------------------------------------

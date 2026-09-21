@@ -28,7 +28,9 @@ from wheel_crypto_scan.evidence import (
     ArtifactInventory,
     BinaryEvidence,
     Evidence,
+    MetadataEvidence,
     RustCrate,
+    SbomComponent,
     ScanError,
     StringMatch,
     SymbolMatch,
@@ -65,6 +67,7 @@ def wheel(
     *binaries: BinaryEvidence,
     errors: tuple[ScanError, ...] = (),
     artifacts: ArtifactInventory | None = None,
+    metadata: MetadataEvidence | None = None,
 ) -> Evidence:
     return Evidence(
         filename="demo-1.0-py3-none-any.whl",
@@ -73,6 +76,18 @@ def wheel(
         artifacts=artifacts if artifacts is not None else ArtifactInventory(),
         binaries=binaries,
         errors=errors,
+        metadata=metadata,
+    )
+
+
+def sbom(*names: str, purl: str | None = None) -> MetadataEvidence:
+    return MetadataEvidence(
+        name="demo",
+        canonical_name="demo",
+        version="1.0",
+        sbom_components=tuple(
+            SbomComponent(n, "0.9.117", purl, "demo-1.0.dist-info/sboms/a.cdx.json") for n in names
+        ),
     )
 
 
@@ -811,6 +826,128 @@ def test_object_postures_are_what_the_field_is_aggregated_from(ruleset) -> None:
     )
     assert object_postures(ruleset, evidence, "openssl") == (LINKAGE_UNKNOWN, LINKAGE_SYSTEM)
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+# --- an SBOM says the wheel uses a library, not which copy -------------------
+
+
+@pytest.mark.parametrize("name", ["openssl", "openssl-sys", "openssl-src"])
+def test_an_sbom_naming_an_openssl_crate_with_no_object_evidence_is_unknown(ruleset, name) -> None:
+    """The issue's own reproduction: an SBOM naming `openssl-sys` with only an
+    unrelated dependency in the one object present must not read `none`."""
+    evidence = wheel(
+        binary("pkg/_rust.abi3.so", needed=("libc.so.6",), dynsym_count=1),
+        metadata=sbom(name),
+    )
+    assert resolve_linkage(ruleset, evidence) == {"openssl": LINKAGE_UNKNOWN}
+
+
+def test_an_sbom_alone_with_no_binary_is_unknown(ruleset) -> None:
+    """The signal does not depend on any object existing at all."""
+    evidence = wheel(metadata=sbom("openssl-sys"))
+    assert resolve_linkage(ruleset, evidence) == {"openssl": LINKAGE_UNKNOWN}
+
+
+def test_an_sbom_component_moves_only_the_library_it_names(ruleset) -> None:
+    """Library-specific, and not gated on `always_report`: `libsodium` is not always
+    reported, but the SBOM naming it still moves its own field."""
+    evidence = wheel(metadata=sbom("libsodium"))
+    assert resolve_linkage(ruleset, evidence) == {
+        "openssl": LINKAGE_NONE,
+        "libsodium": LINKAGE_UNKNOWN,
+    }
+
+
+@pytest.mark.parametrize("name", ["ring", "cryptography", "libcrypto"])
+def test_an_sbom_component_that_does_not_bind_openssl_leaves_it_none(ruleset, name) -> None:
+    """`ring` is a rust_crate that is not one of openssl's `crates`; `cryptography` is
+    a `crypto_distribution`, not a copy of the library; `libcrypto` is a soname, which
+    this field never compares against an SBOM component name."""
+    evidence = wheel(metadata=sbom(name))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
+
+
+@pytest.mark.parametrize("name", ["OpenSSL", "OPENSSL-SYS"])
+def test_an_sbom_component_spelled_differently_from_the_ruleset_leaves_openssl_none(
+    ruleset, name
+) -> None:
+    """The comparison is exact and case-sensitive, like `SBOM_CRYPTO_COMPONENT`'s own
+    (`engine._sbom_entry`'s table lookups). A component spelled with different case
+    matches neither, so it must move neither the field nor the finding."""
+    evidence = wheel(metadata=sbom(name))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
+
+
+@pytest.mark.parametrize("name", ["argon2", "blake2"])
+def test_an_sbom_naming_a_pure_rust_crate_does_not_move_its_colliding_c_library(
+    ruleset, name
+) -> None:
+    """`argon2` and `blake2` are each both a `[[crypto_library]]` (the C reference
+    implementations, libargon2 and libb2) and a *different* `[[rust_crate]]` of the
+    same name (the pure-Rust RustCrypto crates, which do not bind the C library).
+    Neither C library lists its own name in `crates`, unlike `openssl`, whose crate of
+    the same name really does bind libssl/libcrypto. An SBOM component naming the
+    pure-Rust crate -- a `pkg:cargo/...` purl, the crates.io registry type -- must not
+    move the C library's linkage: that would claim the wheel carries a C library it
+    does not."""
+    evidence = wheel(metadata=sbom(name, purl=f"pkg:cargo/{name}@0.5.3"))
+    assert name not in resolve_linkage(ruleset, evidence)
+
+
+@pytest.mark.parametrize("name", ["argon2", "blake2"])
+@pytest.mark.parametrize("purl", [None, "pkg:generic/{name}"], ids=["no-purl", "generic-purl"])
+def test_an_sbom_naming_the_c_library_under_the_colliding_name_still_moves_it(
+    ruleset, name, purl
+) -> None:
+    """The same name collision as above, but the component's `purl` does not say
+    `pkg:cargo/...` -- either there is none at all, or it is a non-cargo type such as
+    `pkg:generic/...`, the shape a real libargon2/libb2 SBOM entry would carry. Only a
+    cargo purl says "this is the pure-Rust crate"; anything else still could name the
+    C library, so it must still move `<name>_linkage`, the same as any other
+    `[[crypto_library]]` name with no rust_crate collision. Leaving this unmoved would
+    report `SBOM_CRYPTO_COMPONENT` on the name (`engine._sbom_entry` matches by name
+    alone) with no field reflecting it."""
+    evidence = wheel(metadata=sbom(name, purl=purl.format(name=name) if purl else None))
+    assert resolve_linkage(ruleset, evidence)[name] == LINKAGE_UNKNOWN
+
+
+@pytest.mark.parametrize("name", ["argon2", "blake2"])
+def test_an_sbom_naming_both_the_crate_and_the_c_library_under_the_colliding_name_moves_it(
+    ruleset, name
+) -> None:
+    """A real SBOM can carry more than one component under the colliding name: the
+    pure-Rust crate (a `pkg:cargo/...` purl) and, separately, the C reference
+    implementation (`pkg:generic/...` or no purl at all) it does not bind. This is the
+    `any`, not `all`, direction of `_declared_by_sbom`'s purl check -- only one of the
+    two components present needs a non-cargo purl for the C library to still count,
+    so the cargo-purl component naming the crate must not hide the other one that
+    names the C library."""
+    metadata = MetadataEvidence(
+        name="demo",
+        canonical_name="demo",
+        version="1.0",
+        sbom_components=(
+            SbomComponent(
+                name, "0.5.3", f"pkg:cargo/{name}@0.5.3", "demo-1.0.dist-info/sboms/a.cdx.json"
+            ),
+            SbomComponent(name, "1.0.0", None, "demo-1.0.dist-info/sboms/a.cdx.json"),
+        ),
+    )
+    evidence = wheel(metadata=metadata)
+    assert resolve_linkage(ruleset, evidence)[name] == LINKAGE_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("fields", "posture"),
+    [
+        ({"needed": ("libc.so.6", "libssl.so.3")}, LINKAGE_SYSTEM),
+        ({"matched_strings": (OPENSSL_BANNER,)}, LINKAGE_STATIC),
+    ],
+    ids=["needed", "banner"],
+)
+def test_an_sbom_never_overrides_what_an_object_answers(ruleset, fields, posture) -> None:
+    evidence = wheel(binary("pkg/_ext.so", **fields), metadata=sbom("openssl-sys"))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == posture
 
 
 # --- system and static within one object (#60) ------------------------------

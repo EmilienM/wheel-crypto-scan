@@ -253,19 +253,26 @@ def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
     unanswered = _left_unanswered(ruleset, evidence)
     counts = member_stem_counts(ruleset.conventions, evidence)
     incomplete = wheel_incompletely_read(evidence)
+    sbom_names = _sbom_component_names(evidence)
+    sbom_purls_by_name = _sbom_purls_by_name(evidence)
+    rust_crate_names = frozenset(ruleset.rust_crates)
     result: dict[str, str] = {}
     for name in sorted(ruleset.libraries):
         library = ruleset.libraries[name]
         postures = set(
             _object_postures(evidence.binaries, library, ruleset.conventions, counts, incomplete)
         )
-        value = _aggregate(postures, unanswered and library.always_report)
+        value = _aggregate(
+            postures,
+            unanswered and library.always_report,
+            _declared_by_sbom(library, sbom_names, sbom_purls_by_name, rust_crate_names),
+        )
         if value != LINKAGE_NONE or library.always_report:
             result[name] = value
     return result
 
 
-def _aggregate(postures: set[str], unanswered: bool) -> str:
+def _aggregate(postures: set[str], unanswered: bool, declared: bool) -> str:
     """Reduce per-binary postures to one answer for the whole wheel.
 
     `unanswered` is the wheel-wide signal that some object did not answer, and it is
@@ -288,6 +295,22 @@ def _aggregate(postures: set[str], unanswered: bool) -> str:
     combination of two definite postures from different objects. `mixed` has no
     finer split than that in the vocabulary, so one object already reading `mixed`
     makes the wheel `mixed` outright, whatever any other object says.
+
+    `declared` is the library-specific signal that the wheel's own SBOM names this
+    library, or a crate that binds it (`_declared_by_sbom`). Like `unanswered`, it is
+    consulted only when nothing in the wheel answered definitely, and it can never
+    outvote a `_DEFINITE` posture found on any object. It is not gated on
+    `always_report`: `unanswered` is a fact about the wheel that applies to every
+    library alike, but `declared` is already about this one library, the same way the
+    crate branch in `_binary_posture` is not gated either.
+
+    Unlike a per-object `unknown`, `declared` is wheel-level and never appears in
+    `object_postures`'s tuple, so it stays invisible to a rule's own
+    `exclude_object_values`/`object_values` check. A wheel whose SBOM names an OpenSSL
+    crate beside an object that reads `system` still fires `DERIVED_SYSTEM_OPENSSL_ONLY`:
+    `declared` never reaches `_aggregate` at all once a `_DEFINITE` posture exists (the
+    `len(definite) == 1` branch above returns first), so there is nothing here for that
+    rule's exclusion to see. Recorded as a residual; see DECISIONS.md.
     """
     if LINKAGE_MIXED in postures:
         return LINKAGE_MIXED
@@ -296,9 +319,99 @@ def _aggregate(postures: set[str], unanswered: bool) -> str:
         return definite[0]
     if len(definite) > 1:
         return LINKAGE_MIXED
-    if LINKAGE_UNKNOWN in postures or unanswered:
+    if LINKAGE_UNKNOWN in postures or unanswered or declared:
         return LINKAGE_UNKNOWN
     return LINKAGE_NONE
+
+
+def _sbom_component_names(evidence: Evidence) -> frozenset[str]:
+    if evidence.metadata is None:
+        return frozenset()
+    return frozenset(component.name for component in evidence.metadata.sbom_components)
+
+
+def _sbom_purls_by_name(evidence: Evidence) -> Mapping[str, frozenset[str | None]]:
+    """Every `purl` (including a missing one, as `None`) seen on a component with a
+    given name. `_declared_by_sbom` reads this only for the `argon2`/`blake2` name
+    collision, to tell an SBOM component naming the C reference library apart from
+    one naming the unrelated pure-Rust crate of the same name.
+    """
+    if evidence.metadata is None:
+        return {}
+    by_name: dict[str, set[str | None]] = {}
+    for component in evidence.metadata.sbom_components:
+        by_name.setdefault(component.name, set()).add(component.purl)
+    return {name: frozenset(purls) for name, purls in by_name.items()}
+
+
+def _is_cargo_purl(purl: str | None) -> bool:
+    """A `pkg:cargo/...` purl is PEP 770's own way of saying "this component is the
+    crates.io crate": `cargo` is the purl `type` PEP 770 reserves for that registry.
+    Anything else -- a different purl type, or none at all -- makes no such claim.
+    """
+    return purl is not None and purl.startswith("pkg:cargo/")
+
+
+def _declared_by_sbom(
+    library: CryptoLibrary,
+    names: frozenset[str],
+    purls_by_name: Mapping[str, frozenset[str | None]],
+    rust_crate_names: frozenset[str],
+) -> bool:
+    """Does the wheel's own SBOM name this library, or a crate that binds it?
+
+    Accepts only names `SBOM_CRYPTO_COMPONENT` also reports through its
+    `crypto_library` and `rust_crate` tables (`engine._sbom_entry`), and compares them
+    the same way it does: exact and case-sensitive. That keeps this field and that
+    finding from ever disagreeing about the same string -- the field cannot move on a
+    component the record carries no finding for. That agreement holds only because
+    `ruleset_loader._validate_sbom_component_coverage` refuses to load a ruleset whose
+    `sbom_component` rules, taken together, do not cover both tables; this function
+    assumes that check already ran.
+
+    Deliberately excludes a distribution name (`crypto_distribution`): a distribution
+    wrapping a library is not the same claim as the wheel carrying a copy of it --
+    SCHEMA.md keeps saying a distribution name never moves this field. A soname is
+    not a candidate in the first place, never mind excluded: it is a dependency
+    string, not the name of a package or crate, so no SBOM component is ever spelled
+    that way, and this field's `needed`-side matching already owns soname comparison.
+
+    `library.name` collides with a *different* `[[rust_crate]]` this library does not
+    itself list in `crates` for exactly two names: `argon2` and `blake2` are both a
+    `[[crypto_library]]` (the C reference libargon2 and libb2) and, separately, a
+    pure-Rust `[[rust_crate]]` of the same name that does not bind the C library --
+    neither lists itself in `crates`, unlike `openssl`, whose own name is deliberately
+    one of its `crates` because the `openssl` crate really does bind libssl/libcrypto.
+    For that collision, a name match alone cannot say which of the two an SBOM
+    component means, so this reads the component's own `purl`: only `pkg:cargo/...`
+    -- the crates.io registry type -- says the component is the pure-Rust crate. A
+    component named `argon2` with any other purl, or none at all (`pkg:generic/...`,
+    or a purl-less entry a reader could not classify), still names something that
+    could be the C library, so it still counts. Two simpler alternatives were rejected.
+    Matching by name alone -- treating any component named `argon2`/`blake2` as the C
+    library whatever its purl -- gives a false positive: a component under
+    `pkg:cargo/argon2@...`, naming the pure-Rust crate, would move `argon2_linkage`
+    off `none` when nothing about it says the C library is present. Skipping the name
+    arm whenever the name merely collides, whatever the purl, gives the opposite
+    failure: a component that really does name libargon2 or libb2 under a non-cargo
+    purl, or none, would not move the field, while `SBOM_CRYPTO_COMPONENT` still fires
+    on that same name (it matches by name, not by purl) -- leaving a finding with no
+    field beside it to say so, the same "reports nothing" shape the invariants resist.
+    See DECISIONS.md.
+
+    An SBOM component says the wheel uses the library, not which copy, exactly like a
+    Rust crate: never a definite posture, only `unknown` in place of `none`.
+    """
+    # `library.name not in library.crates` is not checked here: when it does list
+    # itself (openssl), the `crates` arm on the return below already matches its own
+    # name regardless of purl, so this branch's outcome would be the same either way.
+    name_is_someone_elses_crate = library.name in rust_crate_names
+    if name_is_someone_elses_crate:
+        purls = purls_by_name.get(library.name, frozenset())
+        name_matches = any(not _is_cargo_purl(purl) for purl in purls)
+    else:
+        name_matches = library.name in names
+    return name_matches or any(crate in names for crate in library.crates)
 
 
 def _binary_posture(
@@ -517,7 +630,9 @@ def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
     library in the ruleset and belongs here instead, gated through `resolve_linkage`
     on `library.always_report` rather than reported for all thirteen. `is_opaque` was
     a library-agnostic fact answered a second time inside `_binary_posture` until
-    #68; if a future object-level non-answer is added, it belongs here, not there.
+    #68; if a future object-level non-answer is added, it belongs here, not there. A
+    library-specific wheel-level signal -- the wheel's own SBOM naming a library or a
+    crate that binds it -- goes through `_declared_by_sbom` instead, not here.
     """
     for binary in evidence.binaries:
         if binary.is_opaque:

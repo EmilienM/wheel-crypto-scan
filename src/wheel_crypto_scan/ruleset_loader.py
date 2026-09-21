@@ -373,6 +373,57 @@ def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
             raise RulesetError(f"{where}: {key} names unknown string group {name!r}")
 
 
+def _validate_sbom_component_coverage(rules: Iterable[Rule], source: str) -> None:
+    """`linkage._declared_by_sbom` hardcodes the assumption that some `sbom_component`
+    rule reports on the same two tables it reads names from, `crypto_library` and
+    `rust_crate` -- so the field and the finding never disagree about the same string.
+    Checked once over the whole ruleset, as the union of every `sbom_component` rule's
+    own `match["tables"]` (never the singular `table` key, which `_match_sbom_component`
+    itself never reads either): covering the two tables across two separate rules, one
+    for `crypto_library` and one for `rust_crate`, is exactly as sound as one rule doing
+    both, and a rule-by-rule version of this check would refuse that split for no reason.
+    It would also miss the case that actually breaks the agreement: no `sbom_component`
+    rule at all, or every one of them narrowed to `crypto_distribution` alone. Without
+    one, `linkage.resolve_linkage` still moves `<name>_linkage` to `unknown` on an SBOM
+    component naming a library or one of its crates, with no finding anywhere in the
+    record to say why -- the same "reports nothing" shape the invariants resist
+    elsewhere, so it is refused here rather than left to a test over the shipped
+    ruleset.
+
+    Coverage alone is not enough: a `sbom_component` rule that covers `crypto_library`
+    or `rust_crate` and also carries `suppressed_by` can still lose its finding at scan
+    time -- `engine.apply_rules` drops a hit whenever a rule named in its
+    `suppressed_by` also fired -- while `_declared_by_sbom` moved the field regardless,
+    since it reads `evidence.metadata.sbom_components` directly and has no idea any
+    rule was suppressed. That reopens the same "reports nothing" hole a coverage gap
+    does, so a rule contributing to this coverage is refused `suppressed_by` outright.
+    """
+    required = {"crypto_library", "rust_crate"}
+    covered: set[str] = set()
+    contributors: list[Rule] = []
+    for rule in rules:
+        for match in rule.matches:
+            if match.get("kind") != "sbom_component":
+                continue
+            tables = set(match.get("tables", []))
+            covered.update(tables)
+            if tables & required:
+                contributors.append(rule)
+    missing = required - covered
+    if missing:
+        raise RulesetError(
+            f"{source}: sbom_component rules must together cover tables {sorted(required)}, "
+            f"missing {sorted(missing)}"
+        )
+    for rule in contributors:
+        if rule.suppressed_by:
+            raise RulesetError(
+                f"{source}: rule {rule.id!r} covers sbom_component tables "
+                f"{sorted(required)} and cannot carry suppressed_by -- a suppressed "
+                f"finding would leave linkage moved with no finding to explain it"
+            )
+
+
 def _validate_match_references(
     match: Mapping[str, Any], ruleset_data: Mapping[str, Any], where: str
 ) -> None:
@@ -570,6 +621,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     for rule in rules:
         _validate_rule_references(rule, data, rule_ids)
     _validate_conventions_references(data)
+    _validate_sbom_component_coverage(rules, source)
 
     defaults: dict[str, set[str]] = {}
     for rule in rules:

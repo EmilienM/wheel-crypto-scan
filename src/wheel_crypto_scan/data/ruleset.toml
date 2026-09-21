@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "29"
+ruleset_version = "30"
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +422,8 @@ copy_string_group = "openssl_build_info"
 # crate on an object with no other OpenSSL evidence reads `unknown`, the same as
 # imported symbols with no declared provider, and never a definite posture. Each name
 # must also be a [[rust_crate]] entry, which is what keeps it past the crate cap.
+# The same names, or the library's own name "openssl" itself, in a shipped PEP 770
+# SBOM give the same `unknown` when no object in the wheel answers definitely.
 crates = ["openssl", "openssl-sys", "openssl-src"]
 # Always reported, even when nothing matched: component teams filter on this field.
 always_report = true
@@ -1549,7 +1551,7 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "OpenSSL is used but the linkage could not be resolved"
-why = "The wheel calls OpenSSL without declaring a dependency on it, or the only evidence came from an object we could not read. Something resolves those symbols at runtime and it is outside this wheel and outside our sight, so this is opaque rather than nothing found."
+why = "The wheel uses OpenSSL without saying which copy: imported symbols with no declared dependency, a crate that binds it, or the wheel's own SBOM naming it or such a crate, with no object in the wheel answering definitely; or OpenSSL is found both linked and carried, in one object or across objects, which reads `mixed`; or the only evidence came from an object we could not read. This wheel's own record cannot say which copy answers for it, so it is opaque rather than nothing found."
 [rule.match]
 kind = "linkage"
 name = "openssl"
