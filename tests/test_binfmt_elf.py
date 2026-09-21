@@ -44,7 +44,13 @@ from helpers.binfmt import (
 from helpers.binfmt.elf import STT_FUNC
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import symtab
-from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes, _validated_strtab, read_elf
+from wheel_crypto_scan.binfmt.elf import (
+    _collect_string_bytes,
+    _iter_symbols,
+    _symbol_bytes,
+    _validated_strtab,
+    read_elf,
+)
 from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
@@ -803,17 +809,19 @@ def test_a_compressed_dynstr_under_the_budget_resolves_normally() -> None:
 # `SHT_NOBITS` misses an ordinary, honest, uncompressed section (or `.dynsym`/`.dynstr`
 # from a real symbol table), which falls through that `and` entirely and reaches
 # `.data()` unconditionally, so a large honest `.rodata` or symbol table would be read
-# in full regardless of `max_strings_bytes`, with only the *accumulated* buffer cut
-# afterwards. `section.data_size` is `sh_size` itself for an ordinary section
+# in full regardless of `max_strings_bytes`, with nothing left to cut it back down
+# afterwards: `_collect_string_bytes` has no post-read cut of its own, only the
+# per-section budget it passes into `_bounded_section_data` before each read.
+# `section.data_size` is `sh_size` itself for an ordinary section
 # (pyelftools sets `_decompressed_size = header['sh_size']` whenever `compressed` is
 # false), so the same check, without the narrowing, covers this the same way -- for
 # `.rodata`/`.comment`/`.go.buildinfo`, with the real, honest prefix up to the budget
 # kept (`keep_prefix=True`) rather than thrown away: unlike a compressed section,
 # reading `min(sh_size, max_bytes)` bytes of an ordinary one costs nothing extra, an
 # honest banner well inside the budget is real evidence a refusal should not cost, and
-# this is the same truncation `_collect_string_bytes` performs on the *accumulated*
-# buffer, applied at the single-section read instead of only afterwards. The result
-# reads as `strings_bytes_unread` -- the reader's own budget ran out before the object
+# the budget is enforced at the single-section read, not afterwards over the whole
+# accumulated buffer -- there is no cut left there to catch what this one misses.
+# The result reads as `strings_bytes_unread` -- the reader's own budget ran out before the object
 # did, not that the section could not be read -- the same token an oversized object
 # gets when several smaller sections exhaust the budget between them.
 
@@ -848,6 +856,36 @@ def test_an_ordinary_rodata_over_the_budget_with_nothing_in_the_prefix_still_par
     )
     assert errs == ()
     assert ev.partial_analysis is True
+    assert ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
+    assert ev.matched_strings == ()
+
+
+def test_an_ordinary_rodata_over_the_budget_drops_a_banner_past_it() -> None:
+    """Nothing past `max_strings_bytes` reaches the strings pass: `_collect_string_bytes`
+    decides the budget within its own section accumulation, before the section is
+    read, not by cutting the accumulated buffer down afterwards, and the banner past
+    it is not evidence this reader read.
+
+    Asserted twice: on `_collect_string_bytes`'s own return directly, so a mutation
+    that widens the pre-read cut and re-truncates only the finished buffer cannot
+    hide behind a downstream record that happens to still look right; and through
+    `read_elf`, so the record a consumer actually sees carries the same fact.
+    """
+    payload = b"\x00" * 4096 + BANNER + b"\x00" + b"\x00" * (8192 - 4096 - len(BANNER) - 1)
+    data = ElfBuilder(rodata=payload).build()
+
+    sections = list(ELFFile(io.BytesIO(data)).iter_sections())
+    raw, truncated, unread = _collect_string_bytes(sections, max_strings_bytes=4096)
+    assert len(raw) == 4096
+    assert BANNER not in raw
+    assert truncated is True
+    assert unread is False
+
+    ev, errs = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=4096
+    )
+    assert errs == ()
+    assert ev.strings_truncated is True
     assert ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
     assert ev.matched_strings == ()
 

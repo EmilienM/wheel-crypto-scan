@@ -503,13 +503,15 @@ def test_a_nobits_named_go_buildinfo_does_not_allocate(context) -> None:
 # `SHT_NOBITS` misses an ordinary, honest, uncompressed section -- an honestly large
 # `.rodata`, or `.dynsym`/`.dynstr` from a real symbol table -- which falls through
 # that `and` entirely and reaches `.data()` with no budget check at all: read in full
-# regardless of size, with only the *accumulated* buffer cut afterwards. Reproduced
-# directly with that narrower guard: an honest 8 MiB `.rodata` against a 64 KiB budget
-# reads it whole (largest single `read()` 8388608 bytes, peak 8605805) and reports
-# `strings_bytes_unread` -- truncated after the fact, not refused before it; an honest
+# regardless of size, with nothing left to cut it back down afterwards --
+# `_collect_string_bytes` has no post-read cut of its own, only the per-section budget
+# it passes into `_bounded_section_data` before each read. Reproduced directly with
+# that narrower guard: an honest 8 MiB `.rodata` against a 64 KiB budget reads it whole
+# (largest single `read()` 8388608 bytes, peak 8605805) and comes back
+# `partial_analysis: False` -- a fully clean, complete record, not refused and not
+# truncated, paid for at the size of the section rather than the budget; an honest
 # `.dynsym`/`.dynstr` from 200,000 real symbols (~4.8 MiB `.dynstr`) reads whole the
-# same way and comes back `partial_analysis: False` -- a fully clean, complete record,
-# paid for at the size of the honest table rather than the budget.
+# same way and comes back the same way.
 
 
 def test_an_ordinary_elf_rodata_declaring_more_than_the_budget_does_not_allocate(
