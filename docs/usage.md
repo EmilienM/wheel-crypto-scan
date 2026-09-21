@@ -54,7 +54,7 @@ wheel-crypto-scan scan [INPUTS...] [options]
 | `--download-dir PATH` | Where `--index-url` downloads land. |
 | `--cache-dir PATH` | Where the record cache lives. Defaults to the per-user cache root. |
 | `--no-cache` | Do not read or write the record cache. |
-| `--resume` | Keep records already in `--output` and scan only the rest, keyed on wheel filename. |
+| `--resume` | Keep JSONL records already in `--output` and scan only the rest, keyed on wheel filename. Any other `--format` exits 2 before scanning anything. |
 | `--max-binary-bytes N` | Archive limit on one member's uncompressed size. |
 | `--max-total-bytes N` | Archive limit on the wheel's total uncompressed size. |
 | `-q`, `--quiet` | No progress on stderr. Otherwise progress is printed every 100 wheels and at the end. |
@@ -93,6 +93,11 @@ has the reasoning and the measured cost.
 as a truncated final line from an interrupted run, is dropped and rescanned rather than
 trusted. Reused records are emitted in discovery order rather than prepended, so resuming an
 interrupted run produces the same bytes as scanning from scratch.
+
+Only JSONL can be read back, so `--resume` with `--format md` or `html` exits 2 before
+scanning anything rather than silently rescanning every wheel and overwriting the view. To
+get a Markdown or HTML view of a resumed run, resume the JSONL, then render it in a separate
+run with the cache warm.
 
 ## Triage recipes
 

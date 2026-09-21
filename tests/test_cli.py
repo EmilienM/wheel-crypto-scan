@@ -208,6 +208,41 @@ def test_resume_produces_the_same_bytes_as_a_full_scan(tmp_path: Path) -> None:
     assert partial.read_bytes() == expected
 
 
+@pytest.mark.parametrize("fmt", ["md", "html"])
+def test_resume_refuses_a_format_it_cannot_read_back(
+    corpus: Path,
+    tmp_path: Path,
+    fmt: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--resume` reads `--output` back as JSONL. A Markdown table or an HTML page
+    cannot be read back into records, so every line fails to parse, nothing is kept,
+    and a plain scan would silently rescan everything and overwrite the view.
+    """
+    out = tmp_path / f"out.{fmt}"
+    out.write_text("sentinel\n", encoding="utf-8")
+
+    def _refuse_discover(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("must refuse before discovering or scanning")
+
+    def _refuse_scan_all(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("must refuse before discovering or scanning")
+
+    monkeypatch.setattr(cli, "discover", _refuse_discover)
+    monkeypatch.setattr(cli, "_scan_all", _refuse_scan_all)
+
+    assert (
+        main(["scan", str(corpus), "-o", str(out), "--format", fmt, "--resume", "--no-cache", "-q"])
+        == 2
+    )
+    printed = capsys.readouterr().err
+    assert "--resume" in printed
+    assert fmt in printed
+    assert out.read_text(encoding="utf-8") == "sentinel\n"
+    assert not out.with_name(out.name + ".partial").exists()
+
+
 # --- transient failures -----------------------------------------------------
 #
 # A `MemoryError` (or any exception `_collect` did not specifically anticipate) must
