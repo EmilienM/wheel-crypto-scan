@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "19"
+ruleset_version = "20"
 
 
 # ---------------------------------------------------------------------------
@@ -536,8 +536,8 @@ why = "Curve25519 family. Status depends on the standard revision and on validat
 
 [[string_group]]
 name = "openssl_banner"
-substrings = ["OpenSSL 3.", "OpenSSL 1.1.", "OpenSSL 1.0."]
-why = "OpenSSL's own version banner. The single most reliable way to tell which OpenSSL a binary carries when the symbols are hidden, which is exactly what a statically linked Rust extension does."
+substrings = ["OpenSSL 0.", "OpenSSL 1.", "OpenSSL 2.", "OpenSSL 3.", "OpenSSL 4.", "OpenSSL 5.", "OpenSSL 6.", "OpenSSL 7.", "OpenSSL 8.", "OpenSSL 9."]
+why = "OpenSSL's own version banner. The single most reliable way to tell which OpenSSL a binary carries when the symbols are hidden, which is exactly what a statically linked Rust extension does. Every major digit is listed rather than the shipped ones, because a banner this group does not name is a statically linked copy that reads as no OpenSSL at all, and the list going stale is silent: it stopped at 3 while cryptography's own PyPI wheels already compiled 4 in. A digit and a dot are still required -- `OpenSSL ` alone also matches prose such as \"OpenSSL 3's legacy provider failed to load\", which a wheel linking the system library carries too."
 
 [[string_group]]
 name = "openssl_fips_provider"

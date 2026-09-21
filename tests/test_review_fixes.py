@@ -329,3 +329,32 @@ def test_the_schema_still_forbids_a_passing_class() -> None:
     text = files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
     assert "COMPLIANT" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
     assert "COMPATIBLE" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
+
+
+# --- a banner for a major nobody listed reads as no OpenSSL at all -----------
+
+
+def test_a_statically_linked_openssl_4_is_not_reported_as_clean(context, tmp_path: Path) -> None:
+    """An object whose only OpenSSL evidence is its banner must read `static`.
+
+    Found against cryptography 50.0.1 on PyPI, whose `_rust.abi3.so` compiles OpenSSL
+    4.0.2 in, declares no dependency on libcrypto, and exports no OpenSSL symbol. The
+    banner is the whole of the evidence, and `openssl_banner` stopped at major 3, so
+    the wheel the tool exists to catch came out with `openssl_linkage: none`. The
+    group now names every major digit; `tests/test_ruleset.py` pins that directly.
+    """
+    wheel = build_wheel(
+        tmp_path / f"staticssl-1.0-{MANYLINUX}.whl",
+        name="staticssl",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "staticssl/_rust.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                rodata=b"\x00OpenSSL 4.0.2 25 Aug 2026\x00",
+            ).build()
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
