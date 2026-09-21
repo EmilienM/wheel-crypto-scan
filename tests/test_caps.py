@@ -35,6 +35,7 @@ from wheel_crypto_scan.evidence import (
     SymbolMatch,
 )
 from wheel_crypto_scan.linkage import resolve_linkage
+from wheel_crypto_scan.record import _SkippedEntry, _SymlinkEntry
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 RULESET = load_ruleset()
@@ -214,6 +215,14 @@ def _match(group: str, name: str) -> SymbolMatch:
             lambda **kw: ScanError(**{"stage": "binary", "kind": "k", "message": "m", **kw}),
             ("stage", "path", "kind", "message"),
         ),
+        (
+            lambda **kw: _SkippedEntry(**{"path": "p", "reason": "r", **kw}),
+            ("path", "reason"),
+        ),
+        (
+            lambda **kw: _SymlinkEntry(**{"path": "p", "target": "t", **kw}),
+            ("path", "target"),
+        ),
     ],
 )
 def test_a_sort_key_separates_any_two_records_that_differ(factory, fields) -> None:
@@ -223,7 +232,7 @@ def test_a_sort_key_separates_any_two_records_that_differ(factory, fields) -> No
     in -- and they arrive out of a `set`, whose order is not stable across runs. A
     `sort_key` that skipped a field would therefore make the record depend on the hash
     seed, which is the determinism this tool promises. `SbomComponent` already carries
-    this reasoning in a comment; these four carry it in a test.
+    this reasoning in a comment; these six carry it in a test.
     """
     base = factory()
     for field in fields:

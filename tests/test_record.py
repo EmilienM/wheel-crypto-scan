@@ -151,9 +151,13 @@ def test_no_max_binaries_means_no_cap_and_no_truncation_flag(ruleset) -> None:
 def test_skipped_and_symlinks_are_capped_independently_of_bundled_libs(ruleset) -> None:
     """#119: `artifacts.skipped` (`{path, reason}`) and `artifacts.symlinks`
     (`{path, target}`) are the same unbounded shape #76 fixed for `bundled_libs` and
-    `errors[]` -- neither is referenced by a `Finding.locations`, so (per DECISIONS.md,
-    "bundled_libs and errors[] get their own caps") a plain sorted-and-capped prefix is
-    enough; neither needs `_cap_by_findings`'s finding-aware selection."""
+    `errors[]`. Both go through `caps.cap`, keyed on `reason`/`target` respectively
+    (see DECISIONS.md, "`skipped` and `symlinks` reuse `caps.cap`, not a plain
+    prefix"); with every entry here sharing one `reason` and one `target`, the cap
+    degenerates to a plain sorted prefix, which
+    `test_a_rare_skipped_reason_survives_a_flood_of_a_common_one` and
+    `test_a_rare_symlink_target_survives_a_flood_of_a_common_one` in
+    `test_hardening.py` prove is not the general case."""
     evidence = Evidence(
         filename="broken-1.0-py3-none-any.whl",
         sha256="f" * 64,

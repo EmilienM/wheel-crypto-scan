@@ -43,13 +43,13 @@ def build_record(
 
     `evidence.binaries` is expected to be the *full* set of objects that were actually
     read: `findings` and `verdict` were computed over all of it, not a truncated view.
-    `max_binaries`, when given, also caps the `binaries[]`, `artifacts.bundled_libs`
-    and `errors[]` arrays built here, so the record stays bounded without the cap
-    ever having withheld evidence from a rule -- every object and every error is still
-    fully evaluated regardless of what this cap keeps. A finding's `locations[].path`
-    can therefore legitimately name an object that this cap left out of `binaries[]`,
-    when even the finding-aware selection below could not make room for it -- see
-    SCHEMA.md.
+    `max_binaries`, when given, also caps the `binaries[]`, `artifacts.bundled_libs`,
+    `artifacts.skipped`, `artifacts.symlinks` and `errors[]` arrays built here, so the
+    record stays bounded without the cap ever having withheld evidence from a rule --
+    every object and every error is still fully evaluated regardless of what this cap
+    keeps. A finding's `locations[].path` can therefore legitimately name an object
+    that this cap left out of `binaries[]`, when even the finding-aware selection
+    below could not make room for it -- see SCHEMA.md.
     """
     if evidence_level not in EVIDENCE_LEVELS:
         raise ValueError(f"unknown evidence level: {evidence_level!r}")
