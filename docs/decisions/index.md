@@ -109,3 +109,4 @@ Three habits in that file are worth knowing before you read it:
 | [A record produced without reading the wheel is never cached](tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached) | Accepted, then widened on a corrected audit |
 | [`.exe` joins `_BINARY_SUFFIX`, and stops there](tooling.md#exe-joins-_binary_suffix-and-stops-there) | Accepted |
 | [The loader moves to `ruleset_loader.py`, a sibling module, not a package](tooling.md#the-loader-moves-to-ruleset_loaderpy-a-sibling-module-not-a-package) | Accepted. Pure refactor |
+| [The HTML report embeds records and renders them in the browser](tooling.md#the-html-report-embeds-records-and-renders-them-in-the-browser) | Accepted |

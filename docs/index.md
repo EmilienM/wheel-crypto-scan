@@ -53,6 +53,7 @@ directory is empty, nothing is declared, and the symbols are hidden by a version
 uv tool install .                       # or: uv run wheel-crypto-scan
 wheel-crypto-scan scan /path/to/wheels -o index.jsonl --jobs 8
 wheel-crypto-scan scan one.whl --format md
+wheel-crypto-scan scan /path/to/wheels --format html -o report.html
 wheel-crypto-scan rules                 # the rule table, for review
 wheel-crypto-scan schema                # the JSON Schema for the output
 ```

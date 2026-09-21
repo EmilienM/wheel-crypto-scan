@@ -20,11 +20,11 @@ Everything below is under `src/wheel_crypto_scan/`.
 | `record.py`, `verdict.py` | Output record shape and verdict assembly |
 | `evidence.py` | What extractors may say: the record dataclasses, and the `FORMAT_*`, `STAGE_*`, `BINDING_*` and `PARTIAL_REASONS` vocabularies |
 | `errors.py` | The `ScanError` kinds, which the ruleset can match on |
+| `report.py`, `data/report.html` | Human views of the records: the Markdown table and the self-contained HTML page |
 
 Beside those: `cli.py` (argument parsing and run orchestration), `scan.py` (per-wheel
 orchestration), `discovery.py` (turning inputs, a file list or an index URL into wheel
-paths), `cache.py` (the record cache), `linkage.py` (posture resolution),
-`findings.py` and `report.py`.
+paths), `cache.py` (the record cache), and `linkage.py` (posture resolution).
 
 ## The path a wheel takes
 

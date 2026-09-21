@@ -29,7 +29,7 @@ from .cache import RecordCache, default_cache_root
 from .discovery import discover
 from .errors import SCAN_ABORTED_KINDS
 from .record import EVIDENCE_LEVELS, to_json_line
-from .report import render_markdown
+from .report import render_html, render_markdown
 from .ruleset import Ruleset
 from .ruleset_loader import load_ruleset
 from .scan import ScanContext, scan_wheel
@@ -68,7 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="scan wheels and emit one record each")
     scan.add_argument("inputs", nargs="*", help="wheel files or directories to search")
     scan.add_argument("-o", "--output", type=Path, help="write here instead of stdout")
-    scan.add_argument("--format", choices=("jsonl", "md"), default="jsonl")
+    scan.add_argument("--format", choices=("jsonl", "md", "html"), default="jsonl")
     scan.add_argument("--jobs", type=int, default=1, help="worker processes (default 1)")
     scan.add_argument("--ruleset", type=Path, help="use this ruleset instead of the shipped one")
     scan.add_argument("--evidence-level", choices=EVIDENCE_LEVELS, default="standard")
@@ -126,7 +126,7 @@ def _run_scan(args: argparse.Namespace) -> int:
     # Reuse kept records in discovery order rather than prepending them. Resuming an
     # interrupted run has to produce the same bytes as scanning from scratch, for the
     # same reason parallelism does.
-    return _write(_merge(wheels, existing, scanned), args)
+    return _write(_merge(wheels, existing, scanned), args, ruleset)
 
 
 def _merge(
@@ -259,12 +259,15 @@ def _existing_records(output: Path) -> dict[str, str]:
     return records
 
 
-def _write(lines: Iterable[str], args: argparse.Namespace) -> int:
-    """Stream records out. Only the Markdown summary needs them all in memory at once."""
+def _write(lines: Iterable[str], args: argparse.Namespace, ruleset: Ruleset) -> int:
+    """Stream records out. Only the Markdown and HTML views need them all in memory
+    at once."""
 
     def emit(stream: TextIO) -> None:
         if args.format == "md":
             stream.write(render_markdown([json.loads(line) for line in lines]))
+        elif args.format == "html":
+            stream.write(render_html([json.loads(line) for line in lines], ruleset))
         else:
             stream.writelines(lines)
 

@@ -811,6 +811,32 @@ def test_markdown_output_is_a_table(corpus: Path, tmp_path: Path) -> None:
     assert "weakhash-1.0-py3-none-any.whl" in text
 
 
+def test_html_output_is_a_page(corpus: Path, tmp_path: Path) -> None:
+    first = tmp_path / "first.html"
+    second = tmp_path / "second.html"
+    parallel = tmp_path / "parallel.html"
+    main(["scan", str(corpus), "-o", str(first), "--format", "html", "--no-cache", "-q"])
+    main(["scan", str(corpus), "-o", str(second), "--format", "html", "--no-cache", "-q"])
+    main(
+        [
+            "scan",
+            str(corpus),
+            "-o",
+            str(parallel),
+            "--format",
+            "html",
+            "--jobs",
+            "2",
+            "--no-cache",
+            "-q",
+        ]
+    )
+    text = first.read_text(encoding="utf-8")
+    assert text.startswith("<!DOCTYPE html>")
+    assert "weakhash-1.0-py3-none-any.whl" in text
+    assert first.read_bytes() == second.read_bytes() == parallel.read_bytes()
+
+
 def test_minimal_evidence_level_drops_binary_detail(corpus: Path, tmp_path: Path) -> None:
     out = tmp_path / "out.jsonl"
     main(["scan", str(corpus), "-o", str(out), "--evidence-level", "minimal", "--no-cache", "-q"])
