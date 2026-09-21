@@ -105,6 +105,9 @@ These are design decisions, not accidents. Do not change one without saying so e
 - **Keep `record.py` and `data/schema.json` in step,** and update `SCHEMA.md` with them. A
   test fails on drift.
 - **Dependencies are `pyelftools` and `packaging`.** Ask before adding a third.
+- **Imports go at the top of the file,** in `src/` and `tests/` alike: no import inside a
+  function, a test or a branch. Pylint's `import-outside-toplevel` holds `src/` to it
+  (`tox -e pylint`) and ruff's `PLC0415` holds `tests/` (`tox -e lint`).
 - **Test fixtures are synthesised,** including the object files: `tests/helpers/binfmt/`
   writes ELF, Mach-O and PE byte for byte with `struct`. The suite needs no compiler, no
   network and no committed binaries. Keep it that way.
