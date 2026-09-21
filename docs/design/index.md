@@ -76,14 +76,18 @@ Two habits in that file are worth knowing before you read it:
 | [A cap bounds the record, not the evaluation](limits.md#a-cap-bounds-the-record-not-the-evaluation) | Accepted, and it changes verdicts |
 | [`binaries[]` keeps what a finding points at, before filling the rest](limits.md#binaries-keeps-what-a-finding-points-at-before-filling-the-rest) | Accepted, and it changes records |
 | [A symbol name is capped the way PE's are](limits.md#a-symbol-name-is-capped-the-way-pes-are) | Accepted |
+| [`caps.cap` scans `ordered` again instead of materialising `pinned`/`rest`/`leftovers`](limits.md#capscap-scans-ordered-again-instead-of-materialising-pinnedrestleftovers) | Accepted. Performance and memory, not correctness |
+| [`bundled_libs` and `errors[]` get their own caps, not `binaries_truncated`'s](limits.md#bundled_libs-and-errors-get-their-own-caps-not-binaries_truncateds) | Accepted, and it changes records |
+| [`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix](limits.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix) | Accepted, and it changes records |
 
 ## [ELF](elf.md)
 
 | Entry | Status |
 |---|---|
-| [`.symtab` local definitions are read when `.dynsym` is present](elf.md#symtab-local-definitions-are-read-when-dynsym-is-present) | Accepted, and it changes records |
 | [Sections are found by type, not by a name nobody checks](elf.md#sections-are-found-by-type-not-by-a-name-nobody-checks) | Accepted, and it changes verdicts |
 | [A compressed section is checked before it is inflated](elf.md#a-compressed-section-is-checked-before-it-is-inflated) | Accepted, and it changes records |
+| [`.symtab` is matched for crypto symbols when `.dynsym` is genuinely absent](elf.md#symtab-is-matched-for-crypto-symbols-when-dynsym-is-genuinely-absent) | Accepted, and it changes records |
+| [`.symtab` local definitions are read when `.dynsym` is present](elf.md#symtab-local-definitions-are-read-when-dynsym-is-present) | Accepted, and it changes records |
 
 ## [Mach-O](macho.md)
 
@@ -108,4 +112,5 @@ Two habits in that file are worth knowing before you read it:
 | [A record produced without reading the wheel is never cached](tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached) | Accepted |
 | [`.exe` is in `_BINARY_SUFFIX`, and `.com`, `.cpl` and `.sys` are not](tooling.md#exe-is-in-_binary_suffix-and-com-cpl-and-sys-are-not) | Accepted |
 | [The loader lives in `ruleset_loader.py`, a sibling module, not a package](tooling.md#the-loader-lives-in-ruleset_loaderpy-a-sibling-module-not-a-package) | Accepted, and it changes no record |
+| [`binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader](tooling.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader) | Accepted |
 | [The HTML report embeds records and renders them in the browser](tooling.md#the-html-report-embeds-records-and-renders-them-in-the-browser) | Accepted |
