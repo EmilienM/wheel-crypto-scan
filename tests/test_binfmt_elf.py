@@ -31,6 +31,7 @@ from helpers.binfmt import (
     SHT_PROGBITS,
     SHT_SYMTAB,
     STB_GLOBAL,
+    STB_LOCAL,
     DynSym,
     ElfBuilder,
     append_duplicate_dynsym_section,
@@ -40,6 +41,7 @@ from helpers.binfmt import (
     patch_section_header,
     patch_u16,
 )
+from helpers.binfmt.elf import STT_FUNC
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import symtab
 from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes, _validated_strtab, read_elf
@@ -1840,7 +1842,8 @@ def test_a_relocatable_object_matches_an_imported_symtab_crypto_symbol() -> None
     ]
 
 
-def test_a_local_definition_in_symtab_is_read_when_dynsym_is_present() -> None:
+@pytest.mark.parametrize("binding", [STB_LOCAL, STB_GLOBAL], ids=["local", "global"])
+def test_a_local_definition_in_symtab_is_read_when_dynsym_is_present(binding: int) -> None:
     """A statically linked copy whose symbols a version script kept local.
 
     Gating all `.symtab` matching on `.dynsym` being genuinely absent would leave the
@@ -1849,12 +1852,23 @@ def test_a_local_definition_in_symtab_is_read_when_dynsym_is_present() -> None:
     `.symtab` and none in `.dynsym`, beside a `.dynsym` that exports only
     `PyInit__rust`. A definition nobody else can satisfy is what a static copy *is*, so
     it is read, and the corpus claim is carried by measurement instead (see DESIGN.md).
+
+    `some_unrelated_export` is listed ahead of `EVP_DigestInit_ex` so that, in the
+    local case, the builder's linker-shaped layout moves the crypto symbol ahead of it
+    and sets `sh_info` to the index past it: a reader that started its walk at
+    `sh_info`, skipping every row before it, would miss the crypto symbol there. In
+    the global case neither symbol is local, so both land at or after `sh_info`
+    instead, and it is a reader that stopped its walk at `sh_info`, skipping every row
+    from it on, that would miss the crypto symbol there.
     """
     honest = ElfBuilder(
         needed=("libc.so.6",),
         dynsyms=(DynSym("some_unrelated_export", defined=True),),
         with_symtab=True,
-        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+        symtab_syms=(
+            DynSym("some_unrelated_export", defined=True),
+            DynSym("EVP_DigestInit_ex", defined=True, info=(binding << 4) | STT_FUNC),
+        ),
     ).build()
     ev, errors = _read(honest)
     assert errors == ()
@@ -1862,6 +1876,40 @@ def test_a_local_definition_in_symtab_is_read_when_dynsym_is_present() -> None:
         evidence.SymbolMatch("EVP_DigestInit_ex", "openssl", evidence.BINDING_DEFINED)
     ]
     assert ev.partial_analysis is False
+
+
+def test_the_builder_writes_symtab_locals_first_with_sh_info_at_the_first_global() -> None:
+    """The builder writes `.symtab` the way a linker does, so a reader that trusts
+    `sh_info` to bound its walk is exercised against the shape it will actually see:
+    locals first, `sh_info` pointing at the first non-local row.
+
+    Without this, a regression that trusted `sh_info` would fail nothing, because
+    every fixture would still put its one local row within whatever `sh_info` happened
+    to be.
+    """
+    built = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=(
+            DynSym("g1", defined=True),
+            DynSym("l1", defined=True, info=(STB_LOCAL << 4) | STT_FUNC),
+            DynSym("g2", defined=True),
+            DynSym("l2", defined=True, info=(STB_LOCAL << 4) | STT_FUNC),
+        ),
+    ).build()
+    elf = ELFFile(io.BytesIO(built))
+    section = elf.get_section_by_name(".symtab")
+    assert section.header["sh_info"] == 3
+    names = [section.get_symbol(i).name for i in range(section.num_symbols())]
+    assert names == ["", "l1", "l2", "g1", "g2"]
+    for index in range(section.num_symbols()):
+        is_local = section.get_symbol(index)["st_info"]["bind"] == "STB_LOCAL"
+        assert is_local == (index < section.header["sh_info"])
+
+    no_locals = ElfBuilder(dynsyms=(DynSym("PyInit__ext", defined=True),)).build()
+    dynsym = ELFFile(io.BytesIO(no_locals)).get_section_by_name(".dynsym")
+    assert dynsym.header["sh_info"] == 1
 
 
 def test_an_import_in_symtab_is_not_read_when_dynsym_is_present() -> None:

@@ -78,7 +78,12 @@ class _StrTab:
 
 @dataclass(frozen=True)
 class DynSym:
-    """One `.dynsym` (or `.symtab`) entry: a name and whether it is defined here."""
+    """One `.dynsym` (or `.symtab`) entry: a name and whether it is defined here.
+
+    A table's entries are written locals-first, with `sh_info` set to the index of
+    the first non-local entry, the way a linker writes one: a caller's order is kept
+    within each binding but not across bindings.
+    """
 
     name: str
     defined: bool
@@ -232,6 +237,28 @@ class ElfBuilder:
             return struct.pack(end + "QQ", tag, val)
         return struct.pack(end + "II", tag, val)
 
+    def _pack_symbol_table(
+        self, syms: tuple[DynSym, ...], name_offsets: list[int]
+    ) -> tuple[bytes, int]:
+        """Pack `.dynsym`/`.symtab` entries locals-first, as a linker writes them.
+
+        Returns the packed bytes (null entry first) and `sh_info`, the index of the
+        first non-local entry: with no locals every entry is non-local and this is 1,
+        the value every table without locals already had, so a fixture with no locals
+        produces identical bytes. Caller order is kept within each binding but not
+        across bindings, the stable partition a linker's own local-then-global layout
+        performs.
+        """
+        paired = list(zip(syms, name_offsets, strict=True))
+        locals_first = [p for p in paired if (p[0].info >> 4) == STB_LOCAL]
+        rest = [p for p in paired if (p[0].info >> 4) != STB_LOCAL]
+        ordered = locals_first + rest
+        data = bytearray(self._pack_sym(0, 0, 0, 0, 0, 0))
+        for sym, name_off in ordered:
+            shndx = SHN_UNDEF if not sym.defined else _SHN_DEFINED_PLACEHOLDER
+            data += self._pack_sym(name_off, sym.info, 0, shndx, sym.value, sym.size)
+        return bytes(data), 1 + len(locals_first)
+
     # -- assembly ---------------------------------------------------------------
 
     def build(self) -> bytes:
@@ -338,12 +365,9 @@ class ElfBuilder:
             dynsym_name_offsets = []
 
         if dynsym_index is not None:
-            symdata = bytearray(self._pack_sym(0, 0, 0, 0, 0, 0))
-            for sym, name_off in zip(self.dynsyms, dynsym_name_offsets, strict=True):
-                shndx = SHN_UNDEF if not sym.defined else _SHN_DEFINED_PLACEHOLDER
-                symdata += self._pack_sym(name_off, sym.info, 0, shndx, sym.value, sym.size)
+            symdata, sh_info = self._pack_symbol_table(self.dynsyms, dynsym_name_offsets)
             sections[dynsym_index] = replace(
-                sections[dynsym_index], data=bytes(symdata), link=dynstr_index or 0
+                sections[dynsym_index], data=symdata, link=dynstr_index or 0, info=sh_info
             )
 
         if dynamic_index is not None:
@@ -371,15 +395,12 @@ class ElfBuilder:
             symtab_syms = self.symtab_syms if self.symtab_syms is not None else self.dynsyms
             strtab = _StrTab()
             name_offs = [strtab.add(sym.name) if sym.name else 0 for sym in symtab_syms]
-            symdata = bytearray(self._pack_sym(0, 0, 0, 0, 0, 0))
-            for sym, name_off in zip(symtab_syms, name_offs, strict=True):
-                shndx = SHN_UNDEF if not sym.defined else _SHN_DEFINED_PLACEHOLDER
-                symdata += self._pack_sym(name_off, sym.info, 0, shndx, sym.value, sym.size)
+            symdata, sh_info = self._pack_symbol_table(symtab_syms, name_offs)
             assert strtab_index is not None
             assert symtab_index is not None
             sections[strtab_index] = replace(sections[strtab_index], data=strtab.data)
             sections[symtab_index] = replace(
-                sections[symtab_index], data=bytes(symdata), link=strtab_index
+                sections[symtab_index], data=symdata, link=strtab_index, info=sh_info
             )
 
         shstrtab = _StrTab()
