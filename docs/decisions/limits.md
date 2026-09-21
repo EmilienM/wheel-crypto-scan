@@ -1,7 +1,7 @@
 # Caps, budgets and record size
 
 A record has to be bounded: one wheel with thousands of objects must not produce an
-unbounded JSON line. Five entries about that, and they share one theme — **a limit that
+unbounded JSON line. Six entries about that, and they share one theme — **a limit that
 exists to bound output kept deciding what the tool found**, because it was applied in the
 place that also decides what a rule gets to see, and because the sort key it cut on had
 nothing to do with what a match is worth.
@@ -342,7 +342,37 @@ Both share `max_binaries_per_record`, the same knob that already bounds
 and were found still uncapped while verifying this fix — a wheel with 3000 refused
 members produces a correctly capped `errors: 256` beside an uncapped
 `artifacts.skipped: 3003`. Filed as
-[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119), closed by the next
+entry — whose first draft guessed a plain prefix would be "probably enough" for both
+and was wrong on both counts.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#bundled_libs-and-errors-get-their-own-caps-not-binaries_truncateds) ·
 [#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76)
+
+---
+
+## `skipped` and `symlinks` reuse `caps.cap`, not a plain prefix
+
+**Accepted. A new pair of record fields, `symlinks_truncated` and `skipped_truncated`.**
+
+`artifacts.skipped` and `artifacts.symlinks` were the same unbounded shape the previous
+entry fixed for `bundled_libs`/`errors[]`. A first attempt capped both with a plain
+sorted prefix on the premise that neither is finding-referenced and every entry is
+already fully specific — an adversarial review found both halves of that premise
+false. `skipped`'s `reason` **is** `ScanError.kind`, the exact axis `errors[]`'s own
+`cap_key` already protects, and two shipped rules (`BIN_TOO_LARGE`,
+`WHEEL_MEMBER_UNREADABLE`) do name `skipped` paths — reproduced: a plain prefix dropped
+an entire reason class from `skipped` while `errors[]` correctly kept a representative.
+`symlinks`' `target`, not the entry as a whole, is the axis a consumer keys on (#57: a
+bundled library reachable only through its symlink's target) — reproduced: a plain
+prefix dropped the one crypto-relevant target behind a flood of boring ones, the same
+starvation `caps.py`'s own `ring`-behind-`anyhow` crate example exists to prevent.
+
+Both now go through `caps.cap`, keyed on the axis that matters: `cap_key() -> reason`
+for `skipped`, `cap_key() -> target` for `symlinks`. Neither bare tuple implements
+`caps.Capped` on its own, so `record.py` wraps each pair in a small local frozen
+dataclass at cap time and unwraps the result — `ArtifactInventory.skipped`/`.symlinks`
+themselves stay plain tuples everywhere else.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix) ·
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119)

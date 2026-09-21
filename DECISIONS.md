@@ -4484,9 +4484,99 @@ is unnecessary weight; a plain sorted-and-capped prefix, `bundled_libs`'s origin
 shape before this issue existed, is probably enough), and doing it well needs the same
 scrutiny this entry's `pinned_at` and `schema_version` corrections show a first pass
 tends to miss. Filed separately, found while verifying this fix:
-[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
+[#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119), closed by "`skipped`
+and `symlinks` reuse `caps.cap`, not a plain prefix" below -- which found the "probably
+enough" guess above was wrong on both counts.
 
 Tracked in [#76](https://github.com/EmilienM/wheel-crypto-scan/issues/76).
+
+## `skipped` and `symlinks` reuse `caps.cap`, not a plain prefix
+
+**Accepted. A new pair of record fields, `symlinks_truncated` and `skipped_truncated`.
+`ANALYZER_VERSION` moves.**
+
+`artifacts.skipped` (`{path, reason}`, for members refused by a limit) and
+`artifacts.symlinks` (`{path, target}`) were the same unbounded shape the previous
+entry fixed for `bundled_libs` and `errors[]`, and were found still uncapped while
+verifying that fix: 3000 members refused by `ArchiveLimits.max_member_bytes` produced
+a correctly capped `errors: 256` sitting next to an uncapped `artifacts.skipped: 3003`
+-- a 220 KB record whose own `errors_truncated` gave no hint that `skipped` was also
+incomplete, since the two arrays are fed by the same underlying `archive.errors` for a
+member-refusal wheel but capped separately.
+
+**The first fix tried was a plain sorted-and-capped prefix, and an adversarial review
+found it wrong for both arrays, on the same two premises the first draft of this entry
+asserted without checking.**
+
+For `skipped`: the premise "no `Finding.locations[].path` ever names a skipped member"
+is false. `layers/inventory.py` builds `skipped` from `archive.errors`, and `scan.py`
+folds those same errors into `evidence.errors`, which `engine.py`'s `_match_scan_error`
+turns into `Location(path=error.path, ...)`. Two shipped rules match archive-stage
+error kinds that carry a path -- `BIN_TOO_LARGE` (`error_kinds = ["binary_too_large"]`)
+and `WHEEL_MEMBER_UNREADABLE` -- so a `skipped` entry can be exactly what a finding
+names. Worse, the second premise ("every entry is already fully specific, so there is
+no group a plain prefix could starve") mistakes *entry* uniqueness for *consumer-axis*
+uniqueness: `skipped`'s `reason` **is** `ScanError.kind`, the exact axis
+`ScanError.cap_key` already exists to protect in `errors[]`. Reproduced: 300 members
+refused by a compression-ratio limit plus 3 refused by a size limit, default
+`max_binaries_per_record` -- a plain prefix dropped `binary_too_large` from `skipped`
+*entirely* while `errors[]`, capped through `caps.cap`, correctly kept a
+representative, and three `BIN_TOO_LARGE` finding locations named paths `skipped` no
+longer listed. `SCHEMA.md` sells `errors[]`'s guarantee ("a wheel drowning in one kind
+of failure cannot crowd a different, rarer one out") without saying `skipped` lacked
+it -- exactly the record self-contradiction #76 exists to prevent, one array over.
+
+For `symlinks`: no rule reads a symlink path, so the first premise holds -- but the
+second does not, because `target`, not the entry as a whole, is the axis a consumer
+actually keys on. #57 is this repo's own worked example why: a vendored
+`libcrypto.dylib` reachable *only* through one symlink's target, no `skipped` entry and
+no binary error to fall back on. Reproduced: 300 symlinks all targeting one boring
+library plus 1 targeting a bundled OpenSSL library, default cap -- a plain prefix kept
+none of the crypto-relevant target. This is `caps.py`'s own worked example
+("a Rust object's crates sorted by name and cut at 128 dropped `ring` behind an
+`anyhow`") reproduced one array over: `caps.py` exists precisely because a plain prefix
+answers "how many entries survive," not "does the record still say what it needs to."
+
+**The actual fix: both go through `caps.cap`, keyed on the axis a consumer reads.**
+`skipped` gets `cap_key() -> reason`, `symlinks` gets `cap_key() -> target` -- one
+representative of each survives a flood of another before the rest, the same shape
+`ScanError.cap_key` already has for `errors[]`. Neither `(path, reason)` nor
+`(path, target)` implements `caps.Capped` on its own (they are bare tuples in
+`ArtifactInventory`, used by `layers/inventory.py` and every existing test as such), so
+`record.py` wraps each pair in a small local `_SkippedEntry`/`_SymlinkEntry` frozen
+dataclass at cap time and unwraps the result -- `ArtifactInventory.skipped`/`.symlinks`
+themselves stay plain tuples; nothing outside serialisation needed the wrapper. Net,
+this is *less* code than the plain-prefix draft it replaced: reusing `cap()` also
+collapses the three near-identical `X_truncated = max_binaries is not None and
+len(...) > max_binaries` lines the first draft had (`bundled_libs_truncated` still
+computes its own, since it goes through `_cap_by_findings` instead) down to the two
+`cap()` already returns directly. `tests/test_hardening.py`'s
+`test_a_rare_skipped_reason_survives_a_flood_of_a_common_one` and
+`test_a_rare_symlink_target_survives_a_flood_of_a_common_one` pin this: reverting to
+the plain-prefix slice makes both fail, confirmed by hand.
+
+**Why not `_cap_by_findings` instead**, now that `skipped` is known to be
+finding-referenced: `_cap_by_findings` picks winners by which *object* a finding
+references, keyed on path -- the right shape for `bundled_libs`, which lists objects
+`binaries[]`/`extensions` also list. `skipped` is not a list of objects a finding
+matched evidence *from*; it is a list of refusals, and the thing worth preserving one
+of each of is the *reason*, not the *path* a finding happens to name. `caps.cap`'s
+per-`cap_key` representative is the right question for that; `_cap_by_findings`'s
+per-`(rule_id, subject)` representative is not.
+
+**Why not reuse `binaries_truncated` for either.** Same reasoning as
+`bundled_libs_truncated`: `skipped` and `symlinks` can each be capped independently of
+the full object count `binaries_truncated` bounds, and a wheel that never approaches
+either of *this* pair's caps must not report truncation it never actually did.
+
+`ANALYZER_VERSION` moves: every record now carries `symlinks_truncated` and
+`skipped_truncated`. `schema_version` does not, for the same reason the previous
+entry's new keys did not move it: `SCHEMA.md`'s versioning table already covers "a new
+key that is always present." `ruleset_version` does not move: no rule, symbol, library
+or verdict changed -- `skipped` being finding-referenced changes how the *record* is
+capped, not what any rule matches.
+
+Closes [#119](https://github.com/EmilienM/wheel-crypto-scan/issues/119).
 
 ## `.symtab` is matched for crypto symbols when `.dynsym` is genuinely absent
 

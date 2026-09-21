@@ -23,7 +23,7 @@ read for.
 iteration order is not stable across runs, and `sorted` is stable -- so two items whose
 `sort_key` ties would keep the order the set happened to yield, and the record would
 depend on the hash seed. Every `sort_key` here covers every field `==` compares, and
-`tests/test_caps.py` pins that for all four types rather than leaving it to be noticed.
+`tests/test_caps.py` pins that for all six types rather than leaving it to be noticed.
 
 Lives at the package's top level, not under `binfmt/`, though every per-binary caller of
 `cap` is a `binfmt` reader: this module has no binary-format knowledge of its own, and

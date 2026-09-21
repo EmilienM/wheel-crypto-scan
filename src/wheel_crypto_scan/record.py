@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from . import ANALYZER_VERSION, SCHEMA_VERSION, TOOL_NAME, __version__
@@ -42,13 +43,13 @@ def build_record(
 
     `evidence.binaries` is expected to be the *full* set of objects that were actually
     read: `findings` and `verdict` were computed over all of it, not a truncated view.
-    `max_binaries`, when given, also caps the `binaries[]`, `artifacts.bundled_libs`
-    and `errors[]` arrays built here, so the record stays bounded without the cap
-    ever having withheld evidence from a rule -- every object and every error is still
-    fully evaluated regardless of what this cap keeps. A finding's `locations[].path`
-    can therefore legitimately name an object that this cap left out of `binaries[]`,
-    when even the finding-aware selection below could not make room for it -- see
-    SCHEMA.md.
+    `max_binaries`, when given, also caps the `binaries[]`, `artifacts.bundled_libs`,
+    `artifacts.skipped`, `artifacts.symlinks` and `errors[]` arrays built here, so the
+    record stays bounded without the cap ever having withheld evidence from a rule --
+    every object and every error is still fully evaluated regardless of what this cap
+    keeps. A finding's `locations[].path` can therefore legitimately name an object
+    that this cap left out of `binaries[]`, when even the finding-aware selection
+    below could not make room for it -- see SCHEMA.md.
     """
     if evidence_level not in EVIDENCE_LEVELS:
         raise ValueError(f"unknown evidence level: {evidence_level!r}")
@@ -199,6 +200,45 @@ def _cap_by_findings(
     return tuple(sorted(kept, key=path_of))
 
 
+@dataclass(frozen=True, slots=True)
+class _SkippedEntry:
+    """Wraps one `artifacts.skipped` `(path, reason)` pair to cap it through
+    `caps.cap`, the same `Capped` protocol `ScanError` already implements for
+    `errors[]` -- `reason` is `ScanError.kind` projected onto this array, so the same
+    starvation `ScanError.cap_key` exists to prevent applies here too. Local to
+    `record.py`: `ArtifactInventory.skipped` itself stays a plain tuple, since nothing
+    outside serialisation needs this wrapper.
+    """
+
+    path: str
+    reason: str
+
+    def sort_key(self) -> tuple[str, str]:
+        return (self.path, self.reason)
+
+    def cap_key(self) -> str:
+        return self.reason
+
+
+@dataclass(frozen=True, slots=True)
+class _SymlinkEntry:
+    """Wraps one `artifacts.symlinks` `(path, target)` pair to cap it through
+    `caps.cap`. `target` is the axis a consumer actually keys on (#57: a bundled
+    library is reachable only through the one symlink naming it), so one
+    representative per target survives a flood of boring ones before the rest, the
+    same shape `caps.py`'s own crate-list example exists to prevent one array over.
+    """
+
+    path: str
+    target: str
+
+    def sort_key(self) -> tuple[str, str]:
+        return (self.path, self.target)
+
+    def cap_key(self) -> str:
+        return self.target
+
+
 def to_json_line(record: dict[str, Any]) -> str:
     """Serialise one record as a canonical JSONL line."""
     return json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",", ":")) + "\n"
@@ -276,6 +316,30 @@ def _artifacts_block(
         else _cap_by_findings(artifacts.bundled_libs, lambda path: path, findings, max_binaries)
     )
     bundled_libs_truncated = max_binaries is not None and len(artifacts.bundled_libs) > max_binaries
+    # `skipped`'s `reason` is `ScanError.kind` projected onto `(path, kind)`: the same
+    # rules that match `evidence.errors` by `error_kinds` (`BIN_TOO_LARGE`,
+    # `WHEEL_MEMBER_UNREADABLE`) name paths that live in `skipped` too, and a plain
+    # prefix can crowd an entire reason out -- the same starvation `errors[]`'s own
+    # `cap_key` exists to prevent, one array over. `symlinks`' `target` is the axis a
+    # consumer actually keys on (#57: a bundled `libcrypto.dylib` reachable only
+    # through one symlink's target), and a plain prefix can crowd the one crypto
+    # target out behind a flood of boring ones, `caps.py`'s own `ring`-behind-`anyhow`
+    # example one array over. Both go through `caps.cap` with one representative per
+    # `(reason,)`/`(target,)` kept before the rest, not a plain sorted prefix. See
+    # DECISIONS.md, "`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix"
+    # (#119).
+    if max_binaries is None:
+        skipped, skipped_truncated = artifacts.skipped, False
+        symlinks, symlinks_truncated = artifacts.symlinks, False
+    else:
+        capped_skipped, skipped_truncated = cap(
+            (_SkippedEntry(path, reason) for path, reason in artifacts.skipped), max_binaries
+        )
+        skipped = tuple((entry.path, entry.reason) for entry in capped_skipped)
+        capped_symlinks, symlinks_truncated = cap(
+            (_SymlinkEntry(path, target) for path, target in artifacts.symlinks), max_binaries
+        )
+        symlinks = tuple((entry.path, entry.target) for entry in capped_symlinks)
     return {
         "py_files": artifacts.py_files,
         "pyc_files": artifacts.pyc_files,
@@ -288,8 +352,10 @@ def _artifacts_block(
         "bundled_libs": list(bundled_libs),
         "bundled_libs_truncated": bundled_libs_truncated,
         "sboms": list(artifacts.sboms),
-        "symlinks": [{"path": path, "target": target} for path, target in artifacts.symlinks],
-        "skipped": [{"path": path, "reason": reason} for path, reason in artifacts.skipped],
+        "symlinks": [{"path": path, "target": target} for path, target in symlinks],
+        "symlinks_truncated": symlinks_truncated,
+        "skipped": [{"path": path, "reason": reason} for path, reason in skipped],
+        "skipped_truncated": skipped_truncated,
     }
 
 

@@ -76,6 +76,19 @@ since `bundled_libs` is a *subset* of the objects `binaries[]`/`extensions` list
 the vendored ones) and can hit its own cap even when the full object list does not.
 Capped the same finding-aware way `binaries[]` and `extensions` are.
 
+`symlinks_truncated` and `skipped_truncated` are the same kind of flag for `symlinks`
+and `skipped`, each capped independently of every other array above -- but through
+`caps.cap`, not a plain prefix: `skipped`'s `reason` is `ScanError.kind` (two rules,
+`BIN_TOO_LARGE` and `WHEEL_MEMBER_UNREADABLE`, do name `skipped` paths), and
+`symlinks`' `target` is the field a consumer actually reads (a bundled library can be
+reachable only through the one symlink naming it), so one representative per
+`reason`/`target` survives a flood of another before the rest, the same starvation
+`errors[]`'s own `cap_key` already guards against. `skipped` and `errors[]` are fed by
+the same underlying archive errors for a member-refusal wheel, but capped separately
+and can disagree on how many of those events they still list; `skipped_truncated` and
+`errors_truncated` must both be read to know whether either is complete. See
+DECISIONS.md, "`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix".
+
 `py_files_unparsed` counts source files that would not parse. `binaries_truncated` is
 true when the wheel has more native objects than fit in the `extensions` list above
 and the top-level `binaries[]` array, so a wheel with thousands of objects cannot

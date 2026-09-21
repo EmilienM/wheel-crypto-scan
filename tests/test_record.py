@@ -132,7 +132,11 @@ def test_no_max_binaries_means_no_cap_and_no_truncation_flag(ruleset) -> None:
         filename="broken-1.0-py3-none-any.whl",
         sha256="c" * 64,
         size_bytes=10,
-        artifacts=ArtifactInventory(bundled_libs=("pkg.libs/libfoo-deadbeef.so",)),
+        artifacts=ArtifactInventory(
+            bundled_libs=("pkg.libs/libfoo-deadbeef.so",),
+            skipped=(("pkg/huge.bin", "binary_too_large"),),
+            symlinks=(("pkg/lib.so", "lib.so.1"),),
+        ),
         errors=(ScanError(stage="binary", kind="member_read_error", message="m", path="x"),),
     )
     record = record_for(ruleset, evidence)
@@ -140,6 +144,61 @@ def test_no_max_binaries_means_no_cap_and_no_truncation_flag(ruleset) -> None:
     assert record["artifacts"]["bundled_libs_truncated"] is False
     assert len(record["errors"]) == 1
     assert record["errors_truncated"] is False
+    assert record["artifacts"]["skipped_truncated"] is False
+    assert record["artifacts"]["symlinks_truncated"] is False
+
+
+def test_skipped_and_symlinks_are_capped_independently_of_bundled_libs(ruleset) -> None:
+    """#119: `artifacts.skipped` (`{path, reason}`) and `artifacts.symlinks`
+    (`{path, target}`) are the same unbounded shape #76 fixed for `bundled_libs` and
+    `errors[]`. Both go through `caps.cap`, keyed on `reason`/`target` respectively
+    (see DECISIONS.md, "`skipped` and `symlinks` reuse `caps.cap`, not a plain
+    prefix"); with every entry here sharing one `reason` and one `target`, the cap
+    degenerates to a plain sorted prefix, which
+    `test_a_rare_skipped_reason_survives_a_flood_of_a_common_one` and
+    `test_a_rare_symlink_target_survives_a_flood_of_a_common_one` in
+    `test_hardening.py` prove is not the general case."""
+    evidence = Evidence(
+        filename="broken-1.0-py3-none-any.whl",
+        sha256="f" * 64,
+        size_bytes=10,
+        artifacts=ArtifactInventory(
+            skipped=tuple((f"many/_ext{i:05d}.so", "binary_too_large") for i in range(5)),
+            symlinks=tuple((f"many/lib{i:05d}.so", "libfoo.so") for i in range(5)),
+        ),
+    )
+    record = record_for(ruleset, evidence, max_binaries=3)
+    assert record["artifacts"]["skipped"] == [
+        {"path": "many/_ext00000.so", "reason": "binary_too_large"},
+        {"path": "many/_ext00001.so", "reason": "binary_too_large"},
+        {"path": "many/_ext00002.so", "reason": "binary_too_large"},
+    ]
+    assert record["artifacts"]["skipped_truncated"] is True
+    assert record["artifacts"]["symlinks"] == [
+        {"path": "many/lib00000.so", "target": "libfoo.so"},
+        {"path": "many/lib00001.so", "target": "libfoo.so"},
+        {"path": "many/lib00002.so", "target": "libfoo.so"},
+    ]
+    assert record["artifacts"]["symlinks_truncated"] is True
+
+
+def test_exactly_the_cap_worth_of_skipped_and_symlinks_is_not_truncated(ruleset) -> None:
+    """The same boundary `bundled_libs_truncated`/`errors_truncated` must get right:
+    landing precisely on `max_binaries` must not read as truncated."""
+    evidence = Evidence(
+        filename="exact-1.0-py3-none-any.whl",
+        sha256="g" * 64,
+        size_bytes=10,
+        artifacts=ArtifactInventory(
+            skipped=tuple((f"many/_ext{i:05d}.so", "binary_too_large") for i in range(3)),
+            symlinks=tuple((f"many/lib{i:05d}.so", "libfoo.so") for i in range(3)),
+        ),
+    )
+    record = record_for(ruleset, evidence, max_binaries=3)
+    assert len(record["artifacts"]["skipped"]) == 3
+    assert record["artifacts"]["skipped_truncated"] is False
+    assert len(record["artifacts"]["symlinks"]) == 3
+    assert record["artifacts"]["symlinks_truncated"] is False
 
 
 # --- the field the acceptance gate reads ------------------------------------
