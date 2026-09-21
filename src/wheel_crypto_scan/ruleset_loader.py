@@ -523,6 +523,14 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             group["name"] for group in data["string_group"]
         }:
             raise RulesetError(f"{where}: unknown string group {string_group!r}")
+        copy_string_group = entry.get("copy_string_group")
+        if copy_string_group is not None:
+            if copy_string_group not in {group["name"] for group in data["string_group"]}:
+                raise RulesetError(f"{where}: unknown string group {copy_string_group!r}")
+            if string_group is None:
+                raise RulesetError(f"{where}: copy_string_group needs a string_group")
+            if copy_string_group == string_group:
+                raise RulesetError(f"{where}: copy_string_group must differ from string_group")
         _check_string_sequence(entry.get("crates", []), "crates", where)
         library_crates = tuple(str(crate) for crate in entry.get("crates", ()))
         for crate in library_crates:
@@ -534,6 +542,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             rule=_entry_rule(entry, "crypto_library", by_id, where),
             symbol_group=None if symbol_group is None else str(symbol_group),
             string_group=None if string_group is None else str(string_group),
+            copy_string_group=None if copy_string_group is None else str(copy_string_group),
             crates=library_crates,
             always_report=bool(entry.get("always_report", False)),
             **_entry_overrides(entry, classes, where),

@@ -310,21 +310,28 @@ def _binary_posture(
         system = True
 
     defined = _has_symbol(binary, library.symbol_group, BINDING_DEFINED)
-    static = defined or _has_string(binary, library.string_group)
+    # A banner alone is not `static` when it is header text rather than a copy: the
+    # object's `needed` entries already resolved the library from the host, and the
+    # object imports from it, was read in full, and carries none of the strings that
+    # mark a genuine compiled-in copy. See `_banner_is_header_text` for the gates.
+    banner = _has_string(binary, library.string_group) and not (
+        system and _banner_is_header_text(binary, library)
+    )
+    static = defined or banner
     if sum((system, bundled, static)) > 1:
         # Two or more of `system`, `bundled` and `static` are true on this one
         # object at once. Each is a `_DEFINITE` posture (see the tuple above) drawn
         # from its own piece of evidence -- a `needed` entry resolving to the host
         # library, a different `needed` entry resolving inside the wheel, or a
-        # defined symbol/banner -- and none of the three is weaker evidence than
-        # the others, so none wins outright over the rest: this object's own
-        # evidence already disagrees with itself the same way two different
-        # objects' postures disagree in `_aggregate` (`len(definite) > 1: return
-        # LINKAGE_MIXED`), so it reads `mixed` here too, before `_aggregate` ever
-        # runs. #60 added this check for `system`-and-`static`; #88 widens it to a
-        # three-way count that also catches `bundled`-and-`system` and
-        # `bundled`-and-`static`, closing the gap left by `bundled`'s old early
-        # return in the loop above.
+        # defined symbol, or a banner that is not header text -- and none of the
+        # three is weaker evidence than the others, so none wins outright over the
+        # rest: this object's own evidence already disagrees with itself the same
+        # way two different objects' postures disagree in `_aggregate`
+        # (`len(definite) > 1: return LINKAGE_MIXED`), so it reads `mixed` here
+        # too, before `_aggregate` ever runs. #60 added this check for
+        # `system`-and-`static`; #88 widens it to a three-way count that also
+        # catches `bundled`-and-`system` and `bundled`-and-`static`, closing the
+        # gap left by `bundled`'s old early return in the loop above.
         return LINKAGE_MIXED
     if system:
         return LINKAGE_SYSTEM
@@ -413,6 +420,34 @@ def _has_string(binary: BinaryEvidence, group: str | None) -> bool:
     if group is None:
         return False
     return any(match.group == group for match in binary.matched_strings)
+
+
+def _banner_is_header_text(binary: BinaryEvidence, library: CryptoLibrary) -> bool:
+    """Is a `string_group` match on this object header text rather than a copy?
+
+    Assumes the caller has already established gate (a): a `needed` entry on this
+    same object resolved the library from the host (`system` is true). Without that
+    precondition, imported symbols beside a banner are the shape of a static copy
+    linked alongside an unresolved dependency, not header text, and this must not be
+    called.
+
+    Each remaining gate answers one question: gate (b), imported symbols from the
+    library's own `symbol_group`, means the object actually calls the host copy, not
+    merely that it declares a dependency on one; gate (c), `partial_analysis` being
+    true, means a partial read may have cut the very string that would prove a copy,
+    for any cause, so the gate stays shut rather than reusing
+    `linkage_policy.exclude_reasons`, which answers a different question about a
+    different field; gate (d), a library with no `copy_string_group`, has no way to
+    tell a header banner from a copy, so `None` never opens the gate; and gate (d)'s
+    other half, a real compiled-in copy keeping its build strings beside its banner,
+    means finding none of them is what actually says "header", not the absence of
+    anything else.
+    """
+    if library.copy_string_group is None or binary.partial_analysis:
+        return False
+    return _has_symbol(binary, library.symbol_group, BINDING_IMPORTED) and not _has_string(
+        binary, library.copy_string_group
+    )
 
 
 def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:

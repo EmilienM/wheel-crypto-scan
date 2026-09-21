@@ -5,7 +5,8 @@ OpenSSL, or does it carry its own? The first two entries below are about
 `_binary_posture`, the function that reads one object's own evidence, and both were
 corrected more than once, each time by an object the prose had not anticipated. The third
 is about the weakest evidence it reads: a Rust crate name, which can say `unknown` and
-nothing more.
+nothing more. The fourth is back on `_binary_posture`, about a banner it once counted as
+a copy even when the object's headers, not a linked copy, put the banner there.
 
 ## A `needed` entry is bundled by what it resolves to, not by whether its name was renamed
 
@@ -168,7 +169,9 @@ demo/_ext.so   needed: libc.so.6, libssl.so.3
 
 **The decision: `mixed`, not `static`-wins.** Both facts are independently true and
 independently reportable — a real `DT_NEEDED` entry names the system library, and a real
-symbol or banner shows the object also carries its own copy. `static`-wins would suppress the
+symbol, or a banner that is not header text (see
+[the entry on header banners](#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy)),
+shows the object also carries its own copy. `static`-wins would suppress the
 `needed` evidence from the field most consumers filter on, which would then say `static`
 about an object that also, genuinely, links the system library. `mixed` costs no schema
 change: the value already existed for the cross-object case.
@@ -295,14 +298,14 @@ ways:
 cryptography 50.0.1 off PyPI (manylinux, macOS, Windows)
   crates: openssl, openssl-sys   banner "OpenSSL 4.0.2 25 Aug 2026"          -> static
 cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
-  needed: libcrypto.so.3, libssl.so.3   SBOM names openssl-sys             -> mixed
+  needed: libcrypto.so.3, libssl.so.3   SBOM names openssl-sys             -> system
 ```
 
 Same crate, two postures, so the crate check sits below every other one and its `unknown`
 never outvotes a definite posture elsewhere in the wheel. None of the four records moved.
 The Windows `.pyd` shows what does: its banner is its only OpenSSL evidence, and with
 `openssl_banner` restricted to `3.`, `1.1.` and `1.0.`, it reads `none` before and
-`unknown` after. The Fedora row's `mixed` and its missing crate are tracked in [#136](https://github.com/EmilienM/wheel-crypto-scan/issues/136) and
+`unknown` after. The Fedora row's missing crate is its own gap, tracked in
 [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137).
 
 **What was rejected.** A posture per crate, `static` for `openssl-src`: that crate in
@@ -322,3 +325,49 @@ some, when `unknown` already means what this case needs.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#an-openssl-crate-with-no-other-evidence-reads-unknown-not-none) ·
 [#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128)
+
+---
+
+## A version banner beside imports from the system library is header text, not a copy
+
+**Fixed.**
+
+A banner counted as `static` unconditionally, so an object whose `needed` entries
+resolved OpenSSL from the host, and that imports from it, still read `mixed` if its
+headers alone put the version banner in read-only data — which they do for any consumer
+that includes OpenSSL's headers, whether or not it links its own copy.
+
+```text
+cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
+  needed: libcrypto.so.3, libssl.so.3, OpenSSL symbols imported, header banner, no
+  OPENSSLDIR: string beside it
+-> before: openssl_linkage: mixed, with BIN_OPENSSL_LINKAGE_UNKNOWN
+-> after:  openssl_linkage: system, with DERIVED_SYSTEM_OPENSSL_ONLY
+```
+
+**The fix.** A banner stops counting toward `static` only when all four hold on the one
+object: a `needed` entry resolved the library from the host; the object imports a symbol
+from it; the object was read in full; and the library names a `copy_string_group` —
+strings only a real compiled-in copy carries — that the object matches none of. For
+OpenSSL, that group is `OPENSSLDIR: `, which `OpenSSL_version()` returns from the same
+call as the banner, so a compiled-in copy keeps both together and a header never supplies
+the second string. A defined symbol is unaffected and still makes `static` on its own.
+
+**Why a marker and not the imports alone.** The banner-plus-imports shape alone is not
+enough: a merged universal binary whose other slice carries a hidden static copy, and a
+static `libcrypto` linked beside a dynamic system `libssl`, both satisfy it while
+genuinely carrying a copy. Both keep the copy's build strings beside its banner only when
+something in the object actually calls `OpenSSL_version()` -- the one function that
+returns both. `cryptography` guarantees that call; a generic consumer does not, and can
+link a static `libcrypto` whose `cversion.o` is never pulled in, carrying neither string.
+
+**What it costs.** This moves the field in the favourable direction, which is why it
+needed four independent gates rather than one. A copy whose `OpenSSL_version()` is never
+called -- so its banner survives without its build strings -- reads `system`: a stripped,
+hidden static `libcrypto` beside a dynamic system `libssl`, with the consumer's own
+header supplying the banner, is the residual case, and it read `system` on `main` too
+whenever no header banner happened to be present. A library naming no marker keeps every
+banner it finds counting as a copy, unchanged. An object that is not read in full, for
+any cause, keeps `mixed`.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy)

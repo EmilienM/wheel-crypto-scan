@@ -23,6 +23,7 @@ from wheel_crypto_scan.evidence import (
     PARTIAL_PE_ORDINAL_EXPORT,
     PARTIAL_PE_ORDINAL_IMPORT,
     PARTIAL_REASONS,
+    PARTIAL_STRINGS_BYTES_UNREAD,
     STAGE_BINARY,
     ArtifactInventory,
     BinaryEvidence,
@@ -46,6 +47,7 @@ from wheel_crypto_scan.ruleset import LinkagePolicy
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 OPENSSL_BANNER = StringMatch(group="openssl_banner", value="OpenSSL 3.0.14 4 Jun 2024")
+OPENSSL_BUILD_INFO = StringMatch(group="openssl_build_info", value='OPENSSLDIR: "/usr/lib/ssl"')
 
 
 @pytest.fixture(scope="module")
@@ -827,11 +829,124 @@ def test_a_needed_system_match_and_a_defined_symbol_together_are_mixed(ruleset) 
 def test_a_needed_system_match_and_a_banner_together_are_mixed(ruleset) -> None:
     """The banner-only shape of the same contradiction: a version script hid the
     symbols, but the string is still there, and the `needed` entry still resolves
-    to the system library."""
+    to the system library.
+
+    No imported symbol on this object, so it also guards gate (b) below: without a
+    confirmed import from the resolved library, a banner beside a `needed` match
+    stays a copy rather than becoming header text.
+    """
     evidence = wheel(
         binary("pkg/_ext.so", needed=("libssl.so.3",), matched_strings=(OPENSSL_BANNER,))
     )
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+# --- a header banner beside imports from the resolved system library is not a copy --
+#
+# `OPENSSL_VERSION_TEXT` is a header macro: any consumer that includes OpenSSL's
+# headers compiles the current banner in, whether or not it links OpenSSL at all. A
+# banner is therefore not evidence of a compiled-in copy when the object also imports
+# from a `needed` entry that already resolved to the system library -- it is exactly
+# what the system library's own header would produce. A real copy's `OpenSSL_version()`
+# returns the banner and the `OPENSSLDIR: ` string from the same switch, so a genuine
+# static copy keeps both; a header only ever supplies the banner macro.
+
+
+def test_a_header_banner_beside_imports_from_the_system_library_is_system(ruleset) -> None:
+    """The Fedora shape: a `needed` match, imported OpenSSL symbols, and a banner with
+    no build strings beside it. The banner is header text, so `static` is false and
+    the object reads plain `system`."""
+    evidence = wheel(
+        binary(
+            "cryptography/hazmat/bindings/_rust.abi3.so",
+            needed=("libssl.so.3", "libcrypto.so.3", "libc.so.6"),
+            matched_symbols=(
+                SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),
+                SymbolMatch("SSL_CTX_new", "openssl", BINDING_IMPORTED),
+            ),
+            matched_strings=(OPENSSL_BANNER,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_a_banner_beside_an_openssl_build_string_stays_mixed(ruleset) -> None:
+    """The same object, but the banner is accompanied by a build string only a real
+    compiled-in copy carries beside its banner -- which it does whenever something in
+    the object actually calls `OpenSSL_version()`, the shape a merged universal
+    binary's hidden slice or a static libcrypto beside a dynamic system libssl reads as
+    when that call is reachable: the marker means the banner is not header text after
+    all, so the object stays `mixed`."""
+    evidence = wheel(
+        binary(
+            "cryptography/hazmat/bindings/_rust.abi3.so",
+            needed=("libssl.so.3", "libcrypto.so.3", "libc.so.6"),
+            matched_symbols=(
+                SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),
+                SymbolMatch("SSL_CTX_new", "openssl", BINDING_IMPORTED),
+            ),
+            matched_strings=(OPENSSL_BANNER, OPENSSL_BUILD_INFO),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [PARTIAL_STRINGS_BYTES_UNREAD, PARTIAL_ELF_GO_BUILDINFO_UNREAD],
+)
+def test_a_header_banner_on_a_partially_read_object_stays_mixed(ruleset, reason: str) -> None:
+    """A partial read may have cut the very string that would have proven the banner
+    is a copy, so the gate never opens for an object that was not read in full -- for
+    any cause, not only the ones `[linkage_policy] exclude_reasons` leaves answerable.
+    `PARTIAL_ELF_GO_BUILDINFO_UNREAD` is on that exclude list, which is what shows this
+    gate is its own, stricter split rather than a reuse of it."""
+    evidence = wheel(
+        binary(
+            "cryptography/hazmat/bindings/_rust.abi3.so",
+            needed=("libssl.so.3", "libcrypto.so.3", "libc.so.6"),
+            matched_symbols=(
+                SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),
+                SymbolMatch("SSL_CTX_new", "openssl", BINDING_IMPORTED),
+            ),
+            matched_strings=(OPENSSL_BANNER,),
+            partial_analysis=True,
+            partial_reasons=(reason,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_banner_and_imports_without_a_system_dependency_are_still_static(ruleset) -> None:
+    """No `needed` entry resolves to the system library, so gate (a) never holds: the
+    banner is not header text just because the object also happens to import OpenSSL
+    symbols from somewhere. Whatever provides them is outside this wheel, and the
+    banner is still a real, unexplained copy on this object."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            matched_strings=(OPENSSL_BANNER,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
+
+
+def test_a_library_without_a_copy_string_group_always_counts_its_banner(ruleset) -> None:
+    """libsodium names no `copy_string_group`, so it has no way to tell a header
+    banner from a copy, and a banner beside a system dependency and imports stays a
+    real posture disagreement: `mixed`, the same as OpenSSL got before this gate
+    existed."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libsodium.so.23",),
+            matched_symbols=(SymbolMatch("crypto_box_seal", "libsodium", BINDING_IMPORTED),),
+            matched_strings=(StringMatch("libsodium", "libsodium 1.0.18"),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["libsodium"] == LINKAGE_MIXED
 
 
 def test_a_merged_universal_binary_whose_slices_disagreed_is_now_mixed(ruleset) -> None:

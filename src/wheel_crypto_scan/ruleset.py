@@ -338,6 +338,12 @@ class CryptoLibrary:
     only `rust_crate_names` ahead of its cap, so a crate listed here alone could be
     cut from a Rust object with hundreds of crates and read `none` again. A
     `CryptoLibrary` built in code skips that check and owns the same guarantee.
+
+    `copy_string_group` names strings only a compiled-in copy carries, never its
+    headers. A match from `string_group` on an object that resolves the library from
+    the host, imports from it, was read in full and matches nothing in
+    `copy_string_group` is header text, not a copy. `None` means a banner always
+    counts as a copy.
     """
 
     name: str
@@ -346,6 +352,7 @@ class CryptoLibrary:
     rule: str | None = None
     symbol_group: str | None = None
     string_group: str | None = None
+    copy_string_group: str | None = None
     crates: tuple[str, ...] = ()
     # Report this library's linkage even when nothing matched, because consumers
     # filter on the field and a missing key is harder to handle than "none".

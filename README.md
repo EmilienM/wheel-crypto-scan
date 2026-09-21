@@ -20,13 +20,17 @@ There are three ways a wheel can carry its own OpenSSL, and all three are caught
 | A library under `*.libs/` or `.dylibs/`, a dependency on a hash-renamed `libcrypto-3a1f2b4c.so.3`, or an unrenamed dependency (delocate's convention) that still names a file the wheel itself ships | `bundled` |
 | No dependency and no vendor directory, but OpenSSL symbols defined or its version banner in read-only data | `static` |
 
+A version banner beside a system dependency is header text rather than a copy when the
+object imports its OpenSSL from that dependency, was read in full, and carries none of
+the build strings (`OPENSSLDIR:`) a compiled-in OpenSSL keeps beside its banner.
+
 The third case is the one that matters most and the one a vendor-directory check alone
 misses. Run against three real builds of `cryptography`:
 
 ```
-Fedora RPM build      DT_NEEDED libcrypto.so.3, libssl.so.3    64 symbols imported   -> system
-PyPI 42.0.5           empty cryptography.libs/, no DT_NEEDED,  0 symbols exported    -> static
-PyPI 3.4.8            no DT_NEEDED, no vendor directory,       0 symbols exported    -> static
+Fedora RPM build      DT_NEEDED libcrypto.so.3, libssl.so.3    64 imported, header banner   -> system
+PyPI 42.0.5           empty cryptography.libs/, no DT_NEEDED,  0 symbols exported           -> static
+PyPI 3.4.8            no DT_NEEDED, no vendor directory,       0 symbols exported           -> static
 ```
 
 For PyPI 42.0.5 the *only* evidence is the `OpenSSL 3.2.1` banner in `.rodata`: the vendor
