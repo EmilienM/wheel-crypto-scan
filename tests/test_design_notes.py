@@ -111,7 +111,7 @@ def _headings() -> set[str]:
 
 
 def _normalise(title: str) -> str:
-    return " ".join(title.split()).rstrip(".")
+    return " ".join(title.split())
 
 
 def _github_slug(title: str) -> str:
@@ -125,18 +125,29 @@ def _unwrapped(path: Path) -> str:
     return re.sub(r"\s*\n\s*(?:#+ ?(?!#))?", " ", path.read_text(encoding="utf-8"))
 
 
+_QUOTE_PATTERNS = (
+    # DESIGN.md, "..." / DESIGN.md's "..."
+    re.compile(r"DESIGN\.md`?(?:'s|,)\s+\"([^\"]+)\""),
+    # See "..." in DESIGN.md.
+    re.compile(r"\"([^\"]+)\"\s+in\s+`?DESIGN\.md"),
+)
+
+
 def _quoted_titles() -> list[tuple[str, str]]:
     quoted = []
     for path in _SOURCES:
         text = _unwrapped(path)
-        for match in re.finditer(r"DESIGN\.md`?(?:'s|,)\s+\"([^\"]+)\"", text):
-            quoted.append((path.relative_to(ROOT).as_posix(), _normalise(match.group(1))))
+        for pattern in _QUOTE_PATTERNS:
+            for match in pattern.finditer(text):
+                quoted.append((path.relative_to(ROOT).as_posix(), _normalise(match.group(1))))
     return quoted
 
 
 def test_every_quoted_design_heading_exists() -> None:
     """Code and docs point into `DESIGN.md` by quoting a heading, not by a line number
-    or an anchor; a heading renamed without its quotes leaves them pointing nowhere."""
+    or an anchor; a heading renamed without its quotes leaves them pointing nowhere.
+    The quote must match the heading verbatim apart from line wrapping, so a period
+    inside the closing quote counts as a mismatch."""
     quoted = _quoted_titles()
     assert quoted, "no DESIGN.md heading quotes found; the pattern has gone stale"
     headings = _headings()
