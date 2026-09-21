@@ -18,8 +18,12 @@ from helpers.binfmt.macho import LC_ID_DYLIB, LC_LOAD_DYLIB
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import symtab
 from wheel_crypto_scan.binfmt.macho import _MAX_SIZEOFCMDS, read_macho
+from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.errors import MACHO_PARSE_ERROR
+from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
+from wheel_crypto_scan.linkage import LINKAGE_BUNDLED, resolve_linkage
 from wheel_crypto_scan.ruleset_loader import load_ruleset
+from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
 
 PATTERNS = load_ruleset().compile_patterns().binary
 
@@ -1394,13 +1398,7 @@ def test_a_reexporting_shim_does_not_read_clean() -> None:
 
     # The evidence alone is not the whole claim: run it through the same engine that
     # decides the verdict, the way `test_binfmt_pe.py`'s forwarder test does.
-    from wheel_crypto_scan.engine import apply_rules
-    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
-    from wheel_crypto_scan.linkage import resolve_linkage
-    from wheel_crypto_scan.ruleset_loader import load_ruleset as _load_ruleset
-    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
-
-    ruleset = _load_ruleset()
+    ruleset = load_ruleset()
     wheel_evidence = Evidence(
         filename="demo-1.0-py3-none-any.whl",
         sha256="0" * 64,
@@ -1737,11 +1735,6 @@ def test_this_object_never_reads_as_no_crypto_detected() -> None:
     # Built end to end through `linkage` and `verdict`, the way a wheel actually gets
     # scored: what this closes is a `NO_CRYPTO_DETECTED`
     # verdict on an object that could not be read in full, not a wrong flag alone.
-    from wheel_crypto_scan.engine import apply_rules
-    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
-    from wheel_crypto_scan.linkage import resolve_linkage
-    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
-
     ruleset = load_ruleset()
     wheel_evidence = Evidence(
         filename="demo-1.0-py3-none-any.whl",
@@ -2274,11 +2267,6 @@ def test_an_ambiguous_install_name_never_reads_a_bundled_copy_as_clean() -> None
     assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
     assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
 
-    from wheel_crypto_scan.engine import apply_rules
-    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
-    from wheel_crypto_scan.linkage import resolve_linkage
-    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
-
     ruleset = load_ruleset()
     wheel_evidence = Evidence(
         filename="demo-1.0-py3-none-any.whl",
@@ -2317,9 +2305,6 @@ def test_a_path_that_honestly_names_the_library_recovers_despite_the_ambiguity()
     assert ev.partial_analysis is True
     assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS in ev.partial_reasons
     assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
-
-    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence
-    from wheel_crypto_scan.linkage import LINKAGE_BUNDLED, resolve_linkage
 
     ruleset = load_ruleset()
     wheel_evidence = Evidence(

@@ -45,7 +45,8 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]
+# PLC0415: imports go at the top of the file, tests included; pylint only covers src/.
+select = ["E", "F", "W", "PLC0415"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

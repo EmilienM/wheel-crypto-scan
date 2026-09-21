@@ -42,9 +42,10 @@ from wheel_crypto_scan.binfmt.macho import read_macho
 from wheel_crypto_scan.binfmt.rust import find_rust_crates
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import SbomComponent
+from wheel_crypto_scan.layers.python_ast import scan_python_source
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext, scan_wheel
-from wheel_crypto_scan.wheelfile import ArchiveLimits, WheelArchive
+from wheel_crypto_scan.wheelfile import ArchiveLimits, SeekableZipMember, WheelArchive
 
 MANYLINUX = "cp39-abi3-manylinux_2_28_x86_64"
 MACOS = "cp312-cp312-macosx_11_0_arm64"
@@ -284,12 +285,8 @@ def test_metadata_with_no_parseable_headers_is_recorded(context, tmp_path: Path)
 
 def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> None:
     """sh_size is attacker controlled and SHT_NOBITS materialises it as zero bytes."""
-    from helpers.binfmt import patch_u16  # noqa: F401  (kept for symmetry)
-
     payload = bytearray(ElfBuilder(comment=b"GCC: (GNU) 14.0\x00", needed=("libc.so.6",)).build())
     # Find the .comment section header and rewrite its type to SHT_NOBITS with a 3 GiB size.
-    import struct
-
     e_shoff = struct.unpack_from("<Q", payload, 0x28)[0]
     e_shentsize = struct.unpack_from("<H", payload, 0x3A)[0]
     e_shnum = struct.unpack_from("<H", payload, 0x3C)[0]
@@ -1356,17 +1353,12 @@ def test_sbom_component_sort_key_covers_every_field_dedup_uses() -> None:
 def test_a_streamed_member_serves_backward_seeks_from_its_window(tmp_path: Path) -> None:
     """ELF readers alternate between .dynsym and .dynstr; without a window that is
     one full decompression per symbol."""
-    import io
-    import zipfile as zf
-
-    from wheel_crypto_scan.wheelfile import SeekableZipMember
-
     payload = bytes(range(256)) * 4096  # 1 MiB
     path = tmp_path / "w.zip"
-    with zf.ZipFile(path, "w", zf.ZIP_DEFLATED) as archive:
-        archive.writestr(zf.ZipInfo("blob.bin", date_time=FIXED_DATE), payload)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(zipfile.ZipInfo("blob.bin", date_time=FIXED_DATE), payload)
 
-    with zf.ZipFile(path) as archive:
+    with zipfile.ZipFile(path) as archive:
         member = SeekableZipMember(archive, "blob.bin", len(payload), 2 * 1024 * 1024)
         stream = io.BufferedReader(member)
         stream.read(len(payload))
@@ -1379,17 +1371,12 @@ def test_a_streamed_member_serves_backward_seeks_from_its_window(tmp_path: Path)
 
 def test_a_backward_seek_outside_the_window_is_still_correct(tmp_path: Path) -> None:
     """Falling out of the window must re-open, not silently read the wrong offset."""
-    import io
-    import zipfile as zf
-
-    from wheel_crypto_scan.wheelfile import SeekableZipMember
-
     payload = bytes(range(256)) * 4096
     path = tmp_path / "w.zip"
-    with zf.ZipFile(path, "w", zf.ZIP_DEFLATED) as archive:
-        archive.writestr(zf.ZipInfo("blob.bin", date_time=FIXED_DATE), payload)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(zipfile.ZipInfo("blob.bin", date_time=FIXED_DATE), payload)
 
-    with zf.ZipFile(path) as archive:
+    with zipfile.ZipFile(path) as archive:
         member = SeekableZipMember(archive, "blob.bin", len(payload), window_bytes=0)
         stream = io.BufferedReader(member)
         stream.seek(len(payload) - 16)
@@ -1440,13 +1427,9 @@ def test_parsing_source_with_invalid_escapes_emits_no_warnings(context, tmp_path
     Scanning a real index leaked 592 SyntaxWarnings to stderr, which corrupts any
     pipeline reading the tool's output and buries genuine messages.
     """
-    import warnings as warnings_module
-
-    from wheel_crypto_scan.layers.python_ast import scan_python_source
-
     source = b'import re\nBAD = "\\420 octal"\nPAT = "\\d+"\n'
-    with warnings_module.catch_warnings(record=True) as caught:
-        warnings_module.simplefilter("always")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         sites, found = scan_python_source(source, "pkg/mod.py", context.patterns.python)
     assert [str(w.message) for w in caught] == []
     assert found == ()

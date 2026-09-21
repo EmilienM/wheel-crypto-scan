@@ -7,7 +7,7 @@ comment is written down there.
 
 ```bash
 uvx --with tox-uv tox              # py311-py314, ruff lint and format, pylint
-uvx --with tox-uv tox -e lint      # ruff check --select=E,F,W, then ruff format --check
+uvx --with tox-uv tox -e lint      # ruff check --select=E,F,W,PLC0415, then ruff format --check
 uvx --with tox-uv tox -e format    # apply formatting
 uvx --with tox-uv tox -e pylint    # pylint the package
 uvx --with tox-uv tox -e real      # opt-in, needs real wheels in WCS_CORPUS_DIR

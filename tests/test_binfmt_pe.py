@@ -16,9 +16,14 @@ import io
 import pytest
 from helpers.binfmt import IMAGE_FILE_MACHINE_I386, PEBuilder, PEExport, PEImport
 from wheel_crypto_scan import evidence
-from wheel_crypto_scan.binfmt.pe import read_pe
+from wheel_crypto_scan.binfmt import pe as pe_module
+from wheel_crypto_scan.binfmt.pe import _MAX_NAME_BYTES, _split_forwarder, read_pe
+from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.errors import PE_PARSE_ERROR
+from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
+from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset_loader import load_ruleset
+from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
 
 PATTERNS = load_ruleset().compile_patterns().binary
 
@@ -464,11 +469,6 @@ def test_a_forwarder_names_the_dll_and_symbol_it_forwards_to() -> None:
 
     # The evidence alone is not the whole claim: run it through the same engine that
     # decides the verdict, to confirm the wheel does not read clean.
-    from wheel_crypto_scan.engine import apply_rules
-    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
-    from wheel_crypto_scan.linkage import resolve_linkage
-    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
-
     ruleset = load_ruleset()
     wheel_evidence = Evidence(
         filename="demo-1.0-py3-none-any.whl",
@@ -519,8 +519,6 @@ def test_an_ordinal_forwarder_s_remainder_never_reaches_forwarded_targets() -> N
     `matched_symbols` -- nothing in the ruleset matches a bare number -- so the only
     way to pin this is to read what `_read_exports` actually produced.
     """
-    from wheel_crypto_scan.binfmt import pe as pe_module
-
     wrapper = _extension(
         imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
         exports=(PEExport("my_digest_init", forwarder=f"{OPENSSL_DLL[:-4]}.#123"),),
@@ -542,8 +540,6 @@ def test_a_forwarder_string_past_the_name_cap_is_unresolved() -> None:
     this file, so the object is `pe_export_incomplete` instead, the same as any other
     export name that ran past its cap.
     """
-    from wheel_crypto_scan.binfmt.pe import _MAX_NAME_BYTES
-
     long_forwarder = "libcrypto-3-x64." + "E" * (_MAX_NAME_BYTES + 16)
     wrapper = _extension(
         imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
@@ -563,8 +559,6 @@ def test_split_forwarder_splits_on_the_first_dot_not_the_last() -> None:
     from what a hot/cold-split symbol needs. This is the mutant that swapping
     `partition` back for `rpartition` produces.
     """
-    from wheel_crypto_scan.binfmt.pe import _split_forwarder
-
     assert _split_forwarder("libcrypto-3-x64.EVP_DigestInit_ex.cold") == (
         "libcrypto-3-x64",
         "EVP_DigestInit_ex.cold",
@@ -599,11 +593,6 @@ def test_a_forwarder_with_a_dot_in_its_symbol_half_still_resolves() -> None:
 
     # As with the plain forwarder case: confirm the verdict itself moves, not just
     # the evidence fields.
-    from wheel_crypto_scan.engine import apply_rules
-    from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
-    from wheel_crypto_scan.linkage import resolve_linkage
-    from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
-
     ruleset = load_ruleset()
     wheel_evidence = Evidence(
         filename="demo-1.0-py3-none-any.whl",
@@ -835,8 +824,6 @@ def test_a_name_past_the_cap_is_still_a_name_we_did_not_read() -> None:
     Raising a limit is how a limit quietly stops being one, so the behaviour on the
     far side of it is pinned rather than assumed.
     """
-    from wheel_crypto_scan.binfmt.pe import _MAX_NAME_BYTES
-
     data = PEBuilder(
         dll_name="_ext.pyd",
         imports=(PEImport("python311.dll", names=("Py_Initialize",)),),

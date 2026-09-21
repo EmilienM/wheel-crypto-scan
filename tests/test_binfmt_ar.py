@@ -21,6 +21,7 @@ from helpers.binfmt import (
     gnu_symbol_table_member,
     pseudo_member,
 )
+import wheel_crypto_scan.binfmt.ar as ar_module
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt.ar import read_ar_members
 from wheel_crypto_scan.errors import AR_PARSE_ERROR
@@ -245,8 +246,6 @@ def test_the_member_cap_bounds_dispatch_work_not_just_output_length(monkeypatch)
     `test_more_than_the_member_cap_truncates_rather_than_hangs` just as well as one
     that actually stops the work. Count real dispatches directly.
     """
-    import wheel_crypto_scan.binfmt.ar as ar_module
-
     calls = {"n": 0}
     real_read_binary = ar_module.read_binary
 

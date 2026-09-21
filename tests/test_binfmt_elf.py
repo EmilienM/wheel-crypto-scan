@@ -13,9 +13,11 @@ import dataclasses
 import io
 import os
 import struct
+import zipfile
 import zlib
 
 import pytest
+from elftools.elf.elffile import ELFFile
 
 from helpers.binfmt import (
     E_SHNUM_OFFSET,
@@ -39,12 +41,14 @@ from helpers.binfmt import (
 )
 from wheel_crypto_scan import evidence
 from wheel_crypto_scan.binfmt import symtab
-from wheel_crypto_scan.binfmt.elf import read_elf
+from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes, _validated_strtab, read_elf
+from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
 from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.verdict import NO_CRYPTO_DETECTED, classify
+from wheel_crypto_scan.wheelfile import SeekableZipMember
 
 PATTERNS = load_ruleset().compile_patterns().binary
 
@@ -459,13 +463,6 @@ def test_fast_symbol_reader_agrees_with_pyelftools() -> None:
     It exists because pyelftools seeks per symbol, which is catastrophic on a
     streamed member, but it is only safe if it reads the same bytes the same way.
     """
-    import io
-
-    from elftools.elf.elffile import ELFFile
-
-    from wheel_crypto_scan.binfmt.elf import _iter_symbols, _symbol_bytes, _validated_strtab
-    from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
-
     for elfclass, big_endian in ((64, False), (32, False), (64, True), (32, True)):
         symbols = tuple(DynSym(f"sym_{i:03d}", defined=(i % 3 == 0)) for i in range(60)) + (
             DynSym("EVP_DigestInit_ex", defined=False),
@@ -498,13 +495,6 @@ def test_a_large_symbol_table_does_not_thrash_a_streamed_member(tmp_path) -> Non
     pandoc ships a 400 MiB object with ~497,000 dynamic symbols. Read through a
     streamed zip member with a per-symbol seek, that never finished.
     """
-    import io
-    import zipfile
-
-    from wheel_crypto_scan.binfmt.elf import read_elf
-    from wheel_crypto_scan.ruleset_loader import load_ruleset
-    from wheel_crypto_scan.wheelfile import SeekableZipMember
-
     symbols = tuple(DynSym(f"filler_symbol_{i:06d}", defined=True) for i in range(20000))
     symbols += (DynSym("EVP_DigestInit_ex", defined=False),)
     blob = ElfBuilder(dynsyms=symbols, needed=("libcrypto.so.3",), rodata=b"x" * 400000).build()
@@ -541,13 +531,6 @@ def test_the_symbol_tables_are_read_in_the_order_they_sit_in_the_file(tmp_path) 
     costs exactly one more, and a bound loose enough not to notice that is a bound that
     would not have caught it.
     """
-    import io
-    import zipfile
-
-    from wheel_crypto_scan.binfmt.elf import read_elf
-    from wheel_crypto_scan.ruleset_loader import load_ruleset
-    from wheel_crypto_scan.wheelfile import SeekableZipMember
-
     symbols = tuple(DynSym(f"filler_{i:05d}", defined=True) for i in range(4000))
     symbols += (DynSym("EVP_DigestInit_ex", defined=False),)
     blob = ElfBuilder(dynsyms=symbols, needed=("libcrypto.so.3",), rodata=b"x" * 200000).build()
@@ -1948,8 +1931,6 @@ def test_a_small_decoy_beside_an_over_budget_real_strtab_is_still_not_a_clean_re
     decoy never actually checked. Skipping must count as a hit, not nothing to worry
     about.
     """
-    from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
-
     honest = ElfBuilder(
         e_type=ET_REL,
         dynsyms=(),

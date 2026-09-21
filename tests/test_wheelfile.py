@@ -6,6 +6,7 @@ because these tests are about archive handling rather than about wheels.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import warnings
 import zipfile
@@ -51,8 +52,6 @@ def test_reports_its_own_filename_not_its_host_path(simple_wheel: Path) -> None:
 
 
 def test_computes_the_sha256_of_the_file(simple_wheel: Path) -> None:
-    import hashlib
-
     expected = hashlib.sha256(simple_wheel.read_bytes()).hexdigest()
     with WheelArchive.open(simple_wheel) as archive:
         assert archive.sha256 == expected
