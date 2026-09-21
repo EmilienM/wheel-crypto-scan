@@ -514,6 +514,66 @@ def test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab(
     } <= rule_ids
 
 
+def test_a_blowfish_call_into_the_system_libcrypto_is_conditional_not_non_approved(
+    context, tmp_path: Path
+) -> None:
+    """An extension that only imports `BF_encrypt` from the host's `libcrypto` neither
+    implements nor bundles Blowfish, so the taxonomy's `NON_APPROVED_CRYPTO` -- which
+    means implements or bundles -- does not apply. The call still reads `CONDITIONAL`:
+    whichever library answers it governs the finding, and `openssl_linkage` says that
+    library is the system one here.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, "system-blowfish-call") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="42.0.5",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libcrypto.so.3", "libc.so.6"),
+                dynsyms=(
+                    DynSym(EVP, defined=False),
+                    DynSym("BF_encrypt", defined=False),
+                ),
+            ),
+        },
+    )
+    record = scan(context, wheel)
+    rule_ids = set(record["verdict"]["rule_ids"])
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "NON_APPROVED_CRYPTO" not in record["verdict"]["classes"]
+    assert "BIN_BCRYPT_BLOWFISH_IMPORTED" in rule_ids
+    assert "BIN_BCRYPT_BLOWFISH" not in rule_ids
+
+
+def test_a_blowfish_import_with_no_crypto_library_still_has_a_class(
+    context, tmp_path: Path
+) -> None:
+    """A `BF_encrypt` import with no crypto library linked at all trips no OpenSSL
+    linkage rule, so the only thing keeping this wheel off `NO_CRYPTO_DETECTED` is
+    `BIN_BCRYPT_BLOWFISH_IMPORTED` carrying its own verdict.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, "no-library-blowfish-call") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="42.0.5",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libc.so.6",),
+                dynsyms=(DynSym("BF_encrypt", defined=False),),
+            ),
+        },
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_BCRYPT_BLOWFISH_IMPORTED" in record["verdict"]["rule_ids"]
+
+
 # --------------------------------------------------------------------------
 # delocate: bundled without a rename
 #

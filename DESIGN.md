@@ -5042,6 +5042,24 @@ static the host FIPS provider has no way to refuse them -- the exact argument
 telling the truth; the tool's accepted error direction is over-flagging, and it has no
 passing class to be tricked into.
 
+**Why an import of the same names gets a separate rule.** Calling `BF_encrypt` through
+a library the wheel links neither implements nor bundles Blowfish, so
+`NON_APPROVED_CRYPTO`'s own "implements or bundles" definition does not fit it, and
+`BIN_BCRYPT_BLOWFISH` above matches only a definition. `NON_APPROVED_CRYPTO` on the
+import was rejected for that reason. Leaving the import unmatched was rejected too: an
+object that names `BF_encrypt` against a library other than OpenSSL (only `libc.so.6`
+in `DT_NEEDED`, say) trips no OpenSSL linkage rule either, and a record with no finding
+there would read `NO_CRYPTO_DETECTED`, which `BIN_LINKED_CRYPTO_LIBRARY`'s own `why`
+calls the one thing a headline field must never do. `BIN_BCRYPT_BLOWFISH_IMPORTED`
+keeps a class under the import instead, at `CONDITIONAL`: the library that answers the
+call governs it, and `verdict.conditions.openssl_linkage` says whether that library is
+the host's `libcrypto`. OpenSSL's low-level `BF_` functions sit outside its provider
+mechanism, so a FIPS-enforcing host does not necessarily refuse a call resolved there
+the way it refuses one made through EVP, which is why this goes to a human rather than
+being read as acceptable. A bundled `libcrypto` that answers the call defines
+`BF_encrypt` itself and carries `BIN_BCRYPT_BLOWFISH` on its own object, so nothing here
+changes what a bundled or static copy reads.
+
 **Why a narrower `binding` was rejected.** The finding is already `binding = "defined"`,
 so nothing sharpens it there. The distinction that would help -- exported versus kept
 local by a version script -- needs a third `SymbolMatch.binding` value the record
