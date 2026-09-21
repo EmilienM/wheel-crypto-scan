@@ -90,7 +90,8 @@ callers can use it moves its preconditions out of sight.
 `engine.py` dispatches each `[rule.match]` to a matcher by `kind`. Every matcher takes the
 same `(rule, match, ruleset, evidence, linkage, index)` signature so the engine can drive
 them from one table; most ignore most of it. Matches become `Finding` objects, one per rule
-and subject rather than per occurrence.
+and subject rather than per occurrence. A matcher's own keys are listed in
+`ruleset.MATCH_KEYS`, and a test fails when a matcher reads a key not listed there.
 
 `linkage.py` resolves a posture per crypto library. `_binary_posture` reads one object's
 own evidence — its `vendored_path`, each `needed` entry, the defined-versus-imported symbol

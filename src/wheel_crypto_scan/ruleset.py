@@ -21,33 +21,59 @@ from fnmatch import fnmatch
 from types import MappingProxyType
 from typing import Any
 
-# Matcher kinds the scanner implements. A rule naming anything else cannot run, so the
-# ruleset is rejected rather than quietly skipping the rule.
-MATCHER_KINDS = frozenset(
+# What each matcher kind reads off its `[rule.match]` table, plus `kind` itself and,
+# where the loader and `Ruleset.default_rule_for_table` read them, `table`/`default`. A
+# key a match table carries that is not listed here is refused at load time, because it
+# would otherwise load clean and do nothing -- the same typo trap `[linkage_policy]`
+# closes for its own keys. `tests/test_ruleset.py` walks `engine.py` with `ast` and
+# fails in both directions: a matcher reading a key its entry does not list, and a
+# listed key nothing reads.
+_ENTRY_ROUTING_KEYS = frozenset({"table", "default"})
+
+MATCH_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "dist_name",
-        "requires_dist",
-        "wheel_generator",
-        "no_source",
-        "record_mismatch",
-        "scan_error",
-        "sbom_component",
-        "bundled_library",
-        "dt_needed",
-        "dynamic_symbol",
-        "binary_string",
-        "rust_crate",
-        "linkage",
-        "opaque_binary",
-        "partial_binary",
-        "binaries_truncated",
-        "py_import",
-        "py_call",
-        "py_attr",
-        "py_constant",
-        "py_ctypes_load",
+        "dist_name": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
+        "requires_dist": frozenset({"kind", "any_entry"} | _ENTRY_ROUTING_KEYS),
+        "wheel_generator": frozenset({"kind"}),
+        "no_source": frozenset({"kind"}),
+        "record_mismatch": frozenset({"kind"}),
+        "scan_error": frozenset({"kind", "error_kinds"}),
+        "sbom_component": frozenset({"kind", "tables"}),
+        "bundled_library": frozenset(
+            {"kind", "library", "exclude_libraries"} | _ENTRY_ROUTING_KEYS
+        ),
+        "dt_needed": frozenset({"kind", "library", "mangled", "resolved"} | _ENTRY_ROUTING_KEYS),
+        "dynamic_symbol": frozenset({"kind", "binding", "group", "groups"}),
+        "binary_string": frozenset({"kind", "group", "groups"}),
+        "rust_crate": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
+        "linkage": frozenset(
+            {
+                "kind",
+                "name",
+                "value",
+                "values",
+                "exclude_libraries",
+                "object_values",
+                "exclude_object_values",
+            }
+            | _ENTRY_ROUTING_KEYS
+        ),
+        "opaque_binary": frozenset({"kind"}),
+        "partial_binary": frozenset({"kind", "reasons", "exclude_reasons"}),
+        "binaries_truncated": frozenset({"kind"}),
+        "py_import": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
+        "py_call": frozenset(
+            {"kind", "targets", "usedforsecurity", "algorithm", "weak_algorithms_only"}
+        ),
+        "py_attr": frozenset({"kind", "attributes", "values"}),
+        "py_constant": frozenset({"kind", "constants"}),
+        "py_ctypes_load": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
     }
 )
+
+# Matcher kinds the scanner implements. A rule naming anything else cannot run, so the
+# ruleset is rejected rather than quietly skipping the rule.
+MATCHER_KINDS = frozenset(MATCH_KEYS)
 
 SEVERITIES = frozenset({"high", "medium", "low", "info"})
 CONFIDENCES = frozenset({"high", "medium", "low"})
@@ -58,12 +84,14 @@ LINKAGE_VALUES = frozenset({"system", "bundled", "static", "mixed", "none", "unk
 # The open-vocabulary sequence fields `compile_patterns` reads off every match table,
 # regardless of `kind` -- a `py_call`/`py_attr`/`py_constant`-only meaning, but read
 # generically because the alternative is three copies of the same collection loop.
-# `ruleset_loader._validate_match_references` imports this same tuple to shape-check
-# whichever of these keys a match table carries, on any kind, so a stray boolean here
-# cannot crash `compile_patterns` even on a kind that never reads the field itself.
-# One definition: a fourth key added to the loop below without a matching update here
-# would silently stop being validated, the same drift `MATCHER_KINDS`/`engine._MATCHERS`
-# guards against for matcher kinds themselves.
+# `MATCH_KEYS` is what keeps a stray one of these off a kind that never reads it --
+# `targets` on a `dist_name` match, say -- refused at load time rather than reaching
+# `compile_patterns` as a boolean or other shape it cannot handle. On the one kind
+# each of these keys is allowed on, that kind's arm in
+# `ruleset_loader._validate_match_references` already requires and shape-checks it;
+# the loop there over this same tuple is the backstop for a kind that gains one of
+# these keys in `MATCH_KEYS` without also gaining a shape-check of its own. One
+# definition, read by both.
 GENERIC_MATCH_SEQUENCE_KEYS = ("targets", "attributes", "constants")
 
 ENTRY_TABLES = (
