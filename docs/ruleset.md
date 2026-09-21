@@ -59,9 +59,9 @@ refuses limits too small to hold one of every key the ruleset itself declares. S
 How build tools lay wheels out, not policy: `vendor_dir_globs` (auditwheel's `*.libs`,
 delocate's `.dylibs`), `mangled_soname_regex` (the content hash those tools append),
 `library_suffixes` and the Windows-specific `windows_library_suffixes` /
-`windows_version_suffix_regex` pair, `cargo_path_regex` for the source paths a Rust object
-embeds, `go_boring_group` / `go_stock_group` naming the Go toolchain string groups, and
-`weak_hash_algorithms`.
+`windows_version_suffix_regex` pair, `cargo_path_regex` and `cargo_vendor_path_regex` for
+the cargo source paths a Rust object embeds, `go_boring_group` / `go_stock_group` naming
+the Go toolchain string groups, and `weak_hash_algorithms`.
 
 The Windows entries matter more than they look. Windows puts a library's version, and often
 its architecture, inside the file name where Unix puts it in a `.so.N` suffix:
@@ -90,7 +90,7 @@ These are the things a rule can point at. Each is an array of tables.
 | `[[crypto_library]]` | A native library: its `sonames`, and optionally the `symbol_group` and `string_group` that let the linkage resolver recognise it compiled straight into an extension, where there is no library file and no dependency to find. Optionally `copy_string_group`, strings only a compiled-in copy carries: a `string_group` match on an object that imports the library from a system dependency, was read in full, and matches nothing in it is header text and does not count as a copy. Optionally `crates`, the `[[rust_crate]]` entries that bind it: a crate says an object uses the library, not which copy, so on an object with no other evidence it gives `unknown` rather than `none`. `openssl` is the one reported unconditionally. |
 | `[[symbol_group]]` | Named groups of dynamic symbols, by `prefixes` and `exact` names. Imported means the wheel calls into a library it does not ship; defined means it carries that code itself. |
 | `[[string_group]]` | Named groups of read-only-data substrings. Version banners land here, and for a statically linked extension the banner is often the entire evidence. Substrings must be printable ASCII: an extracted run only ever holds printable ASCII, so anything else could never match, and the one non-printable character a rule author might reach for by mistake is the separator the matcher joins runs with internally. |
-| `[[rust_crate]]` | Crates inferred from the embedded cargo registry paths, each with its own `verdict` and `severity`. An entry can optionally carry its own `suppressed_by`, naming other `[[rust_crate]]` entries. |
+| `[[rust_crate]]` | Crates inferred from the embedded cargo source paths, each with its own `verdict` and `severity`. An entry can optionally carry its own `suppressed_by`, naming other `[[rust_crate]]` entries. |
 | `[[python_module]]` | Module names the AST layer watches for on import. |
 | `[[ctypes_library]]` | Substrings that mean crypto is being reached at runtime by name, which no static dependency graph would show. |
 

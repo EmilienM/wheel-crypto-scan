@@ -19,7 +19,7 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "tool": {
       "type": "object",
@@ -452,7 +452,8 @@
                   "type": "string"
                 },
                 "version": {
-                  "type": "string"
+                  "type": ["string", "null"],
+                  "description": "null when the cargo layout the object was built from names no version (cargo vendor without versioned directories)."
                 }
               }
             }

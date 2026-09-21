@@ -39,6 +39,7 @@ from wheel_crypto_scan import errors
 from wheel_crypto_scan.binfmt import pe, symtab
 from wheel_crypto_scan.binfmt.elf import read_elf
 from wheel_crypto_scan.binfmt.macho import read_macho
+from wheel_crypto_scan.binfmt.rust import find_rust_crates
 from wheel_crypto_scan.cli import main
 from wheel_crypto_scan.evidence import SbomComponent
 from wheel_crypto_scan.ruleset_loader import load_ruleset
@@ -2002,3 +2003,50 @@ def test_a_symtab_over_the_budget_says_so(context) -> None:
     assert refused.matched_symbols == ()
     assert refused.partial_analysis is True
     assert "elf_symtab_unread" in refused.partial_reasons
+
+
+# --- the cargo-vendor path pattern must stay linear, not quadratic ----------
+
+
+def test_cargo_vendor_pattern_stays_linear_over_a_long_run_of_near_misses() -> None:
+    """`vendor/a/` repeated with no `.rs` in sight is the pathological input for a
+    path pattern that has to look ahead for a file extension: every occurrence of
+    `vendor/` is a candidate start, and an unbounded repetition inside re-scans the
+    remaining text from each one. The bounded pattern shipped keeps that linear; an
+    unbounded version of the same pattern is quadratic here and fails the assert
+    within a minute at this size, rather than needing an hour of near-misses to do so.
+    """
+    conventions = load_ruleset().conventions
+    text = "vendor/a/" * 20_000
+
+    start = time.monotonic()
+    crates, _ = find_rust_crates(
+        text, (conventions.cargo_vendor_path_regex,), max_crates=128, claimed=frozenset()
+    )
+    elapsed = time.monotonic() - start
+
+    assert crates == ()
+    assert elapsed < 2, f"the vendor pattern took {elapsed:.2f}s over 20,000 near-misses"
+
+
+def test_cargo_vendor_pattern_stays_linear_over_digit_and_dot_near_misses() -> None:
+    """`vendor/a/` alone does not exercise what keeps a digit-and-dot run cheap: there is
+    nothing after `vendor/` for the name group to walk through, and no `-` to try the
+    version group at. A run built from digits and dots is the shape that stresses the
+    name class's `.` exclusion: put `.` back in the name class and the name and version
+    groups can split the same run several ways, which is what made this case quadratic.
+    This is a guard on that exclusion, not on the `{0,63}` repetition bounds: the same
+    run stays linear even with those bounds removed, as long as `.` still cannot appear
+    in the name.
+    """
+    conventions = load_ruleset().conventions
+    text = ("vendor/" + "1-1.1.1" * 9 + "/") * 10_000
+
+    start = time.monotonic()
+    crates, _ = find_rust_crates(
+        text, (conventions.cargo_vendor_path_regex,), max_crates=128, claimed=frozenset()
+    )
+    elapsed = time.monotonic() - start
+
+    assert crates == ()
+    assert elapsed < 2, f"the vendor pattern took {elapsed:.2f}s over digit/dot near-misses"

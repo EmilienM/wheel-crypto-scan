@@ -5068,21 +5068,23 @@ cryptography 50.0.1 off PyPI, cp311-abi3: manylinux_2_34_x86_64, macosx_11_0_arm
   -> static
 cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
   needed: libcrypto.so.3, libssl.so.3              OpenSSL symbols: imported only
-  SBOM names openssl-sys 0.9.117; no crate from its cargo paths (#137)
+  crates: openssl 0.10.81, openssl-sys 0.9.117, from its distro cargo paths
   banner "OpenSSL 3.5.7 9 Jun 2026", which is header text
   -> system
 ```
 
 Same crate, two postures. So the crate check sits below every other one, and
 `_aggregate` treats its `unknown` like any other: it never outvotes a definite posture
-elsewhere in the wheel. The Fedora row's missing crate is its own gap, tracked in
-[#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137).
+elsewhere in the wheel.
 
 **What moved.** None of the four records above: every object already answered from its
-own evidence, and the records are byte-identical apart from the `tool` block. What moves
-is an object that answers with nothing else. The win_amd64 `.pyd` is one banner away
-from being that object: it matches no OpenSSL symbol and carries a `pe_ordinal_import`
-cause linkage ignores, so its banner is the whole of its evidence. Scanned with
+own evidence, and the records are byte-identical apart from the `tool` block. (The
+Fedora row's `crates` line reflects the distro cargo-path layout described below; the
+`unknown`/`mixed` posture question this section answers is unaffected either way.) What
+moves is an object that answers with nothing else. The win_amd64 `.pyd` is one banner
+away from being that object: it matches no OpenSSL symbol and carries a
+`pe_ordinal_import` cause linkage ignores, so its banner is the whole of its evidence.
+Scanned with
 `openssl_banner` restricted to `3.`, `1.1.` and `1.0.`:
 
 ```text
@@ -5120,11 +5122,11 @@ after:  openssl_linkage: unknown, verdict.rule_ids: [..., "BIN_OPENSSL_LINKAGE_U
   `_left_unanswered`, and it is library-agnostic on purpose; an SBOM would need a second,
   library-specific one, and no SBOM-only wheel has been measured. It leaves the stronger
   evidence out while the weaker moves the field, since that rule's own `why` calls a
-  shipped SBOM the highest-confidence evidence there is, and it matters most where
-  [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137) bites: a build whose cargo paths go unrecognised can still ship
-  an SBOM naming the crate, as Fedora's does.
-- A build whose cargo paths the reader does not recognise carries no crate, so this
-  never fires on it (#137).
+  shipped SBOM the highest-confidence evidence there is, and it matters most for a
+  build whose cargo paths use a layout still unrecognised: it can still ship an SBOM
+  naming the crate.
+- A build whose cargo paths use a layout still unrecognised, such as a git dependency
+  checkout, carries no crate, so this still never fires on it.
 
 Revisit if a real wheel turns up whose only OpenSSL evidence is an SBOM component.
 
@@ -5576,3 +5578,95 @@ groups and rule ids change what a record carries.
 FIPS (unprefixed) shows up in a wheel, since its FIPS-only symbols are the BoringCrypto
 names this group deliberately excludes; or AWS-LC FIPS ships a two-digit major, which
 this group's dot-anchored digits do not cover.
+
+## Crates are read from every cargo source layout, and a vendored crate has no version
+
+**Fixed.**
+
+Crates are read from three cargo source layouts: the crates.io registry layout `cargo
+build` uses straight from a checkout, `cargo/registry/src/<index>/<name>-<version>/`;
+distro packaging, where Fedora's RPM Rust macros lay a crate out at
+`/usr/share/cargo/registry/<name>-<version>/` with no `src/<index>/` segment; and
+`cargo vendor`, what fromager configures for an offline build, which writes
+`vendor/<name>/...` with no `cargo/registry` segment and, without `--versioned-dirs`, no
+version anywhere in the path.
+
+**Measured on this host.** A Fedora `python3-cryptography` build yields 14 crates, nine
+of them from `/usr/share/cargo/registry/`, including `openssl` and `openssl-sys`; the
+other five are Rust std's own vendored dependencies, which every Fedora-rustc-built
+object carries regardless. A cdylib built exactly the way fromager configures cargo --
+`cargo vendor vendor` without `--versioned-dirs`, then `[source.crates-io]
+replace-with` pointing at it -- embeds paths like `vendor/base64/src/alphabet.rs`, with
+no version.
+
+**The fix.** `cargo_path_regex`'s `src/<index>/` segment becomes optional, since distro
+packaging is the same cargo-registry layout minus that one segment. The vendor layout
+gets its own convention, `cargo_vendor_path_regex`, rather than an alternative branch of
+the same pattern: Python's `re` refuses two groups sharing a name in one alternation, and
+its rules differ enough to want two patterns anyway. It requires the path to reach a
+`.rs` file, because C and Go projects vendor trees too --
+`vendor/openssl/crypto/evp/evp_enc.c`, `vendor/golang.org/x/crypto/...go` -- and without
+that anchor a vendored C OpenSSL would misread as the Rust crate named `openssl`. The
+crate name excludes `.`, which no crates.io name can contain, so `vendor/gimli-0.32.3/`
+(`--versioned-dirs`, or how rustc vendors its own dependencies) reads as `gimli`
+`0.32.3` rather than as a crate literally named `gimli-0.32.3` with no version: a
+version always opens with digits then `.`, and once `.` cannot appear in the name, the
+version's leading `-` is necessarily the last `-` before the first `.`, so the split is
+unique whether the name group is lazy or greedy.
+
+**`RustCrate.version` becomes `str | None`.** A layout that names no version gets a
+`null` in the record, never an invented one or an empty string standing in for it --
+the same choice `SbomComponent.version` already made. Widening a required field's type
+is a `schema_version` bump under this repo's own versioning table, so `schema_version`
+goes 1 to 2; a consumer that calls `crate["version"].split(".")` without a `None` check
+needs to know that changed.
+
+**Bounded, not backtracking.** A pattern that has to look ahead for a `.rs` file over an
+unbounded run is quadratic on a long stretch of near-misses: an unbounded version of
+`cargo_vendor_path_regex` takes about 1.6 seconds at 4,000 repetitions of
+`"vendor/a/"` and roughly 40 seconds at 20,000. Every repetition in the pattern
+shipped is bounded instead -- the crate name at 64 characters, crates.io's own limit;
+each path segment at 255; nesting at 16 levels -- and a 200,000-repetition input runs
+in well under a second. The bounds alone are not enough against every near-miss shape:
+a name class that allowed `.` gave the name group and the version group's leading digits
+more ways to split the same run of digits and dots, at 3.7 seconds per MiB against 0.4
+for the pattern shipped. The name class excludes `.`, which no crates.io crate name can
+contain, closing that off rather than trading it for a lower size bound.
+
+**What was rejected, and why.**
+
+- *One pattern, one alternation.* Ruled out by Python `re`'s restriction on duplicate
+  group names, not a judgement call.
+- *Make the registry pattern's version group optional too, to save a second pattern.*
+  The registry layout always carries a version; making it optional there would let a
+  crate with a name that merely looks like `name-version` (there is no way to tell them
+  apart without the version group doing the separating) silently swallow part of the
+  name instead.
+
+**What it costs.** A build whose cargo paths use a layout still unrecognised, such as a
+git dependency checkout (`cargo/git/checkouts/<name>-<hash>/<rev>/`), still carries no
+crate; this reads the three layouts a wheel is actually built from and does not close
+every gap. A crate that contributes no panic location or `assert!` message anywhere in
+the object stays invisible here regardless of which layout built it, as before: this is
+still a path-based signal, not a manifest. No fromager-built wheel has been measured
+yet, only a cdylib built the way fromager configures cargo: a real fromager build goes
+through maturin or setuptools-rust on top of that, either of which could relocate,
+strip or filter the embedded paths before they reach the wheel. The vendor pattern's
+`.rs` anchor has no terminator and no word boundary either, so a vendored C or Go tree
+still misreads as a Rust crate in two cases: a `.rst`/`.rsp` file
+(`vendor/openssl/doc/man7/ossl-guide.rst` reads as crate `openssl`), and a `.rs` file
+elsewhere in the same printable run consuming a real vendor path ahead of it
+(`vendor/openssl/crypto/rsa/x.c vendor/ring/src/a.rs` reads as `openssl` alone, losing
+`ring`). Low-likelihood in real `rodata`, since a C `__FILE__` string is
+NUL-terminated into its own run, but a deliberate trade-off, not a guarantee. The
+pattern also always anchors on the first `vendor/` path component it finds: a build
+tree that itself sits inside a directory named `vendor` collapses every crate under
+that outer component into one crate named after it, with no version, and loses the
+real names nested inside, claimed ones included.
+`/work/vendor/mypkg/vendor/{ring,openssl-sys,sha1}/src/lib.rs` reads as one crate,
+`mypkg`, dropping `ring`, `openssl-sys` and `sha1` entirely. Preferring the innermost
+`vendor/` component would need the pattern to fail past a nested one rather than
+consume through it, which it does not attempt.
+
+Revisit if a fromager-built Rust wheel is measured and its vendor paths do not match
+what the hand-built cdylib above embeds.

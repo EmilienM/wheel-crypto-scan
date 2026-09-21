@@ -298,15 +298,14 @@ ways:
 cryptography 50.0.1 off PyPI (manylinux, macOS, Windows)
   crates: openssl, openssl-sys   banner "OpenSSL 4.0.2 25 Aug 2026"          -> static
 cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
-  needed: libcrypto.so.3, libssl.so.3   SBOM names openssl-sys             -> system
+  needed: libcrypto.so.3, libssl.so.3   crates: openssl, openssl-sys       -> system
 ```
 
 Same crate, two postures, so the crate check sits below every other one and its `unknown`
 never outvotes a definite posture elsewhere in the wheel. None of the four records moved.
 The Windows `.pyd` shows what does: its banner is its only OpenSSL evidence, and with
 `openssl_banner` restricted to `3.`, `1.1.` and `1.0.`, it reads `none` before and
-`unknown` after. The Fedora row's missing crate is its own gap, tracked in
-[#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137).
+`unknown` after.
 
 **What was rejected.** A posture per crate, `static` for `openssl-src`: that crate in
 the build graph does not mean a vendored copy, and it leaves no path in the artifact to
@@ -322,7 +321,8 @@ some, when `unknown` already means what this case needs.
   `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`" below).
 - An SBOM component naming `openssl-sys` does not move the field. The one wheel-level
   signal linkage has is library-agnostic on purpose, and no SBOM-only wheel has been
-  measured. It matters most where [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137) bites.
+  measured. It matters most for a build whose cargo paths use a layout still
+  unrecognised.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#an-openssl-crate-with-no-other-evidence-reads-unknown-not-none) ·
 [#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128)

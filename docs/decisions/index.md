@@ -62,6 +62,7 @@ Three habits in that file are worth knowing before you read it:
 |---|---|
 | [`openssl_banner` names every major digit, not the majors that shipped](policy.md#openssl_banner-names-every-major-digit-not-the-majors-that-shipped) | Accepted |
 | [The sweep that followed, and the two kinds of list it separated](policy.md#the-sweep-that-followed-and-the-two-kinds-of-list-it-separated) | Accepted |
+| [Crates are read from every cargo source layout, and a vendored crate has no version](policy.md#crates-are-read-from-every-cargo-source-layout-and-a-vendored-crate-has-no-version) | Fixed |
 | [A Go FIPS build is told from a stock one by its build settings](policy.md#a-go-fips-build-is-told-from-a-stock-one-by-its-build-settings) | Accepted |
 | [A static OpenSSL's legacy primitives lead the headline](policy.md#a-static-openssls-legacy-primitives-lead-the-headline) | Accepted, knowing what it costs |
 | [An AWS-LC FIPS build is told from a stock one by its symbol prefix](policy.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix) | Accepted |

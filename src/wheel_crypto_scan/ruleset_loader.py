@@ -107,11 +107,22 @@ def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
         mangled = re.compile(str(_require(data, "mangled_soname_regex", where)))
         windows = re.compile(str(_require(data, "windows_version_suffix_regex", where)))
         cargo = re.compile(str(_require(data, "cargo_path_regex", where)))
+        cargo_vendor = re.compile(str(_require(data, "cargo_vendor_path_regex", where)))
     except re.error as exc:
         raise RulesetError(f"{where}: invalid regular expression: {exc}") from None
-    for pattern, group in ((mangled, "stem"), (windows, "stem"), (cargo, "name")):
+    for pattern, group in ((mangled, "stem"), (windows, "stem")):
         if group not in pattern.groupindex:
             raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
+    # Both cargo conventions feed `find_rust_crates`, which reads both groups off
+    # whichever one matched, so each pattern must declare both here even when a layout
+    # never fills `version`: a declared-but-unmatched `version` group is how a layout
+    # that names no version (`cargo vendor` without versioned directories) is told
+    # apart from a pattern that forgot the group, which `find_rust_crates` would only
+    # catch as an IndexError at scan time.
+    for pattern in (cargo, cargo_vendor):
+        for group in ("name", "version"):
+            if group not in pattern.groupindex:
+                raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
     suffixes = tuple(_require(data, "library_suffixes", where))
     windows_suffixes = tuple(_require(data, "windows_library_suffixes", where))
     # A Windows suffix that is not also stripped would never be seen, so the reduction
@@ -124,6 +135,7 @@ def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
         mangled_soname_regex=mangled,
         windows_version_suffix_regex=windows,
         cargo_path_regex=cargo,
+        cargo_vendor_path_regex=cargo_vendor,
         weak_hash_algorithms=frozenset(_require(data, "weak_hash_algorithms", where)),
         library_suffixes=suffixes,
         windows_library_suffixes=windows_suffixes,

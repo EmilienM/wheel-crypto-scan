@@ -474,13 +474,14 @@ def _match_rust_crate(rule, match, ruleset, evidence, linkage, index) -> Iterato
             entry = ruleset.rust_crates.get(crate.name)
             if entry is None or not _owns(rule, entry.rule, default, unowned=True):
                 continue
+            version = f" {crate.version}" if crate.version else ""
             yield Hit(
                 subject_kind="crate",
                 subject=crate.name,
                 location=Location(
                     path=binary.path,
                     evidence=_clean(
-                        f"cargo path for {crate.name} {crate.version}",
+                        f"cargo path for {crate.name}{version}",
                         ruleset.limits.max_evidence_chars,
                     ),
                 ),
