@@ -564,6 +564,35 @@ def test_an_any_binding_rule_matches_both(ruleset) -> None:
     assert "BIN_LIBSODIUM" in ids(run(ruleset, evidence))
 
 
+@pytest.mark.parametrize("binding", [BINDING_DEFINED, BINDING_IMPORTED])
+def test_an_argon2_symbol_is_non_approved_either_binding(ruleset, binding) -> None:
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_ext.so",
+                matched_symbols=(SymbolMatch("argon2id_hash_raw", "argon2", binding),),
+            ),
+        )
+    )
+    findings = run(ruleset, evidence)
+    assert "BIN_ARGON2" in ids(findings)
+    assert one(findings, "BIN_ARGON2").verdict == "NON_APPROVED_CRYPTO"
+
+
+@pytest.mark.parametrize("binding", [BINDING_DEFINED, BINDING_IMPORTED])
+def test_a_blake_symbol_alone_is_context_dependent(ruleset, binding) -> None:
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_ext.so",
+                matched_symbols=(SymbolMatch("blake2b_init", "blake", binding),),
+            ),
+        )
+    )
+    findings = run(ruleset, evidence)
+    assert one(findings, "BIN_NON_CRYPTO_HASH").verdict == "CONTEXT_DEPENDENT"
+
+
 def test_a_rust_crate_carries_its_own_verdict(ruleset) -> None:
     evidence = wheel(
         binaries=(

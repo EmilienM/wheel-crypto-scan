@@ -67,6 +67,7 @@ Two habits in that file are worth knowing before you read it:
 | [Suppression is keyed on rule, subject and object](policy.md#suppression-is-keyed-on-rule-subject-and-object) | Accepted |
 | [An AWS-LC FIPS build is told from a stock one by its symbol prefix](policy.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix) | Accepted |
 | [A BoringSSL FIPS module is told from a stock build by its integrity test](policy.md#a-boringssl-fips-module-is-told-from-a-stock-build-by-its-integrity-test) | Accepted |
+| [Every symbol group is read by a rule, or says it is evidence only](policy.md#every-symbol-group-is-read-by-a-rule-or-says-it-is-evidence-only) | Accepted, and it changes verdicts |
 
 ## [Caps, budgets and record size](limits.md)
 

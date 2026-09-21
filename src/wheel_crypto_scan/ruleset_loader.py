@@ -99,7 +99,7 @@ _ENTRY_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
         },
         "rust_crate": _OVERRIDES | {"suppressed_by"},
         "python_module": _OVERRIDES,
-        "symbol_group": frozenset({"name", "prefixes", "exact", "why"}),
+        "symbol_group": frozenset({"name", "prefixes", "exact", "why", "evidence_only"}),
         "string_group": frozenset({"name", "substrings", "why"}),
         "ctypes_library": frozenset({"substrings", "why"}),
     }
@@ -497,6 +497,44 @@ def _group_names(match: Mapping[str, Any], where: str) -> list[str]:
     return names
 
 
+def _validate_symbol_groups_are_read(data: Mapping[str, Any], rules: Iterable[Rule]) -> None:
+    """Refuse a `[[symbol_group]]` that no rule or `[[crypto_library]]` reads.
+
+    A group no rule reads is evidence thrown away: a defined argon2id_hash_raw alone,
+    with nothing else in the object, would read NO_CRYPTO_DETECTED, because the reader
+    recorded the symbol and nothing downstream looked at it. A group counts as read
+    when some rule's `dynamic_symbol` match names it (through `group` or `groups`),
+    whether or not that rule carries a `verdict`, or when some `[[crypto_library]]`
+    names it as its own `symbol_group`; anything else has to say the silence is
+    intended, with `evidence_only = true` on the group itself. This is a load error
+    rather than a test over the shipped ruleset, so a ruleset supplied through
+    `--ruleset` is covered too.
+    """
+    read: set[str] = set()
+    for rule in rules:
+        for match in rule.matches:
+            if match.get("kind") == "dynamic_symbol":
+                read.update(_group_names(match, f"rule {rule.id!r} match"))
+    for entry in data["crypto_library"]:
+        symbol_group = entry.get("symbol_group")
+        if symbol_group is not None:
+            read.add(str(symbol_group))
+
+    for entry in data["symbol_group"]:
+        name = str(entry["name"])
+        where = f"symbol_group {name!r}"
+        evidence_only = entry.get("evidence_only", False)
+        if not isinstance(evidence_only, bool):
+            raise RulesetError(f"{where}: evidence_only must be a boolean")
+        if evidence_only and name in read:
+            raise RulesetError(f"{where}: is marked evidence_only but is read")
+        if not evidence_only and name not in read:
+            raise RulesetError(
+                f"{where}: no dynamic_symbol rule or crypto_library reads it -- add a "
+                "rule that reads it, or mark it evidence_only = true"
+            )
+
+
 def _entry_rule(
     entry: Mapping[str, Any], table: str, rules: Mapping[str, Rule], where: str
 ) -> str | None:
@@ -786,6 +824,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         if not prefixes and not exact:
             raise RulesetError(f"{where}: has neither prefixes nor exact names")
         symbol_groups[name] = SymbolGroup(name=name, prefixes=prefixes, exact=exact)
+    _validate_symbol_groups_are_read(data, rules)
 
     string_groups: dict[str, StringGroup] = {}
     for entry in data["string_group"]:

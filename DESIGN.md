@@ -5442,6 +5442,78 @@ module's constants move on ELF the same way AWS-LC's do; or an unstripped stock
 BoringSSL object is found carrying `BORINGSSL_integrity_test`, which would mean the
 `#if defined(BORINGSSL_FIPS)` guard this rule relies on no longer holds.
 
+## Every symbol group is read by a rule, or says it is evidence only
+
+**Accepted, and it changes verdicts.**
+
+A `[[symbol_group]]` the binary readers record but no rule reads is evidence gathered
+and thrown away: a defined `argon2id_hash_raw`, alone in an object with no other
+evidence, would read `NO_CRYPTO_DETECTED` with nothing but `WHEEL_GENERATOR` in the
+record, because no rule looks at the `argon2` group `binfmt` populates. `blake`'s
+*string*-group match alone has the same gap: a reference implementation compiled in
+with no banner string carries nothing that arm matches.
+
+**What closes the gap.** Argon2 gets its own rule, `BIN_ARGON2`: `NON_APPROVED_CRYPTO`,
+`binding = "any"`. `blake` is read by `BIN_NON_CRYPTO_HASH` as a second `[[rule.match]]`
+arm beside its existing `binary_string` one, keeping `CONTEXT_DEPENDENT`; the engine
+folds a `binary_string` hit and a `dynamic_symbol` hit on the same group into one
+finding, since a rule's hits key on `(rule id, subject)` and the group name is the
+subject either way.
+
+**Why `any` binding for Argon2 and blake.** Measured with `nm -D --defined-only` on
+Fedora, OpenSSL 3.5.8:
+
+| | exports an argon2*/blake2*/blake3 name |
+|---|---|
+| `/usr/lib64/libcrypto.so.3` | none |
+| `/usr/lib64/libargon2.so.1` | `argon2_ctx`, `argon2d_hash_raw`, ... |
+| `/usr/lib64/libb2.so.1` | `blake2b_init`, `blake2b_final`, `blake2bp_init`, ... |
+
+OpenSSL's own Argon2 is reachable only through `EVP_KDF`, never through these entry
+points, so an *imported* `argon2id_hash_raw` or `blake2b_init` can only mean a
+dependency on libargon2 or libb2 (or an equivalent), never a call the host FIPS
+provider could answer. No other rule in this class has that clean a split: `nm -D
+--defined-only` on the same libcrypto shows 8 `BF_*` exports and both `MD5_*` and
+`SHA1_*`, so an import of those names could be the host library instead of the wheel's
+own copy, which is why `BIN_BCRYPT_BLOWFISH` and `BIN_OWN_WEAK_HASH_IMPL` do not share
+Argon2 and blake's `any` reasoning.
+
+**The loader check.** `parse_ruleset` refuses a ruleset where some `[[symbol_group]]` is
+neither read nor marked as evidence. A group counts as read when some rule's
+`dynamic_symbol` match names it, through `group` or `groups`, or when some
+`[[crypto_library]]` names it as its own `symbol_group`; anything else must carry
+`evidence_only = true` on the group, with its `why` saying so. The reverse is refused
+too, so `evidence_only = true` cannot go stale on a group a rule is later given: marking
+one that something already reads is a load error, not a leftover comment nobody revisits.
+This is a load error rather than a test over the shipped ruleset, the same reasoning
+`[[symbol_group]]`'s own name and reference checks already use, so a ruleset supplied
+through `--ruleset` is inside the guard too.
+
+**`boringssl` and `aws_lc` carry `evidence_only = true`.** `BIN_BORINGSSL` and
+`BIN_AWS_LC` already read the same-named *string* groups, which the build writes into
+read-only data, so no `dynamic_symbol` rule reads either symbol group. AWS-LC is a
+BoringSSL fork and keeps BoringSSL-named symbols -- the `aws_lc_fips` group's own `why`
+already notes its FIPS-only `BORINGSSL_*` names are shared with BoringSSL's FIPS module
+-- so a rule over the `boringssl` symbol group would report BoringSSL on an AWS-LC
+object. Whether either deserves a symbol-level rule of its own is left open, below.
+
+**What it costs.** A BLAKE-only object reads `CONTEXT_DEPENDENT` instead of
+`NO_CRYPTO_DETECTED`. `CONTEXT_DEPENDENT` outranks both `NO_CRYPTO_DETECTED` and
+`OPAQUE` in `[verdict] precedence`, so it can move either headline: a partially read
+object that also carries a BLAKE symbol headlines `CONTEXT_DEPENDENT` instead of
+`OPAQUE`. An Argon2-only object moves further, to `NON_APPROVED_CRYPTO`, which outranks
+`OPAQUE` too.
+
+**Rejected: a `symbol_group` on `[[crypto_library]] argon2`.** It would move `argon2`
+linkage and double-report through `BIN_LINKED_CRYPTO_LIBRARY` beside the dedicated
+finding a compiled-in Argon2 implementation already gets from `BIN_ARGON2`, and nothing
+here calls for a linkage field. **Rejected: a test over the shipped ruleset only.** It
+would miss a ruleset supplied through `--ruleset`, the same gap the load-time check
+above closes.
+
+**Revisit if** a rule should read the `boringssl` or `aws_lc` symbol names directly,
+rather than only through their string-group evidence.
+
 ## Crates are read from every cargo source layout, and a vendored crate has no version
 
 **Accepted, and it changes records.**
