@@ -289,3 +289,41 @@ are found by type, not by a name nobody checks", the paragraph beginning
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#symtab-is-matched-for-crypto-symbols-when-dynsym-is-genuinely-absent) ·
 [#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117)
+
+## `.symtab` local definitions are read when `.dynsym` is present
+
+**Accepted. Narrows the gate [#117](https://github.com/EmilienM/wheel-crypto-scan/issues/117) put up.**
+
+#117 matched `.symtab` only when `.dynsym` was genuinely absent, which left the existing
+corpus unaffected *by construction* — and left the case this tool exists for unread.
+`cryptography` 50.0.1 carries **776 local `EVP_*` definitions in `.symtab` and none in
+`.dynsym`**, whose only exports are the module's own `PyInit` symbols. The statically
+linked OpenSSL was sitting in a table the reader already parsed for `stripped`, and
+nothing looked.
+
+Only definitions cross the narrowed gate: a dynamically linked object must declare every
+import in `.dynsym` to link at all, so taking imports from a debug table would restate
+them under a second provenance, or let a planted undefined entry read as a dependency the
+object does not have. Neither of `.symtab`'s cross-checks runs in that mode, because both
+exist to catch the object's *only* table understating itself, and a partially stripped
+`.symtab` is ordinary rather than a lie.
+
+Measured over 18 native wheels: seven records change and every change is a gain — three
+go `openssl_linkage: none` → `static` on the AWS-LC they compile in — with no finding and
+no `(group, binding)` kind lost anywhere. Every row is walked, on every such object. A
+`symbol_locator` prefilter over `.strtab` was tried to avoid that and rejected: it was
+worth 0.32s against 0.55s on a 26.7 MiB object with half a million symbols, and a
+`.strtab` shrunk to hide a name is one the prefilter reads as holding nothing, so the
+walk that would have caught it never ran (`cryptography` 0.43s → 0.50s, `scipy` 8.37s →
+8.40s).
+
+One cross-check follows: the one that compares `.symtab`'s rows against every
+`SHT_STRTAB` in the object, because it is the only thing that sees a `sh_link` repointed
+at a decoy table of NULs, where every row "resolves" to the empty name. It is fed the
+names both tables resolved, so an imported name `.dynsym` accounted for does not read as
+one the object hid.
+
+What it costs is stated in full in
+[`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md): a
+crafted object can plant names in a table trusted less than `.dynsym`, and the
+consequence is a false *definition*, which over-flags rather than under-flags.

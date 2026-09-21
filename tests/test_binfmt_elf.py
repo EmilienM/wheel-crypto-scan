@@ -1783,20 +1783,43 @@ def test_a_relocatable_object_matches_an_imported_symtab_crypto_symbol() -> None
     ]
 
 
-def test_symtab_matching_is_not_consulted_when_dynsym_is_present() -> None:
-    """The safety property the whole design rests on: every shared object and
-    executable already carries a live `.dynsym`, so `.symtab` -- which can hold
-    unrelated local symbols a linker kept for debugging -- must never be searched for
-    matches once `.dynsym` has already answered the question. A crypto name planted in
-    `.symtab` alone, beside an unrelated `.dynsym`, must not appear in
-    `matched_symbols`: this is what makes the whole existing corpus unaffected by
-    construction rather than by a corpus check this reader cannot run.
+def test_a_local_definition_in_symtab_is_read_when_dynsym_is_present() -> None:
+    """A statically linked copy whose symbols a version script kept local.
+
+    #117 gated `.symtab` matching on `.dynsym` being genuinely absent, which made the
+    existing corpus unaffected by construction -- and left the case this tool exists
+    for unread: cryptography 50.0.1 carries 776 `EVP_*` definitions, every one local
+    in `.symtab` and none in `.dynsym`, beside a `.dynsym` that exports only
+    `PyInit__rust`. A definition nobody else can satisfy is what a static copy *is*,
+    so it is read now, and the corpus claim is carried by measurement instead (#127).
     """
     honest = ElfBuilder(
         needed=("libc.so.6",),
         dynsyms=(DynSym("some_unrelated_export", defined=True),),
         with_symtab=True,
         symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    ev, errors = _read(honest)
+    assert errors == ()
+    assert list(ev.matched_symbols) == [
+        evidence.SymbolMatch("EVP_DigestInit_ex", "openssl", evidence.BINDING_DEFINED)
+    ]
+    assert ev.partial_analysis is False
+
+
+def test_an_import_in_symtab_is_not_read_when_dynsym_is_present() -> None:
+    """Only definitions cross the gate #117 put up, and this is the half that stays.
+
+    A dynamically linked object must declare every import in `.dynsym` to link at all,
+    so `.symtab` can say nothing new about imports; taking them would record the same
+    dependency twice under a second provenance, and would let an undefined entry
+    planted in a debug table read as a dependency the object does not have.
+    """
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("some_unrelated_export", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=False),),
     ).build()
     ev, errors = _read(honest)
     assert errors == ()

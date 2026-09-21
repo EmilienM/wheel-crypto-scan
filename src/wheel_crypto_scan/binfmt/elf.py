@@ -62,8 +62,19 @@ is a name we could not resolve rather than whatever bytes happen to be there.
 the same checks of `nsyms` and `strsize`.
 
 `.symtab`'s size is still believed, and it always drives `stripped` and
-`symbol_counts.symtab`. When `.dynsym` is present that is the whole story, the
-imported-versus-defined split comes from `.dynsym` alone. When `.dynsym` is genuinely
+`symbol_counts.symtab`. When `.dynsym` is present it is the authority on imports, and
+`.symtab` is read for *definitions* alone (#127): a statically linked copy whose symbols
+a version script kept local lives there and nowhere else, which is what cryptography
+50.0.1 does with 776 `EVP_*` definitions beside a `.dynsym` exporting only its module
+init. Imports are not taken from it in that mode, because a dynamically linked object
+must declare every import in `.dynsym` to link at all, so `.symtab` can only restate
+them under a second provenance or let a planted undefined entry read as a dependency
+the object does not have. Of `.symtab`'s two cross-checks, the one that asks whether a
+name the reader was *pointed at* could be read runs in both modes, because an honest
+table never fails it; the one that compares `.symtab`'s rows against every `SHT_STRTAB`
+in the object runs in both too, because it is the only thing that sees a `sh_link`
+repointed at a decoy, and it is fed the names *both* tables resolved so an imported name
+`.dynsym` accounted for does not read as one this object hid. When `.dynsym` is genuinely
 absent -- a relocatable object (`ET_REL`, a `.o`/`.obj` before linking, the shape
 every member of a `.a`/`.lib` static archive has, see `binfmt.ar`), or a statically
 linked executable, neither of which has any dynamic linking information to carry --
@@ -76,12 +87,18 @@ but a section-header-reading tool ever resolves a `.symtab` name, so there is no
 it is the ELF spec's own definition of what `.strtab` is -- which is cheaper to
 attack, not safer, so the cross-check spans every `SHT_STRTAB` section in the object
 rather than trusting the one `sh_link` names (`_any_strtab_holds_a_name_not_read`).
-Gating on `.dynsym`'s absence, rather than matching `.symtab` unconditionally, means a
-*dynamically* linked shared object or executable -- which always carries a live
-`.dynsym`, since `strip` cannot remove it without breaking dynamic linking -- is
-unaffected by construction; a statically linked executable is not, and its output can
-change under this fix, which is the intended target, not an incidental side effect.
-See #117.
+#117 gated `.symtab` matching on `.dynsym`'s absence, which left a dynamically linked
+object unaffected *by construction* rather than by a corpus check this reader could not
+run. That gate also left unread the case this tool exists for, so #127 narrowed it to
+the definitions above and replaced the construction argument with a measurement: over 18
+native wheels off PyPI, five verdict blocks change, three of them the `none`-to-`static`
+this exists for, and no finding and no `(group, binding)` kind is lost from any object.
+What the gate also bought was time, and a `symbol_locator` prefilter over `.strtab` was
+tried to buy it back: it was measured at 0.32s against 0.55s on a 26.7 MiB object with
+half a million symbols, and rejected, because a `.strtab` shrunk to hide a name is one
+the prefilter reads as holding nothing. Every row is walked. `DECISIONS.md` records what
+the narrower gate costs against a hostile object, and why imports stay behind it. See
+#117 and #127.
 """
 
 # This module documents every way an attacker-controlled label can win a lookup and
@@ -309,6 +326,32 @@ def _bounded_section_data(
             return section.stream.read(max_bytes), True
         return b"", True
     return section.data(), False
+
+
+@dataclass(frozen=True, slots=True)
+class _SymtabRead:
+    """`.symtab` and its string table, read once each, with whether a read was refused."""
+
+    table: bytes
+    strings: bytes
+    bytes_unread: bool
+
+
+def _read_symtab(elf, symtab, max_strings_bytes: int) -> _SymtabRead:
+    """Resolve `.symtab`'s string table and read both sections, bounded.
+
+    The prologue both `.symtab` modes share: the sole-table one #117 added, and the
+    supplementary one #127 added beside it. Their loops differ -- one cross-checks the
+    table it is the only reader of, the other takes definitions beside an authoritative
+    `.dynsym` -- and are deliberately not merged. This is the part that does not differ,
+    and leaving it copied left the same budget message written twice.
+
+    `_symtab_strtab` rather than `_validated_strtab`: `.symtab` trusts its own `sh_link`
+    under rules of its own, documented there.
+    """
+    strtab_section = _symtab_strtab(elf, symtab["sh_link"])
+    table, strings, bytes_unread = _symbol_bytes(elf, symtab, strtab_section, max_strings_bytes)
+    return _SymtabRead(table=table, strings=strings, bytes_unread=bytes_unread)
 
 
 def _symtab_strtab(elf, sh_link: int) -> Section | None:
@@ -723,6 +766,11 @@ def read_elf(
     )
     dynsym_count = 0
     symbol_matches: set[SymbolMatch] = set()
+    # Hoisted: the supplementary `.symtab` pass below cross-checks against every
+    # string table in the object, and `.dynstr` is one of them. A crypto name in it
+    # that `.dynsym` resolved is a name this object accounted for, so the two reads
+    # have to share one set or an imported name reads as unclaimed.
+    dynsym_read_crypto: set[str] = set()
     if dynsym is not None:
         try:
             dynsym_count = dynsym.num_symbols()
@@ -734,7 +782,7 @@ def read_elf(
             # Only the crypto names, which is all the cross-check below compares
             # against: remembering every name costs 24 MiB on a half-million-symbol
             # table, for a question only ever asked about the handful a group claims.
-            read_crypto: set[str] = set()
+            read_crypto = dynsym_read_crypto
             unresolved = 0
             dynstr_section = _validated_strtab(elf, dynsym["sh_link"], dt_strtab_addr)
             table, dynstr, symtab_bytes_unread = _symbol_bytes(
@@ -841,16 +889,125 @@ def read_elf(
             symtab_count = 0
     stripped = symtab is None or symtab_count == 0
 
+    if symtab is not None and dynsym is not None:
+        # Supplementary mode: `.dynsym` is present, so imports and exports are already
+        # read off it above, and what it cannot show is a *local* definition -- a
+        # statically linked copy whose symbols a version script kept out of the dynamic
+        # table. cryptography 50.0.1 is the worked example: 776 `EVP_*` definitions,
+        # every one local in `.symtab`, none in `.dynsym`. Only definitions are taken:
+        # a dynamically linked object must declare every import in `.dynsym` to link at
+        # all, so `.symtab` adds nothing about imports, and a planted undefined entry
+        # would fabricate a dependency the object does not have.
+        #
+        # Every row is visited, including on a table holding nothing this ruleset
+        # claims. A prefilter over `.strtab` -- the `symbol_locator` scan `.dynsym`'s
+        # own matcher mirrors -- was measured at 0.32s against 0.55s on a 26.7 MiB
+        # object with half a million symbols, and rejected for what it cost rather than
+        # for what it saved: a `.strtab` shrunk to hide a name is a `.strtab` the
+        # prefilter then reads as holding nothing, so the walk that would have found
+        # the rows pointing past it never ran and the object read clean. See
+        # DECISIONS.md.
+        try:
+            symtab_read = _read_symtab(elf, symtab, max_strings_bytes)
+            if symtab_read.bytes_unread:
+                errors.append(
+                    _error(
+                        path,
+                        ELF_PARSE_ERROR,
+                        ".symtab or its string table declares more bytes than the budget allows",
+                    )
+                )
+                reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
+            else:
+                symtab_unresolved = 0
+                # Every crypto name read, before any skip: a name dropped for being an
+                # import or a pseudo-symbol was still read and accounted for, and the
+                # cross-check below must not see it as one the object hid.
+                symtab_read_crypto: set[str] = set()
+                for name, undefined, resolved, symtype in _iter_symbols(
+                    elf, symtab_read.table, symtab_read.strings
+                ):
+                    if not resolved:
+                        # A row pointed at a name this reader could not read: an index
+                        # past the end of `.strtab`, or into a run it never closes. An
+                        # honest table never produces one, and a `.strtab` shrunk
+                        # beside an intact `.symtab` is exactly how a definition hides
+                        # while every count and every structural check survives. This
+                        # is not the understated-rows cross-check below, which asks
+                        # whether a *sole* table under-declared itself and does not run
+                        # here; this one asks whether a name we were pointed at could
+                        # be read, and that question is the same in both modes.
+                        symtab_unresolved += 1
+                        continue
+                    groups = patterns.symbol_groups_for(name) if name else ()
+                    if groups:
+                        symtab_read_crypto.add(name)
+                    if undefined:
+                        continue
+                    if symtype in (_STT_FILE, _STT_SECTION):
+                        # A source-file or per-section pseudo-symbol, not code: a
+                        # translation unit called `EVP_md5.c` must not match a group by
+                        # coincidence of a filename with what it implements. A linked
+                        # shared object carries one per translation unit, so this matters
+                        # more here than in the relocatable objects it was written for.
+                        continue
+                    for group in groups:
+                        symbol_matches.add(
+                            SymbolMatch(name=name, group=group, binding=evidence.BINDING_DEFINED)
+                        )
+                if symtab_unresolved:
+                    errors.append(
+                        _error(path, ELF_PARSE_ERROR, ".symtab names strings .strtab does not hold")
+                    )
+                    reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
+                elif not (
+                    evidence.PARTIAL_ELF_DYNSYM_UNREAD in reasons
+                    or evidence.PARTIAL_ELF_DYNAMIC_UNREAD in reasons
+                ) and _any_strtab_holds_a_name_not_read(
+                    sections,
+                    patterns,
+                    dynsym_read_crypto | symtab_read_crypto,
+                    max_strings_bytes,
+                ):
+                    # The one thing `unresolved` cannot see. Point `.symtab`'s `sh_link`
+                    # at a decoy `SHT_STRTAB` of nothing but NULs and every row resolves
+                    # -- to the empty name -- so the count stays zero while the real
+                    # names sit unread in the table the decoy displaced. Checked across
+                    # every `SHT_STRTAB` in the object, against the names *both* tables
+                    # resolved, because `.dynstr` is one of them and a name `.dynsym`
+                    # accounted for is not a name this object hid.
+                    #
+                    # Skipped when `.dynsym` or `.dynamic` was not read through: then
+                    # `.dynstr`'s own names were never claimed by anything, and every
+                    # one of them would read as unaccounted for here.
+                    errors.append(
+                        _error(
+                            path,
+                            ELF_PARSE_ERROR,
+                            ".symtab declares fewer entries than .strtab holds names for",
+                        )
+                    )
+                    reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
+                    reasons.add(evidence.PARTIAL_SYMTAB_UNDERSTATES_ROWS)
+        except Exception:
+            errors.append(_error(path, ELF_PARSE_ERROR, "failed to read the symbol table"))
+            reasons.add(evidence.PARTIAL_ELF_SYMTAB_UNREAD)
+
+    # The third state nothing else names: `dynsym is None` while `dynsym_absent` is
+    # false -- an ambiguous `SHT_DYNSYM`, one forged away from its type, or a section
+    # table that would not parse. The object's own section table cannot be trusted
+    # about whether `.dynsym` exists, so neither branch runs and `.symtab` is not read
+    # to stand in for a table whose existence could not be established (#117). Already
+    # recorded as partial by whichever cause put it in that state.
+
     if dynsym_absent and symtab is not None:
         # Reached only for a relocatable object with no `.dynsym` at all -- see the
         # module docstring and #117.
         try:
             symtab_read_crypto: set[str] = set()
             symtab_unresolved = 0
-            strtab_section = _symtab_strtab(elf, symtab["sh_link"])
-            table, strtab, strtab_bytes_unread = _symbol_bytes(
-                elf, symtab, strtab_section, max_strings_bytes
-            )
+            sole = _read_symtab(elf, symtab, max_strings_bytes)
+            table, strtab, strtab_bytes_unread = sole.table, sole.strings, sole.bytes_unread
             if strtab_bytes_unread:
                 errors.append(
                     _error(

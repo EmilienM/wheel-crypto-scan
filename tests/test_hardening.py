@@ -27,11 +27,13 @@ from helpers.binfmt import (
     PEBuilder,
     PEExport,
     PEImport,
+    STB_GLOBAL,
     append_strtab_decoy,
     patch_header_field,
     patch_section_header,
 )
 from helpers.wheelbuilder import build_wheel
+
 
 from wheel_crypto_scan import errors
 from wheel_crypto_scan.binfmt import pe, symtab
@@ -1822,3 +1824,181 @@ def test_a_rare_symlink_target_survives_a_flood_of_a_common_one(context, tmp_pat
     assert record["artifacts"]["symlinks_truncated"] is True
     targets = {entry["target"] for entry in record["artifacts"]["symlinks"]}
     assert targets == {"libfoo.so.1", "libcrypto.so.3"}
+
+
+def test_a_shrunken_strtab_cannot_hide_a_local_definition(context, tmp_path: Path) -> None:
+    """The attack the sole-table path has always caught, now caught in both modes.
+
+    `.symtab` keeps every row, every count and every structural check; `.strtab`'s
+    `sh_size` is shrunk so the rows point past it. Nothing about the object looks
+    wrong, and the definition the rows name is unreachable. #127 read `.symtab` for
+    local definitions on every dynamically linked object, so it has to answer this the
+    way #117's path already does, or a statically linked OpenSSL hides behind one
+    edited field. A first draft prefiltered the string table with `symbol_locator`
+    before walking, to save the walk on tables holding nothing -- which read the
+    shrunken `.strtab` as holding nothing and let the object come out
+    NO_CRYPTO_DETECTED with `partial_analysis: false`. Measured, the prefilter saved
+    0.32s against 0.55s on a 26.7 MiB object with half a million symbols, which is not
+    worth a silent clean.
+    """
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    shrunken = patch_section_header(honest, ".strtab", "sh_size", 1)
+
+    def record_for(name: str, payload: bytes) -> dict:
+        wheel = build_wheel(
+            tmp_path / f"{name}-1.0-{MANYLINUX}.whl",
+            name=name,
+            version="1.0",
+            tags=(MANYLINUX,),
+            files={"pkg/_ext.abi3.so": payload},
+        )
+        return scan_wheel(wheel, context)
+
+    intact = record_for("intact", honest)
+    assert [m["name"] for m in intact["binaries"][0]["matched_symbols"]] == ["EVP_DigestInit_ex"]
+    assert intact["binaries"][0]["partial_analysis"] is False
+
+    hidden = record_for("hidden", shrunken)
+    assert hidden["binaries"][0]["matched_symbols"] == []
+    assert hidden["binaries"][0]["partial_analysis"] is True
+    assert "elf_symtab_unread" in hidden["binaries"][0]["partial_reasons"]
+    # The whole point: absence of evidence, recorded as such.
+    assert hidden["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+def test_a_very_large_symtab_is_walked_in_reasonable_time(context, tmp_path: Path) -> None:
+    """Every row of `.symtab` is now visited on every dynamically linked object.
+
+    The budget bounds the bytes, not the rows, so the walk is the thing to hold: half a
+    million symbols is past anything a real wheel carries and well inside
+    `MAX_STRINGS_BYTES`. Measured at 0.55s here, so the assertion has an order of
+    magnitude of headroom and still fails a per-row cost that regressed by one.
+    """
+    symbols = tuple(
+        DynSym(f"unrelated_symbol_number_{index:07d}", defined=True) for index in range(500_000)
+    )
+    payload = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=symbols,
+    ).build()
+    wheel = build_wheel(
+        tmp_path / f"bigsymtab-1.0-{MANYLINUX}.whl",
+        name="bigsymtab",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={"pkg/_ext.abi3.so": payload},
+    )
+
+    start = time.monotonic()
+    record = scan_wheel(wheel, context)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"the scan took {elapsed:.1f}s"
+    assert record["binaries"][0]["matched_symbols"] == []
+
+
+def test_a_decoy_strtab_cannot_hide_a_local_definition(context, tmp_path: Path) -> None:
+    """The half `unresolved` cannot see.
+
+    Point `.symtab`'s `sh_link` at an appended `SHT_STRTAB` of nothing but NULs and
+    every row resolves -- to the empty name -- so no row is unresolved, nothing
+    matches, and the real names sit unread in the table the decoy displaced. The
+    sole-table path has caught this since #117 through
+    `_any_strtab_holds_a_name_not_read`; #127 had to run the same check in the
+    supplementary mode or the same object reads clean depending only on whether it
+    also has a `.dynsym`.
+    """
+    honest = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+    decoyed, index = append_strtab_decoy(honest, b"\x00" * 64)
+    decoyed = patch_section_header(decoyed, ".symtab", "sh_link", index)
+
+    wheel = build_wheel(
+        tmp_path / f"decoyed-1.0-{MANYLINUX}.whl",
+        name="decoyed",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={"pkg/_ext.abi3.so": decoyed},
+    )
+    record = scan_wheel(wheel, context)
+    binary = record["binaries"][0]
+
+    assert binary["matched_symbols"] == []
+    assert binary["partial_analysis"] is True
+    assert "symtab_understates_rows" in binary["partial_reasons"]
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+def test_a_source_file_symbol_is_not_read_as_a_definition(context, tmp_path: Path) -> None:
+    """`.symtab` names translation units, and a linked shared object carries one per
+    unit. A file called `EVP_md5.c` must not match a symbol group by coincidence of a
+    filename with the code it happens to implement -- which would read as a definition,
+    i.e. as a statically linked copy. #117 skips `STT_FILE`/`STT_SECTION` in the
+    sole-table path and both of its tests build relocatable objects, so the same skip
+    in the supplementary path was held by nothing (#127).
+    """
+    payload = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_md5.c", defined=True, info=(STB_GLOBAL << 4) | 4),),  # STT_FILE
+    ).build()
+    wheel = build_wheel(
+        tmp_path / f"srcfile-1.0-{MANYLINUX}.whl",
+        name="srcfile",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={"pkg/_ext.abi3.so": payload},
+    )
+    record = scan_wheel(wheel, context)
+    assert record["binaries"][0]["matched_symbols"] == []
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "none"
+
+
+def test_a_symtab_over_the_budget_says_so(context) -> None:
+    """The only place the supplementary mode says "I stopped short".
+
+    A `.symtab` or `.strtab` declaring more bytes than the reader's budget is a table
+    whose definitions were never looked at, and an object that carries one must not
+    read as one that carries none. Read through `read_elf` directly, the way every
+    other budget test here does, because the budget is the reader's argument rather
+    than a scan-level setting.
+    """
+    payload = ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym("EVP_DigestInit_ex", defined=True),),
+    ).build()
+
+    generous, errors = read_elf(
+        io.BytesIO(payload),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=64 * 1024,
+    )
+    assert [match.name for match in generous.matched_symbols] == ["EVP_DigestInit_ex"]
+    assert generous.partial_analysis is False
+
+    refused, errors = read_elf(
+        io.BytesIO(payload),
+        "mod.so",
+        context.patterns.binary,
+        vendored=False,
+        max_strings_bytes=8,
+    )
+    assert refused.matched_symbols == ()
+    assert refused.partial_analysis is True
+    assert "elf_symtab_unread" in refused.partial_reasons
