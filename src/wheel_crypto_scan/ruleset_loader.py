@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import re
 import tomllib
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from importlib.resources import files
 from pathlib import Path
 from types import MappingProxyType
@@ -19,6 +19,7 @@ from typing import Any
 
 from packaging.utils import canonicalize_name
 
+from .conventions import parse_conventions
 from .errors import ERROR_KINDS, RulesetError
 from .evidence import PARTIAL_REASONS, PRINTABLE, USED_FOR_SECURITY_VALUES
 from .ruleset import (
@@ -33,7 +34,6 @@ from .ruleset import (
     MATCHER_KINDS,
     ROUTED_KINDS,
     SEVERITIES,
-    Conventions,
     CryptoLibrary,
     Distribution,
     Limits,
@@ -44,6 +44,8 @@ from .ruleset import (
     RustCrateEntry,
     StringGroup,
     SymbolGroup,
+    sbom_crate_key,
+    sbom_library_key,
 )
 from .verdict import NO_CRYPTO_DETECTED
 
@@ -55,21 +57,6 @@ _TOP_LEVEL_KEYS = frozenset(
     {"ruleset_version", "verdict", "limits", "conventions", "linkage_policy", "rule", *ENTRY_TABLES}
 )
 _VERDICT_KEYS = frozenset({"precedence"})
-_CONVENTIONS_KEYS = frozenset(
-    {
-        "vendor_dir_globs",
-        "mangled_soname_regex",
-        "windows_version_suffix_regex",
-        "cargo_path_regex",
-        "cargo_vendor_path_regex",
-        "weak_hash_algorithms",
-        "library_suffixes",
-        "windows_library_suffixes",
-        "go_boring_group",
-        "go_stock_group",
-        "go_fips140_group",
-    }
-)
 _LIMITS_KEYS = frozenset(f.name for f in dataclasses.fields(Limits))
 _RULE_KEYS = frozenset(
     {
@@ -209,51 +196,6 @@ def _check_string_sequence(value: Any, label: str, where: str, *, allow_empty: b
     for item in value:
         if not isinstance(item, str):
             raise RulesetError(f"{where}: {label} must be a list of strings")
-
-
-def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
-    where = "[conventions]"
-    _refuse_unknown_keys(data, _CONVENTIONS_KEYS, where)
-    try:
-        mangled = re.compile(str(_require(data, "mangled_soname_regex", where)))
-        windows = re.compile(str(_require(data, "windows_version_suffix_regex", where)))
-        cargo = re.compile(str(_require(data, "cargo_path_regex", where)))
-        cargo_vendor = re.compile(str(_require(data, "cargo_vendor_path_regex", where)))
-    except re.error as exc:
-        raise RulesetError(f"{where}: invalid regular expression: {exc}") from None
-    for pattern, group in ((mangled, "stem"), (windows, "stem")):
-        if group not in pattern.groupindex:
-            raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
-    # Both cargo conventions feed `find_rust_crates`, which reads both groups off
-    # whichever one matched, so each pattern must declare both here even when a layout
-    # never fills `version`: a declared-but-unmatched `version` group is how a layout
-    # that names no version (`cargo vendor` without versioned directories) is told
-    # apart from a pattern that forgot the group, which `find_rust_crates` would only
-    # catch as an IndexError at scan time.
-    for pattern in (cargo, cargo_vendor):
-        for group in ("name", "version"):
-            if group not in pattern.groupindex:
-                raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
-    suffixes = tuple(_require(data, "library_suffixes", where))
-    windows_suffixes = tuple(_require(data, "windows_library_suffixes", where))
-    # A Windows suffix that is not also stripped would never be seen, so the reduction
-    # it is meant to trigger would silently never happen.
-    unknown = sorted(set(windows_suffixes) - set(suffixes))
-    if unknown:
-        raise RulesetError(f"{where}: windows_library_suffixes {unknown} are not library_suffixes")
-    return Conventions(
-        vendor_dir_globs=tuple(_require(data, "vendor_dir_globs", where)),
-        mangled_soname_regex=mangled,
-        windows_version_suffix_regex=windows,
-        cargo_path_regex=cargo,
-        cargo_vendor_path_regex=cargo_vendor,
-        weak_hash_algorithms=frozenset(_require(data, "weak_hash_algorithms", where)),
-        library_suffixes=suffixes,
-        windows_library_suffixes=windows_suffixes,
-        go_boring_group=str(_require(data, "go_boring_group", where)),
-        go_stock_group=str(_require(data, "go_stock_group", where)),
-        go_fips140_group=str(_require(data, "go_fips140_group", where)),
-    )
 
 
 def _claimed_reasons(match: Mapping[str, Any]) -> frozenset[str]:
@@ -469,7 +411,7 @@ def _check_suppression_acyclic(
 def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
     """The two string groups `[conventions]` names for the Go reader must exist.
 
-    Here rather than in `_parse_conventions` so that one mechanism checks every group
+    Here rather than in `conventions.parse_conventions` so that one mechanism checks every group
     reference in the file, against the raw tables, in one pass and with one spelling of
     the failure. `[conventions]` says naming these groups in the ruleset means renaming
     a group cannot silently flip a verdict-relevant field, and `binfmt.golang` reads
@@ -478,6 +420,8 @@ def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
     """
     where = "[conventions]"
     conventions = _require(ruleset_data, "conventions", where)
+    if not isinstance(conventions, Mapping):
+        raise RulesetError(f"{where}: must be a table")
     known = _entry_names(ruleset_data, "string_group")
     for key in ("go_boring_group", "go_stock_group", "go_fips140_group"):
         name = str(_require(conventions, key, where))
@@ -714,6 +658,33 @@ def _check_verdict(verdict: Any, precedence: frozenset[str], where: str) -> None
     _check(verdict, precedence, "verdict class", where)
 
 
+def _by_sbom_key(
+    entries: Iterable[CryptoLibrary | RustCrateEntry],
+    key: Callable[[str], str],
+    table: str,
+    source: str,
+) -> dict[str, CryptoLibrary | RustCrateEntry]:
+    """Index `entries` by `key(entry.name)`, refusing two names that fold together.
+
+    An SBOM component name is looked up through exactly one of these maps
+    (`Ruleset.library_for_sbom_name`/`crate_for_sbom_name`), so two `[[{table}]]`
+    entries whose names fold to the same key would make that lookup ambiguous --
+    dict insertion order would pick a winner, silently, and differently depending on
+    the order the TOML happens to list them in. Refusing it here keeps the lookup a
+    function rather than an accident of iteration order.
+    """
+    by_key: dict[str, CryptoLibrary | RustCrateEntry] = {}
+    for entry in entries:
+        folded = key(entry.name)
+        if folded in by_key:
+            first, second = sorted((by_key[folded].name, entry.name))
+            raise RulesetError(
+                f"{source}: {table} names {first!r} and {second!r} are the same name to an SBOM"
+            )
+        by_key[folded] = entry
+    return by_key
+
+
 def _entry_overrides(
     entry: Mapping[str, Any], precedence: frozenset[str], where: str
 ) -> dict[str, Any]:
@@ -896,6 +867,11 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         )
     _check_suppression_acyclic(rules, crates, crate_owner)
 
+    libraries_by_sbom_key = _by_sbom_key(
+        libraries.values(), sbom_library_key, "crypto_library", source
+    )
+    crates_by_sbom_key = _by_sbom_key(crates.values(), sbom_crate_key, "rust_crate", source)
+
     modules: dict[str, PythonModule] = {}
     for entry in data["python_module"]:
         name = _entry_name(entry, "python_module")
@@ -960,7 +936,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         version=str(version),
         precedence=precedence,
         limits=limits,
-        conventions=_parse_conventions(_require(data, "conventions", source)),
+        conventions=parse_conventions(_require(data, "conventions", source)),
         linkage_policy=_parse_linkage_policy(data.get("linkage_policy"), rules),
         rules=rules,
         distributions=MappingProxyType(distributions),
@@ -971,6 +947,8 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         string_groups=MappingProxyType(string_groups),
         ctypes_substrings=tuple(sorted(ctypes_substrings)),
         _by_id=MappingProxyType(by_id),
+        _libraries_by_sbom_key=MappingProxyType(libraries_by_sbom_key),
+        _crates_by_sbom_key=MappingProxyType(crates_by_sbom_key),
     )
 
 

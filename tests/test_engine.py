@@ -11,7 +11,7 @@ from importlib.resources import files
 
 import pytest
 
-from wheel_crypto_scan.engine import apply_rules
+from wheel_crypto_scan.engine import _sbom_entry, apply_rules
 from wheel_crypto_scan.errors import MEMBER_READ_ERROR
 from wheel_crypto_scan.evidence import (
     BINDING_DEFINED,
@@ -33,6 +33,7 @@ from wheel_crypto_scan.evidence import (
     SymbolMatch,
 )
 from wheel_crypto_scan.linkage import resolve_linkage
+from wheel_crypto_scan.ruleset import CryptoLibrary
 from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset
 from wheel_crypto_scan.verdict import classify
 
@@ -124,6 +125,77 @@ def test_an_sbom_component_naming_a_crypto_crate_is_matched(ruleset) -> None:
     finding = one(findings, "SBOM_CRYPTO_COMPONENT")
     assert finding.subject == "ring"
     assert finding.verdict == "NON_APPROVED_CRYPTO"
+
+
+@pytest.mark.parametrize(
+    ("name", "resolved_table", "resolved_name"),
+    [
+        ("OpenSSL", "libraries", "openssl"),
+        ("openssl_sys", "rust_crates", "openssl-sys"),
+        ("SHA1-Smol", "rust_crates", "sha1_smol"),
+    ],
+)
+def test_an_sbom_component_spelled_differently_still_reports_its_crypto_component(
+    ruleset, name, resolved_table, resolved_name
+) -> None:
+    """`_sbom_entry` folds the component's name through `ruleset.sbom_library_key`/
+    `sbom_crate_key`, so a name spelled with different case, or a crate spelled with
+    `-` swapped for `_`, still resolves to its ruleset entry -- but the finding's
+    subject stays the SBOM's own spelling, per "a name reported is a name read in
+    full": report what the document said, not the folded key."""
+    component = SbomComponent(
+        name=name, version="1.0", purl=None, source="d.dist-info/sboms/a.json"
+    )
+    findings = run(ruleset, wheel(metadata=metadata(sbom_components=(component,))))
+    finding = one(findings, "SBOM_CRYPTO_COMPONENT")
+    assert finding.subject == name
+    entry = getattr(ruleset, resolved_table)[resolved_name]
+    assert finding.severity == entry.severity
+    assert finding.verdict == entry.verdict
+    if resolved_table == "libraries" or name == "openssl_sys":
+        assert one(findings, "BIN_OPENSSL_LINKAGE_UNKNOWN").verdict == "OPAQUE"
+
+
+def test_a_cargo_purl_sbom_component_is_rated_by_its_crate_entry(ruleset) -> None:
+    """`openssl` is both a `[[crypto_library]]` (severity `high`) and one of its own
+    `[[rust_crate]]` entries (severity `medium`, since the crate can link the system
+    copy or vendor its own). A `pkg:cargo/...` purl says the component is the crate,
+    so the finding is rated by the crate's entry, not the library's."""
+    component = SbomComponent(
+        name="openssl",
+        version="0.10.66",
+        purl="pkg:cargo/openssl@0.10.66",
+        source="d.dist-info/sboms/a.json",
+    )
+    findings = run(ruleset, wheel(metadata=metadata(sbom_components=(component,))))
+    finding = one(findings, "SBOM_CRYPTO_COMPONENT")
+    assert finding.subject == "openssl"
+    assert finding.severity == ruleset.rust_crates["openssl"].severity
+    # Keeps this test from going vacuous if the ruleset ever aligns the two entries.
+    assert finding.severity != ruleset.libraries["openssl"].severity
+
+
+@pytest.mark.parametrize("purl", [None, "pkg:generic/openssl@3.0.13"], ids=["no-purl", "generic"])
+def test_a_non_cargo_sbom_component_is_rated_by_the_library_entry(ruleset, purl) -> None:
+    """Anything other than a `pkg:cargo/...` purl -- another purl type, or none at all
+    -- keeps the rule's own table order, so `openssl` is rated by the C library's
+    entry, the same as before a `pkg:cargo/...` purl was ever read."""
+    component = SbomComponent(
+        name="openssl", version="3.0.13", purl=purl, source="d.dist-info/sboms/a.json"
+    )
+    findings = run(ruleset, wheel(metadata=metadata(sbom_components=(component,))))
+    finding = one(findings, "SBOM_CRYPTO_COMPONENT")
+    assert finding.severity == ruleset.libraries["openssl"].severity
+
+
+def test_a_cargo_purl_does_not_add_a_table_the_rule_does_not_list(ruleset) -> None:
+    """The purl-driven reorder only ever moves `rust_crate` ahead of a table the rule
+    already lists; it never adds `rust_crate` to a rule that never named it."""
+    assert (
+        _sbom_entry(ruleset, ["crypto_library"], "openssl", "pkg:cargo/openssl@0.10.66")
+        is ruleset.libraries["openssl"]
+    )
+    assert _sbom_entry(ruleset, ["rust_crate"], "openssl", None) is ruleset.rust_crates["openssl"]
 
 
 def test_scan_errors_become_findings(ruleset) -> None:
@@ -855,10 +927,10 @@ def test_an_sbom_naming_an_openssl_crate_is_unresolved_linkage_beside_its_compon
 
 
 def test_linkage_moves_only_on_an_sbom_component_the_record_reports(ruleset) -> None:
-    """Agreement guard between the field and the finding: `_declared_by_sbom` must
-    never give a library `unknown` on an SBOM component name for which
-    `SBOM_CRYPTO_COMPONENT` reports no finding, and every name `_sbom_entry` matches
-    through `crypto_library`/`rust_crate` must actually move the library it names.
+    """Agreement guard between the field and the finding, checked both ways: the field
+    must never move on a name `SBOM_CRYPTO_COMPONENT` reports no finding for, and every
+    name `_sbom_entry` resolves through `crypto_library`/`rust_crate` must move the
+    library that entry names, or every library whose `crates` lists that crate.
     """
     baseline = resolve_linkage(ruleset, wheel())
     candidates: set[str] = set()
@@ -868,30 +940,41 @@ def test_linkage_moves_only_on_an_sbom_component_the_record_reports(ruleset) -> 
         candidates.update(library.sonames)
     candidates.update(ruleset.rust_crates)
     candidates.update(ruleset.distributions)
-    # Case variants of real names, spelled differently from every candidate above:
-    # the comparison on both sides (`_declared_by_sbom` and `engine._sbom_entry`) is
-    # exact and case-sensitive, so these must move nothing and match no finding. A
-    # mutation that lower-cases either side's names before comparing turns one of
-    # these into a match on the field with no finding beside it -- the disagreement
-    # this guard exists to catch, which same-case candidates alone cannot reach.
-    candidates.update({"OpenSSL", "OPENSSL-SYS", "LIBSODIUM"})
+    # Case and `-`/`_` variants of real names: folding (`ruleset.sbom_library_key`/
+    # `sbom_crate_key`) now resolves these to the same ruleset entry as the exact
+    # spelling, so each one both moves a field and fires a finding. A mutation that
+    # folds on only one side of the agreement breaks one of the two directions below.
+    candidates.update({"OpenSSL", "OPENSSL-SYS", "openssl_sys", "LIBSODIUM"})
     for name in sorted(candidates):
-        component = SbomComponent(name=name, version=None, purl=None, source="a.cdx.json")
-        evidence = wheel(metadata=metadata(sbom_components=(component,)))
-        mapping = resolve_linkage(ruleset, evidence)
-        moved = [
-            library_name
-            for library_name, value in mapping.items()
-            if value == "unknown" and baseline.get(library_name) != "unknown"
-        ]
-        if not moved:
-            continue
-        subjects = {
-            finding.subject
-            for finding in run(ruleset, evidence)
-            if finding.rule_id == "SBOM_CRYPTO_COMPONENT"
-        }
-        assert name in subjects, f"{name} moved {moved} with no SBOM_CRYPTO_COMPONENT finding"
+        for purl in (None, f"pkg:cargo/{name}@0"):
+            component = SbomComponent(name=name, version=None, purl=purl, source="a.cdx.json")
+            evidence = wheel(metadata=metadata(sbom_components=(component,)))
+            mapping = resolve_linkage(ruleset, evidence)
+            moved = {
+                library_name
+                for library_name, value in mapping.items()
+                if value == "unknown" and baseline.get(library_name) != "unknown"
+            }
+            subjects = {
+                finding.subject
+                for finding in run(ruleset, evidence)
+                if finding.rule_id == "SBOM_CRYPTO_COMPONENT"
+            }
+            if moved:
+                assert name in subjects, (
+                    f"{name} moved {sorted(moved)} with no SBOM_CRYPTO_COMPONENT finding"
+                )
+            entry = _sbom_entry(ruleset, ("crypto_library", "rust_crate"), name, purl)
+            if entry is None:
+                continue
+            assert name in subjects, f"{name} resolved to {entry.name} but fired no finding"
+            if isinstance(entry, CryptoLibrary):
+                bound = {entry.name}
+            else:
+                bound = {lib.name for lib in ruleset.libraries.values() if entry.name in lib.crates}
+            assert bound <= moved, (
+                f"{name} fired SBOM_CRYPTO_COMPONENT for {sorted(bound)} but moved {sorted(moved)}"
+            )
 
     for library in ruleset.libraries.values():
         # `library.name` itself is excluded from this positive check when it also
@@ -906,24 +989,30 @@ def test_linkage_moves_only_on_an_sbom_component_the_record_reports(ruleset) -> 
         )
         names = library.crates if ambiguous_own_name else (library.name, *library.crates)
         for name in names:
-            component = SbomComponent(name=name, version=None, purl=None, source="a.cdx.json")
-            evidence = wheel(metadata=metadata(sbom_components=(component,)))
-            assert resolve_linkage(ruleset, evidence)[library.name] == "unknown"
+            # Case and `-`/`_` variants: the folded comparison must still move the
+            # field, whatever the SBOM's own spelling.
+            for variant in (name, name.upper(), name.replace("-", "_")):
+                component = SbomComponent(
+                    name=variant, version=None, purl=None, source="a.cdx.json"
+                )
+                evidence = wheel(metadata=metadata(sbom_components=(component,)))
+                assert resolve_linkage(ruleset, evidence)[library.name] == "unknown"
         if ambiguous_own_name:
-            crate_component = SbomComponent(
-                name=library.name,
-                version=None,
-                purl=f"pkg:cargo/{library.name}@0.0.0",
-                source="a.cdx.json",
-            )
-            evidence = wheel(metadata=metadata(sbom_components=(crate_component,)))
-            assert resolve_linkage(ruleset, evidence).get(library.name) != "unknown"
+            for variant in (library.name, library.name.upper()):
+                crate_component = SbomComponent(
+                    name=variant,
+                    version=None,
+                    purl=f"pkg:cargo/{variant}@0.0.0",
+                    source="a.cdx.json",
+                )
+                evidence = wheel(metadata=metadata(sbom_components=(crate_component,)))
+                assert resolve_linkage(ruleset, evidence).get(library.name) != "unknown"
 
-            c_library_component = SbomComponent(
-                name=library.name, version=None, purl=None, source="a.cdx.json"
-            )
-            evidence = wheel(metadata=metadata(sbom_components=(c_library_component,)))
-            assert resolve_linkage(ruleset, evidence)[library.name] == "unknown"
+                c_library_component = SbomComponent(
+                    name=variant, version=None, purl=None, source="a.cdx.json"
+                )
+                evidence = wheel(metadata=metadata(sbom_components=(c_library_component,)))
+                assert resolve_linkage(ruleset, evidence)[library.name] == "unknown"
 
 
 # --- python layer -----------------------------------------------------------

@@ -1,10 +1,12 @@
 """The ruleset object model: dataclasses, vocabulary, the prefilter, and pattern compiling.
 
-Everything policy-shaped lives in the TOML file; this module is one of two that turn it
-into something the scanner can use. It owns the parsed shape -- `Rule`, `Conventions`,
-`Ruleset` and the rest -- and `Ruleset.compile_patterns` builds each extractor's half of
-the compiled patterns, `BinaryPatterns` or `PythonPatterns`, so they can bound what they
+Everything policy-shaped lives in the TOML file; this module is one of three that turn
+it into something the scanner can use. It owns the parsed shape -- `Rule`, `Ruleset`
+and the rest -- and `Ruleset.compile_patterns` builds each extractor's half of the
+compiled patterns, `BinaryPatterns` or `PythonPatterns`, so they can bound what they
 collect without knowing that rules exist. Only `ScanContext` holds both halves.
+`Conventions`, the other structural half of the parsed shape, lives in `conventions`
+instead; import it from there.
 
 Reading the TOML into this shape, and refusing a malformed one loudly at load time
 rather than silently mis-scanning, is `ruleset_loader`'s job: `load_ruleset` and
@@ -17,9 +19,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from fnmatch import fnmatch
 from types import MappingProxyType
 from typing import Any
+
+from .conventions import Conventions
 
 # What each matcher kind reads off its `[rule.match]` table, plus `kind` itself and,
 # where the loader and `Ruleset.default_rule_for_table` read them, `table`/`default`. A
@@ -123,8 +126,6 @@ ROUTED_KINDS = MappingProxyType(
 # never be consulted and declaring one would only look effective.
 DEFAULTABLE_TABLES = frozenset(ROUTED_KINDS) - {"crypto_distribution"}
 
-_VERSION_SUFFIX = re.compile(r"\.\d+$")
-
 # Bytes `binfmt.strings.sanitize` removes, so a name can carry any number of them
 # between its characters without changing the name the matcher is shown. `\x00` is
 # excluded: it ends a name rather than sitting inside one. Possessive, because the
@@ -189,19 +190,6 @@ class Limits:
 
 
 @dataclass(frozen=True, slots=True)
-class SonameInfo:
-    """A library file name reduced to its base name, plus whether it was renamed.
-
-    auditwheel, delocate and delvewheel append a content hash to every library they
-    vendor, so a mangled name is itself evidence that the wheel carries its own copy.
-    """
-
-    base: str
-    mangled: bool
-    original: str
-
-
-@dataclass(frozen=True, slots=True)
 class LinkagePolicy:
     """Which `partial_reasons` causes leave a linkage posture answerable.
 
@@ -226,91 +214,6 @@ class LinkagePolicy:
         costs us the answer until someone decides it does not.
         """
         return any(reason not in self.exclude_reasons for reason in reasons)
-
-
-@dataclass(frozen=True, slots=True)
-class Conventions:
-    """How build tools lay wheels out. Structural facts, not policy."""
-
-    vendor_dir_globs: tuple[str, ...]
-    mangled_soname_regex: re.Pattern[str]
-    windows_version_suffix_regex: re.Pattern[str]
-    cargo_path_regex: re.Pattern[str]
-    cargo_vendor_path_regex: re.Pattern[str]
-    weak_hash_algorithms: frozenset[str]
-    # No defaults, and ahead of the defaulted fields for that reason: the loader
-    # refuses a ruleset whose go_boring_group/go_stock_group name no string group, and
-    # a default here would let a directly built Conventions point at groups that need
-    # not exist -- reinstating the silently-false boring_crypto the loader check exists
-    # to prevent, wearing a dataclass default as a disguise.
-    go_boring_group: str
-    go_stock_group: str
-    go_fips140_group: str
-    library_suffixes: tuple[str, ...] = (".so", ".dylib", ".dll", ".pyd")
-    windows_library_suffixes: tuple[str, ...] = (".dll", ".pyd")
-
-    def is_vendor_path(self, path: str) -> bool:
-        """True when any directory component is an auditwheel or delocate vendor dir."""
-        parts = path.split("/")[:-1]
-        return any(fnmatch(part, glob) for part in parts for glob in self.vendor_dir_globs)
-
-    def _reduced_stem(self, name: str) -> tuple[str, bool]:
-        """Strip path, version suffix and library extension. Shared by
-        `normalise_soname` (also undoes a hash rename) and `raw_stem` (does not)."""
-        stem = name.split("/")[-1]
-        windows = False
-        while True:
-            stripped = _VERSION_SUFFIX.sub("", stem)
-            for suffix in self.library_suffixes:
-                # Only a Windows suffix is matched without regard to case, because only
-                # Windows file names are case-insensitive. A Linux `libcrypto.SO.3` is
-                # a file genuinely called that, and reducing it would be inventing one.
-                on_windows = suffix in self.windows_library_suffixes
-                matched = (
-                    stripped.casefold().endswith(suffix.casefold())
-                    if on_windows
-                    else stripped.endswith(suffix)
-                )
-                if matched:
-                    stripped = stripped[: -len(suffix)]
-                    windows = windows or on_windows
-                    break
-            if stripped == stem:
-                break
-            stem = stripped
-        if windows:
-            stem = stem.casefold()
-        return stem, windows
-
-    def normalise_soname(self, name: str) -> SonameInfo:
-        """Reduce `libcrypto-3a1f2b4c.so.3` or `libcrypto-3-x64.dll` to `libcrypto`."""
-        stem, windows = self._reduced_stem(name)
-        match = self.mangled_soname_regex.match(stem)  # pylint: disable=no-member
-        mangled = match is not None
-        if match is not None:
-            stem = match.group("stem")
-        if windows:
-            # After the hash, so a vendored `libcrypto-3-x64-<hash>.dll` loses the hash
-            # first and is still recognised as the vendored copy it is.
-            decorated = self.windows_version_suffix_regex.match(stem)  # pylint: disable=no-member
-            if decorated is not None:
-                stem = decorated.group("stem")
-        return SonameInfo(base=stem, mangled=mangled, original=name)
-
-    def own_base(self, soname: str | None, path: str) -> str:
-        """The library an object claims to be: its DT_SONAME, else its file name.
-
-        An object that declares no SONAME is still the library its file name says it
-        is, which is how a vendored copy gets recognised when the build stripped the
-        declaration out.
-        """
-        return self.normalise_soname(soname or path.rsplit("/", 1)[-1]).base
-
-    def raw_stem(self, soname: str | None, path: str) -> str:
-        """Like `own_base`, but keeps a content-hash rename instead of undoing it, so a
-        plain `needed` entry cannot match a same-family copy renamed elsewhere."""
-        stem, _ = self._reduced_stem(soname or path.rsplit("/", 1)[-1])
-        return stem
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,6 +426,45 @@ class ScanPatterns:
     python: PythonPatterns
 
 
+def sbom_library_key(name: str) -> str:
+    """Fold an SBOM component name to a `[[crypto_library]]` lookup key.
+
+    A C library ships under no registry that treats case or punctuation as
+    insignificant, and no shipped library name in the ruleset carries a `-` or `_`
+    either, so the only fold that reflects a real equivalence is case: `OpenSSL` and
+    `openssl` name the same library, `openssl-sys` and `openssl_sys` do not (and never
+    collide with this table in the first place). Both `SBOM_CRYPTO_COMPONENT`
+    (`engine._sbom_entry`) and `linkage._declared_by_sbom` must resolve a
+    `crypto_library` name through this and nothing else, so the finding and the field
+    can never disagree about the same string.
+
+    Folds case only on an ASCII name. Every shipped `[[crypto_library]]` name is ASCII,
+    and Unicode case folding is not the same equivalence as ASCII case: U+212A KELVIN
+    SIGN lowercases to ASCII `k`, so folding a non-ASCII name here could match it
+    against an ASCII entry it never actually spelled. A non-ASCII name is returned
+    unchanged, which cannot collide with any shipped key.
+    """
+    return name.lower() if name.isascii() else name
+
+
+def sbom_crate_key(name: str) -> str:
+    """Fold an SBOM component name to a `[[rust_crate]]` lookup key.
+
+    crates.io names are case-insensitive and treat `-` and `_` as the same character
+    (a crate published as `foo-bar` and one published as `foo_bar` are the same
+    registry entry), so an SBOM naming either spelling means the same crate. Both
+    `SBOM_CRYPTO_COMPONENT` (`engine._sbom_entry`) and `linkage._declared_by_sbom` must
+    resolve a `rust_crate` name through this and nothing else, so the finding and the
+    field can never disagree about the same string.
+
+    Folds case only on an ASCII name, the same reasoning and the same `sbom_library_key`
+    (above) rejects Unicode case folding for: crates.io names are themselves ASCII-only,
+    and a character like U+212A KELVIN SIGN folding onto ASCII `k` is not an equivalence
+    crates.io draws. A non-ASCII name is returned unchanged.
+    """
+    return name.lower().replace("_", "-") if name.isascii() else name
+
+
 @dataclass(frozen=True, slots=True)
 class Ruleset:
     """The parsed, validated ruleset."""
@@ -541,9 +483,17 @@ class Ruleset:
     string_groups: Mapping[str, StringGroup]
     ctypes_substrings: tuple[str, ...]
     _by_id: Mapping[str, Rule] = field(repr=False, default_factory=dict)
+    _libraries_by_sbom_key: Mapping[str, CryptoLibrary] = field(repr=False, default_factory=dict)
+    _crates_by_sbom_key: Mapping[str, RustCrateEntry] = field(repr=False, default_factory=dict)
 
     def rule(self, rule_id: str) -> Rule:
         return self._by_id[rule_id]
+
+    def library_for_sbom_name(self, name: str) -> CryptoLibrary | None:
+        return self._libraries_by_sbom_key.get(sbom_library_key(name))
+
+    def crate_for_sbom_name(self, name: str) -> RustCrateEntry | None:
+        return self._crates_by_sbom_key.get(sbom_crate_key(name))
 
     def matches_for_kind(self, kind: str) -> tuple[tuple[Rule, Mapping[str, Any]], ...]:
         """Every (rule, match table) pair of this matcher kind.

@@ -3461,20 +3461,76 @@ own validator is what manufactures the cycle, not the split itself.
 `routine_reasons` is `from .ruleset_loader import ...` (or
 `wheel_crypto_scan.ruleset_loader` in tests), including in modules that also import an
 object-model name, which then need two import lines rather than one. Everything that
-imports only object-model names -- `Ruleset`, `Conventions`, `BinaryPatterns`,
-`StringGroup`, `Limits`, the vocabulary constants -- imports them from `ruleset`.
+imports only object-model names -- `Ruleset`, `BinaryPatterns`, `StringGroup`,
+`Limits`, the vocabulary constants -- imports them from `ruleset`. `Conventions` and
+`SonameInfo` moved again, into their own module; see "`Conventions`/`SonameInfo` and
+their `[conventions]` parser move to `conventions.py`" below for where and why.
 
 **What was rejected.** Raising `max-module-lines`, the option this entry argues against:
 the file would be fragile to the next three-line addition, not short on numeric slack.
 The `ruleset/` package layout, for the reason above. Re-export via the
 bottom-import/self-alias trick, for the cyclic-import reason above. Pulling
-`Conventions`/`SonameInfo` (~115 lines) into their own `conventions.py` as well: the
-loader split alone leaves `ruleset.py` well under the limit, `linkage.py` and
-`engine.py` import `Conventions` by name, and a further split neither of them asks for
-would be moving code to move it rather than fixing a real fragility.
+`Conventions`/`SonameInfo` (~115 lines) into their own `conventions.py` at the same
+time: measured at this split, `ruleset.py` was already well under the limit on its
+own, so a further split neither the model nor the loader asked for yet would have been
+moving code to move it rather than fixing a real fragility.
 
-**Revisit if** `ruleset.py` or `ruleset_loader.py` approaches 1000 lines on its own --
-at that point splitting `Conventions`/`SonameInfo` out is the next lever, not a bigger
+**Revisit if** a third responsibility crowds either file for no structural reason of
+its own -- the same shape `Conventions`/`SonameInfo` and their parser were in below,
+once `ruleset_loader.py` reached the limit this split was measured against.
+
+## `Conventions`/`SonameInfo` and their `[conventions]` parser move to `conventions.py`
+
+**Accepted, and it changes no record.** No rule, symbol, library or verdict depends on
+which module defines or parses `Conventions`.
+
+`ruleset_loader.py` reached pylint's default `max-module-lines` (1000) as SBOM
+name-folding and the cargo-purl reorder it backs were added to a loader that already
+carried the ruleset shape checks, the linkage-policy coherence check and every other
+`_parse_*`/`_validate_*` helper -- the trigger the entry above names for its own
+"Revisit if". `Conventions` and `SonameInfo`, the object model, lived in `ruleset.py`;
+`_parse_conventions` and the key set it checks against, the parser, lived in
+`ruleset_loader.py`. Both move together into a new sibling module, `conventions.py`,
+and the parser drops its leading underscore to become the public `parse_conventions`:
+`ruleset_loader.parse_ruleset` now calls it across the module boundary the underscore
+marks private, and `parse_conventions` builds nothing but a `Conventions`, and nothing
+outside these two pieces reads the moved key set, so the model and the one function
+that builds it are one self-contained concern, not two files sharing a name by
+coincidence.
+
+**Why the parser has to move too.** Moving only `Conventions`/`SonameInfo` out of
+`ruleset.py` would shrink the file that was not the one over the limit.
+`ruleset_loader.py` is the one that reached 1000, and `_parse_conventions` -- regex
+compilation, the group checks, the Windows-suffix-subset check -- is the piece of it
+large enough to matter; leaving the parser behind and moving only the dataclasses would
+fix a limit nothing there had broken.
+
+**`_require`/`_refuse_unknown_keys` are duplicated, not imported.** `conventions.py`
+restates these two small checks rather than importing them from `ruleset_loader`,
+because `ruleset_loader.parse_ruleset` needs `Conventions` and `parse_conventions` from
+`conventions.py` to build a `Ruleset`. Importing the other way too would make the two
+modules import each other, the same cyclic import the entry above already rejected
+paying for once to keep `load_ruleset` re-exported from `ruleset.py`.
+
+**What it costs.** Every import of `Conventions` or `SonameInfo` -- `ruleset.py`'s own
+`Ruleset.conventions` field, `linkage.py`, `layers/binaries.py` -- comes from
+`conventions`, not `ruleset`, so a module that also imports an object-model name needs
+two import lines instead of one, the same cost the loader/model split above already
+pays. `ruleset_loader.py` imports only `parse_conventions`, never `Conventions`
+itself: it builds a `Ruleset` from what the parser returns and never names the class.
+
+**What was rejected.** A module-local `too-many-lines` exemption for
+`ruleset_loader.py`, matching `binfmt/elf.py` and `binfmt/macho.py` below: those two
+carry the disable because about half of each is docstring, and splitting either would
+move prose rather than reduce a responsibility. `ruleset_loader.py`'s growth here is
+validation code, not documentation, so that reasoning does not carry over, and this
+module already names the alternative to take instead of the exemption those two use. A
+bigger `max-module-lines` for the same reason the entry below rejects one: it would
+hand every other module the same headroom, earned or not.
+
+**Revisit if** `ruleset.py` or `ruleset_loader.py` approaches the limit again on its
+own -- at that point the next responsibility crowding either file for no structural
+reason of its own is the next one to look for splitting out, not a bigger
 `max-module-lines`.
 
 ## `binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions
@@ -5367,21 +5423,27 @@ specific library being asked for, so it runs for every library with a
 `[[crypto_library]]` entry, not only OpenSSL, the same way the crate branch in
 `_binary_posture` is not gated either.
 
-It matches an SBOM component whose name equals `library.name`, or is one of
+It matches an SBOM component whose name folds to `library.name`, or to one of
 `library.crates` -- exactly the names `SBOM_CRYPTO_COMPONENT` also reports a finding
-for through its `crypto_library` and `rust_crate` tables, compared the same
-case-sensitive way, so the field and that finding can never disagree about the same
-string. The loader refuses a ruleset whose `sbom_component` rules, taken together, do
-not report through both tables (a rule missing one, or none at all), and refuses
-`suppressed_by` on a rule it relies on for that coverage -- a suppressed finding would
-reopen the same hole a coverage gap does -- so this agreement cannot be broken by
-editing the ruleset alone. Coverage is checked over the union of every such rule's
-`tables`, not rule by rule, so covering the two tables through two separate rules is
-accepted the same as one rule doing both. A soname is deliberately not compared: an
-SBOM component names a package, not a dependency string, and this field's `needed`-side
-matching already owns that comparison. A distribution name (`crypto_distribution`, e.g.
-`cryptography`) is also excluded: a distribution wrapping a library is not the wheel
-carrying a copy of it, and `SCHEMA.md` says a distribution name never moves this field.
+for through its `crypto_library` and `rust_crate` tables, folded through the same two
+functions that finding's lookup uses: `ruleset.sbom_library_key` case-folds a
+`[[crypto_library]]` name, and `ruleset.sbom_crate_key` case-folds a `[[rust_crate]]`
+name and also treats `-` and `_` as the same character, the way crates.io does. The
+finding's own subject keeps the SBOM's own spelling -- "a name reported is a name read
+in full" -- so a component spelled `OpenSSL` still reports `SBOM_CRYPTO_COMPONENT`
+with subject `OpenSSL`, not the folded key `openssl`. The field and that finding can
+never disagree about the same string this way. The loader refuses a ruleset whose
+`sbom_component` rules, taken together, do not report through both tables (a rule
+missing one, or none at all), and refuses `suppressed_by` on a rule it relies on for
+that coverage -- a suppressed finding would reopen the same hole a coverage gap does --
+so this agreement cannot be broken by editing the ruleset alone. Coverage is checked
+over the union of every such rule's `tables`, not rule by rule, so covering the two
+tables through two separate rules is accepted the same as one rule doing both. A soname
+is deliberately not compared: an SBOM component names a package, not a dependency
+string, and this field's `needed`-side matching already owns that comparison. A
+distribution name (`crypto_distribution`, e.g. `cryptography`) is also excluded: a
+distribution wrapping a library is not the wheel carrying a copy of it, and
+`SCHEMA.md` says a distribution name never moves this field.
 
 Like a crate, an SBOM component says the wheel uses the library, not which copy: it
 never gives a definite posture, only `unknown` in place of `none`, and it never
@@ -5404,8 +5466,22 @@ refuse, and `unknown` already has the meaning this case needs.
 - An SBOM that fails to parse (`SBOM_UNREADABLE`, `OPAQUE` on its own) does not move the
   field: `_declared_by_sbom` only ever sees components a reader actually extracted, so a
   wheel whose only OpenSSL evidence is an unparseable SBOM reads `none` beside `OPAQUE`.
-- Name matching is exact and case-sensitive, like `SBOM_CRYPTO_COMPONENT`'s own: a
-  component spelled `OpenSSL` moves neither the field nor the finding.
+- Name matching folds through `ruleset.sbom_library_key`/`sbom_crate_key`, like
+  `SBOM_CRYPTO_COMPONENT`'s own: a `[[crypto_library]]` name folds by case only, since
+  no registry treats a C library name's punctuation as insignificant and no shipped
+  library name carries a `-` or `_`; a `[[rust_crate]]` name also folds `-` and `_`
+  together, the way crates.io does. A component spelled `OpenSSL` or `openssl_sys` moves
+  both the field and the finding, and the finding's own subject keeps the SBOM's own
+  spelling. The loader refuses two `[[crypto_library]]` names, or two `[[rust_crate]]`
+  names, that fold to the same key, so the fold can never make this lookup ambiguous.
+  Only the component's own `name` is read this way: its `purl` decides which table
+  rates a colliding name (below), never what the name itself is taken to be, and an
+  RPM-derived spelling such as `openssl-libs` is not aliased to `openssl` -- that is a
+  distribution-packaging convention, not a registry either `sbom_library_key` or
+  `sbom_crate_key` folds for, and no shipped `[[crypto_library]]` or `[[rust_crate]]`
+  entry lists it. A wheel whose only OpenSSL SBOM evidence is spelled `openssl-libs`
+  moves neither the field nor `SBOM_CRYPTO_COMPONENT`, the same gap `partial_analysis`
+  leaves open elsewhere: a hole recorded, not silently absorbed into the fold.
 - `library.name` alone is not enough where the ruleset has both a `[[crypto_library]]`
   and an unrelated `[[rust_crate]]` of the same name: `argon2` and `blake2` are each
   both the C reference library (libargon2, libb2) and, separately, the pure-Rust
@@ -5418,18 +5494,30 @@ refuse, and `unknown` already has the meaning this case needs.
   component is the pure-Rust crate, so only that purl skips the name match. A component
   named `argon2` with a non-cargo purl (`pkg:generic/...`, the shape a real libargon2
   SBOM entry would carry) or no purl at all moves the field, because it could name the
-  C library. Two simpler alternatives are rejected. Matching by name alone, whatever
-  the purl, gives a false positive: a component naming the pure-Rust crate under
-  `pkg:cargo/argon2@...` would move the C library's field when nothing about it says
-  the C library is present. Skipping the name match on every colliding name, whatever
-  the purl, gives the opposite failure: a component that really does declare libargon2
-  or libb2 under a non-cargo purl, or none, would move nothing, while
-  `SBOM_CRYPTO_COMPONENT` fires on the same name (it matches by name, not by purl),
-  leaving a finding that names the C library with no field reflecting it. Reading the
-  purl trusts it at face value: an SBOM component that names the C library but is
+  C library. The collision test runs on the folded key (`sbom_library_key(library.name)`
+  and `sbom_crate_key(library.name)`), so a case variant of the colliding name, `ARGON2`
+  for instance, is still resolved as the same collision. Two simpler alternatives are
+  rejected. Matching by name alone, whatever the purl, gives a false positive: a
+  component naming the pure-Rust crate under `pkg:cargo/argon2@...` would move the C
+  library's field when nothing about it says the C library is present. Skipping the
+  name match on every colliding name, whatever the purl, gives the opposite failure: a
+  component that really does declare libargon2 or libb2 under a non-cargo purl, or
+  none, would move nothing, while `SBOM_CRYPTO_COMPONENT` fires on the same name -- the
+  finding fires on the name whatever the purl, the purl only picks which table rates it
+  -- leaving a finding that names the C library with no field reflecting it. Reading
+  the purl trusts it at face value: an SBOM component that names the C library but is
   mislabelled with a `pkg:cargo/...` purl -- wrong or hostile metadata -- reads as the
   crate and moves nothing, the same class of trust every other field extracted from the
   SBOM places in it.
+- `SBOM_CRYPTO_COMPONENT` reads the same purl for the same collision: a component whose
+  purl says `pkg:cargo/...` is rated by its `[[rust_crate]]` entry, and any other purl,
+  or none, by the `[[crypto_library]]` entry -- the crate's own severity and verdict, not
+  the library's, whenever the two disagree. In the shipped ruleset only `openssl`
+  differs this way (crate `medium`, library `high`); `argon2` and `blake2`'s crate and
+  library entries already agree, so the choice is invisible for them. The preference
+  only ever reorders a table the rule already lists (`engine._sbom_entry` never adds
+  `rust_crate` to a rule that never named it), and falls back to the rule's own table
+  order for a name the preferred table does not have an entry for.
 - `ruleset_loader._validate_sbom_component_coverage` refuses `suppressed_by` on a
   `sbom_component` rule it relies on for `crypto_library`/`rust_crate` coverage: a
   suppressed finding would leave the field moved with nothing in the record to explain
