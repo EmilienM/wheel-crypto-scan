@@ -80,7 +80,10 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--resume",
         action="store_true",
-        help="keep records already in --output and scan only the rest, keyed on wheel filename",
+        help=(
+            "keep JSONL records already in --output and scan only the rest, keyed on wheel "
+            "filename (--format jsonl only)"
+        ),
     )
     scan.add_argument("--max-binary-bytes", type=int, default=ArchiveLimits().max_member_bytes)
     scan.add_argument(
@@ -102,6 +105,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_scan(args: argparse.Namespace) -> int:
     if not args.inputs and not args.from_file and not args.index_url:
         print(f"{TOOL_NAME}: nothing to scan", file=sys.stderr)
+        return 2
+
+    if args.resume and args.format != "jsonl":
+        print(
+            f"{TOOL_NAME}: --resume reads JSONL records back from --output; "
+            f"it cannot resume from --format {args.format}",
+            file=sys.stderr,
+        )
         return 2
 
     ruleset = load_ruleset(args.ruleset)

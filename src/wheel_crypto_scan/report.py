@@ -179,9 +179,8 @@ def _referenced_rules(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> di
 
 def _tool_variants(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sorted, distinct `(version, ruleset_version, analyzer_version, evidence_level)`
-    tuples across the embedded records. `--resume` can mix records produced by
-    different tool versions into one output, so the page shows every variant it finds
-    rather than picking one and hiding the rest."""
+    tuples across the embedded records. The page shows every variant it finds among
+    the records it is given rather than picking one and hiding the rest."""
     seen = set()
     for record in records:
         tool = record.get("tool", {})
