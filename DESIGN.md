@@ -5302,13 +5302,18 @@ identified -- by the symbol prefix, the cargo path, or (on a whole-object reader
 version string -- and the object defines no non-approved primitive of its own;
 `BIN_AWS_LC_FIPS` replaces `BIN_AWS_LC` and `BIN_AWS_LC_RS_CRATE` among the findings
 behind `NON_APPROVED_CRYPTO` either way, naming the FIPS condition alongside whatever
-primitives keep the class, rather than in place of them. An SBOM naming both
-`aws-lc-rs` and `aws-lc-fips-sys` in the same document reads the same way: the FIPS
-crate's `sbom_component` finding drops the `aws-lc-rs` one on the strength of the same
-relation (see "Suppression is keyed on rule, subject and object" above). No real build
-measured here reaches `CONDITIONAL` alone, because every one keeps at least one
-non-approved primitive; the narrower shape is exercised only by synthetic fixtures,
-such as `test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix`'s.
+primitives keep the class, rather than in place of them. An SBOM naming both `aws-lc-rs`
+and `aws-lc-fips-sys` in the same document reads the same way: the FIPS crate's
+`sbom_component` finding drops the `aws-lc-rs` one on the strength of the same relation
+(see "Suppression is keyed on rule, subject and object" above). A test pins this
+directly: `test_an_aws_lc_fips_modules_own_md5_and_x25519_keep_non_approved_leading`
+extends the measured FIPS fixture with `md5_final` and `curve25519_x25519` as local
+`.symtab` definitions, and the record it produces reads `NON_APPROVED_CRYPTO` with
+`CONDITIONAL` in `classes` and `BIN_AWS_LC_FIPS`, `BIN_OWN_WEAK_HASH_IMPL` and
+`BIN_CURVE25519` all present in `rule_ids`. No real build measured here reaches
+`CONDITIONAL` alone, because every one keeps at least one non-approved primitive; that
+narrower shape, and the combined one above, are each exercised only by synthetic
+fixtures, such as `test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix`'s.
 
 The distinction is ruleset data alone: two groups and two rules, read by readers that
 treat AWS-LC no differently from any other library.
