@@ -110,8 +110,8 @@ definitions".
 # a `why`), and every cross-check adds lines without shrinking any of the others.
 # Disabled here rather than raising `max-module-lines` project-wide, which would
 # quietly give every OTHER module the same headroom this one earns by being
-# documentation-heavy. DESIGN.md, "`binfmt/macho.py` carries a module-local
-# line-count exemption", has the reasoning, which applies here as well.
+# documentation-heavy. DESIGN.md, "`binfmt/elf.py` and `binfmt/macho.py` carry
+# module-local line-count exemptions", has the reasoning.
 # pylint: disable=too-many-lines
 
 from __future__ import annotations

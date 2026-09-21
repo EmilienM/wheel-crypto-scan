@@ -2260,8 +2260,9 @@ header-shape checks alone do not cover every way a load command can lie: an ABI-
 `cmdsize` (not a multiple of 8 on a 64-bit object) and an `ncmds` that understates the
 real command count need checks of their own, below.
 
-`binfmt/macho.py` grows with every cause its docstring enumerates; see "`binfmt/macho.py`
-carries a module-local line-count exemption" for how the module-length limit handles it.
+`binfmt/macho.py` grows with every cause its docstring enumerates; see "`binfmt/elf.py`
+and `binfmt/macho.py` carry module-local line-count exemptions" for how the
+module-length limit handles it.
 
 ### A misaligned `cmdsize` or an understated `ncmds` flags the walk too
 
@@ -3475,6 +3476,45 @@ would be moving code to move it rather than fixing a real fragility.
 at that point splitting `Conventions`/`SonameInfo` out is the next lever, not a bigger
 `max-module-lines`.
 
+## `binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions
+
+**Accepted.** Each of `binfmt/elf.py` and `binfmt/macho.py` carries its own
+`# pylint: disable=too-many-lines`, with a justification comment beside it, and the
+project-wide `max-module-lines` in `pyproject.toml` stays at pylint's own default
+(1000).
+
+**The list.**
+
+- `binfmt/macho.py`: its docstring names every way `partial_analysis` can survive, and
+  every load-command shape it flags adds a paragraph.
+- `binfmt/elf.py`: it documents every way an attacker-controlled label can win a
+  lookup, and every cross-check that closes one.
+
+**Why not split.** Measured, about half of each module is docstring and comment; the
+code alone is under 600 lines in each. The excess is the documentation AGENTS.md's
+"every policy entry carries a why" rule asks for, not unchecked growth, and splitting
+either module would move prose between files rather than reduce what either one is
+responsible for. Contrast this with "The loader lives in `ruleset_loader.py`, a sibling
+module, not a package", where four responsibilities shared one file and the split was
+right.
+
+**Why not a global bump.** Raising the project-wide limit instead would silently give
+every OTHER module in the project the same extra headroom, whether or not it has earned
+it. `binfmt/pe.py`, and every other module, stays under the limit without a disable.
+
+**What holds it.** `tests/test_design_notes.py` fails if a module carries the disable
+without being on this list, if a listed module drops the disable, if this entry's list
+and `_LINE_LIMIT_EXEMPT` name different modules in either direction, if
+`pyproject.toml` sets `max-module-lines` in any `[tool.pylint.*]` table, or if
+`too-many-lines`/`C0302` is added to any table's `disable` list.
+
+**Revisit if**:
+
+- a third module needs the exemption, at which point the trade a global bump makes is
+  worth re-measuring; or
+- a listed module's code alone, excluding docstrings and comments, nears the limit, at
+  which point it is a split rather than an exemption.
+
 ## More than one LC_ID_DYLIB or LC_SYMTAB is ambiguous, not last-wins
 
 **Accepted. The Mach-O counterpart of ELF's `elf_section_type_ambiguous`, and it
@@ -3579,8 +3619,8 @@ sitting ahead of the real section there too.
 unresolved, rather than silently reporting whichever candidate the walk reached last.
 The two ambiguity flags are named fields on `_ThinHeader` (see "Every dylib-loading
 command reaches `needed`", above, on why that is a named record), and the cause is one
-more paragraph in `binfmt/macho.py`'s docstring (see "`binfmt/macho.py` carries a
-module-local line-count exemption", below).
+more paragraph in `binfmt/macho.py`'s docstring (see "`binfmt/elf.py` and
+`binfmt/macho.py` carry module-local line-count exemptions", above).
 
 **Two more shapes, beyond the reproduction above, the check must reject the same way.**
 A third `LC_ID_DYLIB` is still ambiguous -- the check counts occurrences rather than
@@ -3614,27 +3654,6 @@ tracks.
 Revisit if a real wheel is found whose fat slices honestly disagree about
 `LC_ID_DYLIB` -- the shape above is synthetic, and no disagreement of any kind has been
 found in a real universal2 wheel.
-
-### `binfmt/macho.py` carries a module-local line-count exemption
-
-**Accepted, and it is a narrower exemption than a project-wide bump.** `binfmt/macho.py`'s
-docstring and dataclass growth -- a documentation-heavy `partial_analysis` docstring that
-AGENTS.md's "every policy entry carries a why" rule asks for, not unchecked growth --
-pushes it over pylint's `max-module-lines`. Raising the project-wide limit instead would
-silently give every OTHER module in the project the same extra headroom, whether or not
-it has earned it. A module-local `# pylint: disable=too-many-lines` in `macho.py`
-itself, with the justification comment beside it, keeps `max-module-lines` at pylint's
-own default (1000) in `pyproject.toml`, so the next module's growth does not ride
-through unpoliced by accident. `pe.py` (814 lines) is under the limit without one.
-
-Revisit if a module other than `binfmt/macho.py` needs the same exemption -- at that
-point the pattern is common enough that a project-wide policy (or a documented list of
-exempted modules) is worth the trade a global bump makes, rather than several modules
-each carrying their own disable comment for the same underlying reason. That condition
-is met: `binfmt/elf.py` carries the same module-local disable, on the same grounds (it
-documents every way an attacker-controlled label can win a lookup and every cross-check
-that closes one), and the choice between a project-wide policy and per-module disables
-is open.
 
 ### The error message names which command was ambiguous; the token does not
 

@@ -1,10 +1,12 @@
 # ELF
 
-Three entries about `binfmt/elf.py`. The first covers the widest set of shapes — a
+Four entries about `binfmt/elf.py`. The first covers the widest set of shapes — a
 `.dynamic`/`.dynsym`/`.symtab` lookup has to reject each of them the same way — and the
 pattern behind all of them is worth internalising before reading any: **an
 attacker-controlled label winning a lookup, so the check meant to catch a mismatch never
-runs.**
+runs.** One more decision about this module — its module-local line-count exemption — is
+about tooling policy rather than the reader, and lives under
+[Scanning, caching and layout](tooling.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions).
 
 ## Sections are found by type, not by a name nobody checks
 

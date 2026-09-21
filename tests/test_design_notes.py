@@ -11,12 +11,22 @@ entry of every `docs/design/` page, in page order.
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DESIGN = ROOT / "DESIGN.md"
+
+# The modules allowed a module-local `too-many-lines` disable. DESIGN.md's
+# "`binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions"
+# gives the reason for each; adding a module here means adding its reason there.
+_LINE_LIMIT_EXEMPT = {
+    "src/wheel_crypto_scan/binfmt/elf.py",
+    "src/wheel_crypto_scan/binfmt/macho.py",
+}
+_LINE_LIMIT_DISABLE = re.compile(r"#\s*pylint:\s*disable\s*=[^\n]*\b(?:too-many-lines|C0302)\b")
 
 # Every tracked text file a reader of the design reads: code, tests, the ruleset and
 # schema, and the Markdown. This file is left out because it spells the patterns, and a
@@ -265,6 +275,65 @@ def _index_entries() -> dict[str, list[str]]:
     return entries
 
 
+_NUMBER_WORDS = {
+    "One": 1,
+    "Two": 2,
+    "Three": 3,
+    "Four": 4,
+    "Five": 5,
+    "Six": 6,
+    "Seven": 7,
+    "Eight": 8,
+    "Nine": 9,
+    "Ten": 10,
+}
+_STATED_ENTRY_COUNT = re.compile(r"^(" + "|".join(_NUMBER_WORDS) + r") entr(?:y|ies)\b")
+
+
+def _stated_entry_count(text: str) -> int | None:
+    """A page's opening line sometimes states its entry count as a number word, e.g.
+    "Three entries about `binfmt/elf.py`." A page that phrases it without a leading
+    number word (`policy.md`, `tooling.md`) or as a subset ("The first two entries
+    below") is left alone; this only catches a stated total a heading count can
+    contradict outright."""
+    lines = text.split("\n", 3)
+    if len(lines) < 3 or not lines[0].startswith("# "):
+        return None
+    match = _STATED_ENTRY_COUNT.match(lines[2])
+    return _NUMBER_WORDS[match.group(1)] if match else None
+
+
+def test_the_stated_entry_count_matches_the_page_headings() -> None:
+    """A page's opening line says how many `## ` entries follow; a heading added,
+    removed or merged without updating that sentence leaves a reader trusting a count
+    that no longer matches what is on the page."""
+    pages = _page_entries()
+    mismatches = [
+        f"{page.name}: stated {stated}, has {len(pages[page.name])}"
+        for page in sorted(DESIGN_PAGES.glob("*.md"))
+        if page.name != "index.md"
+        for stated in [_stated_entry_count(page.read_text(encoding="utf-8"))]
+        if stated is not None and stated != len(pages[page.name])
+    ]
+    assert mismatches == []
+
+
+@pytest.mark.parametrize(
+    ("text", "count"),
+    [
+        ("# ELF\n\nThree entries about `binfmt/elf.py`. More text.\n", 3),
+        ("# PE\n\nOne entry about `binfmt/pe.py` here.\n", 1),
+        ("# Policy\n\nEntries about the shape of the data.\n", None),
+        ("# Linkage\n\nThe first two entries below are about X.\n", None),
+        ("# Title\n\nToo few lines", None),
+    ],
+)
+def test_the_stated_entry_count_reader_only_matches_a_leading_number_word(
+    text: str, count: int | None
+) -> None:
+    assert _stated_entry_count(text) == count
+
+
 def test_the_design_index_lists_every_entry_in_page_order() -> None:
     """`docs/design/index.md` is the table of contents for the design pages. An entry
     added to a page without a row is invisible to anyone reading the index, and nothing
@@ -298,3 +367,86 @@ def test_every_design_index_row_sits_under_its_own_section() -> None:
     pairs = _index_row_sections()
     assert pairs, "no design index rows found; the pattern has gone stale"
     assert [(page, section) for page, section in pairs if page != section] == []
+
+
+def test_the_line_limit_exemption_list_names_real_files() -> None:
+    """A stale path in `_LINE_LIMIT_EXEMPT` would make the test below fail on a path
+    that no longer exists, or pass vacuously if the glob it compares against also
+    missed it."""
+    assert _LINE_LIMIT_EXEMPT
+    assert all((ROOT / path).is_file() for path in _LINE_LIMIT_EXEMPT)
+
+
+def test_only_the_listed_modules_exempt_themselves_from_the_line_limit() -> None:
+    """A new module taking the disable without the doc changing, or a listed module
+    dropping it while the doc still claims it, both show up here."""
+    exempted = {
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.glob("src/**/*.py")
+        if _LINE_LIMIT_DISABLE.search(path.read_text(encoding="utf-8"))
+    }
+    assert exempted == _LINE_LIMIT_EXEMPT
+
+
+def _disabled_codes(pylint_tables: list[dict]) -> set[str]:
+    """pylint accepts `disable` as either a TOML list or a single comma-separated
+    string; either encoding names the same codes and must read the same way here."""
+    disabled: set[str] = set()
+    for table in pylint_tables:
+        raw = table.get("disable", [])
+        codes = raw.split(",") if isinstance(raw, str) else raw
+        disabled |= {code.strip() for code in codes}
+    return disabled
+
+
+def test_the_project_wide_line_limit_stays_at_the_default() -> None:
+    """Guards against both shapes of the global bump the design entry rejects: raising
+    `max-module-lines` in any `[tool.pylint.*]` table, not just `[tool.pylint.format]`,
+    and turning the check off everywhere by disabling `too-many-lines`/`C0302` in
+    `messages control` (or any other pylint table's `disable` list)."""
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pylint_tables = [table for table in data["tool"]["pylint"].values() if isinstance(table, dict)]
+    assert not any("max-module-lines" in table for table in pylint_tables)
+    assert not _disabled_codes(pylint_tables) & {"too-many-lines", "C0302"}
+
+
+@pytest.mark.parametrize(
+    ("toml_text", "flagged"),
+    [
+        ('disable = ["too-many-lines"]', True),
+        ('disable = "too-many-lines"', True),
+        ('disable = "unused-import, too-many-lines"', True),
+        ('disable = ["C0302"]', True),
+        ('disable = "C0302"', True),
+        ('disable = ["unused-import"]', False),
+        ('disable = "unused-import"', False),
+    ],
+    ids=[
+        "list-form",
+        "string-form",
+        "string-form-with-other-codes",
+        "list-form-numeric-code",
+        "string-form-numeric-code",
+        "list-form-unrelated",
+        "string-form-unrelated",
+    ],
+)
+def test_the_disable_normaliser_catches_both_toml_forms(toml_text: str, flagged: bool) -> None:
+    """A comma-separated string is as valid a pylint config as a TOML list; the guard
+    above must not walk a string one character at a time and miss it."""
+    table = tomllib.loads(f"[table]\n{toml_text}\n")["table"]
+    assert bool(_disabled_codes([table]) & {"too-many-lines", "C0302"}) is flagged
+
+
+def test_every_exempt_module_is_named_in_the_design_entry() -> None:
+    """The list in the doc and the set in the test must not fall out of step in either
+    direction: a module in `_LINE_LIMIT_EXEMPT` missing from the doc's bullet list, or a
+    bullet naming a module that isn't exempt, both fail here."""
+    text = DESIGN.read_text(encoding="utf-8")
+    heading = "## `binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions"
+    start = text.index(heading)
+    end = re.search(r"\n#{2,3} ", text[start + len(heading) :])
+    entry = text[start : start + len(heading) + (end.start() if end else len(text))]
+    named = {match.group(1) for match in re.finditer(r"^- `([^`]+)`", entry, re.MULTILINE)}
+    exempt = {path.removeprefix("src/wheel_crypto_scan/") for path in _LINE_LIMIT_EXEMPT}
+    assert named == exempt
