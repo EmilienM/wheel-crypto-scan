@@ -33,7 +33,12 @@ def _chrome_binary() -> str | None:
 
 
 def _render_in_browser(
-    tmp_path: Path, page: str, *, fragment: str = "", extra_script: str = ""
+    tmp_path: Path,
+    page: str,
+    *,
+    fragment: str = "",
+    extra_script: str = "",
+    window_size: str = "",
 ) -> str:
     """Render `page` in headless Chrome (or Chromium) and return the DOM it
     produces after load.
@@ -47,6 +52,8 @@ def _render_in_browser(
     both have run before Chrome's load event fires and `--dump-dom` reads the
     page back. `fragment` becomes the URL's `#...` before the page loads, so the
     page's own hash-routing sees it the same way it would a link to one wheel.
+    `window_size` is Chrome's `WIDTH,HEIGHT`, for a test that measures layout;
+    left empty, the page lays out in Chrome's default headless window.
     """
     binary = _chrome_binary()
     if binary is None:
@@ -56,8 +63,9 @@ def _render_in_browser(
     path = tmp_path / "page.html"
     path.write_text(page, encoding="utf-8")
     url = f"file://{path}#{fragment}" if fragment else f"file://{path}"
+    size = [f"--window-size={window_size}"] if window_size else []
     result = subprocess.run(
-        [binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--dump-dom", url],
+        [binary, "--headless=new", "--disable-gpu", "--no-sandbox", *size, "--dump-dom", url],
         capture_output=True,
         text=True,
         timeout=30,
@@ -657,6 +665,115 @@ def test_browser_wheel_tab_shows_artifact_entries_and_generator_raw(tmp_path: Pa
     assert "a/lib.so -&gt; lib.so.1.2.3" in wheel_tab or "a/lib.so -> lib.so.1.2.3" in wheel_tab
     assert "a/sbom.spdx.json" in wheel_tab
     assert "a/_native.so (elf)" in wheel_tab
+
+
+# A token with no break opportunity in it, far wider than the detail panel: the shape
+# a wheel filename, an object path or a matched string takes.
+_UNBREAKABLE = "a" * 400
+
+
+def _detail_layout(tab: str) -> str:
+    """JS that records, as JSON in `document.title`, the open detail panel's layout
+    on `tab`: `panel` and `box` are `[scrollWidth, clientWidth]` of the panel and of
+    the tab's table scroll box (null without a table); `wrap` is the narrowest
+    free-text cell's width and `em` its font size (both null without one)."""
+    return (
+        "var panel = document.getElementById('detail-panel');"
+        f"var tabPanel = document.getElementById('tab-{tab}');"
+        "var box = tabPanel.querySelector('.table-scroll');"
+        "var cells = Array.prototype.slice.call(tabPanel.querySelectorAll('td.wrap'));"
+        "document.title = JSON.stringify({"
+        " panel: [panel.scrollWidth, panel.clientWidth],"
+        " box: box && [box.scrollWidth, box.clientWidth],"
+        " wrap: cells.length ? Math.min.apply(null,"
+        "  cells.map(function (cell) { return cell.offsetWidth; })) : null,"
+        " em: cells.length ? parseFloat(getComputedStyle(cells[0]).fontSize) : null"
+        "});"
+    )
+
+
+def _measure_detail_view(tmp_path: Path, rec: dict, tab: str, window_size: str = "") -> dict:
+    """Open `rec`'s detail view on `tab` and return what `_detail_layout` records.
+    Asserts the panel is showing: a hidden one measures zero everywhere, which would
+    pass every width comparison while checking nothing."""
+    page = render_html([rec], load_ruleset(None))
+    script = (_click_tab(tab) if tab != "findings" else "") + _detail_layout(tab)
+    dom = _render_in_browser(
+        tmp_path, page, fragment="wheel=0", extra_script=script, window_size=window_size
+    )
+    match = re.search(r"<title>([^<]*)</title>", dom)
+    assert match is not None
+    layout = json.loads(match.group(1))
+    assert layout["panel"][1] > 0
+    return layout
+
+
+@pytest.mark.parametrize("tab", _TAB_ORDER)
+def test_browser_detail_view_never_paints_outside_the_panel(tmp_path: Path, tab: str) -> None:
+    """No tab of the detail view draws past the panel's edge, over the dimmed page
+    behind it, whatever length its text runs to. Every free-form field here carries
+    an unbreakable token, including the columns of a table that do not wrap, so
+    wrapping the free-text columns cannot rescue a table: only its own scroll box
+    keeps it within the panel."""
+    rec = html_record("a", "OPAQUE", "none")
+    rec["wheel"]["filename"] = _UNBREAKABLE
+    rec["verdict"]["reasons"] = [_UNBREAKABLE]
+    rec["findings"][0]["subject"] = _UNBREAKABLE
+    rec["findings"][0]["locations"][0]["path"] = _UNBREAKABLE
+    rec["binaries"][0]["path"] = _UNBREAKABLE
+    rec["binaries"][0]["matched_strings"] = [{"group": "go_fips140", "value": _UNBREAKABLE}]
+    rec["artifacts"]["bundled_libs"] = [_UNBREAKABLE]
+    rec["artifacts"]["skipped"] = [{"path": _UNBREAKABLE, "reason": "size_limit_exceeded"}]
+    rec["errors"] = [
+        {
+            "stage": _UNBREAKABLE,
+            "kind": _UNBREAKABLE,
+            "path": _UNBREAKABLE,
+            "message": _UNBREAKABLE,
+        }
+    ]
+
+    scroll_width, client_width = _measure_detail_view(tmp_path, rec, tab)["panel"]
+
+    assert scroll_width <= client_width
+
+
+def _long_free_text_record() -> dict:
+    """A record whose finding location, error path and error message are each one
+    unbreakable token: the columns a wheel filename or an object path lands in."""
+    rec = html_record("a", "OPAQUE", "none")
+    rec["findings"][0]["locations"][0]["path"] = _UNBREAKABLE
+    rec["errors"] = [
+        {
+            "stage": "binary",
+            "kind": "elf_parse_error",
+            "path": _UNBREAKABLE,
+            "message": _UNBREAKABLE,
+        }
+    ]
+    return rec
+
+
+@pytest.mark.parametrize("tab", ["findings", "errors"])
+def test_browser_detail_table_wraps_long_paths_to_fit(tmp_path: Path, tab: str) -> None:
+    """On a desktop-width window, a long location, error path or error message wraps
+    within its cell, so the table fits its box without a horizontal scrollbar."""
+    layout = _measure_detail_view(tmp_path, _long_free_text_record(), tab, window_size="1600,1000")
+
+    assert layout["box"] is not None
+    scroll_width, client_width = layout["box"]
+    assert scroll_width <= client_width
+
+
+@pytest.mark.parametrize("tab", ["findings", "errors"])
+def test_browser_detail_table_keeps_free_text_columns_readable(tmp_path: Path, tab: str) -> None:
+    """On a window too narrow for the table, a free-text column holds its 16em floor
+    and the table scrolls in its box, rather than the column shrinking to a few
+    characters a line."""
+    layout = _measure_detail_view(tmp_path, _long_free_text_record(), tab, window_size="600,1000")
+
+    assert layout["wrap"] is not None
+    assert layout["wrap"] >= 16 * layout["em"]
 
 
 def test_browser_theme_toggle_cycles_without_storage(tmp_path: Path) -> None:
