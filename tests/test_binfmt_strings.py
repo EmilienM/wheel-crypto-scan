@@ -299,3 +299,32 @@ def test_scan_strings_on_empty_input_is_empty_not_an_error() -> None:
     assert found.rust_crates == ()
     assert found.text == ""
     assert found.truncated is False
+
+
+def test_aws_lc_fips_group_needs_a_version_after_fips() -> None:
+    """`AWS-LC FIPS failure caused by:` is compiled from both builds' source, so a bare
+    `AWS-LC FIPS` would match a stock build that happened to keep it, and a digit with
+    nothing else is still too loose: it also matches prose such as `AWS-LC FIPS 140-3
+    validated` and `AWS-LC FIPS 3's legacy provider failed to load`, neither of which
+    names a build. The group mirrors `openssl_banner` and requires a dot after the digit
+    for the same reason. No AWS-LC FIPS release has shipped a two-digit major -- the
+    measured build is 4.2.0 -- so the dot costs nothing today; every leading digit is
+    still listed the same way `openssl_banner`'s are, which is what lets
+    `test_every_version_anchored_group_names_every_major` police this group too.
+    """
+    group = next(g for g in PATTERNS.string_groups if g.name == "aws_lc_fips")
+    extracted = ExtractedStrings(
+        text="\n".join(
+            (
+                "AWS-LC FIPS 4.2.0",
+                "AWS-LC FIPS failure caused by:",
+                "AWS-LC FIPS 140-3 validated",
+                "AWS-LC FIPS 3's legacy provider failed to load",
+                "AWS-LC 5.9.0",
+            )
+        ),
+        truncated=False,
+    )
+    matches, truncated = match_string_groups(extracted, (group,), max_matches=64)
+    assert truncated is False
+    assert {m.value for m in matches} == {"AWS-LC FIPS 4.2.0"}

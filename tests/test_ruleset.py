@@ -123,7 +123,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "27"
+    assert ruleset.version == "28"
     assert len(ruleset.rules) > 20
 
 
@@ -569,11 +569,14 @@ def test_suppressed_by_on_a_python_module_entry_is_rejected() -> None:
         parse_ruleset(data)
 
 
-def test_aws_lc_rs_suppressed_by_resolves_to_the_fips_sys_finding_key() -> None:
-    ruleset = load_ruleset()
-    assert ruleset.rust_crates["aws-lc-rs"].suppressed_by == (
-        ("BIN_RUST_CRYPTO_CRATE", "aws-lc-fips-sys"),
-    )
+def test_a_crate_entry_suppressed_by_resolves_to_the_owning_rule_and_crate_name() -> None:
+    """The entry-level feature `BIN_AWS_LC_RS_CRATE`/`BIN_AWS_LC_FIPS` no longer needs:
+    both crates are owned by their own dedicated rule, so the rule-level relation
+    between those two rules covers it. Pinned here against a minimal fixture instead."""
+    data = rust_crate_ruleset()
+    data["rust_crate"][0]["suppressed_by"] = ["boring"]
+    ruleset = parse_ruleset(data)
+    assert ruleset.rust_crates["ring"].suppressed_by == (("BIN_RUST_CRYPTO_CRATE", "boring"),)
 
 
 def test_a_library_naming_a_crate_the_crate_table_lacks_is_rejected() -> None:

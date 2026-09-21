@@ -5468,3 +5468,111 @@ real wheel shows aws-lc-rs beside aws-lc-fips-sys with no cargo path for the FIP
 (which would mean the FIPS build's own evidence cannot be trusted to survive its
 suppressor's absence), or a real SBOM-only wheel shows the aws-lc-rs/aws-lc-fips-sys
 over-flag above and the noise is worth the second key.
+
+## An AWS-LC FIPS build is told from a stock one by its symbol prefix, not its name
+
+**Accepted.**
+
+`aws_lc` matches `AWS-LC` and `aws-lc` in read-only data, and lowercase `aws-lc` also
+matches any cargo source path containing it, including both `aws-lc-fips-sys` and
+`aws-lc-rs`. `BIN_AWS_LC` has no way to tell the validated build from the stock one, so a
+FIPS build reads `NON_APPROVED_CRYPTO` with nothing to suppress it, the same shape the Go
+FIPS entry above found in Go's own stock crypto rule.
+
+**Measured rather than reasoned**, building one program two ways on linux/x86_64: a small
+Rust program calling `digest::SHA256` through `aws-lc-rs` 1.18.1, once with
+default-features off and feature `aws-lc-sys` (pulling `aws-lc-sys` 0.45.0), once with
+feature `fips` (pulling `aws-lc-fips-sys` 0.14.2, AWS-LC FIPS 4.2.0). Each was scanned
+stripped and unstripped, packaged as a manylinux wheel.
+
+| | stock | FIPS |
+|---|---|---|
+| `AWS-LC FIPS 4.2.0` (version string) | absent | 1, in `.text` |
+| `AWS-LC FIPS failure caused by:` | in the source of both builds | 1, in `.text` |
+| `aws_lc_fips_0_14_2_*` names in `.symtab` | 0 | 2118 (local definitions) |
+| `aws_lc_0_45_0_*` names in `.symtab` | 27 | 0 |
+| `BORINGSSL_bcm_text_hash`, `BORINGSSL_integrity_test` | absent | present |
+| cargo path `aws-lc-fips-sys` / `aws-lc-sys` | absent | absent |
+| cargo path `aws-lc-rs-1.18.1` | present | present |
+| `/aws-lc/crypto/*.c` paths in `.rodata` | present | present |
+
+Four things follow from that table.
+
+**The string group cannot reach ELF.** AWS-LC's FIPS build moves the module's constants
+into its own `.text` so the integrity hash covers them, and `_collect_string_bytes` reads
+only allocated, non-executable sections, on purpose. Mach-O, PE and the fallback reader
+read a bounded prefix of the whole object instead, so the group is kept for them; on ELF
+it carries nothing.
+
+**What separates the builds on ELF is the symbol prefix `aws-lc-fips-sys` applies:
+`aws_lc_fips_<major>_<minor>_<patch>_`, where the stock build uses
+`aws_lc_<major>_<minor>_<patch>_`.** These are local definitions in `.symtab`, which the
+ELF reader already reads when `.dynsym` is present. A stripped object loses them, and
+then nothing outside `.text` separates the two builds; it reads `NON_APPROVED_CRYPTO`,
+which is the over-flag direction this tool errs in. Stripping removes `.symtab` and
+`.strtab` outright, so there is no local name left to read; that evidence is gone, not
+missing a reader.
+
+**A bare `AWS-LC FIPS` substring would be wrong**, because `AWS-LC FIPS failure caused
+by:` is compiled from both builds' source -- the measured stock build's linker drops the
+failure message entirely, but a stock build that kept it would carry it outside `.text`,
+where this group would still see it -- and a version digit with nothing else is
+still too loose: it also matches prose such as `AWS-LC FIPS 140-3 validated` and
+`AWS-LC FIPS 3's legacy provider failed to load`, neither of which names a build. The
+group mirrors `openssl_banner` and requires a dot after the digit for the same reason.
+No AWS-LC FIPS release has shipped a two-digit major: `gh api
+repos/aws/aws-lc/git/matching-refs/tags/AWS-LC-FIPS` lists 1.x, 2.0.x and 3.0.0 through
+3.3.0, and the measured build here is 4.2.0. The dot costs nothing today; if a
+two-digit major ever ships, this group needs a further, undotted entry for it, listed in
+"Revisit if" below.
+
+**Suppressing `BIN_AWS_LC` alone does not move the headline**, because the `aws-lc-rs`
+crate finding is always present too on a real build, owned by the default
+`BIN_RUST_CRYPTO_CRATE` rule alongside every other crate suppression cannot reach. It
+needs a rule of its own, `BIN_AWS_LC_RS_CRATE`, so `BIN_AWS_LC_FIPS` can suppress it:
+measured on aws-lc-rs 1.18.1, a FIPS build carries the `aws-lc-rs` cargo path and no
+`aws-lc-fips-sys` path, so without this a validated build reads as non-approved through
+the crate alone. `aws-lc-sys` stays on the default rule and is not suppressed: it
+names the stock build, so a wheel carrying both crates still reads `NON_APPROVED_CRYPTO`.
+
+**BoringCrypto's names are not used.** BoringCrypto's FIPS module and AWS-LC's share
+`BORINGSSL_bcm_*` and `BORINGSSL_integrity_test`, so listing them would label a BoringSSL
+FIPS object as AWS-LC.
+
+**What it costs.** `CONDITIONAL`, never a pass: the validated module is compiled in, but
+it is a bundled static copy rather than the system provider, and which certificate covers
+the compiled version is not something the wheel states. Suppression is per object (above):
+a wheel shipping one FIPS object and one stock AWS-LC object keeps `NON_APPROVED_CRYPTO`
+in `classes` for the stock object's own finding, with the condition reported alongside it
+for the FIPS object rather than in place of it. A stripped ELF
+FIPS object still reads `NON_APPROVED_CRYPTO` for the reason above; an unstripped one
+keeps `NON_APPROVED_CRYPTO` in `classes` too, and not for an unrelated reason:
+`curve25519_x25519` (`BIN_CURVE25519`) and `md5_final` (`BIN_OWN_WEAK_HASH_IMPL`) are
+primitives the object defines, not evidence that happens to sit near the FIPS module.
+AWS-LC's FIPS module links as one monolithic `bcm` object, so every algorithm it
+implements ships with it; the stock build's `gc-sections` drops the ones nothing calls.
+Measured with `nm` on the same aws-lc-rs 1.18.1 build: `curve25519_x25519` (s2n-bignum)
+and `md5_final` sit right next to `aws_lc_fips_0_14_2_MD5_Final` in the unstripped FIPS
+object, and neither symbol appears at all in the stock one. Neither is suppressed by
+`BIN_AWS_LC_FIPS`, and neither should be: README defines `NON_APPROVED_CRYPTO` as
+implementing or bundling a non-approved primitive, and these are exactly that.
+Suppressing them because a FIPS module is also present in the object would decide the
+object is fine on balance, which is the verdict-making call the taxonomy leaves to a
+human. So on every real ELF build measured so far -- FIPS or stock, stripped or not --
+`NON_APPROVED_CRYPTO` is the correct class for what the object compiles in.
+`CONDITIONAL` is reached whenever the FIPS build is identified -- by the symbol prefix,
+the cargo path, or (on a whole-object reader) the version string -- and the object
+defines no non-approved primitive of its own; `BIN_AWS_LC_FIPS` replaces `BIN_AWS_LC` and
+`BIN_AWS_LC_RS_CRATE` among the findings behind `NON_APPROVED_CRYPTO` either way, naming
+the FIPS condition alongside whatever primitives keep the class, rather than in place of
+them. No real build measured here reaches `CONDITIONAL` alone, because every one keeps at
+least one non-approved primitive; the narrower shape is exercised only by synthetic
+fixtures, such as `test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix`'s.
+
+No reader changed, so `ANALYZER_VERSION` does not move; `ruleset_version` does, since new
+groups and rule ids change what a record carries.
+
+**Revisit if** the ELF strings pass ever reads executable sections; a C build of AWS-LC
+FIPS (unprefixed) shows up in a wheel, since its FIPS-only symbols are the BoringCrypto
+names this group deliberately excludes; or AWS-LC FIPS ships a two-digit major, which
+this group's dot-anchored digits do not cover.
