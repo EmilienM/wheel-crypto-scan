@@ -1,27 +1,45 @@
-"""Rust crate inference from embedded cargo registry paths.
+"""Rust crate inference from embedded cargo source paths.
 
 A Rust object carries the source path of every crate it was built from, usually
 because a panic location or an `assert!` message embeds it. That makes this a
 medium-confidence signal by nature: a crate that never contributed such a string is
 invisible here, but a crate that shows up is unambiguous about being compiled in.
+
+The path comes from whichever layout built the object: the cargo registry (with or
+without the `src/<index>/` segment distro packaging omits), or a `cargo vendor` tree.
+A layout that names no version, such as `cargo vendor` without `--versioned-dirs`,
+yields a crate with `version=None` rather than an invented one.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from ..evidence import RustCrate
 from ..caps import cap
 
 
 def find_rust_crates(
-    text: str, pattern: re.Pattern[str], max_crates: int, *, claimed: frozenset[str]
+    text: str,
+    patterns: Sequence[re.Pattern[str]],
+    max_crates: int,
+    *,
+    claimed: frozenset[str],
 ) -> tuple[tuple[RustCrate, ...], bool]:
-    """Extract every distinct (name, version) pair `pattern` finds in `text`.
+    """Extract every distinct (name, version) pair any pattern in `patterns` finds.
 
-    `pattern` must have `name` and `version` groups (`BinaryPatterns.cargo_path_regex`
-    guarantees this). Deduplication happens before sorting and the cap is applied
-    after, so which crates survive truncation never depends on scan order.
+    `text` must be `binfmt.strings.RUN_SEPARATOR`-joined runs, and every pattern in
+    `patterns` must not match across that separator: the caller (`strings.py`) relies
+    on this the same way `match_string_groups` does, to keep a hit inside one printable
+    run rather than splicing two unrelated ones together.
+
+    Each pattern must have `name` and `version` groups (`ruleset_loader` guarantees
+    this for every cargo convention). `version` is `None` when a pattern's `version`
+    group did not participate in the match, which is how a layout that carries no
+    version is told apart from one that does. Deduplication happens before sorting and
+    the cap is applied after, so which crates survive truncation never depends on scan
+    order or on which pattern found a given crate first.
 
     `claimed` is the crate names the ruleset has an entry for, and `caps` keeps
     one version of each ahead of everything else. Required rather than defaulted: a
@@ -42,6 +60,7 @@ def find_rust_crates(
     """
     crates = {
         RustCrate(name=match.group("name"), version=match.group("version"))
+        for pattern in patterns
         for match in pattern.finditer(text)
     }
     return cap(crates, max_crates, pin=lambda crate: crate.name in claimed)

@@ -45,6 +45,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
                 r"^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<decoration>[A-Za-z0-9_]+))?$"
             ),
             "cargo_path_regex": r"cargo/registry/src/[^/]+/(?P<name>[a-z-]+)-(?P<version>[0-9.]+)/",
+            "cargo_vendor_path_regex": r"vendor/(?P<name>[a-z-]+)(?:-(?P<version>[0-9.]+))?/",
             "weak_hash_algorithms": ["md5", "sha1"],
             "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
             "windows_library_suffixes": [".dll", ".pyd"],
@@ -123,7 +124,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "28"
+    assert ruleset.version == "29"
     assert len(ruleset.rules) > 20
 
 
@@ -947,6 +948,45 @@ def test_cargo_path_regex_extracts_crate_and_version() -> None:
     )
     assert match is not None
     assert (match.group("name"), match.group("version")) == ("ring", "0.17.8")
+
+
+def test_cargo_path_regex_extracts_crate_and_version_from_a_distro_layout() -> None:
+    """The shipped pattern's `src/<index>/` segment is optional; this loader-parsed
+    minimal one keeps it mandatory, so this exercises the shipped ruleset directly."""
+    patterns = load_ruleset().compile_patterns().binary
+    match = patterns.cargo_path_regex.search(
+        "/usr/share/cargo/registry/openssl-0.10.81/src/ssl/mod.rs"
+    )
+    assert match is not None
+    assert (match.group("name"), match.group("version")) == ("openssl", "0.10.81")
+
+
+def test_cargo_vendor_path_regex_is_compiled_and_exposed() -> None:
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
+    match = patterns.cargo_vendor_path_regex.search("vendor/openssl-sys/src/lib.rs")
+    assert match is not None
+    assert match.group("name") == "openssl-sys"
+
+
+def test_cargo_path_regex_without_a_version_group_is_refused() -> None:
+    data = minimal()
+    data["conventions"]["cargo_path_regex"] = r"cargo/registry/(?P<name>[a-z-]+)/"
+    with pytest.raises(RulesetError, match="needs a 'version' group"):
+        parse_ruleset(data)
+
+
+def test_cargo_vendor_path_regex_without_a_version_group_is_refused() -> None:
+    data = minimal()
+    data["conventions"]["cargo_vendor_path_regex"] = r"vendor/(?P<name>[a-z-]+)/"
+    with pytest.raises(RulesetError, match="needs a 'version' group"):
+        parse_ruleset(data)
+
+
+def test_cargo_vendor_path_regex_without_a_name_group_is_refused() -> None:
+    data = minimal()
+    data["conventions"]["cargo_vendor_path_regex"] = r"vendor/(?P<version>[0-9.]+)/"
+    with pytest.raises(RulesetError, match="needs a 'name' group"):
+        parse_ruleset(data)
 
 
 def test_python_module_names_are_available_to_the_ast_scanner() -> None:

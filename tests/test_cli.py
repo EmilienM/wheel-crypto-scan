@@ -13,7 +13,7 @@ import pytest
 from helpers.binfmt import DynSym, ElfBuilder, MachOBuilder, MachOSym, PEBuilder, PEImport
 from helpers.wheelbuilder import build_wheel
 
-from wheel_crypto_scan import TOOL_NAME, cli, scan
+from wheel_crypto_scan import SCHEMA_VERSION, TOOL_NAME, cli, scan
 from wheel_crypto_scan.binfmt import elf, macho, pe
 from wheel_crypto_scan.cache import RecordCache
 from wheel_crypto_scan.cli import main
@@ -834,7 +834,7 @@ def test_rules_json_lists_every_rule(capsys: pytest.CaptureFixture[str]) -> None
 def test_schema_prints_valid_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["schema"]) == 0
     schema = json.loads(capsys.readouterr().out)
-    assert schema["properties"]["schema_version"]["const"] == 1
+    assert schema["properties"]["schema_version"]["const"] == SCHEMA_VERSION
 
 
 def test_the_schema_matches_what_the_scanner_actually_emits(

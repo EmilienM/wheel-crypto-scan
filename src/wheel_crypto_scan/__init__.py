@@ -18,11 +18,11 @@ except PackageNotFoundError:  # running from a source tree that was never instal
 
 # Breaking changes to the output contract only. Adding optional keys or new rule ids
 # does not bump this; removing or retyping a field does. See SCHEMA.md.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Bumped whenever extraction behaviour changes such that an unchanged wheel would
 # produce a different record. Part of the cache key, so a reader fix can never serve
 # a stale cached record.
-ANALYZER_VERSION = 47
+ANALYZER_VERSION = 48
 
 __all__ = ["ANALYZER_VERSION", "SCHEMA_VERSION", "TOOL_NAME", "__version__"]

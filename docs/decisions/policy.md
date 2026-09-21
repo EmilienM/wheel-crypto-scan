@@ -65,6 +65,49 @@ refused at load time.
 count of cases. A capability earns itself when the enumeration cannot express the match,
 not when the list is long.
 
+## Crates are read from every cargo source layout, and a vendored crate has no version
+
+**Fixed.**
+
+Crates are read from three cargo source layouts: the crates.io registry layout `cargo
+build` uses straight from a checkout, `cargo/registry/src/<index>/<name>-<version>/`;
+distro packaging, where Fedora's RPM Rust macros lay a crate out at
+`/usr/share/cargo/registry/<name>-<version>/` with no `src/<index>/` segment; and
+`cargo vendor` — what fromager configures for an offline build — which writes
+`vendor/<name>/...` with no `cargo/registry` segment and, without `--versioned-dirs`, no
+version anywhere in the path. Measured on a Fedora `python3-cryptography` build: the
+object yields 14 crates, including `openssl` and `openssl-sys`.
+
+The `src/<index>/` segment in `cargo_path_regex` becomes optional. The vendor layout
+gets its own convention, `cargo_vendor_path_regex`, rather than a branch of the same
+pattern — Python's `re` refuses two groups sharing a name in one alternation — and it
+must contain `.rs` past the crate directory (no terminator required, since a Rust panic
+location is not NUL-terminated), which keeps a vendored C or Go tree from being
+misread as a Rust crate in the common case, without a word-boundary guarantee.
+Every repetition in it is bounded (crate name at 64 characters, path segments at 255,
+nesting at 16 levels): an unbounded version of the same pattern measured about 40
+seconds at 20,000 repetitions of a near-miss input, against well under a second bounded.
+The name class also excludes `.`, which no crates.io crate name can contain: that is what
+makes `vendor/gimli-0.32.3/` split uniquely into name `gimli` and version `0.32.3` rather
+than one long name, regardless of whether the name group is lazy or greedy. Allowing `.`
+let the name group and the version group's leading digits split a run of digits and dots
+several ways, which cost 3.7 seconds per MiB against 0.4 without it.
+
+`RustCrate.version` becomes `str | None`: a layout that names no version records `null`,
+never an invented one. Widening a required field's type is a `schema_version` bump under
+this repo's own versioning table, so it goes 1 to 2.
+
+**What it costs.** A build whose cargo paths use a layout still unrecognised, such as a
+git dependency checkout, still carries no crate. A crate that contributes no panic
+location or `assert!` message anywhere in the object stays invisible regardless of
+layout, as before. No fromager-built wheel has been measured yet, only a cdylib built
+the way fromager configures cargo. The vendor pattern always anchors on the first
+`vendor/` path component: a build tree that itself sits inside a directory named
+`vendor` collapses every crate nested inside it into one crate named after that outer
+component, losing the real, possibly claimed, names underneath.
+
+Full argument, with the measurements: [`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#crates-are-read-from-every-cargo-source-layout-and-a-vendored-crate-has-no-version).
+
 ## A Go FIPS build is told from a stock one by its build settings
 
 **Accepted.**

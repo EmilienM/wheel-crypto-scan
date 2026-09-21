@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+from importlib.resources import files
 
 import pytest
 
@@ -436,6 +438,27 @@ def test_the_standard_level_includes_binary_evidence(ruleset) -> None:
     binary = record["binaries"][0]
     assert binary["matched_symbols"][0]["binding"] == "defined"
     assert binary["rust_crates"] == [{"name": "ring", "version": "0.17.8"}]
+
+
+def test_a_rust_crate_with_no_version_serialises_to_a_json_null(ruleset) -> None:
+    """`cargo vendor` without `--versioned-dirs` names no version, and the schema's
+    `rust_crates[].version` type list carries `null` for exactly this case."""
+    evidence = bundled_cryptography()
+    binary_evidence = dataclasses.replace(
+        evidence.binaries[0], rust_crates=(RustCrate("openssl-sys", None),)
+    )
+    evidence = dataclasses.replace(evidence, binaries=(binary_evidence,))
+    record = record_for(ruleset, evidence, evidence_level="standard")
+    binary = record["binaries"][0]
+    assert binary["rust_crates"] == [{"name": "openssl-sys", "version": None}]
+
+    schema = json.loads(
+        (files("wheel_crypto_scan") / "data" / "schema.json").read_text(encoding="utf-8")
+    )
+    version_types = schema["properties"]["binaries"]["items"]["properties"]["rust_crates"]["items"][
+        "properties"
+    ]["version"]["type"]
+    assert "null" in version_types
 
 
 def test_the_minimal_level_drops_the_bulky_evidence_but_keeps_the_shape(ruleset) -> None:

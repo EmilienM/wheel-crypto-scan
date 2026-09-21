@@ -566,6 +566,19 @@ def test_two_wheel_scoped_rules_of_different_kinds_never_share_a_path_either() -
     assert {"DIST_NON_APPROVED_CRYPTO", "DIST_DEPENDS_ON_CRYPTO"} <= findings
 
 
+def test_a_versionless_rust_crate_has_no_trailing_space_or_none_in_its_evidence(
+    ruleset,
+) -> None:
+    """`cargo vendor` without `--versioned-dirs` names no version. The evidence text
+    must read `cargo path for ring`, not `cargo path for ring None` and not
+    `cargo path for ring ` with a dangling space."""
+    evidence = wheel(
+        binaries=(binary("demo/_rust.abi3.so", rust_crates=(RustCrate("ring", None),)),)
+    )
+    finding = one(run(ruleset, evidence), "BIN_RUST_CRYPTO_CRATE")
+    assert finding.locations[0].evidence == "cargo path for ring"
+
+
 def test_an_openssl_crate_alone_is_unresolved_linkage_beside_its_crate_finding(ruleset) -> None:
     """The record for the object `test_linkage` pins as `unknown`: the crate finding, and
     the rule saying OpenSSL is used and its provider could not be resolved."""

@@ -328,13 +328,19 @@ class StringMatch:
 
 @dataclass(frozen=True, slots=True)
 class RustCrate:
-    """A crate inferred from an embedded cargo registry path."""
+    """A crate inferred from an embedded cargo source path.
+
+    `version` is `None` when the layout the object was built from names none, such as
+    `cargo vendor` without versioned directories.
+    """
 
     name: str
-    version: str
+    version: str | None
 
     def sort_key(self) -> tuple[str, str]:
-        return (self.name, self.version)
+        # No pattern can produce "": a version needs digits. So this and a real
+        # missing version never tie, the same way `SbomComponent.sort_key` relies on.
+        return (self.name, self.version or "")
 
     def cap_key(self) -> str:
         """The name is what `[[rust_crate]]` matches; the version is detail."""

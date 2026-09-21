@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "28"
+ruleset_version = "29"
 
 
 # ---------------------------------------------------------------------------
@@ -123,8 +123,45 @@ go_fips140_group = "go_fips140"
 # separators, because the path is spelled the way the machine that built the wheel
 # spells one: cryptography 50.0.1's win_amd64 .pyd carries 153 `cargo\registry` paths
 # and no `cargo/registry` path, so a forward-slash-only pattern read every Rust wheel
-# built on Windows as carrying no crates at all.
-cargo_path_regex = '''cargo[/\\]registry[/\\]src[/\\][^/\\\x00"']+[/\\](?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)[/\\]'''
+# built on Windows as carrying no crates at all. The `src/<index>/` segment is
+# optional because distro packaging (Fedora's `/usr/share/cargo/registry/<name>-
+# <version>/`, laid out by the RPM Rust macros) has none.
+cargo_path_regex = '''cargo[/\\]registry[/\\](?:src[/\\][^/\\\x00"']+[/\\])?(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)[/\\]'''
+
+# `cargo vendor` (what fromager uses to build offline) writes `vendor/<name>/...` with
+# no `cargo/registry` segment at all and, without `--versioned-dirs`, no version either,
+# so it needs its own pattern rather than an alternative branch of the one above: Python
+# `re` refuses two groups with the same name in one pattern. The version group is
+# optional for the same reason, and a crate read through this convention records a null
+# version rather than an invented one. The path must contain `.rs` past the crate
+# directory, with no terminator required after it (Rust panic locations are not
+# NUL-terminated the way a C string literal would be): C and Go projects vendor trees
+# too (`vendor/openssl/crypto/evp/evp_enc.c`, `vendor/golang.org/x/crypto/...go`), and
+# without that anchor a vendored C OpenSSL would be misread as the Rust crate named
+# `openssl`. Because the match has no terminator, a `.rst`/`.rsp` file, or a `.rs`
+# elsewhere in the same printable run, still matches; that is a known gap, not a
+# guarantee this anchor makes. The pattern always anchors on the first `vendor/`
+# component it finds, so a build tree that itself sits inside a directory named
+# `vendor` collapses every crate nested inside it into one crate named after that
+# outer component; that is a known gap too, documented in DECISIONS.md rather than
+# fixed, since fixing it would need the pattern to fail past a nested `vendor/`
+# rather than consume through it.
+# `vendor/gimli-0.32.3/` -- cargo's own `--versioned-dirs` layout, and how rustc vendors
+# its own dependencies -- reads as `gimli` version `0.32.3` rather than as a crate
+# literally named `gimli-0.32.3` with no version, because the name class excludes `.`:
+# a crates.io name can never contain one, a version always opens with a digit run
+# followed by `.`, and with `.` unavailable to the name the version's leading `-` is
+# necessarily the last `-` before the first `.`. The split is therefore unique, and the
+# name group being lazy (like the registry pattern's) neither helps nor hurts it.
+# Allowing `.` in the name gives the two groups' leading digits more ways to split the
+# same text, and that ambiguity is what made a run of digit-and-dot near-misses cost
+# 3.7s per MiB instead of 0.4s. Every repetition is bounded (crate names cap at 64
+# characters on crates.io, path segments at 255, nesting at 16 levels) so the pass over
+# a multi-megabyte string table stays linear instead of quadratic, and every negated
+# class excludes `\n`, the run separator `binfmt.strings.RUN_SEPARATOR` joins printable
+# runs with, so a match can never bridge two runs that never sat next to each other in
+# the object.
+cargo_vendor_path_regex = '''(?<![A-Za-z0-9_.-])vendor[/\\](?P<name>[A-Za-z0-9_][A-Za-z0-9_-]{0,63}?)(?:-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]{0,63}))?[/\\](?:[^/\\\x00"'\n]{1,255}[/\\]){0,16}?[^/\\\x00"'\n]{0,255}?\.rs'''
 
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
 # usedforsecurity=False.

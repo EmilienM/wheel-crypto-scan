@@ -433,6 +433,72 @@ def test_cargo_paths_are_read_whichever_separator_built_the_wheel(
     assert crates == ["ring"]
 
 
+@pytest.mark.parametrize(
+    ("rodata", "expected_version"),
+    [
+        pytest.param(
+            b"\x00/usr/share/cargo/registry/openssl-sys-0.9.117/src/lib.rs\x00",
+            "0.9.117",
+            id="distro-registry-layout",
+        ),
+        pytest.param(
+            b"\x00/build/pkg/vendor/openssl-sys/src/lib.rs\x00",
+            None,
+            id="cargo-vendor-layout",
+        ),
+    ],
+)
+def test_a_crate_from_every_recognised_cargo_layout_produces_a_finding(
+    context, tmp_path: Path, rodata: bytes, expected_version: str | None
+) -> None:
+    """Distro packaging (Fedora's RPM Rust macros) and `cargo vendor` without
+    `--versioned-dirs` -- what fromager configures -- both embed a cargo source path
+    with no `cargo/registry/src/<index>/` segment. Both must yield the crate and its
+    finding."""
+    wheel = build_wheel(
+        tmp_path / f"cargolayout-1.0-{MANYLINUX}.whl",
+        name="cargolayout",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "cargolayout/_rust.abi3.so": ElfBuilder(needed=("libc.so.6",), rodata=rodata).build()
+        },
+    )
+    record = scan_wheel(wheel, context)
+    crates = [crate for binary in record["binaries"] for crate in binary["rust_crates"]]
+    assert crates == [{"name": "openssl-sys", "version": expected_version}]
+    assert any(f["rule_id"] == "BIN_RUST_CRYPTO_CRATE" for f in record["findings"])
+
+
+def test_a_vendored_aws_lc_fips_sys_path_with_no_version_reads_conditional(
+    context, tmp_path: Path
+) -> None:
+    """A fromager-style `cargo vendor` build carries no version in its crate paths.
+    The FIPS build of AWS-LC must still be recognised and routed to its own verdict
+    even though the version the layout would normally carry is missing."""
+    wheel = build_wheel(
+        tmp_path / f"awslcfips-1.0-{MANYLINUX}.whl",
+        name="awslcfips",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcfips/_rust.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                rodata=b"\x00/build/pkg/vendor/aws-lc-fips-sys/src/lib.rs\x00",
+            ).build()
+        },
+    )
+    record = scan_wheel(wheel, context)
+    crates = [crate for binary in record["binaries"] for crate in binary["rust_crates"]]
+    assert crates == [{"name": "aws-lc-fips-sys", "version": None}]
+    finding = next(
+        f
+        for f in record["findings"]
+        if f["rule_id"] == "BIN_AWS_LC_FIPS" and f["subject"] == "aws-lc-fips-sys"
+    )
+    assert finding["verdict"] == "CONDITIONAL"
+
+
 # --- a Go binary built against the FIPS module is not "stock Go crypto" ------
 
 
