@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "22"
+ruleset_version = "23"
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +373,13 @@ sonames = ["libcrypto", "libssl", "libeay32", "ssleay32"]
 # into an extension, where there is no library file and no dependency to find.
 symbol_group = "openssl"
 string_group = "openssl_banner"
+# A Rust crate that binds OpenSSL says the object uses it, not which copy: openssl-sys
+# links the host's or vendors its own on a build feature the object does not record,
+# and OPENSSL_NO_VENDOR sends even a `vendored` build back to the host's. So a listed
+# crate on an object with no other OpenSSL evidence reads `unknown`, the same as
+# imported symbols with no declared provider, and never a definite posture. Each name
+# must also be a [[rust_crate]] entry, which is what keeps it past the crate cap.
+crates = ["openssl", "openssl-sys", "openssl-src"]
 # Always reported, even when nothing matched: component teams filter on this field.
 always_report = true
 verdict = "CONDITIONAL"
@@ -682,13 +689,13 @@ name = "openssl-src"
 verdict = "CONDITIONAL"
 severity = "high"
 needs_human_review = true
-why = "The crate openssl-sys pulls in for its `vendored` feature, which builds OpenSSL from source. Listed as reach rather than as an observation: its Rust code runs in a build script and is not linked into the artifact, so it leaves no panic location, and neither cryptography 50.0.1 wheel measured (manylinux or win_amd64) carries the path. Read it as a hint to a human, not as a posture: a crate name cannot move openssl_linkage, which is resolved from libraries, symbols and strings alone, so a wheel whose only OpenSSL evidence is this name still reports linkage none. Its absence says nothing either, so it is not the fallback for a stripped banner."
+why = "The crate openssl-sys pulls in for its `vendored` feature, which builds OpenSSL from source. Listed as reach rather than as an observation: its Rust code runs in a build script and is not linked into the artifact, so it leaves no panic location, and neither cryptography 50.0.1 wheel measured (manylinux or win_amd64) carries the path. Read it as a hint to a human, not as a posture: an object whose only OpenSSL evidence is this name makes openssl_linkage unknown, not static, unless another object in the wheel answers, because a crate name never asserts which copy was linked. Its absence says nothing either, so it is not the fallback for a stripped banner."
 
 [[rust_crate]]
 name = "openssl-sys"
 verdict = "CONDITIONAL"
 severity = "medium"
-why = "Rust bindings to OpenSSL. The crate can link the system libcrypto or vendor its own, so read the binary linkage evidence in the same record to see which happened."
+why = "Rust bindings to OpenSSL. The crate can link the system libcrypto or vendor its own, so read the binary linkage evidence in the same record to see which happened. With no other OpenSSL evidence in the object, it makes openssl_linkage unknown unless another object in the wheel answers."
 
 [[rust_crate]]
 name = "openssl"

@@ -370,9 +370,11 @@ def test_a_vendored_openssl_crate_path_is_not_reported_as_clean(context, tmp_pat
     """`openssl-src` is what `openssl-sys`'s vendored feature builds OpenSSL with.
 
     An extension that went that way carries no libcrypto dependency and no vendor
-    directory, so the crate path is the one place the build states the posture rather
-    than leaving it to be inferred from a banner that a stripped build may not carry.
-    It was missing from [[rust_crate]] (#123), found while fixing the banner list.
+    directory, and a stripped build may not carry the banner either, so the crate path
+    can be all that is left. It names the crate, not the posture: `openssl-sys` links
+    the host's OpenSSL under `OPENSSL_NO_VENDOR` even with the feature on, so the
+    object reads `unknown` rather than `static`. It was missing from [[rust_crate]]
+    (#123), found while fixing the banner list.
     """
     cargo_path = b"/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openssl-src-300.5.2/"
     wheel = build_wheel(
@@ -396,7 +398,9 @@ def test_a_vendored_openssl_crate_path_is_not_reported_as_clean(context, tmp_pat
         if f["rule_id"] == "BIN_RUST_CRYPTO_CRATE" and f["subject"] == "openssl-src"
     )
     assert finding["verdict"] == "CONDITIONAL"
-    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "unknown"
+    assert "OPAQUE" in record["verdict"]["classes"]
 
 
 @pytest.mark.parametrize("sep", ["/", "\\"])

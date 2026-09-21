@@ -523,12 +523,18 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             group["name"] for group in data["string_group"]
         }:
             raise RulesetError(f"{where}: unknown string group {string_group!r}")
+        _check_string_sequence(entry.get("crates", []), "crates", where)
+        library_crates = tuple(str(crate) for crate in entry.get("crates", ()))
+        for crate in library_crates:
+            if crate not in {rust_crate["name"] for rust_crate in data["rust_crate"]}:
+                raise RulesetError(f"{where}: crate {crate!r} is not a [[rust_crate]] entry")
         libraries[name] = CryptoLibrary(
             name=name,
             sonames=tuple(_require(entry, "sonames", where)),
             rule=_entry_rule(entry, "crypto_library", by_id, where),
             symbol_group=None if symbol_group is None else str(symbol_group),
             string_group=None if string_group is None else str(string_group),
+            crates=library_crates,
             always_report=bool(entry.get("always_report", False)),
             **_entry_overrides(entry, classes, where),
         )

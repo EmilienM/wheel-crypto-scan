@@ -52,8 +52,8 @@ Windows, including `rustls` and `aws-lc-rs`, while all 18 Linux records stay ide
 the world, so this list is incomplete by construction rather than stale by neglect, and
 adding to it buys reach rather than closing a hole. `openssl-src` carries its own limit
 in its `why`: its code runs in a build script and is not linked into the artifact, so
-nobody has observed the path in a shipped wheel, and a crate name cannot move
-`openssl_linkage` in any case.
+nobody has observed the path in a shipped wheel, and on an object with no other OpenSSL
+evidence it gives `openssl_linkage: unknown`, never `static`.
 
 **A guarantee that was not there.** `[conventions]` says naming the Go string groups in
 the ruleset means renaming a group cannot silently flip a verdict-relevant field. The
