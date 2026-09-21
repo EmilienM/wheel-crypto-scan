@@ -886,7 +886,10 @@ def test_static_linkage_produces_its_own_finding(ruleset) -> None:
             binary(
                 "demo/_rust.abi3.so",
                 needed=("libc.so.6",),
-                matched_strings=(StringMatch("openssl_banner", "OpenSSL 3.0.14 4 Jun 2024"),),
+                matched_strings=(
+                    StringMatch("openssl_banner", "OpenSSL 3.0.14 4 Jun 2024"),
+                    StringMatch("openssl_build_info", 'OPENSSLDIR: "/usr/lib/ssl"'),
+                ),
             ),
         )
     )

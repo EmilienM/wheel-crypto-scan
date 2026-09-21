@@ -81,8 +81,8 @@ sort-and-cut:
 ring alone                 -> NON_APPROVED_CRYPTO  needs_human_review: true, findings: 1
 ring + 130 earlier crates  -> NO_CRYPTO_DETECTED   needs_human_review: false, findings: 0
 
-banner alone                 -> openssl_linkage: static
-banner + 70 mbedtls_ runs    -> openssl_linkage: none
+banner and its build string alone -> openssl_linkage: static
+banner + 70 mbedtls_ runs         -> openssl_linkage: none
 
 defined EVP_DigestInit_ex alone -> openssl_linkage: static
 + 70 defined crypto_box_*       -> openssl_linkage: none

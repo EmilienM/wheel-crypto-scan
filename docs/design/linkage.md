@@ -352,8 +352,9 @@ cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
 ```
 
 **How a header banner is told apart.** A banner does not count toward `static` when all
-four hold on the one object: a `needed` entry resolved the library from the host; the
-object imports a symbol from it; the object was read in full; and the library names a
+four hold on the one object: a `needed` entry resolved the library, from the host or
+from a copy the wheel ships (an unconfirmed, `uncertain` entry does not open this gate);
+the object imports a symbol from it; the object was read in full; and the library names a
 `copy_string_group` — strings only a real compiled-in copy carries — that the object
 matches none of. For OpenSSL, that group is `OPENSSLDIR: `, which `OpenSSL_version()`
 returns from the same call as the banner, so a compiled-in copy keeps both together and a
@@ -378,6 +379,46 @@ every banner it finds as a copy. An object that is not read in full, for any cau
 keeps `mixed`.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy)
+
+---
+
+## A version banner with no dependency and no build strings reads `unknown`, not `static`
+
+**Accepted, and it changes `openssl_linkage`.**
+
+`openssl_banner` matches any sentence naming a dotted OpenSSL version, not only a real
+banner: prose such as "enable OpenSSL 3.0 legacy provider" matches the same way "OpenSSL
+3.0.14 4 Jun 2024" does. On an object where no `needed` entry resolved the library at
+all, a banner counts as a copy only when the object also carries the build strings a
+compiled-in copy keeps beside it (`copy_string_group`, `OPENSSLDIR: ` for OpenSSL).
+Without them the banner is uncorroborated prose, and the object reads `unknown`, not
+`static`: real evidence the library's API is named, not evidence of a compiled-in copy.
+The gate stays shut on an object not read in full, for the same reason the header-text
+gate does.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-version-banner-with-no-dependency-and-no-build-strings-reads-unknown-not-static)
+
+---
+
+## OpenSSL-named definitions beside AWS-LC or BoringSSL read `unknown`, not `static`
+
+**Accepted, and it changes `openssl_linkage`.**
+
+AWS-LC and BoringSSL both implement OpenSSL's public API under OpenSSL's own names, so
+an object built from either defines the same `EVP_*`/`BN_*`/... entry points the
+`openssl` `symbol_group` claims. `[[crypto_library]] openssl` names
+`fork_symbol_groups`/`fork_string_groups` (`aws_lc`, `aws_lc_fips`, `boringssl`): on an
+object where one of them matched (a symbol group only when DEFINED there), the
+`openssl` group's own definitions read `unknown` rather than `static`. A banner does not
+save it: AWS-LC's and BoringSSL's own headers define `OPENSSL_VERSION_TEXT` as one
+literal naming the fork, so a banner sharing its printable run with the fork's own
+string marker is that fork's own header macro, not a real OpenSSL copy. A banner on a
+different run — a real, dotted version with its own build string, elsewhere in the same
+object — is not the fork's own text and still corroborates a real copy. It reads
+`unknown`, never `none`, because an object can carry a real OpenSSL and a fork marker at
+once.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#openssl-named-definitions-beside-aws-lc-or-boringssl-read-unknown-not-static)
 
 ---
 

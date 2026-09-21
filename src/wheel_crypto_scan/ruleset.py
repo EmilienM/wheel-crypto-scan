@@ -363,9 +363,24 @@ class CryptoLibrary:
 
     `copy_string_group` names strings only a compiled-in copy carries, never its
     headers. A match from `string_group` on an object that resolves the library from
-    the host, imports from it, was read in full and matches nothing in
-    `copy_string_group` is header text, not a copy. `None` means a banner always
-    counts as a copy.
+    the host or from a bundled copy, imports from it, was read in full and matches
+    nothing in `copy_string_group` is header text, not a copy. On an object with no
+    dependency on the library at all, read in full, that same absence makes a banner
+    uncorroborated prose rather than a copy. `None` means a banner always counts as a
+    copy either way.
+
+    `fork_symbol_groups` and `fork_string_groups` name symbol and string groups that
+    identify a different library implementing this one's API under this one's names
+    -- AWS-LC and BoringSSL both define OpenSSL's `EVP_*`/`BN_*`/... entry points
+    under OpenSSL's own names. On an object where one of them matched (a symbol
+    group only when the match is DEFINED there), this library's `symbol_group`
+    definitions say some implementation of the API was compiled in, not which one,
+    so definitions alone give `unknown` rather than `static` -- and a `string_group`
+    match whose own text is entirely explained by the fork groups' own patterns is
+    that fork's own header banner, not evidence of this library, so a banner alone
+    gives `unknown` the same way, and it does not save the definitions from that
+    reading either. A `needed` entry, or a combination that already reads `mixed`,
+    is unaffected.
     """
 
     name: str
@@ -376,6 +391,8 @@ class CryptoLibrary:
     string_group: str | None = None
     copy_string_group: str | None = None
     crates: tuple[str, ...] = ()
+    fork_symbol_groups: tuple[str, ...] = ()
+    fork_string_groups: tuple[str, ...] = ()
     # Report this library's linkage even when nothing matched, because consumers
     # filter on the field and a missing key is harder to handle than "none".
     always_report: bool = False

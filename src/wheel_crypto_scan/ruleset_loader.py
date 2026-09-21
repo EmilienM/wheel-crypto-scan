@@ -94,6 +94,8 @@ _ENTRY_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
             "symbol_group",
             "string_group",
             "copy_string_group",
+            "fork_symbol_groups",
+            "fork_string_groups",
             "crates",
             "always_report",
         },
@@ -748,6 +750,35 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         for crate in library_crates:
             if crate not in rust_crate_names:
                 raise RulesetError(f"{where}: crate {crate!r} is not a [[rust_crate]] entry")
+        _check_string_sequence(entry.get("fork_symbol_groups", []), "fork_symbol_groups", where)
+        _check_string_sequence(entry.get("fork_string_groups", []), "fork_string_groups", where)
+        fork_symbol_groups = tuple(str(group) for group in entry.get("fork_symbol_groups", ()))
+        fork_string_groups = tuple(str(group) for group in entry.get("fork_string_groups", ()))
+        for group in fork_symbol_groups:
+            if group not in {symbol_entry["name"] for symbol_entry in data["symbol_group"]}:
+                raise RulesetError(f"{where}: unknown symbol group {group!r} in fork_symbol_groups")
+        for group in fork_string_groups:
+            if group not in {string_entry["name"] for string_entry in data["string_group"]}:
+                raise RulesetError(f"{where}: unknown string group {group!r} in fork_string_groups")
+        if (fork_symbol_groups or fork_string_groups) and symbol_group is None:
+            # The lists only ever reclassify this library's own symbol_group
+            # definitions, so there is nothing for them to reclassify without one.
+            raise RulesetError(
+                f"{where}: fork_symbol_groups/fork_string_groups need a symbol_group"
+            )
+        for group in fork_symbol_groups:
+            if group == symbol_group:
+                # Every definition would then claim itself as its own fork, and
+                # `static` would become unreachable for this library.
+                raise RulesetError(
+                    f"{where}: fork_symbol_groups must not name this library's own symbol_group"
+                )
+        for group in fork_string_groups:
+            if group in (string_group, copy_string_group):
+                raise RulesetError(
+                    f"{where}: fork_string_groups must not name this library's own "
+                    "string_group or copy_string_group"
+                )
         libraries[name] = CryptoLibrary(
             name=name,
             sonames=tuple(_require(entry, "sonames", where)),
@@ -756,6 +787,8 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             string_group=None if string_group is None else str(string_group),
             copy_string_group=None if copy_string_group is None else str(copy_string_group),
             crates=library_crates,
+            fork_symbol_groups=fork_symbol_groups,
+            fork_string_groups=fork_string_groups,
             always_report=bool(entry.get("always_report", False)),
             **_entry_overrides(entry, classes, where),
         )

@@ -590,8 +590,8 @@ With a plain sort-and-cut:
 ring alone                 -> NON_APPROVED_CRYPTO  needs_human_review: true, findings: 1
 ring + 130 earlier crates  -> NO_CRYPTO_DETECTED   needs_human_review: false, findings: 0
 
-banner alone                 -> openssl_linkage: static
-banner + 70 mbedtls_ runs    -> openssl_linkage: none
+banner and its build string alone -> openssl_linkage: static
+banner + 70 mbedtls_ runs         -> openssl_linkage: none
 
 defined EVP_DigestInit_ex alone -> openssl_linkage: static
 + 70 defined crypto_box_*       -> openssl_linkage: none
@@ -4503,11 +4503,20 @@ list.
 
 **Why a digit is still required.** `OpenSSL ` on its own also matches prose. The same
 `_rust.abi3.so` carries `OpenSSL 3's legacy provider failed to load`, and so does a
-build that links the system library, while a banner is one of the two things that make
-an object read `static`. Requiring a digit and a dot rules that string out. The
-residual over-match, a string like `requires OpenSSL 3.0 or newer` on an object that
-also resolves the system library, resolves to `mixed` through `_binary_posture`'s
-`sum(...) > 1` branch rather than to a false clean.
+build that links the system library. Requiring a digit and a dot rules that undotted
+string out. It does not rule out prose that names a *dotted* version -- `enable
+OpenSSL 3.0 legacy provider` and `For OpenSSL 3.0.0 and newer` both still match -- and
+a shape no `[[string_group]]` can close any tighter without also losing real banners
+(see "A version banner with no dependency and no build strings reads `unknown`, not
+`static`", below). What keeps that residual match from reading `static` outright is the
+copy marker or the header-text gate, not the shape of the string. On an object with a
+`needed` entry resolving the library and imports from it, the header-text gate closes:
+the residual over-match is header text, and resolves to `system` or `bundled` like any
+other header banner (see "A version banner beside imports from the system library is
+header text, not a copy", below). On an object with a `needed` entry but no import from
+the library, or with none at all, it is exactly the case the copy-marker gates cover --
+`mixed`, through `_binary_posture`'s `sum(...) > 1` branch, when a `needed` entry is
+present; `unknown` when there is none.
 
 **Why all ten digits rather than the four that exist.** A major nobody has listed yet
 is the failure above, waiting. Listing 0 through 9 costs one line, no code, and no
@@ -4733,14 +4742,19 @@ shrunken `.strtab` must read `OPAQUE`, and half a million rows must still walk i
 reasonable time.
 
 **Measured over 18 native wheels off PyPI, against the absence gate alone.** Five
-verdict blocks differ; one headline class moves. `awscrt`, `curl_cffi` and `hf-xet` go
-`openssl_linkage: none` to `static`, picking up `BIN_STATIC_OPENSSL` for the AWS-LC each
-one compiles in -- the whole purpose of reading local definitions. `confluent-kafka` is
-the single class move, `CONDITIONAL` to `NON_APPROVED_CRYPTO`. `cryptography`,
-`pycryptodome` and `PyNaCl` gain symbols without changing class, and five wheels'
-`matched_symbols` report `truncated`. That rate is a property of the population rather
-than of the reader: the gain lands only on wheels that ship an **unstripped `.symtab`**,
-and over a corpus of fully stripped manylinux wheels it would be zero.
+verdict blocks differ; one headline class moves. `awscrt`, `curl_cffi` and `hf-xet` gain
+local definitions from `.symtab` for the first time: the OpenSSL-named entry points each
+one compiles in belong to the AWS-LC or BoringSSL fork each wheel actually ships, so
+linkage reads them `unknown`, not `static` -- "OpenSSL-named definitions beside AWS-LC
+or BoringSSL read `unknown`, not `static`" (above) is what tells a fork's own compiled-in
+definitions apart from a real OpenSSL's. The whole purpose of reading local definitions
+is `cryptography`'s own case, above: a real statically linked copy whose symbols a
+version script hid from `.dynsym` entirely. `confluent-kafka` is the single class move,
+`CONDITIONAL` to `NON_APPROVED_CRYPTO`. `cryptography`, `pycryptodome` and `PyNaCl` gain
+symbols without changing class, and five wheels' `matched_symbols` report `truncated`.
+That rate is a property of the population rather than of the reader: the gain lands only
+on wheels that ship an **unstripped `.symtab`**, and over a corpus of fully stripped
+manylinux wheels it would be zero.
 
 Two claims here are worth separating. That no finding and no `(group, binding)` kind is
 lost anywhere is not really a measurement: the local-definitions block only adds to a
@@ -4899,10 +4913,10 @@ cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
 **How a header banner is told apart.** A `string_group` match does not count toward
 `static` when all four hold on the one object it was found on:
 
-- a `needed` entry resolved `system` in the loop -- a confirmed host dependency, not a
-  guess;
+- a `needed` entry resolved `system` or `bundled` in the loop -- a confirmed
+  dependency, from the host or from a copy the wheel ships, not a guess;
 - the object imports at least one symbol from the library's `symbol_group`, so it calls
-  the host copy rather than only declaring a dependency on one;
+  the resolved copy rather than only declaring a dependency on one;
 - the object is not `partial_analysis`, for any cause -- deliberately its own, stricter
   split rather than a reuse of `[linkage_policy] exclude_reasons`, since a partial read
   can hide the very string the fourth gate looks for;
@@ -4912,7 +4926,26 @@ cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
 A defined symbol still makes `static` regardless of all four: `static = defined or
 banner`, so a real definition never needs a fourth gate. A library naming no
 `copy_string_group` has no way to tell a header banner from a copy, and counts every
-banner match as a copy.
+banner match as a copy. On an object with no `needed` entry naming the library at all --
+so the first gate above never opens -- the same four strings still decide whether a
+banner is a copy, through a sibling condition: see "A version banner with no dependency
+and no build strings reads `unknown`, not `static`", below.
+
+**The auditwheel shape adds `bundled` to the first gate.** auditwheel rewrites an
+extension's dependency to a hash-renamed copy it vendors into the wheel
+(`libcrypto-3a1f2b4c.so.3`) and compiles the extension against OpenSSL's own headers,
+so the extension carries `OPENSSL_VERSION_TEXT` whether or not anything in it calls
+`OpenSSL_version()`. The vendored copy itself carries the real banner and its own
+`OPENSSLDIR: ` string; the extension's copy of the banner is header text the same way a
+system-linked object's is.
+
+```text
+cryptography 42.0.5-style auditwheel build
+  extension NEEDs libcrypto-3a1f2b4c.so.3, imports OpenSSL symbols, no OPENSSLDIR: beside its banner
+  vendored fakecrypto.libs/libcrypto-3a1f2b4c.so.3 carries the banner and OPENSSLDIR: beside it
+-> every banner a copy:       openssl_linkage: mixed,   verdict.rule_ids: [..., "BIN_OPENSSL_LINKAGE_UNKNOWN", ...]
+-> header banner told apart:  openssl_linkage: bundled, verdict.rule_ids: [..., "BIN_BUNDLED_OPENSSL", ...]
+```
 
 For OpenSSL, `copy_string_group` names the `openssl_build_info` string group, matching
 `OPENSSLDIR: `. `OpenSSL_version()` returns the version banner and this string from the
@@ -4955,6 +4988,13 @@ the object reads `system`, not `mixed`. See "What it costs" below for that shape
   marker check.* Discards the banner as evidence even when it is the only sign of a
   genuine hidden copy; the four gates exist so the banner is dropped only when nothing
   else says it might be a copy.
+- *Counting an unconfirmed, vendor-shaped `needed` entry (`uncertain`) as opening the
+  first gate too.* `uncertain` is exactly the case nothing confirmed what the entry
+  resolves to, so there is no confirmed copy for a header macro to belong to. Opening
+  the gate there would let an unconfirmed guess demote a real, unexplained banner on an
+  incompletely-read wheel; `uncertain` combines with `static` into `mixed` instead
+  ("An `uncertain` needed match beside a definition is `mixed`", below), and a header
+  banner does not change that.
 
 **What it costs, and what is left unmeasured.**
 
@@ -4987,10 +5027,175 @@ the object reads `system`, not `mixed`. See "What it costs" below for that shape
 - An object that is `partial_analysis` for any cause keeps `mixed`, whatever the cause.
 - A library other than OpenSSL names no `copy_string_group`, so every banner it finds
   counts as a copy.
+- On the bundled side of the first gate, the misread direction if the four gates are
+  wrong is `mixed` to `bundled`, not to `system`: a wheel wrongly read this way still
+  carries its own copy and still cannot see the host provider, so the mistaken reading
+  is still `CONDITIONAL` with `BIN_BUNDLED_OPENSSL`, not the clean-looking `system`
+  outcome a mistake on the system side would produce.
 
 Revisit if a real copy is found whose banner survives without its build strings, or if a
 second library gains a `copy_string_group` and needs its own measurement the way OpenSSL's
 does here.
+
+## A version banner with no dependency and no build strings reads `unknown`, not `static`
+
+**Accepted, and it changes `openssl_linkage`.**
+
+`openssl_banner` matches any sentence naming a dotted OpenSSL version, not only OpenSSL's
+own banner: `OpenSSL 3.` through `OpenSSL 9.` are substrings, so `enable OpenSSL 3.0
+legacy provider` and `For OpenSSL 3.0.0 and newer it returns the state of the default
+provider` both match, the same as `OpenSSL 3.0.14 4 Jun 2024` does. On a Fedora 44 host,
+`libxmlsec1-openssl`, `libnode` and CPython's own `_hashlib` each carry a match of this
+shape; each also `NEED`s `libcrypto.so.3`, so each is the system-linked case "A version
+banner beside imports from the system library is header text, not a copy" (above)
+already covers, not the no-dependency shape this entry is about. No library on this host
+reproduces the no-dependency shape itself -- OpenSSL compiled straight into an extension
+with no library file and no dependency at all -- without also carrying symbols or build
+strings, so it is reproduced synthetically instead: a dlopen consumer or a literal string
+that names a dotted OpenSSL version, with no `needed` entry, no OpenSSL symbol and no
+build string beside it. An unguarded banner-only match of that shape reads
+`openssl_linkage: static` and fires `BIN_STATIC_OPENSSL`, on an object with no `needed`
+entry to weigh the banner against.
+
+**The gate.** On an object where no `needed` entry resolved the library at all -- `system`,
+`bundled` and `uncertain` are all false, so "A version banner beside imports from the
+system library is header text, not a copy" (above) never applies, since its first gate
+requires a confirmed dependency -- a banner counts as a copy only when the object also
+carries the library's build strings (`copy_string_group`, `openssl_build_info` for
+OpenSSL). Without them the banner is uncorroborated: real evidence that the library's API
+is named in this object, but not evidence of a compiled-in copy. The gate stays shut on
+an object not read in full, for the same reason the header-text gate does: a partial read
+may have cut the very string that would prove a copy.
+
+**Measured.** cryptography 42.0.5 and 50.0.1, on manylinux, macOS universal2 and Windows,
+each carry `OPENSSLDIR: ` beside their banner; confluent-kafka's bundled `librdkafka`
+does too. grpcio, awscrt and curl_cffi carry `OPENSSLDIR: n/a` and no `openssl_banner`
+match at all. Every real static copy measured for this entry keeps its build string
+beside its banner; every uncorroborated match measured is prose from a system-linked or
+unrelated object.
+
+**Why `unknown`, not `none`.** The object carries the library's own banner --
+`BIN_OPENSSL_BANNER` still fires -- so `none` would say there is no OpenSSL evidence
+beside a finding that says otherwise, the same reasoning "An OpenSSL crate with no other
+evidence reads `unknown`, not `none`" (below) applies to a crate. `unknown` means "uses
+the API, does not say which copy," which is what a dlopen consumer, a header-only build
+or a sentence naming a version all are.
+
+**What was rejected.**
+
+- *Tightening the string shape instead.* A patch-level digit still matches `_hashlib`'s
+  own prose ("For OpenSSL 3.0.0 and newer"); requiring a date drops a real banner from a
+  build whose banner carries no date; and no shape at all can tell a header macro or a
+  sentence from a real copy, which is the same argument "`openssl_banner` names every
+  major digit, not the majors that shipped" (above) already makes for keeping the group a
+  plain substring list.
+- *Extending the same demotion to `bundled` and `uncertain`.* A `bundled` `needed` entry
+  is already covered directly by the header-text gate's own bundled half (see "The
+  auditwheel shape adds `bundled` to the first gate", above): the gate excludes the
+  banner there too, once the object imports from the resolved copy. An `uncertain`
+  entry combines with `static` into `mixed` instead ("An `uncertain` needed match beside
+  a definition is `mixed`", below), unaffected by this entry either way, since nothing
+  confirmed what it resolves to for a header macro to belong to.
+
+**What it costs.**
+
+- A real static copy whose consumer never calls `OpenSSL_version()`, whose symbols are
+  all hidden, and whose own headers still supply a banner now reads `unknown` (OPAQUE,
+  `BIN_OPENSSL_LINKAGE_UNKNOWN`) instead of `static`, on an object with no dependency to
+  weigh the banner against. Local `.symtab` definitions still make it `static`
+  regardless.
+- An object that both imports the library with no confirmed dependency and carries an
+  uncorroborated banner moves from `static` to `unknown`: imports with no confirmed
+  provider already meant "uses, not which copy," and the banner without its build string
+  adds no copy either.
+
+A fork of OpenSSL's API carrying an `openssl_banner` match of its own is exactly the
+shape "OpenSSL-named definitions beside AWS-LC or BoringSSL read `unknown`, not
+`static`" (below) covers, when no `needed` entry resolves the library at all. With one,
+the fork's own banner reads exactly as any other banner would: "A version banner beside
+imports from the system library is header text, not a copy" (above) already decides it,
+whether the resolved dependency is the system library or a bundled copy.
+
+## OpenSSL-named definitions beside AWS-LC or BoringSSL read `unknown`, not `static`
+
+**Accepted, and it changes `openssl_linkage`.**
+
+AWS-LC and BoringSSL both implement OpenSSL's public API under OpenSSL's own names:
+`EVP_*`, `BN_*`, `RSA_*`, `BIO_new` and the rest of the `openssl` `symbol_group` are
+entry points either library defines too. `_binary_posture` reads a defined match from a
+library's own `symbol_group` as that library, so an object built from either fork reads
+`openssl_linkage: static` with no OpenSSL in it at all -- `defined` says an OpenSSL-API
+symbol was compiled in, not which implementation supplied it.
+
+Measured, scanning real PyPI wheels: `awscrt` 0.36.4's manylinux build (a C AWS-LC
+build, unprefixed) defines 58 `AWSLC_*`-prefixed names and the OpenSSL-named
+`BIO_new` alongside them, and carries no `openssl_banner` match. `curl_cffi` 0.16.3's
+manylinux build (BoringSSL) defines 40 OpenSSL-named entry points and 16
+`BORINGSSL_*`/`CRYPTO_BUFFER_*` names, also with no banner. The aws-lc-rs 1.18.1 FIPS
+cdylib defines its `aws_lc_fips_*`-prefixed names alongside an unprefixed
+`BN_from_montgomery_word`. None of the three carries an `openssl_banner` match, but a
+consumer that does compile one in is not hypothetical: AWS-LC's and BoringSSL's own
+public headers define `OPENSSL_VERSION_TEXT` as one string literal, `"OpenSSL 1.1.1
+(compatible; AWS-LC <version>)"` or `"OpenSSL 1.1.1 (compatible; BoringSSL)"`, which
+`openssl_banner` matches, and both forks' own `OpenSSL_version()` returns `"OPENSSLDIR:
+n/a"`, which clears the copy-marker gate the same way a real copy's does -- so a fork's
+own banner is not weaker evidence of a fork than a fork marker with no banner at all.
+
+**The relation is ruleset data, not a Python special case.** `[[crypto_library]] openssl`
+names `fork_symbol_groups`/`fork_string_groups`: symbol and string groups that identify
+a different library implementing this one's API under this one's names, currently
+`aws_lc`, `aws_lc_fips` and `boringssl`. On an object where one of them matched (a
+symbol group only when the match is DEFINED in the same object, since an imported fork
+symbol says the object calls a fork it does not compile in here, not that this object's
+own `openssl`-named definitions belong to it), a banner whose text is entirely explained
+by the fork groups' own patterns (`_banner_is_fork_text`) is that fork's own header
+macro, not a real OpenSSL banner, so it cannot corroborate a copy either: `static`
+here -- whether it holds because the `openssl` `symbol_group`'s own definitions are
+present, because this banner is, or both -- reads `unknown` instead. This is tested
+against the fork groups' own compiled patterns, not by requiring a same-object
+`fork_string_groups` match to have survived `match_string_groups`' cap: a real AWS-LC or
+BoringSSL object carries far more fork-group runs than the cap keeps (every
+`OPENSSL_PUT_ERROR` expands `__FILE__` to one more `aws-lc/crypto/*.c` path), and a
+comparison against whichever runs happened to survive would miss this exact shape
+whenever the surviving runs are all paths rather than the banner's own. A banner on a
+*different* printable run -- a real, dotted OpenSSL version with its own build string,
+beside an unrelated fork marker elsewhere in the same object -- is not the fork's own
+text and still corroborates a real copy, so `static` still stands in that shape,
+whatever else the object also carries. This decision is made once, in `_binary_posture`'s
+final `if static:` branch, after `system`, `bundled` and their disagreements with
+`static` have already been resolved: a `needed` match to the system or a bundled
+library, or a combination that already reads `mixed`, is unaffected either way.
+
+**Why `unknown`, not `none`.** An object can carry a real OpenSSL and a fork marker at
+once -- a Rust extension vendoring both `openssl-sys` and `rustls`/`aws-lc-rs`, say,
+where the lowercase `aws-lc` string group also matches an `aws-lc-rs` cargo path -- so
+`none` would be the false negative "absence of evidence is not evidence of absence"
+rules out. `unknown` keeps the object on the triage list (`BIN_OPENSSL_LINKAGE_UNKNOWN`,
+`OPAQUE`), consistent with the existing reading of imports with no declared provider or
+a crate that binds the API and nothing else: "uses the API, does not say which copy."
+
+**What was rejected.**
+
+- *A Python special case naming AWS-LC and BoringSSL directly.* Nothing in the scanner
+  hardcodes a library name; the relation belongs in `ruleset.toml` beside every other
+  fact about `openssl`, matching how `crates` and `copy_string_group` already work.
+- *Excluding AWS-LC's and BoringSSL's names from the `openssl` `symbol_group`.* That
+  loses a real OpenSSL's own definitions when they happen to share an object with a
+  fork, since the group would then no longer recognise them either. Reclassifying the
+  *outcome* for this one library, rather than narrowing what counts as a match, keeps
+  a real OpenSSL's own definitions visible to every rule that reads the group directly
+  (`BIN_OPENSSL_SYMBOLS_DEFINED` still fires on a fork object; it matches names, not
+  libraries).
+- *Reading `none`.* Covered above.
+
+**What it costs.** A real static OpenSSL whose only evidence is definitions, in an
+object that also carries aws-lc-rs or BoringSSL, reads `unknown` (OPAQUE) rather than
+`static`. `BIN_OPENSSL_SYMBOLS_DEFINED` still fires either way, since it matches names
+directly rather than through linkage. The same reading applies when the only evidence is
+a banner that is itself the fork's own header text, with no dependency to weigh it
+against: an object carrying nothing but a fork's own compatibility banner and the
+copy-marker string beside it reads `unknown`, not `static` -- the banner corroborates
+only that some OpenSSL-API implementation was compiled in, not a distinct copy.
 
 ## An object that read `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`
 
@@ -5635,7 +5840,10 @@ read-only data, so no `dynamic_symbol` rule reads either symbol group. AWS-LC is
 BoringSSL fork and keeps BoringSSL-named symbols -- the `aws_lc_fips` group's own `why`
 already notes its FIPS-only `BORINGSSL_*` names are shared with BoringSSL's FIPS module
 -- so a rule over the `boringssl` symbol group would report BoringSSL on an AWS-LC
-object. Whether either deserves a symbol-level rule of its own is left open, below.
+object. `[[crypto_library]] openssl` lists both in `fork_symbol_groups`, which does not
+make either one read: a defined fork name only qualifies OpenSSL-named definitions
+already on the same object, and alone it raises nothing, so the mark stays. Whether
+either deserves a symbol-level rule of its own is left open, below.
 
 **What it costs.** A BLAKE-only object reads `CONTEXT_DEPENDENT` instead of
 `NO_CRYPTO_DETECTED`. `CONTEXT_DEPENDENT` outranks both `NO_CRYPTO_DETECTED` and
