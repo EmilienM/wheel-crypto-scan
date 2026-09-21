@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import tomllib
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -233,3 +234,17 @@ def test_every_error_kind_is_covered_by_a_rule(ruleset: dict[str, Any]) -> None:
             if match["kind"] == "scan_error":
                 covered.update(match["error_kinds"])
     assert ERROR_KINDS - covered == set()
+
+
+def test_every_error_kind_is_actually_emitted_somewhere() -> None:
+    """A kind nothing constructs makes any rule matching it silently dead."""
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in Path("src/wheel_crypto_scan").rglob("*.py")
+    )
+    constant_names = {kind: kind.upper() for kind in ERROR_KINDS}
+    dead = {
+        kind
+        for kind, constant in constant_names.items()
+        if source.count(constant) < 2  # the definition, plus at least one use
+    }
+    assert dead == set()

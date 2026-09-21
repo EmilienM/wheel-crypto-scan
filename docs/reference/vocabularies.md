@@ -78,7 +78,7 @@ python_recursion_limit_exceeded
 over zip metadata already fully in hand, with no I/O and no broad catch anywhere on the path
 that records it, so the same wheel's bytes always produce the same one and caching it is
 safe. See
-[A record produced without reading the wheel is never cached](../decisions/tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached).
+[A record produced without reading the wheel is never cached](../design/tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached).
 
 ## `PARTIAL_REASONS`
 
@@ -125,7 +125,7 @@ into memory and each one can run short.
 
     `strings_truncated` and `symbols_truncated` are fields, not causes. The object *was*
     read; what was capped is what got written down. A cause means bytes nobody looked at.
-    See [A recording cap is not a partial read](../decisions/limits.md#a-recording-cap-is-not-a-partial-read).
+    See [A recording cap is not a partial read](../design/limits.md#a-recording-cap-is-not-a-partial-read).
 
 ### The two splits over this vocabulary
 
@@ -135,9 +135,9 @@ into memory and each one can run short.
   Today: `pe_ordinal_import`.
 - `[linkage_policy] exclude_reasons` names the causes that **leave a linkage posture
   answerable**. Today: `pe_ordinal_import`, `elf_go_buildinfo_unread`,
-  `pe_no_import_directory`. (`elf_symtab_unread` was on this list and is not any more,
-  #117: `.symtab` now drives the imported/defined split too for an object with no
-  `.dynsym`, so it can no longer be said to leave that field intact unconditionally.)
+  `pe_no_import_directory`. `elf_symtab_unread` is not on this list: `.symtab` drives
+  the imported/defined split for an object with no `.dynsym`, and supplies local
+  definitions when there is one.
 
 The first must be a subset of the second, and the loader refuses a ruleset where it is not.
 A test asserts the two are not equal, so if they ever coincide the mechanism is a rename and

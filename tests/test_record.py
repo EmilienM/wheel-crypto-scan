@@ -5,8 +5,10 @@ from __future__ import annotations
 import dataclasses
 import json
 from importlib.resources import files
+from pathlib import Path
 
 import pytest
+from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import SCHEMA_VERSION
 from wheel_crypto_scan.engine import apply_rules
@@ -25,6 +27,7 @@ from wheel_crypto_scan.evidence import (
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.record import build_record, to_json_line
 from wheel_crypto_scan.ruleset_loader import load_ruleset
+from wheel_crypto_scan.scan import ScanContext, scan_wheel
 from wheel_crypto_scan.verdict import classify
 
 
@@ -151,12 +154,12 @@ def test_no_max_binaries_means_no_cap_and_no_truncation_flag(ruleset) -> None:
 
 
 def test_skipped_and_symlinks_are_capped_independently_of_bundled_libs(ruleset) -> None:
-    """#119: `artifacts.skipped` (`{path, reason}`) and `artifacts.symlinks`
-    (`{path, target}`) are the same unbounded shape #76 fixed for `bundled_libs` and
-    `errors[]`. Both go through `caps.cap`, keyed on `reason`/`target` respectively
-    (see DECISIONS.md, "`skipped` and `symlinks` reuse `caps.cap`, not a plain
-    prefix"); with every entry here sharing one `reason` and one `target`, the cap
-    degenerates to a plain sorted prefix, which
+    """`artifacts.skipped` (`{path, reason}`) and `artifacts.symlinks` (`{path,
+    target}`) are the same unbounded shape as `bundled_libs` and `errors[]`, and are
+    capped the same way. Both go through `caps.cap`, keyed on `reason`/`target`
+    respectively (see DESIGN.md, "`skipped` and `symlinks` reuse `caps.cap`, not a
+    plain prefix"); with every entry here sharing one `reason` and one `target`, the
+    cap degenerates to a plain sorted prefix, which
     `test_a_rare_skipped_reason_survives_a_flood_of_a_common_one` and
     `test_a_rare_symlink_target_survives_a_flood_of_a_common_one` in
     `test_hardening.py` prove is not the general case."""
@@ -239,14 +242,14 @@ def test_every_finding_has_the_same_key_set(ruleset) -> None:
     assert len({tuple(sorted(finding)) for finding in findings}) == 1
 
 
-# --- binaries[] cap: what a finding points at is kept first (#75) -----------
+# --- binaries[] cap: what a finding points at is kept first ---------------------
 #
-# `caps.cap()` fixed this shape one layer down for the per-binary string,
-# symbol and crate caps (DECISIONS.md, "A cap bounds the record, it does not pick the
-# evidence", #51): a plain sort-and-cut let a crate list with `ring` sorting behind a
-# hundred `anyhow`-class names drop the one crate a rule cared about. `max_binaries`
-# had the same bug one level up: a plain path-sorted prefix of `binaries[]` has no
-# reason to agree with where the objects a finding actually names happen to sort.
+# `caps.cap()` handles this shape one layer down for the per-binary string, symbol and
+# crate caps (DESIGN.md, "A cap bounds the record, it does not pick the evidence"): a
+# plain sort-and-cut lets a crate list with `ring` sorting behind a hundred
+# `anyhow`-class names drop the one crate a rule cares about. `max_binaries` has the
+# same shape one level up: a plain path-sorted prefix of `binaries[]` has no reason to
+# agree with where the objects a finding actually names happen to sort.
 
 
 def _evidence_with_capped_binaries(filler_count: int, referenced_count: int) -> Evidence:
@@ -256,7 +259,7 @@ def _evidence_with_capped_binaries(filler_count: int, referenced_count: int) -> 
     fillers = tuple(
         # `needed` keeps a filler out of `BIN_OPAQUE` -- a filler must trigger no
         # finding of its own, or it would count as "referenced" too and this fixture
-        # would not isolate what the fix is about.
+        # would not isolate the finding-aware selection under test.
         BinaryEvidence(path=f"pkg/_filler{i:04d}.so", format=FORMAT_ELF, needed=("libc.so.6",))
         for i in range(filler_count)
     )
@@ -295,11 +298,10 @@ def test_binaries_under_the_cap_are_unaffected_by_max_binaries(ruleset) -> None:
 
 
 def test_a_referenced_object_sorting_last_survives_the_cap(ruleset) -> None:
-    """#75: the object `BIN_OPENSSL_SYMBOLS_DEFINED` names sorts dead last among six
-    objects and a cap of three, so a plain path-sorted prefix would have cut it --
-    exactly the shape the reproduction in DECISIONS.md and #75 report. It must still
-    make it into `binaries[]`, and the remaining room is filled with fillers in path
-    order same as before."""
+    """The object `BIN_OPENSSL_SYMBOLS_DEFINED` names sorts dead last among six objects
+    and a cap of three, so a plain path-sorted prefix would cut it -- exactly the shape
+    of the reproduction in DESIGN.md. It must still make it into `binaries[]`, and the
+    remaining room is filled with fillers in path order."""
     evidence = _evidence_with_capped_binaries(filler_count=5, referenced_count=1)
     record = record_for(ruleset, evidence, max_binaries=3)
     paths = [b["path"] for b in record["binaries"]]
@@ -317,7 +319,7 @@ def test_more_referenced_objects_than_the_cap_keeps_the_lowest_sorting_paths(rul
     """When findings alone reference more objects than `max_binaries` allows, there is
     no fixed vocabulary of finding subjects to guarantee room for all of them the way
     `ruleset_loader.parse_ruleset` guarantees room for one of every string, symbol or
-    crate group (DECISIONS.md, "A cap bounds the record, it does not pick the
+    crate group (DESIGN.md, "A cap bounds the record, it does not pick the
     evidence"): how many distinct objects a wheel's findings reference is data the
     wheel supplies, not policy a ruleset declares. The referenced set is capped the
     same deterministic way the whole list always was: to the lowest-sorting paths."""
@@ -358,17 +360,16 @@ def test_binaries_selection_does_not_depend_on_input_order(ruleset) -> None:
 
 
 def test_a_low_severity_group_does_not_starve_a_high_severity_one(ruleset) -> None:
-    """Adversarial review of #75 found that a flat "referenced objects, then the
-    rest, in path order" pass just moves the sorting problem: a finding's `subject`
-    (here, a crate name) sorts exactly as arbitrarily with respect to severity as an
-    object's path does. Ten low-severity `getrandom` objects (`CONTEXT_DEPENDENT`,
-    `info`) sort before the one `ring` object (`NON_APPROVED_CRYPTO`, `high`) purely
-    alphabetically, so under a cap of five a path-only pass lets getrandom's ten
-    objects crowd ring's one object out entirely -- getrandom's finding stays fully
-    corroborated while the one finding that actually matters has zero objects in
-    `binaries[]` to back it up. `_cap_by_findings` reserves one representative object
-    per `(rule_id, subject)` group before filling the rest, so ring's finding is never
-    left with none."""
+    """A flat "referenced objects, then the rest, in path order" pass just moves the
+    sorting problem: a finding's `subject` (here, a crate name) sorts exactly as
+    arbitrarily with respect to severity as an object's path does. Ten low-severity
+    `getrandom` objects (`CONTEXT_DEPENDENT`, `info`) sort before the one `ring` object
+    (`NON_APPROVED_CRYPTO`, `high`) purely alphabetically, so under a cap of five a
+    path-only pass lets getrandom's ten objects crowd ring's one object out entirely --
+    getrandom's finding stays fully corroborated while the one finding that actually
+    matters has zero objects in `binaries[]` to back it up. `_cap_by_findings` reserves
+    one representative object per `(rule_id, subject)` group before filling the rest, so
+    ring's finding is never left with none."""
     getrandom_objects = tuple(
         BinaryEvidence(
             path=f"pkg/aaa_getrandom{i:04d}.so",
@@ -411,14 +412,14 @@ def test_a_low_severity_group_does_not_starve_a_high_severity_one(ruleset) -> No
     assert getrandom_finding["verdict"] == "CONTEXT_DEPENDENT"
 
 
-# --- artifacts.extensions agrees with binaries[] on the cap (#75 follow-up) --
+# --- artifacts.extensions agrees with binaries[] on the cap ---------------------
 
 
 def test_extensions_and_binaries_keep_the_same_objects_under_the_cap(ruleset) -> None:
-    """Before #75, `binaries[]` and `artifacts.extensions` were always the identical
-    plain path-sorted prefix -- same source, same sort, same cap. The finding-aware
-    selection could have silently broken that agreement; `_cap_by_findings` is shared
-    by both precisely so it does not. A referenced object that survives the cap into
+    """A plain path-sorted prefix keeps `binaries[]` and `artifacts.extensions`
+    identical by construction -- same source, same sort, same cap. A finding-aware
+    selection can silently break that agreement; `_cap_by_findings` is shared by both
+    precisely so it does not. A referenced object that survives the cap into
     `binaries[]` must survive into `extensions` too, at the same path."""
     evidence = _evidence_with_capped_binaries(filler_count=5, referenced_count=1)
     record = record_for(ruleset, evidence, max_binaries=3)
@@ -523,3 +524,31 @@ def test_the_record_contains_no_floats(ruleset) -> None:
 def test_the_record_round_trips_through_json(ruleset) -> None:
     record = record_for(ruleset, bundled_cryptography())
     assert json.loads(to_json_line(record)) == json.loads(json.dumps(record))
+
+
+def test_the_schema_does_not_close_the_verdict_class_list() -> None:
+    """A closed enum turns adding a verdict class into a silent schema break."""
+    schema = json.loads(
+        files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
+    )
+    assert "enum" not in schema["$defs"]["verdictClass"]
+    for name in load_ruleset().precedence:
+        assert name in schema["$defs"]["verdictClass"]["description"]
+
+
+def test_the_schema_forbids_a_passing_class() -> None:
+    text = files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
+    assert "COMPLIANT" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
+    assert "COMPATIBLE" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
+
+
+def test_the_record_says_which_evidence_level_produced_it(tmp_path: Path) -> None:
+    """Empty matched_symbols means "none found" at standard and "not recorded" at minimal."""
+    wheel = build_wheel(
+        tmp_path / "demo-1.0-py3-none-any.whl", name="demo", version="1.0", files={}
+    )
+    standard_context = ScanContext.build(load_ruleset())
+    standard = scan_wheel(wheel, standard_context)
+    assert standard["tool"]["evidence_level"] == "standard"
+    minimal_context = ScanContext.build(load_ruleset(), evidence_level="minimal")
+    assert scan_wheel(wheel, minimal_context)["tool"]["evidence_level"] == "minimal"

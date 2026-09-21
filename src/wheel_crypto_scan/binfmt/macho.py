@@ -14,18 +14,16 @@ dependency at load time. `LC_LOAD_WEAK_DYLIB` (tolerates the library being absen
 load timing differs) share `LC_LOAD_DYLIB`'s `dylib_command` layout byte for byte and
 all three join `needed` the same way it does. `LC_REEXPORT_DYLIB` does too, for a
 different reason: it makes the target's exports part of this object's own API surface,
-the direct analogue of a PE forwarder (#54) -- a shim that re-exports libcrypto is
-itself an OpenSSL API surface in the sense `linkage._binary_posture` cares about, and
-`needed` is the field it reads first. #59 is what closed this: previously only
-`LC_LOAD_DYLIB` and `LC_ID_DYLIB` were read and the other four were silently skipped,
-so a weak, lazy, upward or re-exported libcrypto dropped out of `needed` without a
-trace and a re-exporting shim read clean. The same issue closed two narrower gaps in
-the same walk: a dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string
-offset could not be trusted -- outside the command's own body, below where a string
-could legitimately start, or a run the body never closes -- used to be skipped rather
-than flagged, and a non-ASCII byte inside an otherwise-readable name used to drop the
-whole name instead of being sanitized the way `binfmt.elf` and `binfmt.pe` already
-sanitize theirs.
+the direct analogue of a PE forwarder -- a shim that re-exports libcrypto is itself an
+OpenSSL API surface in the sense `linkage._binary_posture` cares about, and `needed` is
+the field it reads first. Reading only `LC_LOAD_DYLIB` and `LC_ID_DYLIB` and silently
+skipping the other four would drop a weak, lazy, upward or re-exported libcrypto out of
+`needed` without a trace and let a re-exporting shim read clean. The same walk covers
+two narrower shapes: a dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string
+offset cannot be trusted -- outside the command's own body, below where a string could
+legitimately start, or a run the body never closes -- is flagged rather than silently
+skipped, and a non-ASCII byte inside an otherwise-readable name is sanitized the way
+`binfmt.elf` and `binfmt.pe` sanitize theirs, rather than dropping the whole name.
 
 Still not read: the indirect symbol table and the two-level namespace ordinals in
 `LC_DYSYMTAB`, which would say which dependency each import is expected to resolve
@@ -40,46 +38,44 @@ symbol reachable only through those tables, whose name is nowhere in the string 
 either.
 
 `partial_analysis` survives for seven cases: a strings read that stopped before the end
-of the object, so a region of it was never looked at; a `LC_SYMTAB` that could not be read in
-full, whether it is absent, unreachable, names nothing we could resolve, holds nothing
-but debug records, or declares fewer entries than it carries names for, so the
+of the object, so a region of it was never looked at; a `LC_SYMTAB` that could not be
+read in full, whether it is absent, unreachable, names nothing we could resolve, holds
+nothing but debug records, or declares fewer entries than it carries names for, so the
 imported/defined split is missing or incomplete; a slice of a fat binary that could not
 be read, or that the fat header placed outside the object, so one architecture is
-unknown rather than clean; a header or set of load commands that would not parse at
-all, which costs the structural read but not the strings already found; a
-dylib-loading, `LC_ID_DYLIB` or `LC_RPATH` command whose string could not be read, so
-a dependency, the object's own install name, or an rpath entry may be missing rather
-than absent; a load command's own `cmd`/`cmdsize` header that could not be
-trusted -- too short to hold itself, running past the commands, or (#90) not aligned
-to the ABI's own 8-byte (64-bit) or 4-byte (32-bit) boundary -- or `ncmds` itself
-undercounting how many commands the object actually carries (#90), which stops the
-walk rather than guessing where the next one starts, so
-every later command -- an honest `LC_LOAD_DYLIB` included -- is unaccounted for
-rather than absent (#84, #90); and more than one `LC_ID_DYLIB` or more than one `LC_SYMTAB`
-command in the same object, which is not the same failure as either of the two above:
-the walk reaches every command and each one parses on its own, but there is no name to
-tell a real `LC_ID_DYLIB` or `LC_SYMTAB` from a decoy sharing its `cmd`, the way there
-is for a dylib-loading command's *string*. Neither candidate is trusted -- `soname` or
-the symbol table reads as though nothing of that kind existed, never as whichever one
-the walk reached last -- because trusting either is exactly the last-wins hazard #56
-closed for ELF's section tables, applied here to load commands instead of sections.
-#85.
+unknown rather than clean; a header or set of load commands that would not parse at all,
+which costs the structural read but not the strings already found; a dylib-loading,
+`LC_ID_DYLIB` or `LC_RPATH` command whose string could not be read, so a dependency, the
+object's own install name, or an rpath entry may be missing rather than absent; a load
+command's own `cmd`/`cmdsize` header that could not be trusted -- too short to hold
+itself, running past the commands, or not aligned to the ABI's own 8-byte (64-bit) or
+4-byte (32-bit) boundary -- or `ncmds` itself undercounting how many commands the object
+actually carries, which stops the walk rather than guessing where the next one starts,
+so every later command -- an honest `LC_LOAD_DYLIB` included -- is unaccounted for
+rather than absent; and more than one `LC_ID_DYLIB` or more than one `LC_SYMTAB` command
+in the same object, which is not the same failure as either of the two above: the walk
+reaches every command and each one parses on its own, but there is no name to tell a
+real `LC_ID_DYLIB` or `LC_SYMTAB` from a decoy sharing its `cmd`, the way there is for a
+dylib-loading command's *string*. Neither candidate is trusted -- `soname` or the symbol
+table reads as though nothing of that kind existed, never as whichever one the walk
+reached last -- because trusting either is exactly the last-wins hazard `binfmt.elf`
+refuses for two sections of one type, applied here to load commands instead of sections.
 
 A universal binary is read slice by slice and merged into one record, in both the
 `FAT_MAGIC` and `FAT_MAGIC_64` forms, which differ only in the width of the arch table's
 offset and size fields. Every slice reading cleanly is what clears the flag, which
-matters because most macOS wheels are universal2: while only the first slice was read,
-every fat object was partial, and a universal2 wheel with no crypto in it came out
-`OPAQUE` rather than `NO_CRYPTO_DETECTED`.
+matters because most macOS wheels are universal2: reading only the first slice would
+leave every fat object partial, and a universal2 wheel with no crypto in it would come
+out `OPAQUE` rather than `NO_CRYPTO_DETECTED`.
 """
 
 # This module carries a docstring that names every way `partial_analysis` can survive,
-# by design (AGENTS.md: every policy entry carries a `why`), and each of #59/#84/#85
-# added one more without shrinking any of the others. Disabled here rather than raising
-# `max-module-lines` project-wide a third time (#84 1000->1100, #85 1100->1200), which
-# would quietly give every OTHER module the same headroom this one earns by being
-# documentation-heavy. See DECISIONS.md, "A module-local line-count exemption instead
-# of a third global bump" (#85).
+# by design (AGENTS.md: every policy entry carries a `why`), and every load-command
+# shape this reader flags adds a line without shrinking any of the others.
+# Disabled here rather than raising `max-module-lines` project-wide, which would
+# quietly give every OTHER module the same headroom this one earns by being
+# documentation-heavy. See DESIGN.md, "`binfmt/macho.py` carries a module-local
+# line-count exemption".
 # pylint: disable=too-many-lines
 
 from __future__ import annotations
@@ -133,8 +129,8 @@ _LC_LOAD_UPWARD_DYLIB = 0x80000023
 # below are the same dependency with different load-time tolerance or timing (absent
 # is fine, resolved lazily, resolved after the things that depend on it); and
 # `LC_REEXPORT_DYLIB` folds the target's exports into this object's own surface, the
-# Mach-O analogue of a PE forwarder (#54). All five are read into `needed` the same
-# way: the loader treats every one of them as a real dependency it must resolve.
+# Mach-O analogue of a PE forwarder. All five are read into `needed` the same way: the
+# loader treats every one of them as a real dependency it must resolve.
 _LC_DYLIB_DEPENDENCIES = frozenset(
     {
         _LC_LOAD_DYLIB,
@@ -148,8 +144,8 @@ _LC_DYLIB_DEPENDENCIES = frozenset(
 # The fixed header every `dylib_command` or `rpath_command` carries before its string
 # can legitimately start. An offset inside that range names one of the fixed integer
 # fields, not something the object spells out, and trusting it would let a crafted
-# object announce a dependency or path it never named -- the decoy shape #56's ELF
-# work is the precedent for guarding against.
+# object announce a dependency or path it never named -- the same decoy shape
+# `binfmt.elf` guards against when it finds sections by type.
 _DYLIB_COMMAND_HEADER_SIZE = 24
 _RPATH_COMMAND_HEADER_SIZE = 12
 
@@ -177,10 +173,10 @@ _NLIST_SIZE = {False: 12, True: 16}
 _MAX_FAT_SLICES = 32
 
 # `sizeofcmds` is a 32-bit field the header declares about itself, the same shape as
-# `nsyms` and `strsize` below: nothing before this checked it against anything but a
-# short read. Real load commands are low tens of KiB; past a generous 1 MiB a streamed
-# member paid a read proportional to what the header claimed rather than to what
-# `ncmds` real commands could possibly need, up to the whole member. #63.
+# `nsyms` and `strsize` below: without this cap, nothing checks it against anything but
+# a short read. Real load commands are low tens of KiB; past a generous 1 MiB a streamed
+# member would pay a read proportional to what the header claims rather than to what
+# `ncmds` real commands could possibly need, up to the whole member.
 _MAX_SIZEOFCMDS = 1024 * 1024
 
 _CPU_TYPE_NAMES = {
@@ -269,16 +265,15 @@ class _SliceHeader:
     # than absent.
     load_command_string_unread: bool
     # A command's own `cmd`/`cmdsize` header could not be trusted -- too short, running
-    # past the commands, or (#90) not aligned to the ABI's own 8-/4-byte boundary --
-    # or `ncmds` undercounted how many commands the object actually carries (#90): the
-    # walk stopped early either way, so everything after is unaccounted for, not
-    # absent. #84, #90.
+    # past the commands, or not aligned to the ABI's own 8-/4-byte boundary -- or
+    # `ncmds` undercounted how many commands the object actually carries: the walk
+    # stopped early either way, so everything after is unaccounted for, not absent.
     load_command_walk_truncated: bool
     # More than one LC_ID_DYLIB, or more than one LC_SYMTAB, was walked, so `soname`
     # or `symtab` above is already `None` for whichever field was ambiguous: neither
     # candidate is trusted, rather than whichever one the walk reached last. Two
     # separate flags, not one merged boolean, so `read_macho`'s error message can name
-    # which command was ambiguous rather than "one of two things was". #85, #103.
+    # which command was ambiguous rather than "one of two things was".
     id_dylib_ambiguous: bool
     symtab_ambiguous: bool
 
@@ -322,12 +317,11 @@ class _Symtab:
 
 @dataclass(frozen=True, slots=True)
 class _ThinHeader:
-    """What one thin Mach-O header and its load-command walk yielded.
+    """What one thin Mach-O header and its load-command walk yields.
 
-    `_read_thin` returned a bare positional tuple through #59 and #84, both of which
-    grew it by one element and both of whose own `DECISIONS.md` entries predicted it
-    would keep happening. #85's ambiguity flag is the third cause to join it, which is
-    the point past which a positional tuple stops being the cheaper choice.
+    A named record rather than a bare positional tuple: every partial cause the walk
+    can report is one more field, and with the string, walk and ambiguity causes
+    beside the header's own fields, a positional tuple stops being the cheaper choice.
     """
 
     cputype: int
@@ -335,14 +329,13 @@ class _ThinHeader:
     needed: tuple[str, ...]
     rpath: tuple[str, ...]
     symtab: _Symtab | None
-    # A dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read. #59.
+    # A dylib-loading, LC_ID_DYLIB or LC_RPATH command's string could not be read.
     load_command_string_unread: bool
     # A command's own cmd/cmdsize header could not be trusted, or ncmds undercounted
-    # the real command count, so the walk stopped early. #84, #90.
+    # the real command count, so the walk stopped early.
     load_command_walk_truncated: bool
     # More than one LC_ID_DYLIB, or more than one LC_SYMTAB, was walked; `soname`
     # and/or `symtab` above are already `None` for whichever field was ambiguous.
-    # #85, #103.
     id_dylib_ambiguous: bool
     symtab_ambiguous: bool
 
@@ -685,7 +678,7 @@ def _read_slice_header(stream, slice_: _Slice) -> _SliceHeader:
     `_read_thin` also raises `_Unreadable` directly, for `sizeofcmds` over
     `_MAX_SIZEOFCMDS`: that message is caught and re-raised here rather than being
     rewritten by the generic `except Exception` below, the same way `struct.error`
-    already gets its own, more specific text instead of the catch-all one. #63.
+    already gets its own, more specific text instead of the catch-all one.
     """
     stream.seek(slice_.offset)
     head = stream.read(4)
@@ -743,7 +736,7 @@ def _read_slice_symbols(
     # than one `LC_SYMTAB` reaches here the same way: `_read_thin` has already reset
     # `header.symtab` to `None` rather than hand this function whichever candidate it
     # walked last, so an ambiguous table reads exactly like an absent one -- `stripped`
-    # included -- with `macho_load_command_ambiguous` carrying the reason. #85, #103.
+    # included -- with `macho_load_command_ambiguous` carrying the reason.
     stripped = header.symtab is None
     symbols_complete = False
     symbols_shortfall: str | None = None
@@ -812,7 +805,7 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
         # Checked before the read, not after: `stream.read(sizeofcmds)` below costs
         # exactly what `sizeofcmds` claims, through a streamed zip member as much as an
         # in-memory one, so refusing here is what keeps a 300 MiB member with a lying
-        # header from being read whole just to find out it lied. #63.
+        # header from being read whole just to find out it lied.
         raise _Unreadable(
             f"sizeofcmds is {sizeofcmds} bytes, over the {_MAX_SIZEOFCMDS}-byte cap on "
             "load commands"
@@ -831,28 +824,28 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
     # regardless of whether each one's own body could be read. Real Mach-O objects
     # never carry more than one of either -- an image has one install name and one
     # symbol table -- so more than one is a decoy, not a second slice of evidence, and
-    # which one is real cannot be told from `cmd` alone. #85.
+    # which one is real cannot be told from `cmd` alone.
     id_dylib_seen = 0
     symtab_seen = 0
     # The ABI's own alignment for `cmdsize`: a multiple of 8 on a 64-bit object, 4 on a
     # 32-bit one. A `cmdsize` that lies about its extent (too small, or overrunning the
-    # commands) was already caught below (#84); one that stays inside the commands and
-    # is internally consistent by that check alone can still be a lie -- misaligned by
-    # a few bytes -- and every command after it is then read from the wrong offset,
-    # desyncing the walk without ever tripping either #84 break. #90.
+    # commands) is caught below by the extent check; one that stays inside the commands
+    # and is internally consistent by that check alone can still be a lie -- misaligned
+    # by a few bytes -- and every command after it is then read from the wrong offset,
+    # desyncing the walk without ever tripping either extent break.
     cmdsize_alignment = 8 if is64 else 4
     pos = 0
     for _ in range(ncmds):
         if pos + 8 > len(commands):
-            # Not even a `cmd`/`cmdsize` pair left to read. #84.
+            # Not even a `cmd`/`cmdsize` pair left to read.
             load_command_walk_truncated = True
             break
         cmd, cmdsize = struct.unpack_from(end + "II", commands, pos)
         if cmdsize < 8 or pos + cmdsize > len(commands) or cmdsize % cmdsize_alignment != 0:
             # `cmdsize` lies about its own extent -- too small, overrunning the
-            # commands, or (#90) not a multiple of the ABI's own alignment -- so `pos`
-            # past here is a guess, not a fact: stop rather than resync on a value that
-            # already lied. #84, #90.
+            # commands, or not a multiple of the ABI's own alignment -- so `pos` past
+            # here is a guess, not a fact: stop rather than resync on a value that
+            # already lied.
             load_command_walk_truncated = True
             break
         body = commands[pos : pos + cmdsize]
@@ -891,25 +884,26 @@ def _read_thin(stream, base: int, slice_size: int, is64: bool, big_endian: bool)
         # The loop ran out of `ncmds` without ever hitting one of the two breaks above
         # -- every command it read parsed cleanly -- but that is not the same claim as
         # "every command in the object was read". `ncmds` is the header's own count,
-        # and nothing before this checked it against how many bytes the walk actually
-        # consumed. Two different lies land here, not one: a header that understates
-        # `ncmds` stops the walk early exactly the way a lying `cmdsize` does, just one
-        # command short of the lie showing up in any single command's own header; and
-        # an aligned, individually-honest-looking `cmdsize` that overstates ITS OWN
-        # command's real size swallows a later command's bytes into its own padding
-        # without any single header ever failing a check -- this catches that shape
-        # too, not just an undercounted `ncmds`. #90.
+        # and without this check nothing verifies it against how many bytes the walk
+        # actually consumed. Two different lies land here, not one: a header that
+        # understates `ncmds` stops the walk early exactly the way a lying `cmdsize`
+        # does, just one command short of the lie showing up in any single command's
+        # own header; and an aligned, individually-honest-looking `cmdsize` that
+        # overstates ITS OWN command's real size swallows a later command's bytes into
+        # its own padding without any single header ever failing a check -- this
+        # catches that shape too, not just an undercounted `ncmds`.
         if pos != len(commands):
             load_command_walk_truncated = True
 
     # Neither candidate is trusted once there is more than one: picking whichever one
-    # the walk reached last is the exact hazard #56 closed for ELF's section tables,
-    # one level up -- there it was "which section is the real .dynsym", here it is
-    # "which command is the real LC_ID_DYLIB (or LC_SYMTAB)". `soname` and `symtab`
+    # the walk reached last is the exact hazard `binfmt.elf` refuses for its section
+    # tables, one level up -- there it is "which section is the real .dynsym", here it
+    # is "which command is the real LC_ID_DYLIB (or LC_SYMTAB)". `soname` and `symtab`
     # read as though this slice never declared one, not as whichever candidate sorted
     # last in the walk -- `read_macho` can still backfill `soname` from a later,
-    # unambiguous fat-binary slice (`DECISIONS.md`'s "one record, slices are merged"),
-    # so a nulled soname here is not always the record's final answer.
+    # unambiguous fat-binary slice (`DESIGN.md`, "A universal binary is one record, and
+    # its slices are merged"), so a nulled soname here is not always the record's final
+    # answer.
     id_dylib_ambiguous = id_dylib_seen > 1
     symtab_ambiguous = symtab_seen > 1
     if id_dylib_ambiguous:
@@ -967,16 +961,14 @@ def _read_symbols(
     fixed budget. `max_strings_bytes` is threaded through and taken as a second,
     fixed ceiling on what either table's *declared* size is allowed to ask `_available`
     for. `binfmt.elf._symbol_bytes` takes the same parameter as its own
-    `max_table_bytes` for `.dynsym`/`.dynstr`, but only enforces it through
-    `_bounded_section_data`'s `compressed or SHT_NOBITS` guard (#62) -- an ordinary,
-    uncompressed `.dynsym`/`.dynstr` still reads through unbounded today (#95). This
-    cap is unconditional on `nsyms`/`strsize` themselves, so it is stricter than that
-    ELF path, not a mirror of it: nothing here depends on how the table is stored, only
-    on what it declares. `sym_wanted` and `symtab.strsize` themselves stay uncapped
-    below, in the `truncated` check: reading less than they declare -- whether the
-    slice ran out or the budget did -- is exactly what `truncated` already means, so a
-    table over budget falls into the read this function already had for one that is
-    merely short, no new branch needed. #63.
+    `max_table_bytes` for `.dynsym`/`.dynstr`, enforced through
+    `_bounded_section_data`, which refuses an over-budget table outright. Here the cap
+    is unconditional on `nsyms`/`strsize` themselves: nothing depends on how the table
+    is stored, only on what it declares. `sym_wanted` and `symtab.strsize` themselves
+    stay uncapped below, in the `truncated` check: reading less than they declare --
+    whether the slice ran out or the budget did -- is exactly what `truncated` means,
+    so a table over budget falls into the same read as one that is merely short, with
+    no branch of its own.
     """
     entry_size = _NLIST_SIZE[is64]
     sym_start = base + symtab.symoff
@@ -1142,19 +1134,18 @@ def _iter_symbols(
     `alias` is already resolved, ABI-prefix-stripped and sanitised here -- the same
     `resolver` ordinary names go through, not a second, unguarded read of `strings`.
     An `N_INDR` row's target is a string table offset exactly like any `n_strx`, so a
-    table pointing many rows' `n_value` at one enormous target had the identical
-    unbounded cost #61 closed for `n_strx`, one call site over: `resolver` was already
-    in scope here and simply was not being used for it. `alias` is `None` both when a
-    row has none and when its target could not be resolved (over the cap, over the
-    budget, past the table, or into a run it never closes) -- the caller cannot
-    tell, and does not need to: a crypto name an unresolved alias hides is still a
-    name `binfmt.symtab.holds_a_name_not_read`'s independent scan of `strings` finds
-    left over and unaccounted for, the same safety net an ordinary unresolved name
-    already relies on.
+    table pointing many rows' `n_value` at one enormous target has the identical
+    unbounded cost as one pointing `n_strx` there, one call site over, and goes through
+    the same `resolver`. `alias` is `None` both when a row has none and when its target
+    could not be resolved (over the cap, over the budget, past the table, or into a run
+    it never closes) -- the caller cannot tell, and does not need to: a crypto name an
+    unresolved alias hides is still a name `binfmt.symtab.holds_a_name_not_read`'s
+    independent scan of `strings` finds left over and unaccounted for, the same safety
+    net an ordinary unresolved name already relies on.
 
     `BoundedNames` is built fresh here, once per call, because its cache is only sound
     over the one string table this call was handed: `_read_symbols` makes one call per
-    slice of a universal binary, never one shared across slices. #61.
+    slice of a universal binary, never one shared across slices.
     """
     order = ">" if big_endian else "<"
     head = struct.Struct(order + "IBB")

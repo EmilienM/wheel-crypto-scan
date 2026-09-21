@@ -135,7 +135,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "30"
+    assert ruleset.version == "31"
     assert len(ruleset.rules) > 20
 
 
@@ -153,11 +153,11 @@ def test_every_version_anchored_group_names_every_major() -> None:
     later would be policed by nobody. A group qualifies when a substring ends in a
     single digit and a dot, which is what `openssl_banner` and `nss` are built from.
 
-    `openssl_banner` stopped at major 3 while cryptography's own PyPI wheels already
-    compiled 4 in (#123), and nothing failed. The negative case pins the cheaper fix
-    out: the product name and a space, with no digit, also claims prose such as
-    OpenSSL's own "OpenSSL 3's legacy provider failed to load", which a wheel linking
-    the system library carries too.
+    A banner group that names only the majors that have shipped misses the next one
+    with nothing failing: cryptography's own PyPI wheels compile OpenSSL 4 in. The
+    negative case pins the cheaper alternative out: the product name and a space, with
+    no digit, also claims prose such as OpenSSL's own "OpenSSL 3's legacy provider
+    failed to load", which a wheel linking the system library carries too.
     """
     ruleset = load_ruleset()
     anchored = re.compile(r"^(?P<product>.+ )[0-9]\.$")
@@ -192,10 +192,10 @@ def test_every_version_anchored_group_names_every_major() -> None:
     ],
 )
 def test_the_shipped_crate_table_decides_what_it_says_it_decides(crate: str, verdict: str) -> None:
-    """These entries were added as reach, and reach nothing holds can be flipped or
-    deleted without a test moving (#123). An entry's verdict is the whole of what it
-    decides, so that is what is pinned: `openssl-src` says a vendored OpenSSL build is
-    a condition to confirm, not a non-approved primitive, and the two spellings of
+    """These entries are reach, and reach nothing holds can be flipped or deleted
+    without a test moving. An entry's verdict is the whole of what it decides, so that
+    is what is pinned: `openssl-src` says a vendored OpenSSL build is a condition to
+    confirm, not a non-approved primitive, and the two spellings of
     SHA-1 and of MD5 have to agree with each other or a build pinned to the older name
     reads differently from the same code under the newer one."""
     assert load_ruleset().rust_crates[crate].verdict == verdict
@@ -326,8 +326,8 @@ def test_every_always_report_library_can_be_recognised_without_its_symbols() -> 
     with `always_report` set is one whose posture is in every record, so `none` for it
     is an assertion the tool makes about every wheel, and it should not rest on the
     fragile half alone. It is a weaker premise than it sounds -- an object can carry
-    the static copy and no banner -- which is why the ordinal export that used to lean
-    on it no longer does.
+    the static copy and no banner -- which is why an ordinal export is not treated as
+    routine on the strength of it.
     """
     libraries = load_ruleset().libraries.values()
     reported = [library for library in libraries if library.always_report]
@@ -582,9 +582,10 @@ def test_suppressed_by_on_a_python_module_entry_is_rejected() -> None:
 
 
 def test_a_crate_entry_suppressed_by_resolves_to_the_owning_rule_and_crate_name() -> None:
-    """The entry-level feature `BIN_AWS_LC_RS_CRATE`/`BIN_AWS_LC_FIPS` no longer needs:
-    both crates are owned by their own dedicated rule, so the rule-level relation
-    between those two rules covers it. Pinned here against a minimal fixture instead."""
+    """No shipped crate carries an entry-level `suppressed_by`: aws-lc-rs and
+    aws-lc-fips-sys are owned by `BIN_AWS_LC_RS_CRATE` and `BIN_AWS_LC_FIPS`, which relate
+    through a rule-level one. The entry-level resolution is pinned against a minimal
+    fixture."""
     data = rust_crate_ruleset()
     data["rust_crate"][0]["suppressed_by"] = ["boring"]
     ruleset = parse_ruleset(data)
@@ -907,8 +908,8 @@ def test_soname_normalisation(soname: str, base: str, mangled: bool) -> None:
         ("libcrypto-3.dll", "libcrypto", False),
         ("libssl-1_1-x64.dll", "libssl", False),
         ("libssl-3-arm64.dll", "libssl", False),
-        # The decoration is a token, not four enumerated architectures (#123): a vendor
-        # spelling nobody listed used to leave the name resolving to no library at all.
+        # The decoration is a token, not four enumerated architectures: a vendor
+        # spelling nobody listed must not leave the name resolving to no library at all.
         ("libcrypto-3-aarch64.dll", "libcrypto", False),
         ("libgnutls-30.dll", "libgnutls", False),
         ("libgcrypt-20.dll", "libgcrypt", False),
@@ -1174,7 +1175,7 @@ def test_naming_both_partial_reason_keys_is_rejected() -> None:
 
 
 def test_a_partial_binary_rule_may_name_neither_key() -> None:
-    """No filter means the rule speaks for every cause, which is the old behaviour."""
+    """No filter means the rule speaks for every cause."""
     ruleset = parse_ruleset(_with_partial_rule())
     assert [dict(m) for m in ruleset.rule("BIN_PARTIAL_TEST").matches] == [
         {"kind": "partial_binary"}
@@ -1295,7 +1296,7 @@ def test_an_unknown_usedforsecurity_list_element_is_rejected() -> None:
 
 
 def test_a_boolean_usedforsecurity_is_rejected_rather_than_crashing_at_scan_time() -> None:
-    """#82: a bare TOML `true` parses to a Python bool, and `attrs.get(...) not in
+    """A bare TOML `true` parses to a Python bool, and `attrs.get(...) not in
     want_used` raises `TypeError: argument of type 'bool' is not a container or
     iterable` at scan time when `usedforsecurity` is that bool. The loader must catch
     this shape instead of letting a custom ruleset load clean and then crash the CLI.
@@ -1325,7 +1326,7 @@ def test_an_empty_usedforsecurity_list_is_rejected() -> None:
 
 
 def test_a_boolean_targets_is_rejected_rather_than_crashing_at_scan_time() -> None:
-    """#82: `frozenset(match.get("targets", ()))` raises the identical `TypeError` when
+    """`frozenset(match.get("targets", ()))` raises the identical `TypeError` when
     `targets` is a bool."""
     with pytest.raises(RulesetError, match="targets must be a list of strings"):
         parse_ruleset(_with_py_call_rule(targets=True))
@@ -1397,8 +1398,8 @@ def test_a_boolean_weak_algorithms_only_loads_clean() -> None:
 
 
 def test_a_string_weak_algorithms_only_is_rejected() -> None:
-    """#82's crash class, one field over: `weak_only = bool(match.get(...))` makes
-    `weak_algorithms_only = "false"` evaluate to `True`, the opposite of what a rule
+    """The same class of mistake, one field over: `weak_only = bool(match.get(...))`
+    makes `weak_algorithms_only = "false"` evaluate to `True`, the opposite of what a rule
     author who wrote that string almost certainly meant, with no crash and no error to
     notice it by."""
     with pytest.raises(RulesetError, match="weak_algorithms_only must be a boolean"):
@@ -1444,8 +1445,8 @@ def _with_py_attr_rule(**match) -> dict:
 
 
 def test_a_boolean_attributes_is_rejected_rather_than_crashing_at_scan_time() -> None:
-    """#82's crash class also applies to `_match_py_attr`'s `frozenset(match.get(
-    "attributes", ()))`."""
+    """The same crash applies to `_match_py_attr`'s
+    `frozenset(match.get("attributes", ()))`."""
     with pytest.raises(RulesetError, match="attributes must be a list of strings"):
         parse_ruleset(_with_py_attr_rule(attributes=True))
 
@@ -1546,3 +1547,34 @@ def test_a_valid_py_call_rule_still_matches_evidence_end_to_end() -> None:
     )
     findings = engine.apply_rules(ruleset, evidence, resolve_linkage(ruleset, evidence))
     assert [finding.rule_id for finding in findings] == ["PY_CALL_TEST"]
+
+
+def test_every_crypto_library_with_a_verdict_is_reachable_by_a_linkage_rule() -> None:
+    """Structural guard: a library nobody can match is a silent hole in the taxonomy."""
+    ruleset = load_ruleset()
+    covered: set[str] = set()
+    for _, match in ruleset.matches_for_kind("linkage"):
+        if "name" in match:
+            covered.add(str(match["name"]))
+        elif match.get("table") == "crypto_library":
+            excluded = set(match.get("exclude_libraries", ()))
+            covered.update(set(ruleset.libraries) - excluded)
+    needs_cover = {name for name, lib in ruleset.libraries.items() if lib.verdict}
+    assert needs_cover - covered == set()
+
+
+@pytest.mark.parametrize(
+    ("name", "base", "mangled"),
+    [
+        ("libcrypto.dll", "libcrypto", False),
+        ("libcrypto-3a1f2b4c.dll", "libcrypto", True),
+        ("libssl-1_1-x64.dll", "libssl", False),
+        # A vendor spelling nobody enumerated: an architecture written as an
+        # alternation of four tokens would resolve this to no library at all.
+        ("libcrypto-3-aarch64.dll", "libcrypto", False),
+        ("_ext.pyd", "_ext", False),
+    ],
+)
+def test_windows_library_names_normalise(name: str, base: str, mangled: bool) -> None:
+    info = load_ruleset().conventions.normalise_soname(name)
+    assert (info.base, info.mangled) == (base, mangled)

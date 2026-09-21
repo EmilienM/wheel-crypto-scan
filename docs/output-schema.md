@@ -89,7 +89,7 @@ reachable only through the one symlink naming it), so one representative per
 the same underlying archive errors for a member-refusal wheel, but capped separately
 and can disagree on how many of those events they still list; `skipped_truncated` and
 `errors_truncated` must both be read to know whether either is complete. See
-[`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix](decisions/limits.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix).
+[`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix](design/limits.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix).
 
 `py_files_unparsed` counts source files that would not parse. `binaries_truncated` is
 true when the wheel has more native objects than fit in the `extensions` list above
@@ -102,16 +102,15 @@ far: one refused by a limit is in `skipped` above, one that failed to open or re
 an error instead. Only the arrays a consumer reads back out of the JSON are capped for
 the objects that did become evidence, and `extensions` and `binaries[]` are always
 capped to the same set of objects, so the two never disagree on which ones they list.
-Neither is a
-plain path-sorted prefix: the objects any `findings[].locations[]` names are kept
-first (one per distinct `(rule_id, subject)` a finding names, before any finding gets
+Neither is a plain path-sorted prefix: the objects any `findings[].locations[]` names are
+kept first (one per distinct `(rule_id, subject)` a finding names, before any finding gets
 a second object), and the remaining room is filled with the rest in path order. A
 finding's `locations[].path` can still, rarely, name an object that is not present in
-either array: only when findings alone name more distinct `(rule_id, subject)` groups
-than the cap allows, in which case the groups that sort last by `(rule_id, subject)`
-lose out. `findings[]` where `rule_id == "WHEEL_BINARIES_TRUNCATED"` names how many
-objects were evaluated in total when this happens. See
-[`binaries[]` keeps what a finding points at, before filling the rest](decisions/limits.md#binaries-keeps-what-a-finding-points-at-before-filling-the-rest).
+either array: only when findings alone name more distinct `(rule_id, subject)` groups than
+the cap allows, in which case the groups that sort last by `(rule_id, subject)` lose out.
+`findings[]` where `rule_id == "WHEEL_BINARIES_TRUNCATED"` names how many objects were
+evaluated in total when this happens. See
+[`binaries[]` keeps what a finding points at, before filling the rest](design/limits.md#binaries-keeps-what-a-finding-points-at-before-filling-the-rest).
 
 `source_available` is `false` when the wheel ships no readable Python at all: bytecode
 without source, or source that would not parse. **When it is false, the absence of Python
@@ -127,7 +126,7 @@ For a universal Mach-O that is one entry for the member rather than one per
 architecture, because the slices are merged. `matched_symbols` can therefore carry one
 name as both `imported` and `defined`, which no single slice can be, when the
 architectures disagree; `machine`, `bits` and `endian` describe the first slice alone.
-[A universal binary is one record, and its slices are merged](decisions/macho.md#a-universal-binary-is-one-record-and-its-slices-are-merged)
+[A universal binary is one record, and its slices are merged](design/macho.md#a-universal-binary-is-one-record-and-its-slices-are-merged)
 records why they are merged anyway.
 
 | Field | Meaning |
@@ -160,7 +159,7 @@ positives rather than a surprise.
 | `elf_section_data_unread` | A section's bytes could not be read, so the strings pass ran over less than the object holds. An ordinary `.rodata`/`.comment` over this reader's own budget does not reach this cause: its in-budget prefix is kept and the object reads `strings_bytes_unread` instead, not this token — reserved for a section whose bytes really could not be produced at all. |
 | `elf_dynamic_unread` | `.dynamic` would not resolve, or a section named `.dynamic` exists whose declared `sh_type` is not `SHT_DYNAMIC` and so cannot be trusted as one, so `needed`, `soname`, `rpath` and `runpath` are empty because they could not be read, not because the object declares none. |
 | `elf_dynsym_unread` | `.dynsym` would not read, named strings `.dynstr` does not hold, declared fewer entries than `.dynstr` holds names for, a section named `.dynsym` exists whose declared `sh_type` is not `SHT_DYNSYM` and so cannot be trusted as one, or `.dynsym`/`.dynstr` declares more bytes than this reader's own budget is willing to read — the honest table may be entirely present in the object, and this cause does not mean it lied, only that the reader stopped short of it — so the imported-versus-defined split is missing or partial. |
-| `elf_symtab_unread` | `.symtab` would not read, or a section named `.symtab` exists whose declared `sh_type` is not `SHT_SYMTAB` and so cannot be trusted as one, so `stripped` and `symbol_counts.symtab` describe a table we failed on rather than one the object does not have. Costs the imported-versus-defined split too, but only for an object with no `.dynsym` at all: `.symtab` is matched for crypto symbols exactly then, through the identical cross-check `.dynsym` gets. When `.dynsym` is present, `.symtab` is never consulted for matching at all, and this kind only ever reflects `stripped`/the count. |
+| `elf_symtab_unread` | `.symtab` would not read, or a section named `.symtab` exists whose declared `sh_type` is not `SHT_SYMTAB` and so cannot be trusted as one, so `stripped` and `symbol_counts.symtab` describe a table we failed on rather than one the object does not have. Costs the imported-versus-defined split too, in two different degrees. For an object with no `.dynsym` at all, `.symtab` is the only symbol table and the whole split is unavailable; for an object that has one, `.dynsym` still answers imports and what is lost is the *local definitions* `.symtab` alone carries, which is how a statically linked copy with a version script is recognised. `.symtab` is matched for crypto symbols in both cases, and a budget refusal or a row naming a string `.strtab` does not hold folds into this kind in both. The cross-checks differ with the mode: with no `.dynsym`, `.symtab` is the object's only table and gets the full check `.dynsym` gets, so `.strtab` holding names for more entries than `.symtab` declares also lands here; with a `.dynsym` present, that check does not run, because it asks whether a *sole* table under-declared itself and a `.symtab` trimmed by a partial strip is ordinary rather than a lie. |
 | `elf_go_buildinfo_unread` | `.go.buildinfo` would not read, so Go toolchain provenance is missing. Does not cost the linkage answer. |
 | `macho_header_unread` | The Mach-O header, or a fat header, would not parse. |
 | `macho_symtab_incomplete` | `LC_SYMTAB` was absent, declared no entries, or declared entries this reader could not take at their word: unreachable, naming strings it does not hold, holding nothing but debug records, declaring fewer entries than the string table holds names for, or declaring more symbol- or string-table bytes than this reader's own budget is willing to read — the honest table may be entirely present in the object, and this cause does not mean it lied, only that the reader stopped short of it. It records an error unless the table left nothing unexplained — an absent `LC_SYMTAB`, or one declaring no entries over a string table holding no name it failed to account for — and that error says which way it fell short. `stripped` and `symbol_counts.symtab` then describe a table we could not use rather than one the object does not have. |
@@ -215,7 +214,7 @@ The field most consumers filter on. Always present.
 | `system` | Resolves `libcrypto`/`libssl` from the host, so it inherits the host's FIPS provider and crypto policy. **The condition under which a `CONDITIONAL` wheel is acceptable.** An OpenSSL version banner in the same object does not change this when the object imports from the host library, was read in full, and carries no `openssl_build_info` string, because that banner is header text. The field can read `system` while some object in the wheel read `unknown` (an `unknown` never outvotes a definite posture). `DERIVED_SYSTEM_OPENSSL_ONLY` is then withheld, and `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` names that object and carries `OPAQUE`. |
 | `bundled` | Ships its own copy: in a vendor directory, via a hash-renamed dependency, or via a dependency that names an unmangled but unrenamed file the wheel itself ships (delocate's convention). Cannot see the system provider. |
 | `static` | Compiled in, with no library file and no declared dependency. Same consequence as `bundled`, harder to spot. |
-| `mixed` | Both postures found across different objects in one wheel (the original, cross-object case); or, for one object's own evidence: two or more of `system`, `bundled` and `static` all true for it at once (a `needed` match to the system library alongside a definition, or a banner that is not header text (see `system`); a `needed` entry that resolves inside the wheel alongside a *different* `needed` entry that resolves to the system library, or alongside a definition/banner); or exactly one of `system`/`bundled` true alongside an unconfirmed, vendor-shaped-but-unconfirmed `needed` entry AND a definition/banner together (`uncertain` and `static` both true) — `uncertain` alone never triggers `mixed` on its own, only in combination with `static`. Includes the case a universal (fat) Mach-O object merges into one record when its slices disagree this way, which used to read `bundled` or `system` outright instead. |
+| `mixed` | Both postures found across different objects in one wheel (the cross-object case); or, for one object's own evidence: two or more of `system`, `bundled` and `static` all true for it at once (a `needed` match to the system library alongside a definition, or a banner that is not header text (see `system`); a `needed` entry that resolves inside the wheel alongside a *different* `needed` entry that resolves to the system library, or alongside a definition/banner); or exactly one of `system`/`bundled` true alongside an unconfirmed, vendor-shaped-but-unconfirmed `needed` entry AND a definition/banner together (`uncertain` and `static` both true) — `uncertain` alone never triggers `mixed` on its own, only in combination with `static`. Includes the case a universal (fat) Mach-O object merges into one record when its slices disagree this way, which reads `mixed` rather than `bundled` or `system` outright. |
 | `none` | No OpenSSL evidence in any binary object, and no shipped SBOM component naming the library or a crate that binds it, from objects read far enough to say so. |
 | `unknown` | An object read far enough to say so uses OpenSSL without naming where it comes from (imported OpenSSL symbols and no dependency on the library, or a Rust crate that binds it and nothing else), or the wheel's own SBOM names the library or such a crate and no object answers; or evidence came only from an object we could not read, some object in the wheel was not read in full and the cause could have hidden what this field is read off, or the wheel itself was not read in full (a member skipped by an archive limit, or one that failed to open) and a dependency's path looks vendored (an `@loader_path`/`@rpath`-relative path, or a vendor-shaped `RPATH`/`RUNPATH`) without a shipped object confirming it — provided that same object carries no definition or banner of its own, and no *different* `needed` entry on it already resolves to `system` or `bundled`. When it carries a definition or banner, the object's own evidence is `mixed` instead. When a different `needed` entry on it already resolves to `system` or `bundled` — but the object carries no definition/banner, and does not also have a second, different `needed` entry resolving to the other of `system`/`bundled` — the object's own evidence is that one confirmed posture instead, unaffected by the unconfirmed entry; if it has both a confirmed `system` entry and a confirmed `bundled` entry, the object's own evidence is `mixed` instead, per the `mixed` row above, regardless of the unconfirmed one. A vendor-shaped path naming nothing, in a wheel read in full, is `system`: the complete member list not containing the answer is itself the answer. `partial_reasons` names the cause when it applies; the ones that leave the answer intact are marked in the reason table above. |
 
@@ -234,11 +233,12 @@ A distribution name (`crypto_distribution`, e.g. `cryptography`) is a finding at
 and never moves this field, and neither does a soname in an SBOM component: this field
 only compares an SBOM component's name against a library's own name and its `crates`,
 the same names `SBOM_CRYPTO_COMPONENT` reports a finding for. When a library's own
-name is *also* a different `rust_crate` it does not itself list in `crates` -- shipped
-today for `argon2` and `blake2`, each both a C reference library and an unrelated
-pure-Rust crate of the same name -- the component's `purl` breaks the tie: only a
-`pkg:cargo/...` purl reads as the crate and leaves the C library's field untouched, so
-a component named `argon2`/`blake2` with any other purl, or none, still moves it.
+name is *also* a different `rust_crate` it does not itself list in `crates` -- in the
+shipped ruleset, `argon2` and `blake2`, each both a C reference library and an
+unrelated pure-Rust crate of the same name -- the component's `purl` breaks the tie:
+only a `pkg:cargo/...` purl reads as the crate and leaves the C library's field
+untouched, so a component named `argon2`/`blake2` with any other purl, or none,
+moves it.
 
 Other libraries appear as `<name>_linkage` when they have evidence.
 

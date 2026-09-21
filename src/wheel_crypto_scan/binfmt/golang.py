@@ -96,9 +96,9 @@ def build_go_info(
     # flip `boring_crypto` while the matching rule still fires.
     # Every Go group the ruleset names, not only the ones a typed field is derived
     # from: `markers` is the structured summary a consumer reads instead of the
-    # findings, and a group missing from it made that summary contradict the verdict
-    # built from the same strings -- a build against the Go FIPS 140-3 module
-    # reporting `["go_stock_crypto"]` while its verdict said otherwise (#126).
+    # findings, and a group missing from it would make that summary contradict the
+    # verdict built from the same strings -- a build against the Go FIPS 140-3 module
+    # reporting `["go_stock_crypto"]` while its verdict said otherwise.
     wanted = {patterns.go_boring_group, patterns.go_stock_group, patterns.go_fips140_group}
     marker_groups = {group.name: group for group in patterns.string_groups if group.name in wanted}
     markers = tuple(

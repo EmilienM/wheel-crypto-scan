@@ -26,12 +26,11 @@ maps to a rule.
 One carve-out: a `partial_reasons` cause that is a linker convention rather than a failure
 is recorded without a verdict. Today that is one cause, an ordinal import, and only because
 the dependency name survives it — when it is a name the ruleset knows, which
-[the decision log](decisions/opacity.md#a-routine-cause-is-recorded-but-does-not-make-a-wheel-opaque)
-measures rather than assumes.
+[the design notes](design/opacity.md#a-routine-cause-is-recorded-but-does-not-make-a-wheel-opaque)
+measure rather than assume.
 
-The ordinal *export* was on that list too and was taken off: it loses a definition, and a
-definition is how `static` is recognised, so the sentence that carried the import never
-applied to it.
+An ordinal *export* is not on that list: it loses a definition, and a definition is how
+`static` is recognised, so the argument that admits the import does not apply to it.
 
 !!! danger "The admission test is behavioural, not editorial"
 
@@ -56,8 +55,8 @@ end of a string table, or into a run it never closes, is a name we could not res
 short name.
 
 Recording what was reachable looks like the safe direction and is not — it asserts a symbol
-that does not exist, in the field the whole tool turns on. Both binary readers had this and
-both were wrong; a test asserted the fabricated name was intended.
+that does not exist, in the field the whole tool turns on. Both binary readers resolve names
+this way, and a test holds each to it.
 
 ## `partial_analysis` and `partial_reasons` never disagree
 
@@ -122,17 +121,16 @@ question is how a field gets an answer nothing decided.
 
 ### A shared check states what it assumes
 
-`binfmt.symtab` is only sound over a string table the caller read through, and extracting it
-from the one reader that guaranteed that into one that did not left a live hole. Moving a
-check to where two callers can use it moves its preconditions out of sight, so they go in
-its docstring.
+`binfmt.symtab` is only sound over a string table the caller read through, and moving it to
+a reader that does not guarantee that opens a hole. Moving a check to where two callers can
+use it moves its preconditions out of sight, so they go in its docstring.
 
 ### A pass over a whole object belongs in C
 
 Every such pass runs once per slice of a universal binary, up to `_MAX_FAT_SLICES`, over
-regions the slices are free to share. A Python loop over a 2 MiB string table was 19 seconds
-across one object; the same check as one compiled regex is 1.2. `tests/test_hardening.py` is
-where that is held.
+regions the slices are free to share. A Python loop over a 2 MiB string table takes 19
+seconds across one object; the same check as one compiled regex takes 1.2.
+`tests/test_hardening.py` is where that is held.
 
 ### Keep `record.py` and `data/schema.json` in step
 
@@ -152,7 +150,19 @@ that way.
 
 Much of this suite exists to hold an invariant rather than a behaviour, and such a test
 passes just as well when it asserts nothing. Deleting the line under test, or mutating it to
-the wrong answer, is the only way to tell. Several guards here were added after a review
-showed the obvious version of them stayed green.
+the wrong answer, is the only way to tell. The obvious version of a guard often stays green
+with the line it guards deleted.
+
+### Write down the current design, not its history
+
+Comments, docstrings, test names, ruleset `why` text, `SCHEMA.md`, `DESIGN.md` and `docs/`
+say what the code does and why, as if it had always been this way. No issue or PR numbers,
+no "found by review", no "used to", "previously", "an earlier version", "before this fix",
+"revised", "corrected", "extended in". Keep the reasoning, the measurement and the rejected
+alternative, and describe a rejected approach as an alternative ("keying on the name alone
+reads X"), not as something the code once did. History belongs in the commit message and
+the PR. A test file is named for its topic, never for the review or fix that produced it.
+`tests/test_design_notes.py` catches citations, review framing and a quoted `DESIGN.md`
+heading that no longer exists; the rest is on the writer.
 
 Wheels are read from the zip in memory, never extracted to disk.

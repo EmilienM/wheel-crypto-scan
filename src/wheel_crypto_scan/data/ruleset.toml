@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "30"
+ruleset_version = "31"
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ go_fips140_group = "go_fips140"
 # Rust objects embed the source path of every crate they were built from. Both
 # separators, because the path is spelled the way the machine that built the wheel
 # spells one: cryptography 50.0.1's win_amd64 .pyd carries 153 `cargo\registry` paths
-# and no `cargo/registry` path, so a forward-slash-only pattern read every Rust wheel
+# and no `cargo/registry` path, so a forward-slash-only pattern reads every Rust wheel
 # built on Windows as carrying no crates at all. The `src/<index>/` segment is
 # optional because distro packaging (Fedora's `/usr/share/cargo/registry/<name>-
 # <version>/`, laid out by the RPM Rust macros) has none.
@@ -139,13 +139,14 @@ cargo_path_regex = '''cargo[/\\]registry[/\\](?:src[/\\][^/\\\x00"']+[/\\])?(?P<
 # too (`vendor/openssl/crypto/evp/evp_enc.c`, `vendor/golang.org/x/crypto/...go`), and
 # without that anchor a vendored C OpenSSL would be misread as the Rust crate named
 # `openssl`. Because the match has no terminator, a `.rst`/`.rsp` file, or a `.rs`
-# elsewhere in the same printable run, still matches; that is a known gap, not a
+# elsewhere in the same printable run, also matches; that is a known gap, not a
 # guarantee this anchor makes. The pattern always anchors on the first `vendor/`
 # component it finds, so a build tree that itself sits inside a directory named
 # `vendor` collapses every crate nested inside it into one crate named after that
-# outer component; that is a known gap too, documented in DECISIONS.md rather than
-# fixed, since fixing it would need the pattern to fail past a nested `vendor/`
-# rather than consume through it.
+# outer component. That is a known gap too, left open because closing it would need the
+# pattern to fail past a nested `vendor/` rather than consume through it; DESIGN.md,
+# "Crates are read from every cargo source layout, and a vendored crate has no
+# version", has the example.
 # `vendor/gimli-0.32.3/` -- cargo's own `--versioned-dirs` layout, and how rustc vendors
 # its own dependencies -- reads as `gimli` version `0.32.3` rather than as a crate
 # literally named `gimli-0.32.3` with no version, because the name class excludes `.`:
@@ -154,13 +155,13 @@ cargo_path_regex = '''cargo[/\\]registry[/\\](?:src[/\\][^/\\\x00"']+[/\\])?(?P<
 # necessarily the last `-` before the first `.`. The split is therefore unique, and the
 # name group being lazy (like the registry pattern's) neither helps nor hurts it.
 # Allowing `.` in the name gives the two groups' leading digits more ways to split the
-# same text, and that ambiguity is what made a run of digit-and-dot near-misses cost
-# 3.7s per MiB instead of 0.4s. Every repetition is bounded (crate names cap at 64
-# characters on crates.io, path segments at 255, nesting at 16 levels) so the pass over
-# a multi-megabyte string table stays linear instead of quadratic, and every negated
-# class excludes `\n`, the run separator `binfmt.strings.RUN_SEPARATOR` joins printable
-# runs with, so a match can never bridge two runs that never sat next to each other in
-# the object.
+# same text, and that ambiguity makes a run of digit-and-dot near-misses cost 3.7s per
+# MiB instead of 0.4s. Every repetition is bounded (crate names cap at 64 characters on
+# crates.io, path segments at 255, nesting at 16 levels) so the pass over a
+# multi-megabyte string table stays linear instead of quadratic, and every negated class
+# excludes `\n`, the run separator `binfmt.strings.RUN_SEPARATOR` joins printable runs
+# with, so a match can never bridge two runs that never sat next to each other in the
+# object.
 cargo_vendor_path_regex = '''(?<![A-Za-z0-9_.-])vendor[/\\](?P<name>[A-Za-z0-9_][A-Za-z0-9_-]{0,63}?)(?:-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]{0,63}))?[/\\](?:[^/\\\x00"'\n]{1,255}[/\\]){0,16}?[^/\\\x00"'\n]{0,255}?\.rs'''
 
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
@@ -176,11 +177,12 @@ weak_hash_algorithms = ["md4", "md5", "md5-sha1", "ripemd160", "sha1", "sm3", "w
 # tool are already called linkage: the resolved posture per library, `kind = "linkage"`
 # which matches on those postures, and this, which is about neither.
 #
-# `resolve_linkage` used to read only `is_opaque` and the binary-stage errors, so an
-# object a reader explicitly marked as not read in full, but that recorded no error,
-# still contributed a definite posture. A stripped macOS extension is the everyday
-# case: one field said its symbol table was not read, the next said `openssl_linkage:
-# none`, and the second is a claim the first says we cannot make.
+# `resolve_linkage` reads `partial_analysis` causes, not only `is_opaque` and the
+# binary-stage errors. Otherwise an object a reader explicitly marks as not read in
+# full, but that records no error, would still contribute a definite posture. A
+# stripped macOS extension is the everyday case: one field says its symbol table was
+# not read, the next says `openssl_linkage: none`, and the second is a claim the first
+# says we cannot make.
 #
 # Reading `partial_analysis` wholesale would be wrong in the other direction. Some
 # causes are conventions rather than failures, and some cost evidence linkage never
@@ -394,7 +396,7 @@ why = "Checksum, not a hash function in the security sense. Included so storage 
 #
 # An entry's optional `rule` routes the bundled-library finding for that library, and
 # nothing else. The DT_NEEDED and linkage rules read this table too and do not consult
-# it, so they go on firing exactly as before.
+# it, so they fire the same whether or not an entry sets it.
 # ---------------------------------------------------------------------------
 
 [[crypto_library]]
@@ -610,7 +612,7 @@ why = "Curve25519 family. Status depends on the standard revision and on validat
 [[string_group]]
 name = "openssl_banner"
 substrings = ["OpenSSL 0.", "OpenSSL 1.", "OpenSSL 2.", "OpenSSL 3.", "OpenSSL 4.", "OpenSSL 5.", "OpenSSL 6.", "OpenSSL 7.", "OpenSSL 8.", "OpenSSL 9."]
-why = "OpenSSL's own version banner. The single most reliable way to tell which OpenSSL a binary carries when the symbols are hidden, which is exactly what a statically linked Rust extension does. Every major digit is listed rather than the shipped ones, because a banner this group does not name is a statically linked copy that reads as no OpenSSL at all, and the list going stale is silent: it stopped at 3 while cryptography's own PyPI wheels already compiled 4 in. A digit and a dot are still required -- `OpenSSL ` alone also matches prose such as \"OpenSSL 3's legacy provider failed to load\", which a wheel linking the system library carries too."
+why = "OpenSSL's own version banner. The single most reliable way to tell which OpenSSL a binary carries when the symbols are hidden, which is exactly what a statically linked Rust extension does. Every major digit is listed rather than the shipped ones, because a banner this group does not name is a statically linked copy that reads as no OpenSSL at all, and the list going stale is silent: a list that stops at 3 misses cryptography's own PyPI wheels, which compile OpenSSL 4 in. A digit and a dot are still required -- `OpenSSL ` alone also matches prose such as \"OpenSSL 3's legacy provider failed to load\", which a wheel linking the system library carries too."
 
 [[string_group]]
 name = "openssl_build_info"
@@ -731,7 +733,7 @@ rule = "BIN_AWS_LC_RS_CRATE"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
-why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so this finding does not by itself say which build it compiled against. Its own rule, BIN_AWS_LC_FIPS, names BIN_AWS_LC_RS_CRATE in its rule-level suppressed_by, so an object that also carries aws-lc-fips-sys drops this finding and the FIPS build's CONDITIONAL finding stands; no entry-level relation is needed here. An SBOM naming both crates over sbom_component still reports this finding beside aws-lc-fips-sys's, which over-flags and is accepted for the same reason (see DECISIONS.md)."
+why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so this finding does not by itself say which build it compiled against. Its own rule, BIN_AWS_LC_FIPS, names BIN_AWS_LC_RS_CRATE in its rule-level suppressed_by, so an object that also carries aws-lc-fips-sys drops this finding and the FIPS build's CONDITIONAL finding stands; no entry-level relation is needed here. An SBOM naming both crates over sbom_component still reports this finding beside aws-lc-fips-sys's, which over-flags and is accepted for the same reason (see Suppression is keyed on rule, subject and object in DESIGN.md)."
 
 [[rust_crate]]
 name = "aws-lc-fips-sys"
@@ -1266,7 +1268,7 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "Wheel scan was interrupted"
-why = "An exception the scanner did not specifically anticipate cut the read short before anything else ran -- unlike WHEEL_UNREADABLE this makes no claim about the archive's own bytes, so it must not be reported as a corrupt zip. The same wheel can read cleanly on a later attempt once whatever interrupted this one (memory pressure, a transient I/O error) has passed, which is also why a record carrying this kind is never cached: see DECISIONS.md."
+why = "An exception the scanner did not specifically anticipate cut the read short before anything else ran -- unlike WHEEL_UNREADABLE this makes no claim about the archive's own bytes, so it must not be reported as a corrupt zip. The same wheel can read cleanly on a later attempt once whatever interrupted this one (memory pressure, a transient I/O error) has passed, which is also why a record carrying this kind is never cached: see DESIGN.md."
 [rule.match]
 kind = "scan_error"
 error_kinds = ["unexpected_error"]
@@ -1401,7 +1403,7 @@ severity = "info"
 confidence = "high"
 needs_human_review = false
 title = "Links the system OpenSSL"
-why = "A plain, unmangled libcrypto.so.3 or libssl.so.3 dependency that does not resolve to a copy the wheel itself ships (delocate vendors without renaming, so an unmangled name alone is not enough -- see #57). This is the good case: the extension resolves to whatever OpenSSL the host provides, so a FIPS-enabled host gives it the FIPS provider. Recorded as information; the wheel is still CONDITIONAL, and the condition is what the linkage field reports."
+why = "A plain, unmangled libcrypto.so.3 or libssl.so.3 dependency that does not resolve to a copy the wheel itself ships (delocate vendors without renaming, so an unmangled name alone is not enough). This is the good case: the extension resolves to whatever OpenSSL the host provides, so a FIPS-enabled host gives it the FIPS provider. Recorded as information; the wheel is still CONDITIONAL, and the condition is what the linkage field reports."
 [rule.match]
 kind = "dt_needed"
 library = "openssl"
@@ -1431,7 +1433,7 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Depends on a crypto library the wheel ships under its own name"
-why = "delocate copies a dependency into .dylibs/ and rewrites the load command to point there without renaming the file, so a plain, unmangled needed entry can still resolve to an object this wheel itself ships -- and nothing stops a Linux build placing an unmangled dependency beside the extension the same way. BIN_NEEDED_MANGLED_CRYPTO only catches a hash-renamed name; this is the rule that says a needed entry is bundled when it resolves to a shipped object without one, so that reading of bundled is never silent. See #57."
+why = "delocate copies a dependency into .dylibs/ and rewrites the load command to point there without renaming the file, so a plain, unmangled needed entry can still resolve to an object this wheel itself ships -- and nothing stops a Linux build placing an unmangled dependency beside the extension the same way. BIN_NEEDED_MANGLED_CRYPTO only catches a hash-renamed name; this is the rule that says a needed entry is bundled when it resolves to a shipped object without one, so that reading of bundled is never silent."
 [rule.match]
 kind = "dt_needed"
 table = "crypto_library"
@@ -1790,7 +1792,7 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Go binary using stock Go crypto"
-why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto or the Go FIPS 140-3 module is detected, because both builds still contain the stock package paths: measured on go1.27.1, a GOFIPS140 build carries crypto/sha256. and crypto/aes. exactly as often as a stock one, so without the suppression a binary whose crypto goes through the validated module read as non-approved. Suppression is per object, so a wheel shipping one FIPS-built and one stock Go binary reports both, with the stock finding located on the stock object alone."
+why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto or the Go FIPS 140-3 module is detected, because both builds still contain the stock package paths: measured on go1.27.1, a GOFIPS140 build carries crypto/sha256. and crypto/aes. exactly as often as a stock one, so without the suppression a binary whose crypto goes through the validated module would read as non-approved. Suppression is per object, so a wheel shipping one FIPS-built and one stock Go binary reports both, with the stock finding located on the stock object alone."
 suppressed_by = ["BIN_GO_BORING_CRYPTO", "BIN_GO_FIPS140"]
 [rule.match]
 kind = "binary_string"
@@ -1831,7 +1833,7 @@ severity = "info"
 confidence = "high"
 needs_human_review = false
 title = "Binary declares something this tool cannot name, by design"
-why = "This object was not read in full, but the cause is a convention rather than a failure: an import bound by ordinal has no function name to match. WS2_32 is normally bound by ordinal, so this is the ordinary shape of a Windows extension that touches sockets, and treating it as opacity put every such wheel on the OPAQUE triage list. What is lost is a function name inside a DLL the record still names, so a crypto dependency bound this way is still caught by its DT_NEEDED equivalent. A forwarder whose target is named by ordinal -- `SOMEDLL.#123` -- is the same shape: the loader opens the DLL before it can fail to find the ordinal inside, so the dependency survives in needed the same way, and this cause is reused rather than given a token of its own. Recorded without a verdict: the evidence really is incomplete, so the record says so, but it is not on its own a reason for a human to look. An ordinal export is not this: it names a definition rather than a dependency, so BIN_PARTIAL_FORMAT claims it."
+why = "This object was not read in full, but the cause is a convention rather than a failure: an import bound by ordinal has no function name to match. WS2_32 is normally bound by ordinal, so this is the ordinary shape of a Windows extension that touches sockets, and treating it as opacity would put every such wheel on the OPAQUE triage list. What is lost is a function name inside a DLL the record still names, so a crypto dependency bound this way is still caught by its DT_NEEDED equivalent. A forwarder whose target is named by ordinal -- `SOMEDLL.#123` -- is the same shape: the loader opens the DLL before it can fail to find the ordinal inside, so the dependency survives in needed the same way, and this cause is reused rather than given a token of its own. Recorded without a verdict: the evidence really is incomplete, so the record says so, but it is not on its own a reason for a human to look. An ordinal export is not this: it names a definition rather than a dependency, so BIN_PARTIAL_FORMAT claims it."
 [rule.match]
 kind = "partial_binary"
 reasons = ["pe_ordinal_import"]

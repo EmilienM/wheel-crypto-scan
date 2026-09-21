@@ -47,7 +47,7 @@ def test_finds_a_versionless_crate_from_a_backslash_vendor_path() -> None:
 def test_vendor_path_missing_the_pattern_falls_back_to_no_source_layouts() -> None:
     """A patterns tuple without `cargo_vendor_path_regex` cannot match a vendor-only
     path -- a property of `find_rust_crates` itself, not a guard on which patterns
-    `binfmt.strings` wires in; that guard is `test_review_fixes.py`'s end-to-end
+    `binfmt.strings` wires in; that guard is `test_acceptance.py`'s end-to-end
     cargo-vendor-layout case."""
     crates, _ = find_rust_crates(
         r"C:\b\vendor\ring\src\lib.rs",

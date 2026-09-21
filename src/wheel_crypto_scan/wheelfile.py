@@ -39,21 +39,21 @@ class ArchiveLimits:
     undercounts the real worst case rather than stating it. Measured end to end, a
     real per-worker peak runs closer to `max_in_memory_bytes` plus a small multiple of
     `binfmt.strings.MAX_STRINGS_BYTES` -- each `binfmt.macho` object can hold up to
-    three such budgets at once (a strings prefix, a symbol table, a string table) --
-    and for `binfmt.elf` it can still run higher than that, unbounded by any fixed
-    multiple, for the one shape #95 has not yet closed: an ordinary, uncompressed
-    section larger than the budget.
+    three such budgets at once (a strings prefix, a symbol table, a string table).
 
     A reader built on top of a streamed member has to bound what it pulls through the
-    stream itself, or streaming a member buys nothing. `binfmt.macho` does, against
-    `binfmt.strings.MAX_STRINGS_BYTES` by default, as of #63, which closed the one
-    place this had quietly stopped being true: `sizeofcmds` and `LC_SYMTAB`'s `nsyms`
-    and `strsize`, self-reported sizes that used to be measured only against the
-    member's own bytes, letting a streamed member be read close to whole regardless
-    of `max_in_memory_bytes`. `binfmt.elf` bounds a *compressed* or `SHT_NOBITS`
-    section the same way (#62), but not yet an ordinary, uncompressed one -- an
-    honestly large `.rodata`, or a large `.dynsym`/`.dynstr`, still reads in full
-    through `section.data()` before any budget applies. Tracked in #95.
+    stream itself, or streaming a member buys nothing. `binfmt.macho` bounds
+    `sizeofcmds` and `LC_SYMTAB`'s `nsyms` and `strsize` against
+    `binfmt.strings.MAX_STRINGS_BYTES`, not just against the member's own bytes, so a
+    streamed member is never read close to whole regardless of `max_in_memory_bytes`.
+    `binfmt.elf` bounds every eligible section the same way: a *compressed* or
+    `SHT_NOBITS` section is refused before it is inflated past the budget, and an
+    ordinary, uncompressed section over budget keeps only its in-budget prefix
+    (`strings_bytes_unread`, no error) rather than reading in full -- except
+    `.dynsym`/`.dynstr`, which are refused outright when over budget
+    (`elf_dynsym_unread`), because a symbol table's count and a string table's
+    contents cannot be trusted from a partial read the way a strings-only section's
+    prefix can.
     """
 
     max_total_uncompressed_bytes: int = 8 * 1024**3

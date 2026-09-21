@@ -3,7 +3,7 @@
 This module's job is to read the TOML mapping, refuse a malformed one loudly at load
 time rather than silently mis-scanning, and hand back the `Ruleset` that `ruleset`
 defines. Import `load_ruleset`, `parse_ruleset` and `routine_reasons` from here, not
-from `ruleset`; see `DECISIONS.md` for why the loader lives in its own module.
+from `ruleset`; see `DESIGN.md` for why the loader lives in its own module.
 """
 
 from __future__ import annotations
@@ -221,8 +221,8 @@ def _parse_linkage_policy(data: Mapping[str, Any] | None, rules: Iterable[Rule])
 
     Keys and tokens are both checked, for the reason a rule's `reasons` are checked in
     `_validate_match_references`: `excluded_reasons` would otherwise load clean and
-    exempt nothing, and the symptom -- a wheel reading `unknown` where it used to read
-    `none` -- looks like the feature working.
+    exempt nothing, and the symptom -- a wheel reading `unknown` instead of `none` for
+    a cause that should be exempt -- looks like the feature working.
     """
     routine = routine_reasons(rules)
     where = "[linkage_policy]"
@@ -487,7 +487,7 @@ def _validate_match_references(
         # wheel's source passes to `hashlib.new(...)`, open-ended by construction, and
         # a rule intentionally naming a *strong* algorithm is a real, existing shape --
         # the shipped `PY_WEAK_HASH_UNRESOLVED` rule's `algorithm = "unresolved"` is
-        # not a member of that set either. See DECISIONS.md.
+        # not a member of that set either. See DESIGN.md.
         algorithm = match.get("algorithm")
         if algorithm is not None and not isinstance(algorithm, str):
             raise RulesetError(f"{where}: algorithm must be a string")
@@ -546,7 +546,7 @@ def _entry_rule(
     lets one table feed several rules of the same kind without them all double-firing.
     Only the kinds in `ROUTED_KINDS` read that routing, so naming a rule of any other
     kind is refused here: the ruleset would load clean and the entry would route
-    nothing, taking its old rule's finding with it.
+    nothing, and its table's default rule would not see it either.
     """
     rule_id = entry.get("rule")
     if rule_id is None:

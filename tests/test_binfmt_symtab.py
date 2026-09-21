@@ -1,5 +1,5 @@
 """Behaviour of `binfmt.symtab.BoundedNames`: the cap/budget/cache shared by ELF and
-Mach-O symbol-name resolution (#61).
+Mach-O symbol-name resolution.
 
 `test_binfmt_elf.py` and `test_binfmt_macho.py` exercise the per-name cap, the
 whole-table budget and the memoization this class provides, through their own
@@ -21,8 +21,8 @@ def test_the_cache_does_not_grow_past_its_own_cap() -> None:
     exhaust neither the per-name cap nor the byte budget before running the cache's own
     entry count well past it. `binfmt.elf` and `binfmt.macho` already avoid remembering
     every name in a huge table for exactly this reason elsewhere (a half-million-symbol
-    table costs 24 MiB remembered whole), so the cache #61 added cannot reopen that
-    door through a table shaped to dodge the byte budget instead of the per-name cap.
+    table costs 24 MiB remembered whole), so the name cache cannot reopen that door
+    through a table shaped to dodge the byte budget instead of the per-name cap.
 
     Every offset still has to resolve correctly regardless: the cap only stops this
     class remembering an answer, never stops it giving one.
@@ -58,11 +58,11 @@ def test_a_small_table_is_cached_in_full() -> None:
 def test_a_name_exactly_as_long_as_the_remaining_budget_still_resolves() -> None:
     """A name costing exactly what is left of the budget is affordable, not one over.
 
-    `window` used to be `min(cap + 1, available, budget)`: with `budget` down to
-    exactly `_MAX_NAME_BYTES`, that clamps the search span to `_MAX_NAME_BYTES` itself,
-    one byte short of where a name of exactly that length terminates -- the budget
-    limits how much content may be *spent*, not how far the search may look, and a
-    search span equal to the spend limit is one byte too narrow to confirm a name
+    `window` as plain `min(cap + 1, available, budget)` would be wrong: with `budget`
+    down to exactly `_MAX_NAME_BYTES`, that clamps the search span to `_MAX_NAME_BYTES`
+    itself, one byte short of where a name of exactly that length terminates -- the
+    budget limits how much content may be *spent*, not how far the search may look, and
+    a search span equal to the spend limit is one byte too narrow to confirm a name
     spends exactly that much rather than more.
     """
     name = "A" * _MAX_NAME_BYTES

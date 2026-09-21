@@ -3,8 +3,8 @@
 Static analyser that reports crypto-relevant **evidence** inside Python wheels so consumers
 of a package index can see per-wheel FIPS risk. It gathers evidence; it does not decide FIPS
 compatibility. Read `README.md` for what it detects, `SCHEMA.md` for the output contract, and
-`DECISIONS.md` for the design calls that cost something and were made anyway, including
-the holes left open on purpose and the measurement behind each one.
+`DESIGN.md` for the design calls that cost something, including the holes left open on
+purpose and the measurement behind each one.
 
 ## Invariants
 
@@ -17,18 +17,18 @@ These are design decisions, not accidents. Do not change one without saying so e
   host paths, timestamps or hostnames.
 - **Unreadable means `OPAQUE`, never `NO_CRYPTO_DETECTED`.** Absence of evidence is not
   evidence of absence, and a test asserts every recordable failure maps to a rule. One
-  carve-out, in `DECISIONS.md`: a `partial_reasons` cause that is a linker convention
+  carve-out, in `DESIGN.md`: a `partial_reasons` cause that is a linker convention
   rather than a failure is recorded without a verdict. Today that is one cause, an
   ordinal import, and only because the dependency name survives it -- when it is a name
-  the ruleset knows, which `DECISIONS.md` measures rather than assumes. The ordinal
-  *export* was on that list too and was taken off: it loses a definition, and a
-  definition is how `static` is recognised, so the sentence that carried the import
-  never applied to it. Adding to this list is changing this invariant, and the admission
-  test is behavioural rather than editorial: go and find a crypto object that reads
-  clean because the cause is on the list. If it exists the cause does not belong there,
-  whatever the sentence says. That list is also the floor of the linkage exemptions
-  below; the loader refuses a ruleset that drops an exemption without re-rating, and a
-  test pins the other direction.
+  the ruleset knows, which `DESIGN.md` measures rather than assumes. An ordinal
+  *export* is not on that list: it loses a definition, and a definition is how `static`
+  is recognised, so the argument that admits the import does not apply to it. Adding
+  to this list is changing this invariant, and the admission test is behavioural
+  rather than editorial: go and find a crypto object that reads clean because the
+  cause is on the list. If it exists the cause does not belong there, whatever the
+  sentence says. That list is also the floor of the linkage exemptions below; the
+  loader refuses a ruleset that drops an exemption without re-rating, and a test pins
+  the other direction.
 - **A structure that does not parse costs that structure, never the evidence already
   gathered.** A reader that cannot read its own header still returns the strings, cargo
   paths and Go markers it found, and still marks the object `partial_analysis`. The
@@ -38,8 +38,8 @@ These are design decisions, not accidents. Do not change one without saying so e
   the object did not spell out: an index past the end of a string table, or into a run it
   never closes, is a name we could not resolve, not a short name. Recording what was
   reachable looks like the safe direction and is not -- it asserts a symbol that does not
-  exist, in the field the whole tool turns on. Both binary readers had this and both were
-  wrong; a test asserted the fabricated name was intended.
+  exist, in the field the whole tool turns on. Both binary readers resolve names this
+  way, and a test holds each to it.
 - **`partial_analysis` and `partial_reasons` never disagree.** The tuple is non-empty
   exactly when the boolean is true, asserted across every reader. Filter on the boolean;
   read the tuple to find out what to do about it.
@@ -95,13 +95,13 @@ These are design decisions, not accidents. Do not change one without saying so e
   list because it looks like the same question is how a field gets an answer nothing
   decided.
 - **A shared check states what it assumes.** `binfmt.symtab` is only sound over a string
-  table the caller read through, and extracting it from the one reader that guaranteed
-  that into one that did not left a live hole. Moving a check to where two callers can
-  use it moves its preconditions out of sight, so they go in its docstring.
+  table the caller read through, and moving it to a reader that does not guarantee that
+  opens a hole. Moving a check to where two callers can use it moves its preconditions
+  out of sight, so they go in its docstring.
 - **A pass over a whole object belongs in C.** Every such pass runs once per slice of a
   universal binary, up to `_MAX_FAT_SLICES`, over regions the slices are free to share.
-  A Python loop over a 2 MiB string table was 19 seconds across one object; the same
-  check as one compiled regex is 1.2. `tests/test_hardening.py` is where that is held.
+  A Python loop over a 2 MiB string table takes 19 seconds across one object; the same
+  check as one compiled regex takes 1.2. `tests/test_hardening.py` is where that is held.
 - **Keep `record.py` and `data/schema.json` in step,** and update `SCHEMA.md` with them. A
   test fails on drift.
 - **Dependencies are `pyelftools` and `packaging`.** Ask before adding a third.
@@ -111,8 +111,18 @@ These are design decisions, not accidents. Do not change one without saying so e
 - **Break a guard to see whether it guards.** Much of this suite exists to hold an
   invariant rather than a behaviour, and such a test passes just as well when it asserts
   nothing. Deleting the line under test, or mutating it to the wrong answer, is the only
-  way to tell. Several guards here were added after a review showed the obvious version
-  of them stayed green.
+  way to tell. The obvious version of a guard often stays green with the line it guards
+  deleted.
+- **Write down the current design, not its history.** Comments, docstrings, test names,
+  ruleset `why` text, `SCHEMA.md`, `DESIGN.md` and `docs/` say what the code does and
+  why, as if it had always been this way. No issue or PR numbers, no "found by review",
+  no "used to", "previously", "an earlier version", "before this fix", "revised",
+  "corrected", "extended in". Keep the reasoning, the measurement and the rejected
+  alternative, and describe a rejected approach as an alternative ("keying on the name
+  alone reads X"), not as something the code once did. History belongs in the commit
+  message and the PR. A test file is named for its topic, never for the review or fix
+  that produced it. `tests/test_design_notes.py` catches citations, review framing and
+  a quoted `DESIGN.md` heading that no longer exists; the rest is on the writer.
 - Wheels are read from the zip in memory, never extracted to disk.
 
 ## Commands

@@ -276,12 +276,11 @@ def test_dynamic_section_with_unresolvable_string_table_does_not_raise() -> None
     """`.dynamic` failing to read costs `.dynsym`'s symbols too, and that is correct.
 
     `.dynsym`'s own `sh_link` is only trusted when it corroborates `.dynamic`'s own
-    `DT_STRTAB` tag (#56 round 4): a decoy `SHT_STRTAB` section is otherwise
-    indistinguishable from the real `.dynstr`. When `.dynamic` itself could not be
-    read at all, there is no `DT_STRTAB` to corroborate against, so `.dynsym`'s
-    string table is untrusted too -- fail closed, not "structurally unrelated, so
-    unaffected". This was a deliberate behaviour change, not a regression: the
-    alternative is exactly the hole that let a decoy string table erase real crypto
+    `DT_STRTAB` tag: a decoy `SHT_STRTAB` section is otherwise indistinguishable from
+    the real `.dynstr`. When `.dynamic` itself could not be read at all, there is no
+    `DT_STRTAB` to corroborate against, so `.dynsym`'s string table is untrusted too --
+    fail closed, not "structurally unrelated, so unaffected". That is deliberate: the
+    alternative is exactly the hole that lets a decoy string table erase real crypto
     symbols with nothing in the record to say so.
     """
     data = ElfBuilder(
@@ -294,7 +293,7 @@ def test_dynamic_section_with_unresolvable_string_table_does_not_raise() -> None
     # The dynamic tags could not be resolved, so needed/soname fall back to empty...
     assert ev.needed == ()
     assert ev.soname is None
-    # ...and .dynsym's names are now also untrusted, with nothing to corroborate its
+    # ...and .dynsym's names are untrusted too, with nothing to corroborate its
     # string table against; the record says so rather than reading them as absent.
     assert ev.matched_symbols == ()
     assert ev.partial_analysis is True
@@ -525,8 +524,8 @@ def test_a_large_symbol_table_does_not_thrash_a_streamed_member(tmp_path) -> Non
     assert errors == ()
     assert found.dynsym_count == len(symbols) + 1
     assert any(s.name == "EVP_DigestInit_ex" for s in found.matched_symbols)
-    # The cost must scale with the number of sections, not the number of symbols.
-    # Before the fix this was one full decompression per symbol.
+    # The cost must scale with the number of sections, not the number of symbols:
+    # re-reading the section per symbol costs one full decompression each.
     assert member.reopens < 50, f"re-decompressed {member.reopens} times"
 
 
@@ -599,14 +598,14 @@ def test_a_callers_max_strings_bytes_is_reported_as_truncation() -> None:
     assert ev.strings_truncated is True
 
 
-# --- #62: a SHF_COMPRESSED section's declared size is checked before it is inflated --
+# --- a SHF_COMPRESSED section's declared size is checked before it is inflated ---
 #
 # `Section.data()` decompresses `Chdr.ch_size` bytes -- the logical, decompressed size,
 # an attacker-controlled 64-bit field -- before this reader ever gets to apply its own
 # byte budget. A 255 KiB object can declare and produce a 256 MiB buffer this way. The
-# fix reads `ch_size` (`section.data_size`, which pyelftools itself already parses
-# eagerly, cheaply, in `Section.__init__`) and refuses to call `.data()` at all once
-# that alone is over budget.
+# reader reads `ch_size` (`section.data_size`, which pyelftools itself parses eagerly,
+# cheaply, in `Section.__init__`) and refuses to call `.data()` at all once that alone
+# is over budget.
 
 
 def _compressed_chdr(ch_size: int, *, addralign: int = 1) -> bytes:
@@ -625,16 +624,16 @@ def test_a_compressed_rodata_declaring_more_than_the_budget_is_refused_not_infla
 
     The payload genuinely does decompress to its declared 8 KiB -- this is not a
     section whose bytes cannot be trusted, the way "elf section data unreadable" in
-    `tests/test_partial_reasons.py` is. Unfixed, `.data()` succeeds here and the
+    `tests/test_partial_reasons.py` is. Without this guard, `.data()` succeeds here and the
     banner at the front of the buffer survives truncation to 4 KiB, so the object
     reads as `strings_bytes_unread` rather than `elf_section_data_unread`: correct in
-    the sense the issue itself describes ("the record afterwards is correct... this
-    is cost, not evidence"), but only after the 8 KiB (a stand-in for the issue's own
-    512 MiB) was fully inflated to get there. Fixed, the declared size alone is over
-    budget and `.data()` is never called, so nothing is ever read from this section --
-    and `strings_truncated` stays `False`: the section was never read, so nothing
+    the sense that the record is right and this is only cost, not evidence, but only
+    after the 8 KiB (a stand-in for a real 512 MiB) is fully inflated to get there. With
+    this guard, the declared size alone is over budget and `.data()` is never called, so
+    nothing is ever read from this section -- and `strings_truncated` stays `False`: the
+    section was never read, so nothing
     here can say how many of its bytes, if any, were genuine strings versus more of
-    whatever `ch_size` this large represents (see DECISIONS.md's note on this).
+    whatever `ch_size` this large represents (see DESIGN.md's note on this).
     """
     payload = BANNER + b"\x00" + b"\x00" * (8192 - len(BANNER) - 1)
     body = _compressed_section(payload)
@@ -685,16 +684,16 @@ def test_a_compressed_rodata_under_the_budget_reads_normally() -> None:
 
 # `.dynsym`'s associated string table goes through the identical `.data()` call, via
 # `_bounded_section_data` shared with `.rodata` above -- a decoy `SHT_STRTAB`,
-# corroborated against `.dynamic`'s own `DT_STRTAB` the way #56 already requires, is
-# how a test can control what bytes `.dynsym` resolves names through without the
-# builder needing a raw-bytes hook for `.dynstr` itself. `sh_addr=0` is what
-# corroborates: `ElfBuilder` always writes `DT_STRTAB`'s own `d_ptr`, and every
-# section's `sh_addr`, as 0.
+# corroborated against `.dynamic`'s own `DT_STRTAB` the way the reader requires, is how
+# a test can control what bytes `.dynsym` resolves names through without the builder
+# needing a raw-bytes hook for `.dynstr` itself. `sh_addr=0` is what corroborates:
+# `ElfBuilder` always writes `DT_STRTAB`'s own `d_ptr`, and every section's `sh_addr`,
+# as 0.
 
-# 46 bytes, chosen (#95) so `_DYNSTR_PAYLOAD` below lands at exactly 48 bytes -- the
-# same 48 bytes `.dynsym` itself declares for one real `DynSym` here: index 0 is always
-# the reserved null entry, so one real symbol is two `Elf64_Sym` rows, 24 bytes each.
-# `_bounded_section_data` now checks `.dynsym`'s own declared size unconditionally too,
+# 46 bytes, chosen so `_DYNSTR_PAYLOAD` below lands at exactly 48 bytes -- the same 48
+# bytes `.dynsym` itself declares for one real `DynSym` here: index 0 is always the
+# reserved null entry, so one real symbol is two `Elf64_Sym` rows, 24 bytes each.
+# `_bounded_section_data` checks `.dynsym`'s own declared size unconditionally too,
 # not only `.dynstr`'s, so an "exactly at the budget" test below has to sit at a
 # boundary both sections actually share, not just the string table's.
 _DYNSTR_NAME = "EVP_" + "x" * 42
@@ -711,9 +710,9 @@ def _compressed_dynstr_decoy(honest: bytes, body: bytes) -> bytes:
 
 def test_a_compressed_dynstr_declaring_more_than_the_budget_is_refused_not_inflated() -> None:
     """As above, one level over: `.dynsym` has no truncate-and-continue of its own, so
-    unfixed this genuinely decompressing 8 KiB `.dynstr` is read in full regardless of
+    without this guard this genuinely decompressing 8 KiB `.dynstr` is read in full regardless of
     `max_strings_bytes` and the symbol resolves -- the exposure here is that nothing
-    ever refuses it, at any size. Fixed, `ch_size` alone over budget refuses it before
+    ever refuses it, at any size. With this guard, `ch_size` alone over budget refuses it before
     `.data()` runs, and the entry that named it comes back unresolved instead.
     """
     honest = ElfBuilder(dynsyms=(DynSym(_DYNSTR_NAME, defined=False),)).build()
@@ -761,25 +760,25 @@ def test_a_compressed_dynstr_under_the_budget_resolves_normally() -> None:
     assert {m.name for m in ev.matched_symbols} == {_DYNSTR_NAME}
 
 
-# --- #95: an ordinary, uncompressed section is checked against the budget too -------
+# --- an ordinary, uncompressed section is checked against the budget too -------
 #
-# `_bounded_section_data` only refused before `.data()` ran when the section was
-# `compressed` or `SHT_NOBITS` -- the two shapes #62 measured. An ordinary, honest,
-# uncompressed section (or `.dynsym`/`.dynstr` from a real symbol table) fell through
-# that `and` entirely and reached `.data()` unconditionally, so a large honest `.rodata`
-# or symbol table was read in full regardless of `max_strings_bytes`, with only the
-# *accumulated* buffer cut afterwards. `section.data_size` is `sh_size` itself for an
-# ordinary section (pyelftools sets `_decompressed_size = header['sh_size']` whenever
-# `compressed` is false), so the same check #62 already applies, without the narrowing,
-# closes this the same way -- for `.rodata`/`.comment`/`.go.buildinfo`, with the real,
-# honest prefix up to the budget kept (`keep_prefix=True`) rather than thrown away:
-# unlike a compressed section, reading `min(sh_size, max_bytes)` bytes of an ordinary
-# one costs nothing extra, an honest banner well inside the budget is real evidence
-# a refusal should not cost, and this is exactly what `_collect_string_bytes` already
-# did before this widened check started refusing the whole section outright. The
-# result reads as `strings_bytes_unread` -- the reader's own budget ran out before the
-# object did, not that the section could not be read -- the same token an oversized
-# object already gets when several smaller sections exhaust the budget between them.
+# A guard that only refuses before `.data()` runs when the section is `compressed` or
+# `SHT_NOBITS` misses an ordinary, honest, uncompressed section (or `.dynsym`/`.dynstr`
+# from a real symbol table), which falls through that `and` entirely and reaches
+# `.data()` unconditionally, so a large honest `.rodata` or symbol table would be read
+# in full regardless of `max_strings_bytes`, with only the *accumulated* buffer cut
+# afterwards. `section.data_size` is `sh_size` itself for an ordinary section
+# (pyelftools sets `_decompressed_size = header['sh_size']` whenever `compressed` is
+# false), so the same check, without the narrowing, covers this the same way -- for
+# `.rodata`/`.comment`/`.go.buildinfo`, with the real, honest prefix up to the budget
+# kept (`keep_prefix=True`) rather than thrown away: unlike a compressed section,
+# reading `min(sh_size, max_bytes)` bytes of an ordinary one costs nothing extra, an
+# honest banner well inside the budget is real evidence a refusal should not cost, and
+# this is the same truncation `_collect_string_bytes` performs on the *accumulated*
+# buffer, applied at the single-section read instead of only afterwards. The result
+# reads as `strings_bytes_unread` -- the reader's own budget ran out before the object
+# did, not that the section could not be read -- the same token an oversized object
+# gets when several smaller sections exhaust the budget between them.
 
 
 def test_an_ordinary_rodata_over_the_budget_keeps_its_in_budget_prefix() -> None:
@@ -841,7 +840,8 @@ def test_a_short_read_past_the_budget_is_not_reported_as_truncated() -> None:
 
 def test_an_ordinary_rodata_declaring_exactly_the_remaining_budget_still_reads() -> None:
     """Exactly `remaining`, not more than it, so the section is refused nothing -- the
-    same "more than, not at least" boundary #62's own tests draw for the compressed case.
+    same "more than, not at least" boundary the compressed-section tests draw for the
+    compressed case.
     """
     payload = BANNER + b"\x00"
     data = ElfBuilder(rodata=payload).build()
@@ -855,8 +855,8 @@ def test_an_ordinary_rodata_declaring_exactly_the_remaining_budget_still_reads()
 
 
 def test_an_ordinary_rodata_under_the_budget_reads_normally() -> None:
-    """Regression guard: a section comfortably under budget is unaffected by widening
-    the check to the uncompressed case.
+    """Regression guard: a section comfortably under budget is unaffected by the check
+    covering the uncompressed case.
     """
     payload = BANNER + b"\x00"
     data = ElfBuilder(rodata=payload).build()
@@ -877,9 +877,9 @@ def _ordinary_dynstr_decoy(honest: bytes, body: bytes) -> bytes:
 
 
 def test_an_ordinary_dynstr_declaring_more_than_the_budget_is_refused_not_inflated() -> None:
-    """As the compressed `.dynstr` test above, minus the compression: unfixed, this
+    """As the compressed `.dynstr` test above, minus the compression: without this guard, this
     honest, uncompressed 8 KiB `.dynstr` is read in full at any size and the symbol
-    resolves. Fixed, `sh_size` alone over budget refuses it before `.data()` runs, and
+    resolves. With this guard, `sh_size` alone over budget refuses it before `.data()` runs, and
     the entry that named it comes back unresolved instead -- the record has to say so
     rather than read as a clean, complete table.
     """
@@ -929,7 +929,7 @@ def test_an_ordinary_dynstr_under_the_budget_resolves_normally() -> None:
 
 # --- a refused .dynsym/.dynstr never reaches the understated/unresolved cross-check --
 #
-# `symtab_bytes_unread` (#95's own widened refusal) has to be checked BEFORE
+# `symtab_bytes_unread` (the budget refusing `.dynsym`/`.dynstr`) has to be checked BEFORE
 # `unresolved`/`holds_a_name_not_read`, the same ordering `binfmt.macho`'s own
 # `truncated` check already has ahead of its `unresolved`/understated pair. Without
 # that ordering, a `.dynsym` refused for budget (empty `table`, zero rows, `unresolved
@@ -940,7 +940,8 @@ def test_an_ordinary_dynstr_under_the_budget_resolves_normally() -> None:
 
 def test_a_refused_dynsym_with_an_honest_dynstr_does_not_fabricate_understated_rows() -> None:
     """`.dynsym` alone is over budget (many short-named padding entries); `.dynstr`,
-    built from the same short names, comfortably fits. Unfixed, `table` is empty so
+    built from the same short names, comfortably fits. Without a guard against this
+    ordering, `table` is empty so
     `unresolved` stays 0, and `holds_a_name_not_read` finds `SSL_new` in `.dynstr`
     unclaimed by any read row -- a real crypto name reported as an understated symbol
     count, when the true fact is the table was refused, not that it lied.
@@ -962,10 +963,11 @@ def test_a_refused_dynsym_with_an_honest_dynstr_does_not_fabricate_understated_r
 
 def test_a_refused_dynstr_with_an_honest_dynsym_does_not_fabricate_a_second_error() -> None:
     """The companion, lower-severity shape: `.dynstr` alone is over budget (a large
-    uncompressed decoy), `.dynsym` is a single honest, in-budget entry. Unfixed, every
-    row in `table` fails to resolve against the empty `dynstr`, so `unresolved > 0` and
-    the first branch fires a second, redundant error on top of the correct budget one
-    -- `.dynstr` was never shown to lie about its own contents, only left unread.
+    uncompressed decoy), `.dynsym` is a single honest, in-budget entry. Without a guard
+    against this ordering, every row in `table` fails to resolve against the empty
+    `dynstr`, so `unresolved > 0` and the first branch fires a second, redundant error
+    on top of the correct budget one -- `.dynstr` was never shown to lie about its own
+    contents, only left unread.
     """
     honest = ElfBuilder(dynsyms=(DynSym("SSL_new", defined=False),)).build()
     payload = b"\x00SSL_new\x00" + b"\x00" * (8192 - 10)
@@ -1030,8 +1032,8 @@ def test_unparseable_header_keeps_the_strings_it_already_found() -> None:
 def test_unparseable_header_marks_the_object_partial() -> None:
     """An object we could not read at all has to say so.
 
-    This was the more serious half: `partial_analysis` stayed `False`, so nothing
-    raised `BIN_PARTIAL_FORMAT` and the record never flagged itself incomplete.
+    If `partial_analysis` stays `False`, nothing raises `BIN_PARTIAL_FORMAT` and the
+    record never flags itself incomplete.
     """
     ev, _ = _read(b"\x7fELF" + b"\x00" * 12 + BANNER, path="broken.so")
     assert ev.partial_analysis is True
@@ -1106,10 +1108,10 @@ def test_the_fallback_reports_a_string_not_a_section_it_cannot_know() -> None:
 # --- an error means the object was not read in full --------------------------
 
 
-def test_an_unresolvable_dynamic_section_no_longer_reads_as_a_complete_read() -> None:
-    """The dangerous one: `needed` empties, and the record used to call that complete.
+def test_an_unresolvable_dynamic_section_does_not_read_as_a_complete_read() -> None:
+    """The dangerous one: `needed` empties, and the record must not call that complete.
 
-    A consumer filtering on `partial_analysis` would have taken this for an object that
+    A consumer filtering on `partial_analysis` would otherwise take this for an object that
     genuinely declares no dependencies, which is the "looks clean because we could not
     read it" failure the whole tool is built to avoid.
     """
@@ -1123,9 +1125,9 @@ def test_an_unresolvable_dynamic_section_no_longer_reads_as_a_complete_read() ->
     assert [e.kind for e in errors] == [ELF_PARSE_ERROR, ELF_PARSE_ERROR]
     assert ev.needed == ()
     assert ev.partial_analysis is True
-    # `elf_dynsym_unread` joins `elf_sections_unread` now: `.dynsym`'s own string table
-    # has nothing to corroborate against once `.dynamic` could not be read, so it is
-    # untrusted too rather than read through regardless (#56 round 4).
+    # `elf_dynsym_unread` joins `elf_sections_unread`: `.dynsym`'s own string table has
+    # nothing to corroborate against once `.dynamic` could not be read, so it is
+    # untrusted too rather than read through regardless.
     assert set(ev.partial_reasons) == {
         evidence.PARTIAL_ELF_SECTIONS_UNREAD,
         evidence.PARTIAL_ELF_DYNSYM_UNREAD,
@@ -1279,15 +1281,15 @@ def test_a_leading_underscore_is_a_name_here_not_an_abi_prefix() -> None:
     assert ev.matched_symbols == ()
 
 
-# --- a symbol name has a cap, and the table a whole-table budget (#61) --------
+# --- a symbol name has a cap, and the table a whole-table budget ---------------
 #
-# `_iter_symbols` used to decode and `sanitize` every dynsym name in full, with no
-# per-name bound and no table-wide budget: a table pointing many rows at one enormous
-# name cost rows times that name's length, all of it in `sanitize`, a per-character
-# Python pass. `binfmt.symtab.BoundedNames` ports `binfmt.pe`'s `_MAX_NAME_BYTES` /
-# `_MAX_NAME_TOTAL_BYTES` (#53) to close it. `tests/test_hardening.py` holds the
-# bounded-time and memoization-effectiveness cases; these hold the boundary itself and
-# the whole-table budget a repeated single name does not exercise.
+# Decoding and `sanitize`-ing every dynsym name in full, with no per-name bound and no
+# table-wide budget, costs rows times a name's length for a table pointing many rows at
+# one enormous name, all of it in `sanitize`, a per-character Python pass.
+# `binfmt.symtab.BoundedNames` applies `binfmt.pe`'s `_MAX_NAME_BYTES` /
+# `_MAX_NAME_TOTAL_BYTES` to bound it. `tests/test_hardening.py` holds the bounded-time
+# and memoization-effectiveness cases; these hold the boundary itself and the
+# whole-table budget a repeated single name does not exercise.
 
 
 def _crypto_name(index: int, length: int) -> str:
@@ -1316,7 +1318,8 @@ def test_a_dynsym_name_one_byte_over_the_cap_is_not_read() -> None:
     """One byte further and the row is unresolved, not truncated into the record.
 
     Raising a limit is how a limit quietly stops being one, so the far side of it is
-    pinned rather than assumed -- the same reason #53's PE test pins its own boundary.
+    pinned rather than assumed -- the same reason PE's name-cap test pins its own
+    boundary.
     """
     name = "EVP_" + "A" * (symtab._MAX_NAME_BYTES - 3)
     assert len(name) == symtab._MAX_NAME_BYTES + 1
@@ -1348,12 +1351,12 @@ def test_many_long_names_under_the_cap_exhaust_the_table_wide_budget() -> None:
     assert [e.message for e in errors] == [".dynsym names strings .dynstr does not hold"]
 
 
-# --- sections are found by type, not by a name nobody checks (#56) -----------
+# --- sections are found by type, not by a name nobody checks -------------------
 #
 # The dynamic linker never reads section names or the section header table at all --
-# it walks `PT_DYNAMIC` and the tags it points at -- so a name-based lookup trusted a
+# it walks `PT_DYNAMIC` and the tags it points at -- so a name-based lookup trusts a
 # label the loader itself never checks. Renaming `.dynsym` (or `.dynamic`, or
-# `.symtab`) in `.shstrtab` produced a loadable object a name-based reader treated as
+# `.symtab`) in `.shstrtab` produces a loadable object a name-based reader treats as
 # carrying none of them: no error, `partial_analysis: false`, every symbol and
 # dependency gone from the record.
 
@@ -1370,7 +1373,7 @@ def test_a_renamed_dynsym_is_still_found_by_type() -> None:
 
 
 def test_renaming_dynamic_too_still_populates_needed() -> None:
-    """`.dynamic` is found by `sh_type` the same way, so both renames close together."""
+    """`.dynamic` is found by `sh_type` the same way, so both renames are survived together."""
     honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
     renamed = honest.replace(b".dynsym\x00", b".dynsyx\x00").replace(
         b".dynamic\x00", b".dynamix\x00"
@@ -1395,10 +1398,10 @@ def test_a_renamed_symtab_still_reports_stripped_status() -> None:
 def test_multiple_dynsym_sections_after_the_real_one_are_ambiguous_not_clean() -> None:
     """More than one `SHT_DYNSYM` section is unusual but not forbidden.
 
-    Picking "the first in section order" would be exactly the shape #56 exists to
-    close, one level down: a decoy could be crafted to sort first and hide the real
-    section. Instead neither is trusted, and the object reads as ambiguous rather than
-    as one carrying no symbols at all.
+    Picking "the first in section order" would be exactly the shape the type-based
+    lookup exists to close, one level down: a decoy could be crafted to sort first and
+    hide the real section. Instead neither is trusted, and the object reads as ambiguous
+    rather than as one carrying no symbols at all.
     """
     honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
     ev, errors = _read(append_duplicate_dynsym_section(honest))
@@ -1409,12 +1412,12 @@ def test_multiple_dynsym_sections_after_the_real_one_are_ambiguous_not_clean() -
     assert any(e.kind == ELF_PARSE_ERROR for e in errors)
 
 
-def test_a_decoy_dynsym_section_spliced_in_before_the_real_one_no_longer_reads_clean() -> None:
+def test_a_decoy_dynsym_section_spliced_in_before_the_real_one_does_not_read_clean() -> None:
     """The shape a "first match wins" rule would get wrong: a decoy earlier in the
     section list than the real `.dynsym`, so a naive type-based lookup would pick the
-    decoy and read the object as carrying nothing -- exactly the "renamed and now
-    reads clean" failure #56 exists to close, reintroduced one level down. Ambiguity
-    detection has to be order-independent to close it.
+    decoy and read the object as carrying nothing -- exactly the "renamed and reads
+    clean" failure the type-based lookup exists to close, reintroduced one level down.
+    Ambiguity detection has to be order-independent to close it.
     """
     honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
     spliced = insert_bogus_section_before(honest, ".dynsym", SHT_DYNSYM)
@@ -1430,8 +1433,8 @@ def test_an_ambiguous_dynamic_section_costs_needed_too() -> None:
     """The same ambiguity handling applies to `.dynamic`, not just `.dynsym`.
 
     It also costs `.dynsym`'s symbols: an ambiguous `.dynamic` means no `DT_STRTAB` to
-    corroborate `.dynsym`'s own `sh_link` against (#56 round 4), so that string table
-    is untrusted too rather than read through regardless.
+    corroborate `.dynsym`'s own `sh_link` against, so that string table is untrusted
+    too rather than read through regardless.
     """
     honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
     spliced = insert_bogus_section_before(honest, ".dynamic", SHT_DYNAMIC)
@@ -1479,7 +1482,7 @@ def test_a_forged_dynsym_type_with_the_name_left_intact_does_not_read_as_absent(
 
 def test_a_forged_dynamic_type_with_the_name_left_intact_does_not_read_as_absent() -> None:
     """Also costs `.dynsym`: no readable `.dynamic` means no `DT_STRTAB` to
-    corroborate `.dynsym`'s `sh_link` against either (#56 round 4)."""
+    corroborate `.dynsym`'s `sh_link` against either."""
     honest = ElfBuilder(needed=("libc.so.6",), dynsyms=_HIDDEN).build()
     forged = patch_section_header(honest, ".dynamic", "sh_type", SHT_PROGBITS)
     ev, errors = _read(forged)
@@ -1505,14 +1508,15 @@ def test_a_forged_symtab_type_with_the_name_left_intact_does_not_read_as_absent(
 
 # --- a decoy of the target type must not disable the name/type-mismatch check ------
 #
-# The mismatch check used to run only when the type-based lookup found nothing
-# (`dynsym is None and _type_mismatch(...)`). One harmless decoy `SHT_DYNSYM` section
-# is enough to satisfy the type-based lookup on its own -- unambiguously, since there
-# is exactly one candidate of that type -- so `dynsym is None` was False and the
-# mismatch check was never even consulted. The REAL section, still correctly named but
-# with its own `sh_type` forged away, then went completely unseen: not found by type
-# (wrong type) and not checked by name (the gate never fired). The check now runs
-# unconditionally, regardless of what the type-based lookup found elsewhere.
+# Gating the mismatch check on the type-based lookup finding nothing
+# (`dynsym is None and _type_mismatch(...)`) is not enough. One harmless decoy
+# `SHT_DYNSYM` section is enough to satisfy the type-based lookup on its own --
+# unambiguously, since there is exactly one candidate of that type -- so
+# `dynsym is None` would be False and the mismatch check would never even be consulted.
+# The REAL section, still correctly named but with its own `sh_type` forged away, then
+# goes completely unseen: not found by type (wrong type) and not checked by name (the
+# gate never fires). The check runs unconditionally instead, regardless of what the
+# type-based lookup found elsewhere.
 
 
 def test_a_decoy_dynsym_does_not_disable_the_check_on_the_real_forged_one() -> None:
@@ -1556,14 +1560,14 @@ def test_a_decoy_symtab_does_not_disable_the_check_on_the_real_forged_one() -> N
 
 # --- a same-named decoy must not disable the name/type-mismatch check either -------
 #
-# `_type_mismatch` finds "the section named X" the same way `_find_section` always
-# has: the first match in section order. A decoy that reuses the real section's own
-# *name* rather than its type sorts first, is read as correctly typed (it is -- that
-# is the whole trick), and reports no mismatch, leaving a same-named real section
-# sitting behind it -- still carrying its own forged `sh_type` -- completely unseen:
-# not found by type (wrong type) and not caught by the mismatch check (a differently
-# ambiguous, but equally untrustworthy, name match). Ambiguous by name is now treated
-# the same as ambiguous by type: neither is trusted.
+# Finding "the section named X" by the first match in section order, the way
+# `_find_section` does, would let a decoy that reuses the real section's own *name*
+# rather than its type sort first, read as correctly typed (it is -- that is the whole
+# trick), and report no mismatch, leaving a same-named real section sitting behind it
+# -- still carrying its own forged `sh_type` -- completely unseen: not found by type
+# (wrong type) and not caught by the mismatch check (a differently ambiguous, but
+# equally untrustworthy, name match). Ambiguous by name is treated the same as
+# ambiguous by type: neither is trusted.
 
 
 def test_a_same_named_decoy_dynsym_does_not_disable_the_check_either() -> None:
@@ -1655,9 +1659,9 @@ def test_a_section_header_table_entirely_absent_falls_back_to_whole_file_strings
     `.dynamic`, `.dynsym` and `.symtab` cannot be found by type or by name when there
     is no section list to search, so every field derived from one is genuinely empty
     rather than merely unread -- but the strings pass still runs, over the whole file,
-    the same fallback a header that would not parse already gets. Worse than that
-    fallback used to be silent: no error, no `partial_analysis`, and the string pass
-    itself found nothing because it had no section list to filter to either.
+    the same fallback a header that would not parse already gets. Leaving that
+    fallback silent would be worse: no error, no `partial_analysis`, and the string pass
+    itself finding nothing because it had no section list to filter to either.
     """
     built = ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024").build()
     sectionless = patch_header_field(patch_header_field(built, "e_shnum", 0), "e_shoff", 0)
@@ -1673,8 +1677,8 @@ def test_a_section_header_table_entirely_absent_falls_back_to_whole_file_strings
     )
 
 
-def test_a_renamed_dynsym_no_longer_reads_completely_clean() -> None:
-    """The reproduction end to end: on `main` this used to classify as clean.
+def test_a_renamed_dynsym_does_not_read_completely_clean() -> None:
+    """The reproduction end to end: a renamed `.dynsym` must not classify as clean.
 
     `needed` and `matched_symbols` come back right on their own (proved above); this
     pins that the verdict downstream of them changes too, since a rule keys on the
@@ -1697,14 +1701,14 @@ def test_a_renamed_dynsym_no_longer_reads_completely_clean() -> None:
     assert verdict.headline != NO_CRYPTO_DETECTED
 
 
-# --- sh_link is only trusted when it corroborates .dynamic's own DT_STRTAB (#56 rd 4)
+# --- sh_link is only trusted when it corroborates .dynamic's own DT_STRTAB --------------------
 #
 # The dynamic linker resolves `.dynamic` and `.dynsym`'s names through `DT_STRTAB`
 # from `PT_DYNAMIC`, never through any section's `sh_link`. A decoy `SHT_STRTAB`
 # section -- correctly typed, so pyelftools accepts it without complaint -- planted
-# purely to be read through `sh_link` used to be trusted outright: an all-NUL decoy
+# purely to be read through `sh_link`, trusted outright, is a hole: an all-NUL decoy
 # resolves every symbol name to `""`, which is not flagged unresolved, so a real
-# `libcrypto.so.3` read completely clean instead of carrying its 64 crypto symbols.
+# `libcrypto.so.3` would read completely clean instead of carrying its 64 crypto symbols.
 # `.dynamic`'s own `sh_link` has the same hole and is worse: it can fabricate a
 # `DT_NEEDED` entry the object never declared, not merely erase one.
 
@@ -1762,14 +1766,14 @@ def test_a_decoy_string_table_cannot_fabricate_a_needed_dependency() -> None:
     assert any(e.kind == ELF_PARSE_ERROR for e in errors)
 
 
-# --- .symtab matching, only when .dynsym is genuinely absent (#117) ----------------
+# --- .symtab: fully matched without .dynsym, definitions only beside it --------
 
 
 def test_a_relocatable_object_matches_a_defined_symtab_crypto_symbol() -> None:
-    """The reproduction #117 was filed over: a `.o` -- a relocatable object, the shape
-    every member of a real `.a`/`.lib` static archive has -- normally carries no
-    `.dynsym` at all, only `.symtab`. A genuine definition there was invisible to
-    symbol-based detection before this.
+    """A `.o` -- a relocatable object, the shape every member of a real `.a`/`.lib`
+    static archive has -- normally carries no `.dynsym` at all, only `.symtab`. Without
+    matching `.symtab`, a genuine definition there is invisible to symbol-based
+    detection.
     """
     honest = ElfBuilder(
         e_type=ET_REL,
@@ -1804,12 +1808,12 @@ def test_a_relocatable_object_matches_an_imported_symtab_crypto_symbol() -> None
 def test_a_local_definition_in_symtab_is_read_when_dynsym_is_present() -> None:
     """A statically linked copy whose symbols a version script kept local.
 
-    #117 gated `.symtab` matching on `.dynsym` being genuinely absent, which made the
-    existing corpus unaffected by construction -- and left the case this tool exists
-    for unread: cryptography 50.0.1 carries 776 `EVP_*` definitions, every one local
-    in `.symtab` and none in `.dynsym`, beside a `.dynsym` that exports only
-    `PyInit__rust`. A definition nobody else can satisfy is what a static copy *is*,
-    so it is read now, and the corpus claim is carried by measurement instead (#127).
+    Gating all `.symtab` matching on `.dynsym` being genuinely absent would leave the
+    existing corpus unaffected by construction -- and leave the case this tool exists
+    for unread: cryptography 50.0.1 carries 776 `EVP_*` definitions, every one local in
+    `.symtab` and none in `.dynsym`, beside a `.dynsym` that exports only
+    `PyInit__rust`. A definition nobody else can satisfy is what a static copy *is*, so
+    it is read, and the corpus claim is carried by measurement instead (see DESIGN.md).
     """
     honest = ElfBuilder(
         needed=("libc.so.6",),
@@ -1826,7 +1830,8 @@ def test_a_local_definition_in_symtab_is_read_when_dynsym_is_present() -> None:
 
 
 def test_an_import_in_symtab_is_not_read_when_dynsym_is_present() -> None:
-    """Only definitions cross the gate #117 put up, and this is the half that stays.
+    """Only definitions cross the `.dynsym`-absent gate, and this is the half that
+    stays behind it.
 
     A dynamically linked object must declare every import in `.dynsym` to link at all,
     so `.symtab` can say nothing new about imports; taking them would record the same
@@ -1906,15 +1911,15 @@ def test_a_strtab_that_does_not_hold_the_names_symtab_points_at_is_not_a_clean_r
 
 
 def test_a_decoy_strtab_repointed_from_symtab_does_not_read_completely_clean() -> None:
-    """The severe finding two independent adversarial reviews reproduced: `.symtab`
-    has no `.dynsym`-style address authority to corroborate `sh_link` against, so a
-    `.symtab` repointed at a decoy, all-NUL `SHT_STRTAB` resolved every name to `""`
-    -- not unresolved, resolved -- and the real `.strtab`, sitting untouched elsewhere
-    in the section table, was never asked. A crafted object could hide a genuine
-    `EVP_DigestInit_ex` definition and read completely clean: `matched_symbols=()`,
-    `partial_analysis=False`, no error. `_any_strtab_holds_a_name_not_read` closes it
-    by asking every `SHT_STRTAB` section, not just the one `sh_link` names, so the
-    real `.strtab` still gets to contradict the decoy.
+    """`.symtab` has no `.dynsym`-style address authority to corroborate `sh_link`
+    against, so a `.symtab` repointed at a decoy, all-NUL `SHT_STRTAB` resolves every
+    name to `""` -- not unresolved, resolved -- and trusting only that table, the real
+    `.strtab`, sitting untouched elsewhere in the section table, is never asked. A
+    crafted object could hide a genuine `EVP_DigestInit_ex` definition and read
+    completely clean: `matched_symbols=()`, `partial_analysis=False`, no error.
+    `_any_strtab_holds_a_name_not_read` closes it by asking every `SHT_STRTAB` section,
+    not just the one `sh_link` names, so the real `.strtab` still gets to contradict the
+    decoy.
     """
     honest = ElfBuilder(
         e_type=ET_REL,
@@ -1935,13 +1940,13 @@ def test_a_decoy_strtab_repointed_from_symtab_does_not_read_completely_clean() -
 
 
 def test_a_small_decoy_beside_an_over_budget_real_strtab_is_still_not_a_clean_read() -> None:
-    """A second construction of the same attack, found verifying the fix above: a
-    *small* decoy `.symtab` is happy to point at (so the primary read is clean),
+    """A second construction of the same attack, one the guard above has to survive:
+    a *small* decoy `.symtab` is happy to point at (so the primary read is clean),
     sitting beside the genuine `.strtab` with its own declared `sh_size` inflated past
-    the budget. An earlier version of `_any_strtab_holds_a_name_not_read` silently
-    skipped a section it could not fully read rather than treating that as suspicious,
-    so the one section that could have contradicted the decoy was never actually
-    checked. Skipping must count as a hit, not nothing to worry about.
+    the budget. Silently skipping a section that cannot be fully read, rather than
+    treating that as suspicious, would leave the one section that could contradict the
+    decoy never actually checked. Skipping must count as a hit, not nothing to worry
+    about.
     """
     from wheel_crypto_scan.binfmt.strings import MAX_STRINGS_BYTES
 

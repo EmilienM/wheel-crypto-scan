@@ -20,12 +20,13 @@ equivalent of auditwheel, copies a dependency into `.dylibs/` and rewrites the l
 command to point at it *without* renaming the file. A `needed` entry can therefore name
 a plain, unmangled `libcrypto.3.dylib` and still resolve entirely inside the wheel, so
 `mangled` cannot be the only test for "does this `needed` entry name a copy the wheel
-ships". See #57.
+ships". See `DESIGN.md`, "A `needed` entry is bundled by what it resolves to, not by
+whether its name was renamed".
 
 A structural rule underlies all of the above: an absolute `needed` path is never
 resolved relative to anything -- not `RPATH`/`RUNPATH`, not a vendor directory, not
 the wheel at all -- so it can never be evidence of vendoring, whatever else in the
-wheel happens to share its basename. See #80.
+wheel happens to share its basename.
 """
 
 from __future__ import annotations
@@ -58,19 +59,17 @@ def member_stem_counts(conventions: Conventions, evidence: Evidence) -> Mapping[
     `needed` entry can never legitimately resolve to the object declaring it.
     `_resolves_within_wheel` uses the count to discount an object's own contribution
     to its own answer while still honouring a second, genuinely different object that
-    happens to share the same stem. See #57. (#57's own reproduction used an absolute
-    dependency, `/usr/lib64/libcrypto.so.3`; #80 later gave every absolute `needed`
-    entry its own, earlier short-circuit in `needed_posture` that never reaches this
-    function at all, so the discount below is now exercised by a *relative*
-    same-named dependency instead -- the coincidence is exactly as possible there,
-    just reached through the ordinary, non-absolute path.)
+    happens to share the same stem. An absolute `needed` entry never reaches this
+    count, because `needed_posture` answers it before asking, so the discount is
+    exercised by a *relative* same-named dependency: the coincidence is exactly as
+    possible there, reached through the ordinary, non-absolute path.
 
     The object's `path` is set by `layers.binaries.scan_binaries` for every member it
     attempts to read, whether or not the read succeeded, so a vendored copy whose
     internal structure could not be parsed still counts.
 
     `binary.from_archive` objects are excluded: a relocatable object inside a `.a`/
-    `.lib` static archive (`binfmt.ar`, #99) was never a file any real dynamic loader
+    `.lib` static archive (`binfmt.ar`) is never a file any real dynamic loader
     could resolve a `needed` entry to, so a `SONAME` on one -- bytes `binfmt.ar` reads
     exactly as written, including whatever an adversarial wheel chose to write there
     -- must not be able to confirm an unrelated `needed` entry as resolving inside the
@@ -95,7 +94,6 @@ def _resolves_within_wheel(own_stem: str, needed_stem: str, counts: Mapping[str,
     Assumes `needed` is a name a real loader could plausibly resolve inside the wheel
     at all -- `needed_posture` only calls this for a relative entry, never an absolute
     path, which no loader resolves this way regardless of what shares its basename.
-    See #80.
     """
     count = counts.get(needed_stem, 0)
     return count > 1 if needed_stem == own_stem else count > 0
@@ -110,7 +108,6 @@ def wheel_incompletely_read(evidence: Evidence) -> bool:
     binary at all, and records neither a `skipped` entry nor a `STAGE_BINARY` error.
     Whichever it is, `member_stem_counts` cannot be a complete answer: the object a
     vendor-shaped path is pointing at might be exactly the one that never got read.
-    See #57.
     """
     return bool(
         evidence.artifacts.skipped
@@ -132,13 +129,13 @@ def _looks_vendored(needed: str, binary: BinaryEvidence, conventions: Convention
     itself, and the caller only consults this when the wheel was not read in full
     (`wheel_incompletely_read`): when every member was read, `member_stem_counts`
     already speaks for the whole wheel, and a vendor-shaped path naming nothing there
-    is genuine `system`, not `unknown`. See #57.
+    is genuine `system`, not `unknown`.
 
     Also assumes `needed` is a relative entry: `needed_posture` never calls this for
     an absolute path, because an absolute path is never resolved relative to a loading
     object's `RPATH`/`RUNPATH` or its own directory, so a vendor-glob-shaped component
     inside one -- whether embedded directly or produced by the join below -- names
-    nothing a real loader would ever look at. See #80.
+    nothing a real loader would ever look at.
     """
     if conventions.is_vendor_path(needed):
         return True
@@ -164,7 +161,7 @@ def needed_posture(
     which never mangles, needs the second half); `LINKAGE_UNKNOWN` when the wheel was
     not read in full and the path looks vendored (`_looks_vendored`) but names
     nothing confirmed, because a path shaped like vendoring is not proof by itself
-    and an incompletely-read wheel cannot rule it out either (#57); `LINKAGE_SYSTEM`
+    and an incompletely-read wheel cannot rule it out either; `LINKAGE_SYSTEM`
     otherwise -- including a vendor-shaped path naming nothing, when the wheel was
     read in full and can therefore rule it out.
 
@@ -187,16 +184,15 @@ def needed_posture(
     `mangled` is checked first, ahead of the absolute-path return, and is unaffected
     by absoluteness: a hash-renamed basename is strong independent evidence on its
     own, and mangled detection has nothing to do with whether the path was absolute.
-    #80.
 
-    This closes the residual only for a genuinely absolute path (`startswith("/")`).
-    A relative-looking entry that still cannot resolve inside the wheel by any real
+    The short-circuit covers only a genuinely absolute path (`startswith("/")`). A
+    relative-looking entry that still cannot resolve inside the wheel by any real
     search order -- a `../`-relative path, or a Mach-O `@executable_path/`-anchored
     one, which resolves against the process's own binary rather than the loading
-    object -- still reaches `_resolves_within_wheel` and `_looks_vendored` exactly as
-    before #80 and can still read a spurious `bundled` or `unknown` from an unrelated
-    basename collision. Narrower than the argument above technically allows;
-    `DECISIONS.md` records it as a residual left open rather than assumed closed.
+    object -- reaches `_resolves_within_wheel` and `_looks_vendored` like any other
+    relative entry, and can read a spurious `bundled` or `unknown` from an unrelated
+    basename collision. That is narrower than the argument above technically allows;
+    `DESIGN.md` records it as a residual left open rather than assumed closed.
 
     Shared with `engine._match_dt_needed`, which reports this per `needed` entry
     rather than aggregating it, so the record and the finding cannot disagree about
@@ -287,12 +283,12 @@ def _aggregate(postures: set[str], unanswered: bool, declared: bool) -> str:
     `object_postures`, which is how `DERIVED_SYSTEM_OPENSSL_ONLY` declines to fire
     beside an object that read `unknown`.
 
-    `mixed` can now arrive already resolved for a single object -- #60: a `needed`
-    entry matched the system library and the object also defines or banners its own
-    copy; #88: a `needed` entry resolved inside the wheel (`bundled`) alongside a
-    different `needed` entry matching the system library, or alongside a
-    definition/banner, on that same object -- not only as this function's own
-    combination of two definite postures from different objects. `mixed` has no
+    `mixed` can also arrive already resolved for a single object: a `needed` entry
+    matched the system library and the object also defines its own copy or carries a
+    banner that is not header text, or a `needed` entry resolved inside the wheel
+    (`bundled`) beside a different `needed` entry matching the system library, or
+    beside a definition/banner, on that same object. It is not only this function's
+    own combination of two definite postures from different objects. `mixed` has no
     finer split than that in the vocabulary, so one object already reading `mixed`
     makes the wheel `mixed` outright, whatever any other object says.
 
@@ -310,7 +306,8 @@ def _aggregate(postures: set[str], unanswered: bool, declared: bool) -> str:
     crate beside an object that reads `system` still fires `DERIVED_SYSTEM_OPENSSL_ONLY`:
     `declared` never reaches `_aggregate` at all once a `_DEFINITE` posture exists (the
     `len(definite) == 1` branch above returns first), so there is nothing here for that
-    rule's exclusion to see. Recorded as a residual; see DECISIONS.md.
+    rule's exclusion to see. That is a known residual, recorded in DESIGN.md, "An SBOM
+    naming an OpenSSL crate reads `unknown`, not `none`".
     """
     if LINKAGE_MIXED in postures:
         return LINKAGE_MIXED
@@ -371,7 +368,7 @@ def _declared_by_sbom(
 
     Deliberately excludes a distribution name (`crypto_distribution`): a distribution
     wrapping a library is not the same claim as the wheel carrying a copy of it --
-    SCHEMA.md keeps saying a distribution name never moves this field. A soname is
+    SCHEMA.md says a distribution name never moves this field. A soname is
     not a candidate in the first place, never mind excluded: it is a dependency
     string, not the name of a package or crate, so no SBOM component is ever spelled
     that way, and this field's `needed`-side matching already owns soname comparison.
@@ -397,7 +394,7 @@ def _declared_by_sbom(
     purl, or none, would not move the field, while `SBOM_CRYPTO_COMPONENT` still fires
     on that same name (it matches by name, not by purl) -- leaving a finding with no
     field beside it to say so, the same "reports nothing" shape the invariants resist.
-    See DECISIONS.md.
+    See DESIGN.md, "An SBOM naming an OpenSSL crate reads `unknown`, not `none`".
 
     An SBOM component says the wheel uses the library, not which copy, exactly like a
     Rust crate: never a definite posture, only `unknown` in place of `none`.
@@ -439,23 +436,23 @@ def _binary_posture(
         )
         if posture == LINKAGE_BUNDLED:
             # auditwheel and delvewheel rename what they vendor; delocate does not,
-            # so a plain name that still resolves inside the wheel counts too. #57.
+            # so a plain name that resolves inside the wheel counts too.
             #
-            # This used to return immediately, before the rest of this loop -- a
-            # second `needed` entry that resolves to `system`, say -- or the
-            # defined/static check below it ever ran, so a merged fat-slice object
-            # whose slices disagreed (one slice bundled, another system or static)
-            # read `bundled` outright instead of `mixed`, unlike the same evidence
-            # split across two separate objects. Set the flag and keep looping
-            # instead: `bundled` is a `_DEFINITE` posture exactly like `system`, so
-            # it belongs in the same disagreement check below, not in a return of
-            # its own. See #88.
+            # No early return: returning here, before the rest of this loop (a
+            # second `needed` entry that resolves to `system`, say) or the
+            # defined/static check below it runs, would let a merged fat-slice
+            # object whose slices disagree (one slice bundled, another system or
+            # static) read `bundled` outright instead of `mixed`, unlike the same
+            # evidence split across two separate objects. `bundled` is a
+            # `_DEFINITE` posture exactly like `system`, so it belongs in the same
+            # disagreement check below, not in a return of its own.
             bundled = True
             continue
         if posture == LINKAGE_UNKNOWN:
             # Looks vendored (a `@loader_path`/`@rpath`/vendor-shaped RUNPATH), but
             # nothing in the wheel confirms it names a file that is actually there.
-            # Not proof of "system" either -- see the reproduction in #57.
+            # Not proof of "system" either: the file it names may be the one member
+            # of an incompletely-read wheel that never got read.
             uncertain = True
             continue
         system = True
@@ -479,28 +476,26 @@ def _binary_posture(
         # rest: this object's own evidence already disagrees with itself the same
         # way two different objects' postures disagree in `_aggregate`
         # (`len(definite) > 1: return LINKAGE_MIXED`), so it reads `mixed` here
-        # too, before `_aggregate` ever runs. #60 added this check for
-        # `system`-and-`static`; #88 widens it to a three-way count that also
-        # catches `bundled`-and-`system` and `bundled`-and-`static`, closing the
-        # gap left by `bundled`'s old early return in the loop above.
+        # too, before `_aggregate` ever runs. The count is three-way so that
+        # `bundled`-and-`system` and `bundled`-and-`static` are caught alongside
+        # `system`-and-`static`.
         return LINKAGE_MIXED
     if system:
         return LINKAGE_SYSTEM
     if bundled:
         # No other `_DEFINITE` posture was also true above, so this is the
-        # ordinary bundled case: the same answer the loop's old early return gave
-        # for this shape, reached here instead only after confirming it did not
-        # need to combine with a `system` or `static` signal found elsewhere on
-        # this same object. #88.
+        # ordinary bundled case, reached only after confirming it does not need
+        # to combine with a `system` or `static` signal found elsewhere on this
+        # same object.
         return LINKAGE_BUNDLED
     if uncertain and static:
         # A `needed` entry whose path/rpath shape looks vendored but that this
         # incompletely-read wheel cannot confirm either way, and a real definition
         # or banner in the same object, are both true at once. Returning `unknown`
-        # here -- as this function did before #87 -- discarded the confirmed static
-        # evidence in favour of the unconfirmed one, the opposite of what
-        # "unreadable or uncertain must never read as NO_CRYPTO_DETECTED" asks for:
-        # a real fact should never be the one that goes missing.
+        # here would discard the confirmed static evidence in favour of the
+        # unconfirmed one, the opposite of what "unreadable or uncertain must never
+        # read as NO_CRYPTO_DETECTED" asks for: a real fact should never be the one
+        # that goes missing.
         #
         # Reached only when neither `system` nor `bundled` is true. That is not the
         # same shape as the two `_DEFINITE`-count branches above -- `system` and
@@ -526,8 +521,8 @@ def _binary_posture(
         # `_DEFINITE`-count check changes nothing the test suite can observe). It
         # sits here because `uncertain` and `static` are the only two facts left
         # for this branch to combine once `system` and `bundled` have both already
-        # been ruled out. See #87, extended by #88 to also rule out `bundled`
-        # ahead of it, and originally extending #60.
+        # been ruled out. See `DESIGN.md`, "An `uncertain` needed match beside a
+        # definition is `mixed`".
         return LINKAGE_MIXED
     if uncertain:
         return LINKAGE_UNKNOWN
@@ -552,10 +547,10 @@ def _binary_posture(
     # that yielded nothing at all) makes the *wheel* unable to answer for the whole
     # ruleset -- `_left_unanswered` already says so, and `resolve_linkage` passes that
     # signal into `_aggregate` gated on `library.always_report`. Returning
-    # `LINKAGE_UNKNOWN` from here instead put that answer directly into this one
-    # library's `postures` set, bypassing the gate: every library in the ruleset, not
-    # only `openssl`, read `unknown` for an opaque binary, which is exactly what
-    # `always_report`-gating exists to prevent. See #68.
+    # `LINKAGE_UNKNOWN` from here instead would put that answer directly into this
+    # one library's `postures` set, bypassing the gate: every library in the ruleset,
+    # not only `openssl`, would read `unknown` for an opaque binary, which is exactly
+    # what `always_report`-gating exists to prevent.
     return LINKAGE_NONE
 
 
@@ -604,14 +599,13 @@ def _banner_is_header_text(binary: BinaryEvidence, library: CryptoLibrary) -> bo
 def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
     """Did any object in this wheel fail to answer the question linkage asks?
 
-    Three ways, and the third was missing for a long time. An object that yielded
-    nothing at all; a binary that never produced a record, which shows up as a
-    binary-stage error; and an object a reader read and explicitly marked as not read
-    in full.
+    Three ways. An object that yielded nothing at all; a binary that never produced a
+    record, which shows up as a binary-stage error; and an object a reader read and
+    explicitly marked as not read in full.
 
     That third one is the everyday case rather than the exotic one -- a stripped macOS
     extension records `macho_symtab_incomplete` and no error -- and without it the
-    record said both "we could not read this object's symbols" and "there is no
+    record would say both "we could not read this object's symbols" and "there is no
     OpenSSL in it", which is a claim the first half says we cannot make. `is_opaque`
     does not rescue it: `needed` is non-empty for every loadable dylib and every
     `.pyd`.
@@ -619,18 +613,18 @@ def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
     Which causes count is policy and is read off the ruleset, because most of
     `partial_reasons` is a failure and some of it is a linker convention that leaves
     every field linkage reads intact. Counting the tuple wholesale would turn every
-    ordinal import into `openssl_linkage: unknown`, which is the noise #32 removed.
+    ordinal import into `openssl_linkage: unknown`: the same noise that keeping a
+    routine cause out of the verdict avoids.
 
     This is the one place a wheel-wide, library-agnostic non-answer belongs.
     `_binary_posture` may return `LINKAGE_UNKNOWN` only from a condition that depends
     on the specific `library` being asked about (an uncertain `needed` match against
     `library.sonames`, an imported symbol from `library.symbol_group`, or a crate
-    from `library.crates`) -- never
-    from a fact about the object alone, because that answer is the same for every
-    library in the ruleset and belongs here instead, gated through `resolve_linkage`
-    on `library.always_report` rather than reported for all thirteen. `is_opaque` was
-    a library-agnostic fact answered a second time inside `_binary_posture` until
-    #68; if a future object-level non-answer is added, it belongs here, not there. A
+    from `library.crates`) -- never from a fact about the object alone, because that
+    answer is the same for every library in the ruleset and belongs here instead,
+    gated through `resolve_linkage` on `library.always_report` rather than reported
+    for all thirteen. `is_opaque` is such a fact, and it is answered here and nowhere
+    else; any other object-level non-answer belongs here too, not there. A
     library-specific wheel-level signal -- the wheel's own SBOM naming a library or a
     crate that binds it -- goes through `_declared_by_sbom` instead, not here.
     """

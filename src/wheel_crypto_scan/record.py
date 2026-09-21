@@ -102,22 +102,21 @@ def _cap_by_findings(
     the first, a bare `(path, format)` pair for the second, the bare path string
     itself for the third. `binaries[]` and `extensions` are always the same length,
     one entry per object read, so keeping them on one function is what keeps those two
-    agreeing on which objects survive the cap -- the same thing that was true of them
-    before this existed, when both were the identical plain prefix. `bundled_libs` is
-    a different, usually smaller universe of paths (only the vendored objects), so it
-    is never expected to list the same objects as the other two; what it shares with
-    them is only the *selection rule* -- a finding-referenced object wins a slot first
-    -- not the resulting set.
+    agreeing on which objects survive the cap -- the same guarantee a plain prefix
+    would give them by construction, since it is the identical prefix either way.
+    `bundled_libs` is a different, usually smaller universe of paths (only the
+    vendored objects), so it is never expected to list the same objects as the other
+    two; what it shares with them is only the *selection rule* -- a finding-referenced
+    object wins a slot first -- not the resulting set.
 
-    Mirrors `caps.cap()`'s fix for the per-binary string/symbol/crate caps
-    (DECISIONS.md, "A cap bounds the record, it does not pick the evidence", #51), one
-    layer up: there the cap picked which *matches inside an object* a rule got to see;
-    here it only ever picked which *objects* the serialised record lists, since #55
-    made evaluation itself see every object regardless of this cap. A plain
-    path-sorted prefix has no reason to agree with where the objects a finding
-    actually names happen to sort, so a wheel whose crypto-relevant objects sort last
-    could cap them straight out of `binaries[]` while `findings[]` and `verdict` still
-    named them (#75).
+    Mirrors what `caps.cap()` does for the per-binary string/symbol/crate caps
+    (DESIGN.md, "A cap bounds the record, it does not pick the evidence"), one layer
+    up: there the cap picks which *matches inside an object* a rule gets to see; here
+    it only ever picks which *objects* the serialised record lists, since evaluation
+    itself sees every object regardless of this cap. A plain path-sorted prefix has
+    no reason to agree with where the objects a finding actually names happen to sort,
+    so a wheel whose crypto-relevant objects sort last could cap them straight out of
+    `binaries[]` while `findings[]` and `verdict` still named them.
 
     Three passes fill the room in the order a reader would miss it most, the same
     shape `caps.cap()` uses for its own three passes:
@@ -125,19 +124,19 @@ def _cap_by_findings(
       1. One representative object per `(rule_id, subject)` a finding names, visited
          in that order -- so a finding does not lose *every* one of its objects to an
          unrelated finding's objects simply because its own objects' paths, or its own
-         `subject`, happen to sort later. This is the fix a flat "referenced, then
-         rest, in path order" pass was still missing: sorting the referenced set by
-         path alone just moves the same sorting problem from object paths to finding
+         `subject`, happen to sort later. A flat "referenced, then rest, in path
+         order" pass is not enough on its own: sorting the referenced set by path
+         alone just moves the same sorting problem from object paths to finding
          subjects, and a subject like a crate name sorts exactly as arbitrarily with
          respect to severity as a filename does.
       2. Every other referenced object, in path order.
-      3. Everything else, in path order -- the same rule the plain prefix already used
-         for everything, when there was nothing to prefer.
+      3. Everything else, in path order -- the same rule a plain prefix uses for
+         everything, when there is nothing to prefer.
 
     A `Location.path` that names no item here (a `kind = "linkage"` rule's Hit, for
     one, always carries the wheel's own filename, never an object path) is not part of
-    any group and cannot win a slot through this function; it was never going to be an
-    entry in `binaries[]` or `extensions` regardless of the wheel's content.
+    any group and cannot win a slot through this function; it is never an entry in
+    `binaries[]` or `extensions` regardless of the wheel's content.
 
     Unlike `caps.cap()`'s per-binary caps, there is no fixed, ruleset-declared
     vocabulary of finding subjects to guarantee room for one of: how many distinct
@@ -155,7 +154,7 @@ def _cap_by_findings(
     lowest-sorting groups win, the same posture `caps.cap()` documents for its
     own analogous case. `binaries_truncated` and `WHEEL_BINARIES_TRUNCATED` still fire
     whenever the result is a prefix of anything, referenced or not, so this case is
-    never silent -- see DECISIONS.md and SCHEMA.md.
+    never silent -- see DESIGN.md and SCHEMA.md.
     """
     if len(items) <= max_binaries:
         return tuple(items)
@@ -223,10 +222,10 @@ class _SkippedEntry:
 @dataclass(frozen=True, slots=True)
 class _SymlinkEntry:
     """Wraps one `artifacts.symlinks` `(path, target)` pair to cap it through
-    `caps.cap`. `target` is the axis a consumer actually keys on (#57: a bundled
-    library is reachable only through the one symlink naming it), so one
-    representative per target survives a flood of boring ones before the rest, the
-    same shape `caps.py`'s own crate-list example exists to prevent one array over.
+    `caps.cap`. `target` is the axis a consumer actually keys on (a bundled library
+    can be reachable only through the one symlink naming it), so one representative
+    per target survives a flood of boring ones before the rest, the same shape
+    `caps.py`'s own crate-list example exists to prevent one array over.
     """
 
     path: str
@@ -293,12 +292,11 @@ def _artifacts_block(
     artifacts: ArtifactInventory, findings: Sequence[Finding], max_binaries: int | None
 ) -> dict[str, Any]:
     # `extensions` is capped the same finding-aware way `binaries[]` is, through the
-    # same function, so the two never disagree on which objects survive the cap --
-    # they always agreed before this existed, when both were the identical plain
-    # prefix. `ArtifactInventory.extensions` itself holds the full, untruncated set;
-    # `build_inventory` stopped capping it for the same reason `_collect` stopped
-    # truncating `Evidence.binaries` for #55 -- capping it before this point would
-    # have been capping it before the cap could know what a finding cared about.
+    # same function, so the two never disagree on which objects survive the cap.
+    # `ArtifactInventory.extensions` itself holds the full, untruncated set;
+    # `build_inventory` does not cap it, for the same reason `_collect` does not
+    # truncate `Evidence.binaries`: capping it before this point would cap it before
+    # the cap could know what a finding cared about.
     extensions = (
         artifacts.extensions
         if max_binaries is None
@@ -308,8 +306,10 @@ def _artifacts_block(
     # only the vendored ones -- so it can be smaller than `max_binaries` even when
     # `artifacts.binaries_truncated` is true, and it needs its own truncation flag
     # rather than reusing that one: a wheel that vendors thousands of small libraries
-    # under `*.libs/`/`.dylibs/` produced an unbounded `bundled_libs` array before
-    # this, independently of how many native objects were read in total (#76).
+    # under `*.libs/`/`.dylibs/` would otherwise produce an unbounded `bundled_libs`
+    # array, independently of how many native objects were read in total. See
+    # DESIGN.md, "`bundled_libs` and `errors[]` get their own caps, not
+    # `binaries_truncated`'s".
     bundled_libs = (
         artifacts.bundled_libs
         if max_binaries is None
@@ -321,13 +321,12 @@ def _artifacts_block(
     # `WHEEL_MEMBER_UNREADABLE`) name paths that live in `skipped` too, and a plain
     # prefix can crowd an entire reason out -- the same starvation `errors[]`'s own
     # `cap_key` exists to prevent, one array over. `symlinks`' `target` is the axis a
-    # consumer actually keys on (#57: a bundled `libcrypto.dylib` reachable only
+    # consumer actually keys on (a bundled `libcrypto.dylib` can be reachable only
     # through one symlink's target), and a plain prefix can crowd the one crypto
     # target out behind a flood of boring ones, `caps.py`'s own `ring`-behind-`anyhow`
     # example one array over. Both go through `caps.cap` with one representative per
     # `(reason,)`/`(target,)` kept before the rest, not a plain sorted prefix. See
-    # DECISIONS.md, "`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix"
-    # (#119).
+    # DESIGN.md, "`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix".
     if max_binaries is None:
         skipped, skipped_truncated = artifacts.skipped, False
         symlinks, symlinks_truncated = artifacts.symlinks, False

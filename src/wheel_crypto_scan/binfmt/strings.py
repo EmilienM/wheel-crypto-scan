@@ -156,7 +156,7 @@ class StringsPass:
     or more crates than the limits keep -- and a recording cap is not a partial read:
     the object was read, and what was capped is what got written down. What a cap costs
     is bounded by `caps`, which keeps a representative of every key before it
-    fills the remainder, so a cap can no longer silence a group or a named crate
+    fills the remainder, so a cap cannot silence a group or a named crate
     outright.
 
     Whether bytes went unread is the caller's question, because the caller is what
