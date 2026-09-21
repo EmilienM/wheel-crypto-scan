@@ -277,6 +277,25 @@ def _validate_rule_references(
         _validate_match_references(match, ruleset_data, where)
 
 
+def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
+    """The two string groups `[conventions]` names for the Go reader must exist.
+
+    Here rather than in `_parse_conventions` so that one mechanism checks every group
+    reference in the file, against the raw tables, in one pass and with one spelling of
+    the failure. `[conventions]` says naming these groups in the ruleset means renaming
+    a group cannot silently flip a verdict-relevant field, and `binfmt.golang` reads
+    them for exactly that reason; unchecked, a name no group had loaded clean and left
+    `GoBuildInfo.boring_crypto` false for every Go binary in the run.
+    """
+    where = "[conventions]"
+    conventions = _require(ruleset_data, "conventions", where)
+    known = {entry["name"] for entry in ruleset_data["string_group"]}
+    for key in ("go_boring_group", "go_stock_group"):
+        name = str(_require(conventions, key, where))
+        if name not in known:
+            raise RulesetError(f"{where}: {key} names unknown string group {name!r}")
+
+
 def _validate_match_references(
     match: Mapping[str, Any], ruleset_data: Mapping[str, Any], where: str
 ) -> None:
@@ -454,6 +473,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     for rule in rules:
         _validate_rule_references(rule, data, rule_ids)
+    _validate_conventions_references(data)
 
     defaults: dict[str, set[str]] = {}
     for rule in rules:

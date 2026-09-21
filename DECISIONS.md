@@ -893,10 +893,10 @@ Tracked in [#55](https://github.com/EmilienM/wheel-crypto-scan/issues/55).
 
 ## `binaries[]` keeps what a finding points at, before filling the rest
 
-**Accepted, and it changes records. Revised after adversarial review of the first
-version of this fix found two things worth fixing in the fix itself -- see "What
-adversarial review changed here" below, which is the part to read first if you are
-deciding whether the fallback this entry describes still needs work.**
+**Accepted, and it changes records. The first version of this fix was found to have
+two things worth fixing in the fix itself -- see "What changed here" below, which is
+the part to read first if you are deciding whether the fallback this entry describes
+still needs work.**
 
 `#55`, directly above, made evaluation complete: every object in a wheel is read,
 linked and matched against every rule regardless of `max_binaries_per_record`, so the
@@ -910,7 +910,7 @@ survived. There the unit was a match inside an object; here it is the object its
 and crypto-relevant objects have no more reason to sort early than `ring` did among a
 hundred `anyhow`-class crate names.
 
-Adversarial review of `#55` built the shape directly: 300 filler `.so` objects plus
+A direct test of `#55` built the shape: 300 filler `.so` objects plus
 `pkg/zz1_broken.so` (a partial ELF carrying an OpenSSL banner) and
 `pkg/zz2_opaque.so` (unparseable), both sorting after every filler.
 
@@ -955,7 +955,7 @@ property `BinaryEvidence` or a bare `(path, format)` pair could sensibly expose
 through a shared `Capped` protocol. The *pattern* is the same on purpose; the code is
 not shared, for the same reason it was not shared before the grouping pass existed.
 
-**What adversarial review changed here.** The version of this fix first proposed
+**What changed here.** The version of this fix first proposed
 skipped the grouping pass and went straight from "referenced objects, then the rest,
 both in path order" to a flat truncation once the referenced set itself exceeded the
 cap -- justified at the time by an unbounded worst case ("four hundred statically-linked
@@ -1403,9 +1403,9 @@ Tracked in [#56](https://github.com/EmilienM/wheel-crypto-scan/issues/56).
 ## A `needed` entry is bundled by what it resolves to, not by whether its name was renamed
 
 **Accepted, and it changes `openssl_linkage` and one finding. Two claims below did not
-hold up under adversarial review -- see "Two claims here did not hold up" below, which
-is the part to read first if you are deciding whether `member_stem_counts` or
-`_looks_vendored` is safe to lean on as written.**
+hold up -- see "Two claims here did not hold up" below, which is the part to read
+first if you are deciding whether `member_stem_counts` or `_looks_vendored` is safe to
+lean on as written.**
 
 `_binary_posture` read `needed` first: a base name in a crypto library's `sonames` was
 `bundled` only when the name itself carried a content hash (`libcrypto-3a1f2b4c.so.3`),
@@ -1754,8 +1754,8 @@ plain `system` with `DERIVED_SYSTEM_OPENSSL_ONLY` instead. The headline `verdict
 does **not** move for this specific reproduction -- it is `CONDITIONAL` both before and
 after, because `BIN_NEEDED_VENDORED_CRYPTO` already forces `CONDITIONAL` pre-fix on its
 own. What moves is the rule ids and the `classes` tuple, not the headline; an earlier
-draft of this entry claimed the headline moved too, and adversarial review measured both
-paths through `apply_rules` and `classify` to find that wrong before it shipped.
+draft of this entry claimed the headline moved too, and measuring both paths through
+`apply_rules` and `classify` found that wrong before it shipped.
 `test_an_absolute_basename_collision_beside_a_real_system_match_no_longer_self_
 disagrees` (`tests/test_linkage.py`) pins the posture move at the `resolve_linkage`
 level; `test_an_absolute_basename_collision_is_not_manufactured_bundled` and
@@ -2059,8 +2059,8 @@ the three being returned on its own.
 
 **Precedence, now that four signals can be in play on one object.** Built out and
 verified directly against the ladder in `linkage._binary_posture` and against the test
-suite, not assumed from #60's or #87's own phrasing (both of those entries record an
-adversarial review catching this same category of mistake once already):
+suite, not assumed from #60's or #87's own phrasing (both of those entries record this
+same category of mistake being caught once already):
 
 | `system` | `bundled` | `static` | `uncertain` | Result | Why |
 |---|---|---|---|---|---|
@@ -2135,7 +2135,7 @@ fix does not touch.
 review.** Whether an object identified by its own `binary.vendored_path` (rather than by
 a `needed` entry) can itself carry a disagreeing `system`/`static`/`uncertain` signal
 that its own early return currently discards is a structurally similar question, and
-adversarial review of this fix built a real one: a vendored `libssl` that itself links
+review of this fix built a real one: a vendored `libssl` that itself links
 the host `libcrypto` (the `auditwheel --exclude libcrypto.so.3` shape `DECISIONS.md`
 already names elsewhere as real) --
 
@@ -4781,9 +4781,65 @@ re-evaluation of already-scanned wheels is already bought by the bump that was m
 `ANALYZER_VERSION` states in the record that extraction changed, and here only policy
 did.
 
-**Revisit if** another `[[string_group]]` needs the same treatment. `nss` (`NSS 3.`)
-has the identical shape and survives only because its two other arms carry no version.
-A second case is the point at which a pattern capability stops being more machinery
-than the problem deserves.
+**What followed.** Reviewing the fix turned up more lists of this shape, and the
+sweep separated two kinds that had been treated as one.
+
+*A field's spellings, enumerated.* These close mechanically, they are silent when
+stale, and they are what this entry is about. `nss` (`NSS 3.`) now names every digit.
+`[conventions] windows_version_suffix_regex` spelled the architecture as
+`x64|x86|arm64|arm64ec`, four spellings of a field whose fifth (a vendor writing
+`aarch64`) left `libcrypto-3-aarch64.dll` resolving to no library at all; it is a token
+now, and the group is called `decoration` rather than `arch` because that is what it
+matches. `cargo_path_regex` spelled one path separator: cryptography 50.0.1's
+`win_amd64` `.pyd` carries 153 `cargo\registry` paths and no `cargo/registry` path, so
+every Rust wheel built on Windows read as carrying no crates at all. That one cost more
+evidence than the rest of the sweep put together -- with both separators, `hf-xet` goes
+from 0 crates to 74 on Windows, including `rustls`, `aws-lc-rs` and `blake3`, while all
+18 Linux records stay byte-identical.
+
+*An entity list.* `[[rust_crate]]` gained `openssl-src`, `boring`, `boring-sys`,
+`sha-1`, `md5`, `sha1_smol` and `sha3`. These are different in kind: no pattern closes
+the set of crates that exist in the world, so the list is incomplete by construction
+rather than stale by neglect, and adding to it buys reach rather than closing a hole.
+`openssl-src` is listed with that limit stated in its own `why`: its Rust code runs in
+a build script and is not linked into the artifact, and neither cryptography wheel
+measured carries the path, so it is reach nobody has observed rather than the fallback
+for a stripped banner. A review of the entry surfaced a second limit worth stating
+here, because it is true of the whole table and not just this row: a crate name cannot
+move `openssl_linkage`. `_binary_posture` resolves that field from `[[crypto_library]]`
+sonames, symbol groups and string groups, and no `[[rust_crate]]` reaches it, so a
+wheel whose only OpenSSL evidence is a crate name reports `CONDITIONAL` with
+`openssl_linkage: none` -- a finding a human reads, beside a field that says nothing.
+Whether the crate table should feed the posture at all is
+[#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128), not a thing to settle
+in a sweep.
+
+One more was not an enumeration but a guarantee that was not there. `[conventions]`
+says naming the Go string groups in the ruleset means renaming a group cannot silently
+flip a verdict-relevant field, and `binfmt.golang` reads `go_boring_group` and
+`go_stock_group` for exactly that reason; the loader never checked them, so a name no
+group had loaded clean and left `GoBuildInfo.boring_crypto` false for every Go binary
+in the run, while every other group reference in the file was refused at load time.
+`_validate_conventions_references` now checks them where those other references are
+checked, and `Conventions` lost the defaults for both fields: a default there would let
+a directly built `Conventions` point at groups that need not exist, which is the same
+silent false wearing a dataclass default as a disguise.
+
+**What the sweep did not close.** Two causes were found and deliberately left, because
+neither is a policy edit: a Go binary built with `GOFIPS140` still carries the stock
+package paths and so reads as non-approved, which needs the build settings parsed out
+of `.go.buildinfo` ([#126](https://github.com/EmilienM/wheel-crypto-scan/issues/126));
+and a static link that hides its symbols keeps them in `.symtab`, which nothing
+consults while `.dynsym` exists ([#127](https://github.com/EmilienM/wheel-crypto-scan/issues/127)).
+The `version` half of `windows_version_suffix_regex` is still an enumeration of two
+shapes, and Windows library spellings are listed Unix-first (`libnss3`, not `nss3.dll`);
+both are unexercised by any corpus measured rather than known good.
+
+**Revisit if** a `[[string_group]]` needs a match ten literals cannot spell. Not on a
+count of cases: the four that arrived here were not four of a kind, and only one of
+them (`nss`) was a `[[string_group]]` a pattern capability would have helped.
+`windows_version_suffix_regex` and `cargo_path_regex` were already patterns, just too
+narrow ones, and the crate names no pattern can close at all. A capability earns itself
+when the enumeration cannot express the match, not when the list is long.
 
 Tracked in [#123](https://github.com/EmilienM/wheel-crypto-scan/issues/123).

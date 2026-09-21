@@ -209,10 +209,15 @@ class Conventions:
     windows_version_suffix_regex: re.Pattern[str]
     cargo_path_regex: re.Pattern[str]
     weak_hash_algorithms: frozenset[str]
+    # No defaults, and ahead of the defaulted fields for that reason: the loader
+    # refuses a ruleset whose go_boring_group/go_stock_group name no string group, and
+    # a default here would let a directly built Conventions point at groups that need
+    # not exist -- reinstating the silently-false boring_crypto the loader check exists
+    # to prevent, wearing a dataclass default as a disguise.
+    go_boring_group: str
+    go_stock_group: str
     library_suffixes: tuple[str, ...] = (".so", ".dylib", ".dll", ".pyd")
     windows_library_suffixes: tuple[str, ...] = (".dll", ".pyd")
-    go_boring_group: str = "go_boring"
-    go_stock_group: str = "go_stock_crypto"
 
     def is_vendor_path(self, path: str) -> bool:
         """True when any directory component is an auditwheel or delocate vendor dir."""

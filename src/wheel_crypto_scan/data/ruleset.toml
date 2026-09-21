@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "20"
+ruleset_version = "21"
 
 
 # ---------------------------------------------------------------------------
@@ -98,18 +98,27 @@ windows_library_suffixes = [".dll", ".pyd"]
 # libnettle-8.dll, libgcrypt-20.dll. That is how the platform spells a name, not a fact
 # about any one library, so it is undone here rather than enumerated library by library
 # -- which would fix whichever library someone happened to think of and leave the rest
-# resolving to nothing. Applied only to names that carried a Windows suffix, because a
+# resolving to nothing. The architecture is matched as a token rather than enumerated
+# for that same reason: `x64|x86|arm64|arm64ec` was four spellings of a field whose
+# fifth spelling (a vendor writing aarch64) would have left libcrypto-3-aarch64.dll
+# resolving to no library at all. Over-stripping a name that is not an architecture
+# costs a suffix on a name we then match more broadly, which is the safe direction here.
+# Applied only to names that carried a Windows suffix, because a
 # Unix libfoo-2.so really is called libfoo-2, and applied after the content hash is
 # stripped, so a vendored libcrypto-3-x64-<hash>.dll is still recognised as vendored.
-windows_version_suffix_regex = '^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<arch>x64|x86|arm64|arm64ec))?$'
+windows_version_suffix_regex = '^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<decoration>[A-Za-z0-9_]+))?$'
 
 # Go toolchain string groups, named here rather than in the Go reader, so renaming a
 # group in this file cannot silently flip a verdict-relevant field in the record.
 go_boring_group = "go_boring"
 go_stock_group = "go_stock_crypto"
 
-# Rust objects embed the source path of every crate they were built from.
-cargo_path_regex = '''cargo/registry/src/[^/\x00"']+/(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)/'''
+# Rust objects embed the source path of every crate they were built from. Both
+# separators, because the path is spelled the way the machine that built the wheel
+# spells one: cryptography 50.0.1's win_amd64 .pyd carries 153 `cargo\registry` paths
+# and no `cargo/registry` path, so a forward-slash-only pattern read every Rust wheel
+# built on Windows as carrying no crates at all.
+cargo_path_regex = '''cargo[/\\]registry[/\\]src[/\\][^/\\\x00"']+[/\\](?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)[/\\]'''
 
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
 # usedforsecurity=False.
@@ -576,8 +585,8 @@ why = "GnuTLS banner and initialisation strings. GnuTLS is configured separately
 
 [[string_group]]
 name = "nss"
-substrings = ["NSS 3.", "softokn3", "NSS_Initialize"]
-why = "NSS version and PKCS#11 module strings. NSS keeps its own module database and its own FIPS switch."
+substrings = ["NSS 0.", "NSS 1.", "NSS 2.", "NSS 3.", "NSS 4.", "NSS 5.", "NSS 6.", "NSS 7.", "NSS 8.", "NSS 9.", "softokn3", "NSS_Initialize"]
+why = "NSS version and PKCS#11 module strings. NSS keeps its own module database and its own FIPS switch. Every major digit is listed for the reason `openssl_banner` lists them: a version this group does not name is evidence that reads as absent, and the list going stale is silent. NSS has been on 3 since 2000, so this is cheap insurance rather than an expectation."
 
 [[string_group]]
 name = "rustls"
@@ -618,6 +627,18 @@ severity = "high"
 why = "ring carries BoringSSL-derived assembly and implements its own primitives. Not a validated module, and it cannot be redirected to the system provider."
 
 [[rust_crate]]
+name = "boring-sys"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Builds BoringSSL and links it into the extension. BoringSSL is not a validated module, does not read the system crypto policy, and its FIPS branch ships separately."
+
+[[rust_crate]]
+name = "boring"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Rust API over BoringSSL, which boring-sys compiles in. Named separately because a binary can carry a panic location from either crate alone."
+
+[[rust_crate]]
 name = "aws-lc-sys"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
@@ -646,6 +667,13 @@ needs_human_review = true
 why = "A TLS stack that does not consult the system crypto policy. Its provider crate decides the primitives; look for ring or aws-lc-rs alongside it."
 
 [[rust_crate]]
+name = "openssl-src"
+verdict = "CONDITIONAL"
+severity = "high"
+needs_human_review = true
+why = "The crate openssl-sys pulls in for its `vendored` feature, which builds OpenSSL from source. Listed as reach rather than as an observation: its Rust code runs in a build script and is not linked into the artifact, so it leaves no panic location, and neither cryptography 50.0.1 wheel measured (manylinux or win_amd64) carries the path. Read it as a hint to a human, not as a posture: a crate name cannot move openssl_linkage, which is resolved from libraries, symbols and strings alone, so a wheel whose only OpenSSL evidence is this name still reports linkage none. Its absence says nothing either, so it is not the fallback for a stripped banner."
+
+[[rust_crate]]
 name = "openssl-sys"
 verdict = "CONDITIONAL"
 severity = "medium"
@@ -662,6 +690,30 @@ name = "sha1"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 why = "Pure-Rust SHA-1. A broken hash, implemented in the extension where FIPS mode cannot deny it."
+
+[[rust_crate]]
+name = "sha-1"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "The same crate as sha1 under the name it published before 0.10. A cargo path spells whichever name that build depended on, so both have to be listed or the older pin reads as carrying nothing."
+
+[[rust_crate]]
+name = "md5"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Pure-Rust MD5, a different crate from RustCrypto's md-5 below and as widely used. A broken hash implemented in the extension, where FIPS mode cannot deny it."
+
+[[rust_crate]]
+name = "sha1_smol"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "The dependency-free SHA-1 crate, which took this name when RustCrypto claimed sha1. Same broken hash, different name, so both have to be listed."
+
+[[rust_crate]]
+name = "sha3"
+verdict = "CONDITIONAL"
+severity = "medium"
+why = "Pure-Rust SHA-3 and SHAKE. The algorithms are approved; this implementation is not a validated module and does not read the system provider, so the condition is which build it is trusted under."
 
 [[rust_crate]]
 name = "md-5"

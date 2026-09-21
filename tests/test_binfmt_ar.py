@@ -145,11 +145,11 @@ def test_the_gnu_symbol_table_member_is_skipped_not_read_as_an_object() -> None:
 
 
 def test_bsd_symdef_variants_and_gnu_sym64_are_also_skipped() -> None:
-    """#99's adversarial review: every real index/padding convention a real
-    toolchain writes, not just GNU's bare `/`. Before this fix, an ordinary macOS
-    (`__.SYMDEF`) or GNU 64-bit (`/SYM64/`) archive -- the everyday shape, not a
-    crafted one -- picked up a spurious `FORMAT_UNKNOWN` entry per index member and
-    the `BIN_PARTIAL_FORMAT` verdict hit that comes with it.
+    """#99: every real index/padding convention a real toolchain writes, not just
+    GNU's bare `/`. Before this fix, an ordinary macOS (`__.SYMDEF`) or GNU 64-bit
+    (`/SYM64/`) archive -- the everyday shape, not a crafted one -- picked up a
+    spurious `FORMAT_UNKNOWN` entry per index member and the `BIN_PARTIAL_FORMAT`
+    verdict hit that comes with it.
     """
     real = ElfBuilder(dynsyms=(IMPORTED_OPENSSL,)).build()
     for index_name in ("__.SYMDEF", "__.SYMDEF SORTED", "__.SYMDEF_64", "/SYM64/"):
@@ -169,7 +169,7 @@ def test_bsd_symdef_variants_and_gnu_sym64_are_also_skipped() -> None:
 
 
 def test_an_out_of_range_gnu_offset_is_still_read_under_a_synthetic_path() -> None:
-    """#99's adversarial review: an earlier version of this module dropped the whole
+    """#99: an earlier version of this module dropped the whole
     member -- no evidence, no error -- when its name could not be resolved. A wheel
     whose only crypto evidence was in that member read `NO_CRYPTO_DETECTED` with an
     empty `errors[]`, the exact thing "unreadable means OPAQUE, never
