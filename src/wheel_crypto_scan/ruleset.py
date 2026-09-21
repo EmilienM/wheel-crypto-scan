@@ -208,23 +208,54 @@ def _symbol_locator(names: Iterable[str]) -> re.Pattern[bytes] | None:
     A branch stops at the first name that ends there, because anything longer through
     that node is found by the shorter name anyway.
     """
+    return _trie_locator(names, between=_SANITIZED_AWAY)
+
+
+def _code_string_locator(groups: Iterable[StringGroup]) -> re.Pattern[bytes] | None:
+    """One byte regex finding anywhere a substring an `in_code` group claims could sit.
+
+    The code pass reads raw executable bytes, not a string table split into runs by
+    control-byte padding, so unlike `_symbol_locator` there is nothing to skip between
+    characters: `between` is empty and a hit is the literal substring, contiguous.
+
+    It locates, it does not decide, the same contract `_symbol_locator` carries: a hit
+    means "look here properly", and `binfmt.strings.find_code_strings` still runs the
+    real `StringGroup.pattern` over the printable text recovered around it. It must
+    never under-approximate `StringGroup.pattern` over any `in_code` group's own
+    substrings, which is why it is built from the same `substrings` field and lives
+    here beside it rather than being re-derived by a caller. `None` when no group is
+    flagged `in_code`, so a caller can skip the whole code-reading path on that alone.
+    """
+    substrings = [substring for group in groups for substring in group.substrings]
+    return _trie_locator(substrings, between=b"")
+
+
+def _trie_locator(names: Iterable[str], *, between: bytes) -> re.Pattern[bytes] | None:
+    """A trie-built byte locator for `names`, joining consecutive bytes with `between`.
+
+    Shared by `_symbol_locator` and `_code_string_locator`, which differ only in what
+    can legitimately separate one byte of a name from the next in the bytes being
+    searched: `_SANITIZED_AWAY` for a name sitting in a string table `sanitize` would
+    otherwise strip control bytes from, `b""` for a substring read straight out of
+    executable code, where nothing pads one character from the next.
+    """
     root: dict[int | None, Any] = {}
     for name in sorted(set(names)):
         node = root
         for byte in name.encode("utf-8", "replace"):
             node = node.setdefault(byte, {})
         node[None] = None
-    return re.compile(_locator_branch(root)) if root else None
+    return re.compile(_locator_branch(root, between=between)) if root else None
 
 
-def _locator_branch(node: Mapping[int | None, Any]) -> bytes:
+def _locator_branch(node: Mapping[int | None, Any], *, between: bytes) -> bytes:
     """One trie node as a regex, terminal nodes pruning everything below them."""
     if None in node:
         return b""
     branches = []
     for byte, below in sorted((key, value) for key, value in node.items() if key is not None):
-        tail = _locator_branch(below)
-        branches.append(re.escape(bytes([byte])) + (_SANITIZED_AWAY + tail if tail else b""))
+        tail = _locator_branch(below, between=between)
+        branches.append(re.escape(bytes([byte])) + (between + tail if tail else b""))
     return branches[0] if len(branches) == 1 else b"(?:" + b"|".join(branches) + b")"
 
 
@@ -395,11 +426,13 @@ class SymbolGroup:
 
 @dataclass(frozen=True, slots=True)
 class StringGroup:
-    """Literal substrings to look for in read-only data, as one compiled alternation."""
+    """Literal substrings to look for in read-only data, and, when `in_code`, in ELF
+    executable sections too, as one compiled alternation."""
 
     name: str
     substrings: tuple[str, ...]
     pattern: re.Pattern[str]
+    in_code: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +463,12 @@ class BinaryPatterns:
     # One byte regex finding every place a name a symbol group claims could be hiding
     # in an undecoded blob. `None` when no group names anything.
     symbol_locator: re.Pattern[bytes] | None = field(repr=False, default=None)
+    # The `in_code` groups, sorted by name -- the only groups `binfmt.elf` searches
+    # ELF executable sections for. Empty for every ruleset that flags none.
+    code_string_groups: tuple[StringGroup, ...] = ()
+    # One byte regex finding every place a substring an `in_code` group claims could
+    # sit in raw executable bytes. `None` when no group is flagged `in_code`.
+    code_string_locator: re.Pattern[bytes] | None = field(repr=False, default=None)
 
     def symbol_groups_for(self, symbol: str) -> tuple[str, ...]:
         """Group names claiming this symbol, sorted. Empty when nothing claims it."""
@@ -612,6 +651,8 @@ class Ruleset:
             else None
         )
         locator = _symbol_locator(prefixes | set(exact_index))
+        code_groups = tuple(group for group in string_groups if group.in_code)
+        code_locator = _code_string_locator(code_groups)
 
         sequences: dict[str, set[str]] = {key: set() for key in GENERIC_MATCH_SEQUENCE_KEYS}
         for rule in self.rules:
@@ -636,6 +677,8 @@ class Ruleset:
                 _prefix_probe=probe,
                 _string_index=MappingProxyType({group.name: group for group in string_groups}),
                 symbol_locator=locator,
+                code_string_groups=code_groups,
+                code_string_locator=code_locator,
                 rust_crate_names=frozenset(self.rust_crates),
             ),
             python=PythonPatterns(

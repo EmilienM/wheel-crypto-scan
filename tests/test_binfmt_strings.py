@@ -7,11 +7,13 @@ import random
 import re
 import time
 
+from wheel_crypto_scan.binfmt import strings as strings_module
 from wheel_crypto_scan.binfmt.strings import (
     PRINTABLE,
     RUN_SEPARATOR,
     ExtractedStrings,
     extract_printable,
+    find_code_strings,
     match_string_groups,
     sanitize,
     scan_strings,
@@ -22,11 +24,12 @@ from wheel_crypto_scan.ruleset_loader import load_ruleset
 PATTERNS = load_ruleset().compile_patterns().binary
 
 
-def _group(name: str, *substrings: str) -> StringGroup:
+def _group(name: str, *substrings: str, in_code: bool = False) -> StringGroup:
     return StringGroup(
         name=name,
         substrings=tuple(substrings),
         pattern=re.compile("|".join(re.escape(s) for s in substrings)),
+        in_code=in_code,
     )
 
 
@@ -340,3 +343,33 @@ def test_aws_lc_fips_group_needs_a_version_after_fips() -> None:
     matches, truncated = match_string_groups(extracted, (group,), max_matches=64)
     assert truncated is False
     assert {m.value for m in matches} == {"AWS-LC FIPS 4.2.0"}
+
+
+# --- find_code_strings ---------------------------------------------------------
+
+
+def test_find_code_strings_merges_overlapping_windows(monkeypatch) -> None:
+    """10,000 back-to-back banners must not turn one region into many times its own
+    size once every hit's window is joined: overlapping and adjacent windows merge
+    into one before extraction, so the buffer handed to `extract_printable` is
+    bounded by the region's own size, not by how many hits it contains -- a region
+    this packed with hits chains every window into essentially one.
+    """
+    region = b"AWS-LC FIPS 4.2.0 " * 10_000
+    captured: list[int] = []
+    real_extract_printable = strings_module.extract_printable
+
+    def spy(data: bytes, min_length: int, max_bytes: int):
+        captured.append(len(data))
+        return real_extract_printable(data, min_length, max_bytes)
+
+    monkeypatch.setattr(strings_module, "extract_printable", spy)
+
+    matches, truncated = find_code_strings((region,), PATTERNS)
+
+    assert any(m.group == "aws_lc_fips" for m in matches)
+    assert captured, "extract_printable was never called"
+    # Without merging, 10,000 hits each keeping a window on both sides would join to
+    # several million bytes; merged, the packed region collapses to close to its own
+    # size plus a handful of separators.
+    assert captured[0] <= len(region) + 100

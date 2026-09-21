@@ -2028,12 +2028,12 @@ _LOCAL_FUNC = (STB_LOCAL << 4) | STT_FUNC
 # offset 0xd0888 in .text on aws-lc-fips-sys 0.14.2). The real stock build drops the
 # message entirely -- gc-sections removes it, since nothing in the non-FIPS build path
 # references it. The stock fixture below puts the message in .rodata anyway, on purpose:
-# it is not what a real stock build carries, but it is the worst case the ELF strings
-# pass can read -- a stock build is not delocated, so .rodata is where the message would
-# land if a future stock build kept it. Without a version digit after `FIPS `, that
-# placement would make a bare `AWS-LC FIPS` substring false-positive on a stock object
-# read end to end through this fixture, not only in the direct group test in
-# `test_binfmt_strings.py`.
+# it is not what a real stock build carries, but it is the worst case the read-only
+# strings pass can read -- a stock build is not delocated, so .rodata is where the
+# message would land if a future stock build kept it. Without a version digit after
+# `FIPS `, that placement would make a bare `AWS-LC FIPS` substring false-positive on a
+# stock object read end to end through this fixture, not only in the direct group test
+# in `test_binfmt_strings.py`.
 _AWS_LC_RODATA = (
     b"\x00/aws-lc/crypto/mem.c\x00"
     b"/root/.cargo/registry/src/index.crates.io-x/aws-lc-rs-1.18.1/src/lib.rs\x00"
@@ -2169,10 +2169,67 @@ def test_an_sbom_beside_a_fips_binary_object_reads_conditional(context, tmp_path
     assert "BIN_AWS_LC_RS_CRATE" not in record["verdict"]["rule_ids"]
 
 
+def test_a_stripped_aws_lc_fips_build_reads_as_a_condition(context, tmp_path: Path) -> None:
+    """AWS-LC's FIPS build delocates its version string into `.text`, which stripping
+    does not remove -- only `.symtab`'s prefixed local names go with it -- so a
+    stripped release object, the shape most real wheels ship, is still identified by
+    the banner alone.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslcfipsstripped-1.0-{MANYLINUX}.whl",
+        name="awslcfipsstripped",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcfipsstripped/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                with_symtab=False,
+                rodata=_AWS_LC_RODATA,
+                text=_AWS_LC_FIPS_TEXT,
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_AWS_LC_FIPS" in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC" not in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC_RS_CRATE" not in record["verdict"]["rule_ids"]
+    assert {"group": "aws_lc_fips", "value": "AWS-LC FIPS 4.2.0"} in record["binaries"][0][
+        "matched_strings"
+    ]
+
+
+def test_a_stripped_stock_aws_lc_build_with_the_failure_message_in_text_is_non_approved(
+    context, tmp_path: Path
+) -> None:
+    """The code read must not widen into a false positive: the "failure caused by"
+    message alone, with no version digit, is compiled from both builds' source and
+    sits in `.text` on a stock build too. A stock, stripped object carrying only that
+    message must still read as stock, not as the FIPS build.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslcstocktext-1.0-{MANYLINUX}.whl",
+        name="awslcstocktext",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcstocktext/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                with_symtab=False,
+                rodata=_AWS_LC_RODATA,
+                text=b"\x00AWS-LC FIPS failure caused by:\n\x00",
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "BIN_AWS_LC" in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC_FIPS" not in record["verdict"]["rule_ids"]
+
+
 def test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix(context, tmp_path: Path) -> None:
-    """The measured FIPS object. Its version string sits in `.text`, which the ELF
-    strings pass does not read, so this test relies on the symbol prefix alone, not on
-    the version string.
+    """An unstripped object with no version banner in `.text` at all: the symbol
+    prefix, a local `.symtab` definition, is what identifies the FIPS build here.
     """
     wheel = build_wheel(
         tmp_path / f"awslcfips-1.0-{MANYLINUX}.whl",
@@ -2183,7 +2240,6 @@ def test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix(context, tmp_pa
             "awslcfips/_ext.abi3.so": _aws_lc_binary(
                 symtab_name="aws_lc_fips_0_14_2_SHA256_Init",
                 rodata=_AWS_LC_RODATA,
-                text=_AWS_LC_FIPS_TEXT,
             ),
         },
     )
@@ -2241,12 +2297,11 @@ def test_a_stock_aws_lc_build_is_non_approved(context, tmp_path: Path) -> None:
     path, but never the FIPS symbol prefix.
 
     A real stock build drops the "failure caused by" message entirely. This fixture puts
-    it in `.rodata` on purpose anyway -- the worst case the ELF strings pass can read, and
-    the one place a stock build could plausibly still carry it -- so that widening the
-    string group to a bare "AWS-LC FIPS" (dropping the digit) breaks this test directly:
-    `.rodata` is part of the strings pass, unlike `.text`. `test_aws_lc_fips_group_needs_
-    a_version_after_fips` in `test_binfmt_strings.py` pins the same mutation at the group
-    level.
+    it in `.rodata` on purpose anyway -- the worst case the read-only strings pass can
+    read, and the one place a stock build could plausibly still carry it -- so that
+    widening the string group to a bare "AWS-LC FIPS" (dropping the digit) breaks this
+    test directly. `test_aws_lc_fips_group_needs_a_version_after_fips` in
+    `test_binfmt_strings.py` pins the same mutation at the group level.
     """
     wheel = build_wheel(
         tmp_path / f"awslcstock-1.0-{MANYLINUX}.whl",

@@ -100,7 +100,7 @@ _ENTRY_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
         "rust_crate": _OVERRIDES | {"suppressed_by"},
         "python_module": _OVERRIDES,
         "symbol_group": frozenset({"name", "prefixes", "exact", "why", "evidence_only"}),
-        "string_group": frozenset({"name", "substrings", "why"}),
+        "string_group": frozenset({"name", "substrings", "why", "in_code"}),
         "ctypes_library": frozenset({"substrings", "why"}),
     }
 )
@@ -846,10 +846,14 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         # letting one hit's enclosing-run search swallow the boundary of a run after it.
         if any(ord(ch) not in PRINTABLE for text in substrings for ch in text):
             raise RulesetError(f"{where}: substrings must be printable ASCII")
+        in_code = entry.get("in_code", False)
+        if not isinstance(in_code, bool):
+            raise RulesetError(f"{where}: in_code must be a boolean")
         string_groups[name] = StringGroup(
             name=name,
             substrings=substrings,
             pattern=re.compile("|".join(re.escape(text) for text in substrings)),
+            in_code=in_code,
         )
 
     ctypes_substrings: set[str] = set()

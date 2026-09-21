@@ -2158,3 +2158,133 @@ def test_a_dynsym_whose_own_section_header_failed_does_not_fall_back_to_symtab_m
 
     assert ev.matched_symbols == ()
     assert evidence.PARTIAL_ELF_SECTIONS_UNREAD in ev.partial_reasons
+
+
+# --- executable sections, for the string groups the ruleset flags `in_code` --------
+
+
+def test_only_in_code_groups_are_read_from_executable_sections() -> None:
+    """`.text` carries an OpenSSL banner, never flagged `in_code`, beside an AWS-LC
+    FIPS version string, which is. Only the flagged group's hit is found: a group
+    with no `in_code` flag is never searched for in executable code.
+    """
+    data = ElfBuilder(
+        needed=("libc.so.6",),
+        text=b"\x00OpenSSL 3.0.14 4 Jun 2024\x00AWS-LC FIPS 4.2.0\x00",
+    ).build()
+    ev, errors = _read(data)
+
+    assert {m.group for m in ev.matched_strings} == {"aws_lc_fips"}
+    assert errors == ()
+
+
+def test_an_unread_code_section_records_no_partial_reason() -> None:
+    """A `.text` section larger than the code budget is read as its own honest
+    prefix (`keep_prefix`); when the banner sits past what was read, it goes unfound
+    with no error and no partial reason -- unlike the read-only strings pass, whose
+    own over-budget prefix names `strings_bytes_unread`. This code read exists only
+    to tell a validated build from a stock one, and missing it leaves the object
+    reading whatever its read-only evidence already gives.
+    """
+    budget = 64 * 1024
+    text = b"\x00" * budget + b"AWS-LC FIPS 4.2.0\x00"
+    data = ElfBuilder(needed=("libc.so.6",), text=text).build()
+
+    ev, errors = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=budget
+    )
+
+    assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()
+    assert ev.matched_strings == ()
+    assert errors == ()
+
+
+def test_a_code_region_does_not_spend_the_read_only_budget() -> None:
+    """Reading `.text` for an `in_code` group spends its own, independent budget: a
+    `.text` section that alone fills the whole budget must not leave the read-only
+    strings pass any shorter of room for its own evidence.
+    """
+    budget = 64 * 1024
+    data = ElfBuilder(
+        needed=("libc.so.6",),
+        rodata=b"\x00OpenSSL 3.0.14 4 Jun 2024\x00",
+        text=b"\x00" * budget,
+    ).build()
+
+    ev, errors = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=budget
+    )
+
+    assert {"openssl_banner"} <= {m.group for m in ev.matched_strings}
+    assert evidence.PARTIAL_STRINGS_BYTES_UNREAD not in ev.partial_reasons
+    assert errors == ()
+
+
+def test_a_large_rodata_does_not_spend_the_code_budget() -> None:
+    """The reverse of `test_a_code_region_does_not_spend_the_read_only_budget`: a
+    `.rodata` that alone fills the whole budget must not leave the code read any
+    shorter of room for its own evidence either. The two passes spend
+    `max_strings_bytes` independently, not a budget shared between them.
+    """
+    budget = 64 * 1024
+    data = ElfBuilder(
+        needed=("libc.so.6",),
+        rodata=b"\x00" * budget,
+        text=b"\x00AWS-LC FIPS 4.2.0\x00",
+    ).build()
+
+    ev, errors = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=budget
+    )
+
+    assert {"aws_lc_fips"} <= {m.group for m in ev.matched_strings}
+    assert errors == ()
+
+
+def test_a_banner_inside_the_code_budget_prefix_is_still_found() -> None:
+    """A `.text` section larger than the code budget is still read up to that budget
+    (`keep_prefix`), not refused outright: a banner sitting inside the kept prefix is
+    found, the same as it would be in an object whose `.text` never exceeded the
+    budget at all. `test_an_unread_code_section_records_no_partial_reason` covers only
+    a banner past the budget, which passes whether the prefix is kept or the whole
+    section is refused; this covers the other half of `keep_prefix`.
+    """
+    budget = 64 * 1024
+    text = b"AWS-LC FIPS 4.2.0\x00" + b"\x00" * (budget * 2)
+    data = ElfBuilder(needed=("libc.so.6",), text=text).build()
+
+    ev, errors = read_elf(
+        io.BytesIO(data), "mod.so", PATTERNS, vendored=False, max_strings_bytes=budget
+    )
+
+    assert {m.group for m in ev.matched_strings} == {"aws_lc_fips"}
+    assert ev.partial_analysis is False
+    assert ev.partial_reasons == ()
+    assert errors == ()
+
+
+def test_a_code_match_that_overflows_the_cap_still_marks_strings_truncated() -> None:
+    """The read-only pass and the code pass are unioned before the final per-binary
+    cap, and that union can drop what neither pass on its own would have: the
+    read-only pass alone fills the cap without truncating, the code pass alone adds
+    one more group, and only the combined cap drops anything. `strings_truncated` has
+    to say so -- it is what the record calls `truncated.strings` -- and the
+    `aws_lc_fips` representative, sorting first, has to survive the drop.
+    """
+    limited = dataclasses.replace(
+        PATTERNS, limits=dataclasses.replace(PATTERNS.limits, max_strings_per_binary=2)
+    )
+    data = ElfBuilder(
+        needed=("libc.so.6",),
+        rodata=b"\x00BoringSSL\x00OpenSSL 3.0.14 4 Jun 2024\x00",
+        text=b"\x00AWS-LC FIPS 4.2.0\x00",
+    ).build()
+
+    ev, errors = read_elf(
+        io.BytesIO(data), "mod.so", limited, vendored=False, max_strings_bytes=64 * 1024
+    )
+
+    assert {m.group for m in ev.matched_strings} == {"aws_lc_fips", "boringssl"}
+    assert ev.strings_truncated is True
+    assert errors == ()

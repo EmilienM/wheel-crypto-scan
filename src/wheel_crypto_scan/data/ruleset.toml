@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "37"
+ruleset_version = "38"
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +589,7 @@ evidence_only = true
 name = "aws_lc_fips"
 prefixes = ["aws_lc_fips_"]
 exact = []
-why = "The prefix aws-lc-fips-sys gives every AWS-LC symbol it compiles in, aws_lc_fips_<major>_<minor>_<patch>_, where the stock aws-lc-sys build uses aws_lc_<major>_<minor>_<patch>_. Measured on aws-lc-rs 1.18.1: the FIPS build (aws-lc-fips-sys 0.14.2) carries 2118 such names as local definitions in .symtab and the stock build (aws-lc-sys 0.45.0) carries none. Only the Rust crate applies this prefix; a C build of AWS-LC FIPS is unprefixed, and its FIPS-only symbols (BORINGSSL_bcm_text_hash and the like) are shared with BoringSSL's FIPS module; boringssl_fips_module lists the one FIPS-only name upstream exports, BORINGSSL_integrity_test, whose rule names neither fork. A stripped object loses these names."
+why = "The prefix aws-lc-fips-sys gives every AWS-LC symbol it compiles in, aws_lc_fips_<major>_<minor>_<patch>_, where the stock aws-lc-sys build uses aws_lc_<major>_<minor>_<patch>_. Measured on aws-lc-rs 1.18.1: the FIPS build (aws-lc-fips-sys 0.14.2) carries 2118 such names as local definitions in .symtab and the stock build (aws-lc-sys 0.45.0) carries none. Only the Rust crate applies this prefix; a C build of AWS-LC FIPS is unprefixed, and its FIPS-only symbols (BORINGSSL_bcm_text_hash and the like) are shared with BoringSSL's FIPS module; boringssl_fips_module lists the one FIPS-only name upstream exports, BORINGSSL_integrity_test, whose rule names neither fork. A stripped object loses these names, but the aws_lc_fips string group's version string still identifies it."
 
 [[symbol_group]]
 name = "boringssl_fips_module"
@@ -632,8 +632,10 @@ why = "Every spelling of an X25519/Ed25519 entry point: the generic lowercase na
 # Embedded strings. The scanner extracts printable runs from the binary itself and
 # matches them here. Which bytes those runs come from is per format: `binfmt.elf` reads
 # the non-executable allocated sections, while Mach-O, PE and the strings-only fallback
-# read the whole object, so a match can be a symbol name rather than a banner. Substrings
-# are plain text; keep them distinctive enough not to match ordinary English.
+# read the whole object, so a match can be a symbol name rather than a banner. A group
+# flagged `in_code = true` is also searched for in ELF executable sections, on its own
+# separate pass and budget. Substrings are plain text; keep them distinctive enough not
+# to match ordinary English.
 # ---------------------------------------------------------------------------
 
 [[string_group]]
@@ -664,7 +666,8 @@ why = "AWS-LC writes its own name into read-only data, which is how we spot it w
 [[string_group]]
 name = "aws_lc_fips"
 substrings = ["AWS-LC FIPS 0.", "AWS-LC FIPS 1.", "AWS-LC FIPS 2.", "AWS-LC FIPS 3.", "AWS-LC FIPS 4.", "AWS-LC FIPS 5.", "AWS-LC FIPS 6.", "AWS-LC FIPS 7.", "AWS-LC FIPS 8.", "AWS-LC FIPS 9."]
-why = "AWS-LC's version string, which a FIPS build spells AWS-LC FIPS <version> and a stock build spells AWS-LC <version>. A digit alone is not enough: the message AWS-LC FIPS failure caused by: is compiled from both builds' source, and a digit with nothing else also matches prose such as AWS-LC FIPS 140-3 validated or AWS-LC FIPS 3's legacy provider failed to load, neither of which names a build. The measured stock build's linker drops the failure message entirely, but a stock build that kept it would carry it outside .text, where this group would see it, so the digit-and-dot requirement still has to hold. Mirrors openssl_banner: a dot after the digit is required, and every leading digit is listed rather than the majors that shipped, so the list going stale is silent the same way. No AWS-LC FIPS release has a two-digit major yet -- the measured build is 4.2.0 -- so the dot costs nothing today; if one ships, this group needs a further, undotted entry for it. On ELF this reaches nothing: the FIPS build moves the module's constants into .text so its integrity check covers them, and the ELF strings pass reads only non-executable sections. Measured on aws-lc-fips-sys 0.14.2, AWS-LC FIPS 4.2.0 appears once, in .text. Readers that scan the whole object, as Mach-O, PE and the fallback do, can see it; on ELF the aws_lc_fips symbol group carries the answer."
+in_code = true
+why = "AWS-LC's version string, which a FIPS build spells AWS-LC FIPS <version> and a stock build spells AWS-LC <version>. A digit alone is not enough: the message AWS-LC FIPS failure caused by: is compiled from both builds' source, and a digit with nothing else also matches prose such as AWS-LC FIPS 140-3 validated or AWS-LC FIPS 3's legacy provider failed to load, neither of which names a build. The measured stock build's linker drops the failure message entirely, but a stock build that kept it would carry it outside .text, where this group would still see it, so the digit-and-dot requirement still has to hold. Mirrors openssl_banner: a dot after the digit is required, and every leading digit is listed rather than the majors that shipped, so the list going stale is silent the same way. No AWS-LC FIPS release has a two-digit major yet -- the measured build is 4.2.0 -- so the dot costs nothing today; if one ships, this group needs a further, undotted entry for it. The FIPS build moves the module's constants into .text so its own integrity check covers them, which is exactly where this string lands: measured on aws-lc-fips-sys 0.14.2, AWS-LC FIPS 4.2.0 appears once, in .text, and survives stripping since .text is code, not a symbol table. Readers that scan the whole object, as Mach-O, PE and the fallback do, can see it without any flag; in_code = true is what lets ELF search executable sections for this group too, since binfmt.elf reads only the non-executable allocated sections otherwise. Every other string group in this file stays read-only-data-only. A group should carry in_code only when missing it errs toward over-flagging, the direction this tool accepts: missing this banner leaves a stripped FIPS object reading as the stock build it is not, never the reverse."
 
 [[string_group]]
 name = "libsodium"
@@ -1666,7 +1669,7 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "AWS-LC FIPS build present"
-why = "The FIPS build of AWS-LC, identified by its version string, by the symbol prefix aws-lc-fips-sys applies, or by that crate's cargo path. A condition rather than an answer: it is still a static copy bundled into the wheel rather than the system provider, and which validated version was compiled in is not something the wheel states. A stripped ELF object carries none of the three outside .text and reads as stock AWS-LC. Suppresses BIN_AWS_LC and BIN_AWS_LC_RS_CRATE on the same object only, so a wheel shipping one FIPS object and one stock one keeps the stock object's own finding; the per-object evidence stays in matched_symbols and matched_strings."
+why = "The FIPS build of AWS-LC, identified by its version string, by the symbol prefix aws-lc-fips-sys applies, or by that crate's cargo path. A condition rather than an answer: it is still a static copy bundled into the wheel rather than the system provider, and which validated version was compiled in is not something the wheel states. The version string survives stripping -- it lives in .text, not .symtab, and ELF searches executable sections for this group alone -- so a stripped ELF object is still identified by it even once the symbol prefix is gone. Suppresses BIN_AWS_LC and BIN_AWS_LC_RS_CRATE on the same object only, so a wheel shipping one FIPS object and one stock one keeps the stock object's own finding; the per-object evidence stays in matched_symbols and matched_strings."
 [[rule.match]]
 kind = "binary_string"
 group = "aws_lc_fips"

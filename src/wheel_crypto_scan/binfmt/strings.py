@@ -172,6 +172,65 @@ class StringsPass:
     truncated: bool
 
 
+def find_code_strings(
+    regions: Sequence[bytes], patterns: BinaryPatterns
+) -> tuple[tuple[StringMatch, ...], bool]:
+    """String-group hits from executable code, for the groups the ruleset flags `in_code`.
+
+    Unlike `scan_strings`, this never reads a region at all when nothing is flagged:
+    `patterns.code_string_locator` is `None` whenever no `[[string_group]]` sets
+    `in_code`, and every region is skipped outright rather than extracted and matched
+    against an empty group list for nothing.
+
+    Extracting every printable run of a `.text`-sized region the way `scan_strings`
+    does would decode megabytes nothing asked about; `code_string_locator` finds the
+    few byte offsets worth decoding first, in C, so the printable-extraction-and-match
+    pass below only ever runs over a window around an actual hit. A window is
+    `max_evidence_chars` bytes on each side of a hit, the same bound a match's `value`
+    is trimmed to, so the enclosing run recovered from it can only ever start before
+    the window and end after it, never reach past what was actually windowed in.
+
+    Overlapping windows are merged into one before extraction: a region
+    packed with back-to-back hits, such as the same banner repeated thousands of times,
+    would otherwise turn one region into many times its own size once every window is
+    joined, exactly the amplification this function exists not to create. A hit whose
+    start already falls inside the last window extends that window instead of opening
+    a new one, so the joined buffer this function builds is bounded by one region's own
+    size plus one separator per window, never by how many hits it contains.
+    """
+    locator = patterns.code_string_locator
+    if locator is None:
+        return (), False
+    window = patterns.limits.max_evidence_chars
+    joined = bytearray()
+    for region in regions:
+        window_start = -1
+        window_end = -1
+        for match in locator.finditer(region):
+            candidate_start = max(0, match.start() - window)
+            candidate_end = min(len(region), match.end() + window)
+            if window_start != -1 and candidate_start < window_end:
+                window_end = max(window_end, candidate_end)
+                continue
+            if window_start != -1:
+                joined.extend(region[window_start:window_end])
+                joined.extend(b"\x00")
+            window_start, window_end = candidate_start, candidate_end
+        if window_start != -1:
+            joined.extend(region[window_start:window_end])
+            joined.extend(b"\x00")
+    if not joined:
+        return (), False
+    extracted = extract_printable(bytes(joined), patterns.limits.min_string_length, len(joined))
+    matches, truncated = match_string_groups(
+        extracted, patterns.code_string_groups, patterns.limits.max_strings_per_binary
+    )
+    trimmed = tuple(
+        replace(match, value=match.value[: patterns.limits.max_evidence_chars]) for match in matches
+    )
+    return trimmed, truncated
+
+
 def scan_strings(raw: bytes, patterns: BinaryPatterns, max_bytes: int) -> StringsPass:
     """Extract printable runs, match the string groups, and find the cargo paths.
 

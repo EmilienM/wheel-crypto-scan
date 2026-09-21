@@ -1985,6 +1985,24 @@ def test_a_symtab_over_the_budget_says_so(context) -> None:
     assert "elf_symtab_unread" in refused.partial_reasons
 
 
+def test_a_large_code_section_with_no_hit_is_read_in_bounded_time(context) -> None:
+    """A pass over a whole object belongs in C: `code_string_locator` is one compiled
+    byte regex over raw `.text`, so a large section carrying no hit at all still
+    finishes quickly rather than costing a Python-level scan of every byte.
+    """
+    text = b"\x00" * (64 * 1024 * 1024)
+    payload = ElfBuilder(needed=("libc.so.6",), text=text).build()
+
+    start = time.monotonic()
+    ev, errors = read_elf(io.BytesIO(payload), "mod.so", context.patterns.binary, vendored=False)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5, f"the read took {elapsed:.1f}s"
+    assert ev.matched_strings == ()
+    assert ev.partial_analysis is False
+    assert errors == ()
+
+
 # --- the cargo-vendor path pattern must stay linear, not quadratic ----------
 
 

@@ -90,6 +90,7 @@ Two habits in that file are worth knowing before you read it:
 | [A compressed section is checked before it is inflated](elf.md#a-compressed-section-is-checked-before-it-is-inflated) | Accepted, and it changes records |
 | [`.symtab` is matched for crypto symbols when `.dynsym` is genuinely absent](elf.md#symtab-is-matched-for-crypto-symbols-when-dynsym-is-genuinely-absent) | Accepted, and it changes records |
 | [`.symtab` local definitions are read when `.dynsym` is present](elf.md#symtab-local-definitions-are-read-when-dynsym-is-present) | Accepted, and it changes records |
+| [A version banner that lives in code is read from executable sections, for the groups that say so](elf.md#a-version-banner-that-lives-in-code-is-read-from-executable-sections-for-the-groups-that-say-so) | Accepted, and it changes verdicts |
 
 ## [Mach-O](macho.md)
 
