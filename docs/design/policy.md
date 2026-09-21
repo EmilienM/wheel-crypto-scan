@@ -192,31 +192,31 @@ them apart.
 **Accepted.**
 
 `suppressed_by` keys on the object a hit fired on, not the whole wheel: a suppressor on
-one binary never drops a finding on a different one. Because of that, a suppressor whose
-hits are located on a different kind of path than the rule it names never suppresses it,
-since their hits never share a path; what a rule locates on follows its matcher kind, not
-its `layer` -- most binary-layer `linkage` rules locate on the wheel path, not on the
-binary they describe, so a same-layer relation naming one of them against a per-object
-binary rule is just as dead as a cross-layer one. A `linkage` match with `object_values`
-set is the exception: it locates per object instead, so a relation naming that rule
-against a per-object binary rule on the same object does suppress. The loader accepts
-either shape without complaint, so check what each side locates on rather than which
-layer or matcher kind alone promises.
+one binary never drops a finding on a different one. What a rule locates on follows its
+matcher kind, not its `layer`, so a same-layer relation between two kinds that never
+share a path is refused at load time exactly like a cross-layer one -- a `linkage` match
+with `object_values` set is the one exception, since it locates per object rather than by
+its kind alone. `MATCHER_LOCATIONS` in `ruleset.py` is the one declaration of which class
+of path each matcher kind locates on, and the loader refuses any relation between two
+rules that can never share one.
 
 A `[[rust_crate]]` entry can also carry its own `suppressed_by`, naming another crate
-entry, so two subjects of the same rule -- `aws-lc-rs` and its FIPS build
-`aws-lc-fips-sys` -- can relate the way two whole rules can; no other table reads
-entry-level `suppressed_by`, and the loader refuses it there. Only the `rust_crate`
-matcher honours it, though: `sbom_component` takes a component's verdict from the same
-`[[rust_crate]]` entry but not its `suppressed_by`, so an SBOM naming both aws-lc-rs and
-aws-lc-fips-sys still reports both, an accepted over-flag. Suppression is
+entry, so two crates that stay on one rule can relate; no other table reads entry-level
+`suppressed_by`, and the loader refuses it there. No shipped entry carries one: the
+AWS-LC relation is rule-level instead, `aws-lc-rs` and `aws-lc-fips-sys` each routed to
+a rule of their own, and the former naming the latter in its rule-level `suppressed_by`.
+`sbom_component` honours both the entry- and rule-level relations too, keyed on the SBOM
+document as the object, so an SBOM naming both crates in one document reports only
+the FIPS build's finding. SBOM and binary evidence never suppress each other, because
+they never share a path, which is the accepted over-flag that remains: an SBOM naming
+`aws-lc-rs` beside a FIPS binary object still reports both. Suppression is
 non-cascading, and the loader refuses a `suppressed_by` cycle across rules and crates,
 including one closed by an ownerless crate, rather than silently dropping every member
 of one.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#suppression-is-keyed-on-rule-subject-and-object),
-including why `aws-lc-sys` and `rustls` get no such relation, and why the SBOM gap is left
-as an accepted over-flag.
+including why `aws-lc-sys` and `rustls` are not suppressed, and why the cross-source
+over-flag is accepted.
 
 ## An AWS-LC FIPS build is told from a stock one by its symbol prefix
 
@@ -245,11 +245,12 @@ default crate rule, alongside every crate suppression cannot reach, a FIPS build
 
 `CONDITIONAL` is reached whenever the FIPS build is identified and the object defines no
 non-approved primitive of its own; the cargo path being the object's sole evidence is one
-way to reach it, not the only one. No real build measured here does, though: a stripped
-object loses the symbol prefix, so `BIN_AWS_LC_FIPS` never fires and `BIN_AWS_LC` names it
-as stock, and an unstripped one fires `BIN_AWS_LC_FIPS` correctly but still reads
-`NON_APPROVED_CRYPTO`, because `curve25519_x25519` and `md5_final` are the FIPS module's
-own primitive implementations, which is exactly what that class is defined to catch,
-condition or not.
+way to reach it, not the only one, and an SBOM naming both `aws-lc-rs` and
+`aws-lc-fips-sys` in the same document reads the same way. No real build measured here
+does, though: a stripped object loses the symbol prefix, so `BIN_AWS_LC_FIPS` never fires
+and `BIN_AWS_LC` names it as stock, and an unstripped one fires `BIN_AWS_LC_FIPS`
+correctly but still reads `NON_APPROVED_CRYPTO`, because `curve25519_x25519` and
+`md5_final` are the FIPS module's own primitive implementations, which is exactly what
+that class is defined to catch, condition or not.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix-not-its-name)

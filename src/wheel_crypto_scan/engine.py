@@ -27,7 +27,7 @@ from .linkage import (
     object_postures,
     wheel_incompletely_read,
 )
-from .ruleset import CryptoLibrary, Limits, Rule, Ruleset
+from .ruleset import CryptoLibrary, Distribution, Limits, Rule, Ruleset, RustCrateEntry
 
 __all__ = ["Hit", "apply_rules"]
 
@@ -52,7 +52,8 @@ class Hit:
     needs_human_review: bool | None = None
     # Entry-level suppressor keys, (rule id, subject), copied from the matcher's table
     # entry. Checked beside the rule's own `suppressed_by` in `_apply_suppression`, for
-    # a relation between two subjects of the same rule.
+    # a relation between two subjects of the same rule -- on the same binary object for
+    # `rust_crate`, or on the same SBOM document for `sbom_component`.
     suppressed_by: tuple[tuple[str, str], ...] = ()
 
 
@@ -113,10 +114,13 @@ def _build_finding(rule: Rule, hits: Sequence[Hit], limits: Limits) -> Finding:
 def _apply_suppression(hits: Sequence[tuple[Rule, Hit]]) -> list[tuple[Rule, Hit]]:
     """Drop a hit when a more specific one fired on the same object.
 
-    Per object: a suppressor counts only where it fired on the same location path,
-    so a FIPS-built binary does not hide a stock one beside it. Non-cascading: what
-    fired is read before anything is dropped, so a suppressor that is itself
-    suppressed still suppresses; the loader refuses cycles for that reason.
+    Per object: a suppressor counts only where it fired on the same location path --
+    the same binary for a per-object binary rule, the same SBOM document for a
+    `sbom_component` hit -- so a FIPS-built binary does not hide a stock one beside it,
+    and an SBOM naming a FIPS crate does not hide the stock crate it also names.
+    Non-cascading: what fired is read before anything is dropped, so a suppressor
+    that is itself suppressed still suppresses; the loader refuses cycles for that
+    reason.
     """
     by_rule = {(rule.id, hit.location.path) for rule, hit in hits}
     by_subject = {(rule.id, hit.subject, hit.location.path) for rule, hit in hits}
@@ -307,10 +311,23 @@ def _match_sbom_component(rule, match, ruleset, evidence, linkage, index) -> Ite
         return
     tables = match.get("tables", [])
     for component in meta.sbom_components:
-        entry = _sbom_entry(ruleset, tables, component.name, component.purl)
-        if entry is None:
+        resolved = _sbom_entry(ruleset, tables, component.name, component.purl)
+        if resolved is None:
             continue
+        table, entry = resolved
         version = f" {component.version}" if component.version else ""
+        # Only a `rust_crate` hit can be suppressed this way: `crate_suppressors` reads
+        # the resolved entry's own canonical name, never `component.name`'s raw spelling,
+        # since `crate_for_sbom_name` folds case and `-`/`_` before it resolves an entry,
+        # so a folded component can resolve to an entry spelled differently from the SBOM.
+        # `_apply_suppression` keys the suppressing hit on its own raw `subject`
+        # (`component.name`, set below), so this still lines up when a suppressor crate's
+        # own SBOM spelling matches its canonical name, which every shipped entry does.
+        suppressed_by = (
+            tuple((rule.id, other) for other in ruleset.crate_suppressors(entry.name))
+            if table == "rust_crate"
+            else ()
+        )
         yield Hit(
             subject_kind="component",
             subject=component.name,
@@ -323,13 +340,16 @@ def _match_sbom_component(rule, match, ruleset, evidence, linkage, index) -> Ite
             severity=entry.severity,
             verdict=entry.verdict,
             needs_human_review=entry.needs_human_review,
+            suppressed_by=suppressed_by,
         )
 
 
-def _sbom_entry(  # type: ignore[no-untyped-def]
+def _sbom_entry(
     ruleset: Ruleset, tables: Sequence[str], name: str, purl: str | None
-):
-    """The ruleset entry an SBOM component of this `name`/`purl` reports through.
+) -> tuple[str, Distribution | CryptoLibrary | RustCrateEntry] | None:
+    """The entry table `SBOM_CRYPTO_COMPONENT`'s `tables` resolves this `name`/`purl` to,
+    and which of the tables it came from -- `_match_sbom_component` reads the latter to
+    tell a crate-table hit apart, since only that one can carry `crate_suppressors`.
 
     Table order is the rule's own, with one purl-driven exception: a `pkg:cargo/...`
     purl is PEP 770's spelling for "this component is the crates.io crate", so when the
@@ -346,15 +366,15 @@ def _sbom_entry(  # type: ignore[no-untyped-def]
         if table == "crypto_library":
             entry = ruleset.library_for_sbom_name(name)
             if entry is not None:
-                return entry
+                return table, entry
         if table == "rust_crate":
             entry = ruleset.crate_for_sbom_name(name)
             if entry is not None:
-                return entry
+                return table, entry
         if table == "crypto_distribution":
             entry = ruleset.distributions.get(canonicalize_name(name))
             if entry is not None:
-                return entry
+                return table, entry
     return None
 
 
