@@ -2029,3 +2029,34 @@ def test_cargo_vendor_pattern_stays_linear_over_digit_and_dot_near_misses() -> N
 
     assert crates == ()
     assert elapsed < 2, f"the vendor pattern took {elapsed:.2f}s over digit/dot near-misses"
+
+
+@pytest.mark.parametrize("prefix", ["cargo/registry/src/x/", "cargo/registry/"])
+def test_cargo_registry_pattern_stays_linear_over_a_long_segment_of_name_version_near_misses(
+    prefix: str,
+) -> None:
+    """A long slash-free run of `a-1.1.1`-shaped near-misses is the pathological input
+    for a name group and a version-tail group that are both unbounded: every `-` is a
+    backtrack point, and an unbounded tail re-scans the rest of the segment from each
+    one. This is quadratic only when all three hold at once -- `.` allowed in the name
+    class, an unbounded name, and an unbounded version tail -- so reverting any one of
+    them alone keeps this test green: linearity here rests on the `.` exclusion, which
+    `test_a_directory_name_with_a_dot_before_the_version_is_not_a_crate` in
+    `test_binfmt_rust.py` guards. The `{0,63}` bounds on the name and the version tail
+    are a convention, not something this test or that one holds: no test fails when
+    either is loosened or removed, because with `.` excluded the unbounded shape is
+    already linear. `test_a_64_character_crate_name_crates_ios_maximum_still_reads_in_full`
+    only pins the name bound's lower edge, at 64 characters; it says nothing about the
+    bound going higher.
+    """
+    conventions = load_ruleset().conventions
+    text = prefix + "a-1.1.1" * 20_000
+
+    start = time.monotonic()
+    crates, _ = find_rust_crates(
+        text, (conventions.cargo_path_regex,), max_crates=128, claimed=frozenset()
+    )
+    elapsed = time.monotonic() - start
+
+    assert crates == ()
+    assert elapsed < 2, f"the registry pattern took {elapsed:.2f}s over name/version near-misses"

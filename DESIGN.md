@@ -5211,6 +5211,10 @@ its own dependencies) reads as `gimli` `0.32.3` rather than as a crate literally
 `gimli-0.32.3` with no version: a version always opens with digits then `.`, and once
 `.` cannot appear in the name, the version's leading `-` is necessarily the last `-`
 before the first `.`, so the split is unique whether the name group is lazy or greedy.
+Every negated character class in both cargo patterns excludes `\n`, the run separator
+`binfmt.strings.RUN_SEPARATOR` joins printable runs with, so a crate is always read from
+one printable run and never spliced from two strings that never sat next to each other
+in the object.
 
 **`RustCrate.version` is `str | None`.** A layout that names no version gets a `null` in
 the record, never an invented one or an empty string standing in for it -- the same
@@ -5232,6 +5236,21 @@ Excluding `.`, which no crates.io crate name can contain, closes that off rather
 trading it for a lower size bound. `test_hardening.py` holds both shapes under a time
 limit.
 
+An unbounded `cargo_path_regex` would have the same shape of problem in a different
+place. An unbounded registry pattern whose name allows `.` and runs as an unbounded
+greedy match, paired with an unbounded version tail, is quadratic on a long slash-free
+segment of `a-1.1.1`-shaped near-misses: every `-` is a backtrack point, and an
+unbounded tail re-scans the rest of the segment from each one, at 0.30 seconds at 20,000
+characters and 1.24 at 40,000. Only all three together are quadratic: dropping any one
+of the unbounded name, the unbounded tail, or the `.` in the name class keeps the shape
+linear on its own. The shipped pattern takes the vendor pattern's shape instead -- name
+without `.`, lazy, bounded at 64 characters; version tail bounded at 64; index segment
+bounded at 255 (`NAME_MAX`) -- which a local check (54 real Rust objects over 200 KiB in
+a uv cache, 870 crate reads, `cargo/registry` paths on both separators) found reads the
+same (name, version) pairs an unbounded pattern would. With `.` allowed back in and the
+same bounds otherwise applied, the cost is 0.10-0.15 seconds per MiB against 0.01-0.03
+with `.` excluded, the same 5-10x the digit-and-dot shape above pays.
+
 **What was rejected, and why.**
 
 - *One pattern, one alternation.* Ruled out by Python `re`'s restriction on duplicate
@@ -5241,6 +5260,34 @@ limit.
   crate with a name that merely looks like `name-version` (there is no way to tell them
   apart without the version group doing the separating) silently swallow part of the
   name instead.
+- *Refuse a `[conventions]` cargo pattern that can match `RUN_SEPARATOR`, at load time,
+  instead of excluding it from the pattern.* Sound for a `[[string_group]]` substring,
+  which is a literal, but a `[conventions]` entry is an arbitrary regex, and Python
+  `re` has no public API to decide whether an arbitrary pattern can match a given
+  character; `sre_parse` is private, and probing with sample strings is unsound. A
+  load-time check that only looks complete breaks the rule that a guard must fail when
+  the thing it guards is deleted. The precondition instead stays where `rust.py`
+  already states it, held by a test over every shipped cargo pattern rather than by
+  the loader.
+- *Drop a match whose span crosses `RUN_SEPARATOR`, at scan time, instead of excluding
+  the separator from the class.* `finditer` has already consumed a spliced match's
+  span by the time such a filter would see it, so a legitimate match overlapping that
+  span is lost with no signal -- a silent loss of evidence, the direction this tool
+  never takes.
+- *A structural check on the shipped pattern's repetition bounds, to catch a future
+  unbounded edit without a hardening test.* The same private-API problem as the
+  `RUN_SEPARATOR` check: nothing public in `re` says whether a compiled pattern's
+  repetition is bounded. What it would hold differs by pattern. For the vendor
+  pattern, `test_hardening.py`'s long-run-of-near-misses test already fails on an
+  unbounded path-segment or nesting repetition alone, `.` excluded and the name and
+  tail bounds untouched, so a structural check on those bounds would hold nothing
+  that test does not; its digit-and-dot test guards the `.` exclusion separately,
+  and neither pins the name or tail's `{0,63}` bound itself. For the registry
+  pattern, the `{0,63}`/`{1,255}` bounds are a convention no test enforces, because
+  excluding `.` already keeps an unbounded name and version tail linear on their
+  own -- only all three together, an unbounded name, an unbounded version tail, and
+  `.` allowed in the name class, turn it quadratic, and `test_hardening.py`'s
+  linear-time test guards exactly that shape.
 
 **What it costs.** A build whose cargo paths use none of the three layouts, such as a
 git dependency checkout (`cargo/git/checkouts/<name>-<hash>/<rev>/`), carries no crate;
@@ -5250,7 +5297,10 @@ object is invisible whichever layout built it: this is a path-based signal, not 
 manifest. No fromager-built wheel has been measured, only a cdylib built the way
 fromager configures cargo: a real fromager build goes through maturin or
 setuptools-rust on top of that, either of which could relocate, strip or filter the
-embedded paths before they reach the wheel. The vendor pattern's `.rs` anchor has no
+embedded paths before they reach the wheel. A crate name past 64 characters, or a
+version string whose tail runs past 63 characters after `x.y.z`, does not read as a
+crate under either cargo convention -- the same cost the vendor pattern's bounds
+accept, paid by the registry pattern too. The vendor pattern's `.rs` anchor has no
 terminator and no word boundary either, so a vendored C or Go tree misreads as a Rust
 crate in two cases: a `.rst`/`.rsp` file (`vendor/openssl/doc/man7/ossl-guide.rst` reads
 as crate `openssl`), and a `.rs` file elsewhere in the same printable run consuming a

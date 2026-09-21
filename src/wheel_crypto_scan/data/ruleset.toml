@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "31"
+ruleset_version = "32"
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +125,19 @@ go_fips140_group = "go_fips140"
 # and no `cargo/registry` path, so a forward-slash-only pattern reads every Rust wheel
 # built on Windows as carrying no crates at all. The `src/<index>/` segment is
 # optional because distro packaging (Fedora's `/usr/share/cargo/registry/<name>-
-# <version>/`, laid out by the RPM Rust macros) has none.
-cargo_path_regex = '''cargo[/\\]registry[/\\](?:src[/\\][^/\\\x00"']+[/\\])?(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)[/\\]'''
+# <version>/`, laid out by the RPM Rust macros) has none. That segment's negated
+# class excludes `\n`, the run separator `binfmt.strings.RUN_SEPARATOR` joins printable
+# runs with: without that exclusion a match can start in one printable run and finish
+# in an unrelated one, naming a crate neither string names. The name excludes `.`,
+# which no crates.io crate name can contain, and is lazy and bounded at 64 characters
+# (crates.io's own limit); the version tail is bounded at 64 characters too, the same
+# as the vendor pattern's below. An unbounded name and version tail backtrack
+# quadratically over a long slash-free segment of `name-version` near-misses only when
+# `.` is also allowed in the name; excluding it keeps the unbounded shape linear on its
+# own, and allowing it back in costs several times more per MiB even with these bounds
+# in place. DESIGN.md, "Crates are read from every cargo source layout, and a vendored
+# crate has no version", has the measurement.
+cargo_path_regex = '''cargo[/\\]registry[/\\](?:src[/\\][^/\\\x00"'\n]{1,255}[/\\])?(?P<name>[A-Za-z0-9_][A-Za-z0-9_-]{0,63}?)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]{0,63})[/\\]'''
 
 # `cargo vendor` (what fromager uses to build offline) writes `vendor/<name>/...` with
 # no `cargo/registry` segment at all and, without `--versioned-dirs`, no version either,
