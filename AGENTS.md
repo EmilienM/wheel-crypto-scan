@@ -124,8 +124,9 @@ These are design decisions, not accidents. Do not change one without saying so e
   alternative, and describe a rejected approach as an alternative ("keying on the name
   alone reads X"), not as something the code once did. History belongs in the commit
   message and the PR. A test file is named for its topic, never for the review or fix
-  that produced it. `tests/test_design_notes.py` catches citations, review framing and
-  a quoted `DESIGN.md` heading that no longer exists; the rest is on the writer.
+  that produced it. `tests/test_design_notes.py` catches citations, review framing, a
+  quoted `DESIGN.md` heading that no longer exists, and a Markdown heading wrapped onto
+  a second source line; the rest is on the writer.
 - Wheels are read from the zip in memory, never extracted to disk.
 
 ## Commands
