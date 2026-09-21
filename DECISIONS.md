@@ -5770,3 +5770,71 @@ the meaning this case needs.
 
 Composes with "An OpenSSL crate with no other evidence reads unknown, not none" above:
 that entry's own residual, an SBOM naming the crate reading `none`, is what this fixes.
+
+## The HTML report embeds records and renders them in the browser
+
+**Accepted.**
+
+`--format html` writes one self-contained page: Python renders a static shell and embeds
+every scanned record as one JSON block; the page's own JavaScript builds the table, the
+filters and the drill-down views from that data at load time. No new dependency and no
+external asset -- no CDN script, no stylesheet link, no font, nothing the page loads over
+the network -- so the invariant that this tool makes no network access at runtime extends
+to its output, not only to the scan itself.
+
+**The embedding is the security boundary.** Every filename, matched symbol, matched
+string and piece of evidence a wheel carries is untrusted, and a wheel author controls
+all of it. The JSON payload is escaped by replacing `<`, `>` and `&` with their JSON `\u`
+escapes rather than HTML entities: `<script>` is an HTML "raw text" element, so its
+content is scanned only for the literal bytes `</script`, never for character references,
+and `.textContent` hands JavaScript back an HTML entity completely unchanged --
+corrupting exactly the string it was meant to protect. A `\u` escape has no literal `<`
+and round-trips through `JSON.parse` like any other escape in a JSON string. Verified
+against a real browser, not only reasoned from the two specs. The JS that reads the
+payload back never uses `innerHTML`: every value reaches the DOM through `textContent` or
+an element property such as `.value`.
+
+Two embedded records can share a filename -- a cpu and a cuda build of the same wheel
+name, for instance -- so the drill-down is keyed on a record's position in the embedded,
+sorted list, never on the filename: a filename-keyed lookup would let one record's row
+silently open the other's evidence on a collision, with no way from the table to reach
+the one that lost.
+
+**Byte-stable, like the JSONL it views.** `render_html` is a pure function of the
+records, the ruleset and the shipped template: no timestamp, host path, hostname or
+random id. The theme toggle reads and writes `localStorage` at view time only, wrapped in
+try/catch since storage can be unavailable, so it never touches the file's bytes. The
+template itself is pure ASCII, so `--format html` to a redirected stdout does not crash
+on a non-UTF-8 locale the way a stray arrow glyph or em dash in the JavaScript source
+would.
+
+**No verdict class gets a favourable colour.** The taxonomy has no passing class, and the
+page must not invent one by way of colour: the two classes that mean "nothing was
+decided" -- `NO_CRYPTO_DETECTED` and `OPAQUE` -- share one neutral CSS token, and every
+other class is a warning or a danger token. A wheel not flagged for review reads "not
+flagged", never a plain "no" or a checkmark. The class filter is seeded from the union of
+the ruleset's precedence and every class actually present in the records, not from
+precedence alone: `NO_CRYPTO_DETECTED`'s fallback is hardcoded in `verdict.py` rather
+than required in a ruleset's `[verdict] precedence`, so a custom ruleset that omits it
+would otherwise hide every clean wheel from the table with no control able to bring it
+back.
+
+The class and linkage help text shown in the page -- `CLASS_HELP` and `LINKAGE_HELP` in
+`report.py` -- are plain constants rather than a ruleset addition, so no HTML-only text
+can affect a verdict or need a `ruleset_version` bump. `CLASS_HELP` is verbatim from
+SCHEMA.md's "Verdict classes" table, held to that by a test that parses the table
+directly rather than only asserting the claim in prose.
+
+**What was rejected, and why.**
+
+- *A templating engine or a JS framework.* One HTML file with inline CSS and vanilla JS
+  is the whole surface; a dependency buys nothing a `str.replace` on one sentinel token
+  does not already do, and the sentinel avoids `str.format`'s clash with the page's own
+  CSS braces.
+- *HTML-entity escaping for the embedded JSON.* Survives `.textContent` as extra literal
+  characters inside the string it is meant to protect, corrupting the data it carries.
+  The `\u`-escape approach above has no literal `<` and avoids that.
+- *Trimming the embedded record, or a size warning past some threshold.* Every field a
+  consumer might need for a real investigation is already in the JSONL; leaving any of
+  it out of the page would just send the reader back to the JSONL to finish the job the
+  report exists to shortcut.

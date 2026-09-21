@@ -213,3 +213,31 @@ only, never `.symtab` — the table a relocatable `.o` normally carries. Filed a
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader) ·
 [#99](https://github.com/EmilienM/wheel-crypto-scan/issues/99)
+
+## The HTML report embeds records and renders them in the browser
+
+**Accepted.**
+
+`--format html` writes one self-contained page: no new dependency, and no external
+asset — no CDN script, no stylesheet link, nothing the page loads over the network.
+Python renders a static shell and embeds the records as one JSON block; the page's own
+JavaScript builds the table and the drill-down views from that data at load time.
+
+The embedded JSON is escaped so no wheel-controlled string — a filename, a matched
+string, a piece of evidence — can close the `<script>` element it sits in, and the JS
+that reads it back never uses `innerHTML`: every value reaches the DOM through
+`textContent` or an element property, so nothing decoded from a wheel is ever parsed as
+markup.
+
+The page is byte-stable: a pure function of the records, the ruleset and the template,
+with no timestamp, host path or hostname. The theme toggle reads and writes
+`localStorage` at view time only, so it never touches the file's bytes.
+
+No verdict class gets a favourable colour. The two classes that mean "nothing was
+decided" share one neutral token; every other class is a warning or a danger token, and
+a wheel not flagged for review reads "not flagged", never a plain "no" or a checkmark.
+The class and linkage help text shown in the page lives in `report.py` as plain
+constants, next to a test that fails when a class in the ruleset's precedence has no
+entry.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#the-html-report-embeds-records-and-renders-them-in-the-browser)

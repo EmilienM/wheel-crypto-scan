@@ -1,8 +1,98 @@
-"""The human-readable summary table."""
+"""Human-readable views of the records: the Markdown table and the self-contained HTML page."""
 
 from __future__ import annotations
 
-from wheel_crypto_scan.report import render_markdown
+import dataclasses
+import json
+import re
+import shutil
+import socket
+import subprocess
+from importlib.resources import files
+from pathlib import Path
+
+import pytest
+
+from wheel_crypto_scan.report import CLASS_HELP, LINKAGE_HELP, render_html, render_markdown
+from wheel_crypto_scan.ruleset import LINKAGE_VALUES
+from wheel_crypto_scan.ruleset_loader import load_ruleset
+
+_DATA_SCRIPT = re.compile(
+    r'<script type="application/json" id="wcs-data">(.*?)</script>', re.DOTALL
+)
+
+_CHROME_CANDIDATES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
+
+
+def _chrome_binary() -> str | None:
+    for name in _CHROME_CANDIDATES:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def _render_in_browser(
+    tmp_path: Path, page: str, *, fragment: str = "", extra_script: str = ""
+) -> str:
+    """Render `page` in headless Chrome (or Chromium) and return the DOM it
+    produces after load.
+
+    Self-skips when no such browser is on the host, the same shape
+    `test_hostbin_libcrypto_soname_and_evp_digestinit_ex_defined` skips without a
+    system `libcrypto.so.3`: an opt-in check of real behaviour that degrades to
+    "not run" rather than "failed" when the host cannot support it, and needs no
+    network and no new Python dependency. `extra_script` is test-authored
+    JavaScript, appended after the page's own script; both are synchronous, so
+    both have run before Chrome's load event fires and `--dump-dom` reads the
+    page back. `fragment` becomes the URL's `#...` before the page loads, so the
+    page's own hash-routing sees it the same way it would a link to one wheel.
+    """
+    binary = _chrome_binary()
+    if binary is None:
+        pytest.skip("no headless-capable browser (google-chrome/chromium) on this host")
+    if extra_script:
+        page = page.replace("</body>", f"<script>{extra_script}</script></body>")
+    path = tmp_path / "page.html"
+    path.write_text(page, encoding="utf-8")
+    url = f"file://{path}#{fragment}" if fragment else f"file://{path}"
+    result = subprocess.run(
+        [binary, "--headless=new", "--disable-gpu", "--no-sandbox", "--dump-dom", url],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    return result.stdout
+
+
+_TAB_ORDER = ("findings", "binaries", "wheel", "errors", "raw")
+
+
+def _click_tab(tab: str) -> str:
+    """JS that clicks the detail view's tab button for `tab`, test-authored code
+    to append after the page's own script through `extra_script`."""
+    index = _TAB_ORDER.index(tab)
+    return f'document.querySelectorAll(".tabs button")[{index}].click();'
+
+
+def _tab(dom: str, tab: str) -> str:
+    """The rendered content of one detail-view tab panel, by its `id="tab-<tab>"`.
+
+    Sliced between the start of this tab panel's own `<div id="tab-...">` and the
+    start of the next one's (or `#popover`, after the last tab), rather than by
+    matching a closing `</div>`: a tab's own content nests further `<div>`s (the
+    Binaries tab's per-object boxes), so a "first closing tag" match would cut the
+    slice short.
+    """
+    index = _TAB_ORDER.index(tab)
+    start = dom.index(f'<div id="tab-{tab}"')
+    if index + 1 < len(_TAB_ORDER):
+        end_marker = f'<div id="tab-{_TAB_ORDER[index + 1]}"'
+    else:
+        end_marker = '<div id="popover"'
+    end = dom.index(end_marker, start)
+    return dom[start:end]
 
 
 def record(name: str, klass: str, linkage: str, review: bool = True) -> dict:
@@ -18,6 +108,115 @@ def record(name: str, klass: str, linkage: str, review: bool = True) -> dict:
         },
         "findings": [],
     }
+
+
+def html_record(
+    name: str,
+    klass: str,
+    linkage: str,
+    *,
+    review: bool = True,
+    rule_id: str = "BIN_BUNDLED_OPENSSL",
+    evidence_level: str = "standard",
+) -> dict:
+    """A record carrying every top-level key `render_html` reads, for the tests that
+    exercise more than the columns `render_markdown` also draws on."""
+    base = record(name, klass, linkage, review)
+    base["verdict"]["rule_ids"] = [rule_id]
+    base["verdict"]["reasons"] = [f"{rule_id}: {name}"]
+    base["schema_version"] = 1
+    base["tool"] = {
+        "name": "wheel-crypto-scan",
+        "version": "1.2.3",
+        "ruleset_version": "1",
+        "analyzer_version": 1,
+        "evidence_level": evidence_level,
+    }
+    base["findings"] = [
+        {
+            "rule_id": rule_id,
+            "subject": name,
+            "subject_kind": "library",
+            "severity": "high",
+            "category": "bundled-crypto",
+            "layer": "binary",
+            "confidence": "high",
+            "verdict": klass,
+            "needs_human_review": review,
+            "occurrences": 1,
+            "truncated": False,
+            "locations": [{"path": f"{name}/_native.so", "line": None, "evidence": name}],
+        }
+    ]
+    base["artifacts"] = {
+        "py_files": 1,
+        "pyc_files": 0,
+        "py_files_unparsed": 0,
+        "source_available": True,
+        "binaries_truncated": False,
+        "record_entries": 3,
+        "total_uncompressed_bytes": 100,
+        "extensions": [{"path": f"{name}/_native.so", "format": "elf"}],
+        "bundled_libs": [f"{name}.libs/libcrypto.so"],
+        "bundled_libs_truncated": False,
+        "sboms": [],
+        "symlinks": [],
+        "symlinks_truncated": False,
+        "skipped": [],
+        "skipped_truncated": False,
+    }
+    base["binaries"] = [
+        {
+            "path": f"{name}/_native.so",
+            "format": "elf",
+            "vendored_path": None,
+            "machine": "x86_64",
+            "bits": 64,
+            "endian": "little",
+            "elf_type": "ET_DYN",
+            "soname": None,
+            "needed": [],
+            "rpath": [],
+            "runpath": [],
+            "stripped": False,
+            "symbol_counts": {"dynsym": 1, "symtab": 0},
+            "matched_symbols": [],
+            "matched_strings": [],
+            "rust_crates": [],
+            "go": None,
+            "truncated": {"symbols": False, "strings": False},
+            "partial_analysis": False,
+            "partial_reasons": [],
+        }
+    ]
+    base["errors"] = []
+    base["errors_truncated"] = False
+    return base
+
+
+def _extract_payload(page: str) -> dict:
+    match = _DATA_SCRIPT.search(page)
+    assert match is not None, "no #wcs-data script found in the rendered page"
+    return json.loads(match.group(1))
+
+
+def _css(page: str) -> str:
+    match = re.search(r"<style>(.*?)</style>", page, re.DOTALL)
+    assert match is not None
+    return match.group(1)
+
+
+def _js(page: str) -> str:
+    """The plain `<script>...</script>` block (the page's own logic): the exact
+    literal `<script>` tag with no attributes, which only the page's own script
+    carries -- the `wcs-data` block next to it (untrusted, wheel-derived data) opens
+    with `<script type="application/json" id="wcs-data">` instead."""
+    match = re.search(r"<script>(.*)</script>", page, re.DOTALL)
+    assert match is not None
+    return match.group(1)
+
+
+# --- Markdown -----------------------------------------------------------------------
 
 
 def test_markdown_has_a_row_per_wheel() -> None:
@@ -51,3 +250,453 @@ def test_markdown_never_claims_compliance() -> None:
     table = render_markdown([record("a", "NO_CRYPTO_DETECTED", "none", review=False)])
     assert "compliant" not in table.lower()
     assert "compatible" not in table.lower()
+
+
+# --- HTML ---------------------------------------------------------------------------
+
+
+def test_html_is_byte_stable_across_input_order() -> None:
+    ruleset = load_ruleset(None)
+    a = html_record("a", "CONDITIONAL", "bundled")
+    b = html_record("b", "OPAQUE", "none")
+    first = render_html([a, b], ruleset)
+    second = render_html([b, a], ruleset)
+    assert first == second
+
+
+def test_html_has_no_timestamp_or_host_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guards more than one wall-clock source, not only `time.time`, and checks the
+    rendered bytes directly for a date-shaped string, rather than only comparing two
+    renders that could happen to land on the same day. `datetime.date.today` is not
+    patched here: it is a C-immutable type whose classmethod pytest's `monkeypatch`
+    cannot reassign, so the direct date-pattern scan below is what would catch a
+    `datetime`-based generated-at line instead."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "CONDITIONAL", "bundled")
+
+    monkeypatch.setattr("time.time", lambda: 1_000_000.0)
+    monkeypatch.setattr("time.strftime", lambda *a, **k: "2024-01-01")
+    first = render_html([rec], ruleset)
+
+    monkeypatch.setattr("time.time", lambda: 2_000_000.0)
+    monkeypatch.setattr("time.strftime", lambda *a, **k: "2030-12-31")
+    second = render_html([rec], ruleset)
+
+    assert first == second
+    assert socket.gethostname() not in first
+    assert re.search(r"\b\d{4}-\d{2}-\d{2}\b", first) is None
+
+    # The page must equal the shipped template with only the data token substituted:
+    # anything else -- a banner spliced in before the substitution, a host path, a
+    # generated-at line -- would show up as a difference here even if it never touches
+    # a clock this test patches.
+    template = files("wheel_crypto_scan").joinpath("data/report.html").read_text(encoding="utf-8")
+    embedded = _DATA_SCRIPT.search(first)
+    assert embedded is not None
+    assert first == template.replace("/*WCS_DATA*/", embedded.group(1))
+
+
+def test_html_embedded_data_round_trips() -> None:
+    ruleset = load_ruleset(None)
+    records = [html_record("b", "OPAQUE", "none"), html_record("a", "CONDITIONAL", "bundled")]
+    page = render_html(records, ruleset)
+    payload = _extract_payload(page)
+    assert payload["records"] == sorted(records, key=lambda r: r["wheel"]["filename"])
+
+
+def test_html_cannot_be_closed_by_a_wheel_string() -> None:
+    ruleset = load_ruleset(None)
+    dangerous = "</script><script>alert(1)</script><!--"
+    rec = html_record(dangerous, "OPAQUE", "none")
+    rec["verdict"]["reasons"] = [f"BIN_BUNDLED_OPENSSL: {dangerous}"]
+    rec["findings"][0]["locations"][0]["evidence"] = dangerous
+
+    page = render_html([rec], ruleset)
+
+    template = files("wheel_crypto_scan").joinpath("data/report.html").read_text(encoding="utf-8")
+    assert page.count("</script>") == template.count("</script>")
+    assert "<script>alert" not in page
+
+    # Directly on the embedded payload: no literal "<" survives at all, which is what
+    # actually keeps "</script" and "<script" from ever forming, regardless of whether
+    # a ">" happens to follow one in the wheel's own string.
+    embedded = _DATA_SCRIPT.search(page)
+    assert embedded is not None
+    assert "<" not in embedded.group(1)
+
+
+def test_html_never_claims_compliance() -> None:
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "NO_CRYPTO_DETECTED", "none", review=False)
+    rec["verdict"]["reasons"] = []
+    rec["verdict"]["rule_ids"] = []
+    rec["findings"] = []
+
+    page = render_html([rec], ruleset)
+    lowered = page.lower()
+
+    assert "compliant" not in lowered
+    assert "compatible" not in lowered
+    assert re.search(r"\bpass(ed|es)?\b", lowered) is None
+    assert "✓" not in page
+    assert "&check;" not in lowered
+    assert "not flagged" in lowered
+    assert "absence of evidence" in lowered
+
+
+def test_html_gives_no_class_a_success_colour() -> None:
+    """Every precedence class must have a `[data-class=...]` rule, that rule must
+    resolve to exactly one of the three named colour tokens (never a bare hex value a
+    reviewer would have to eyeball), the two "nothing decided" classes must share the
+    neutral token while every other class must not, and none of the tokens themselves
+    -- in either theme -- may actually render as green. Pinning the token *name* a
+    class maps to is not enough on its own: a hex literal is what a reader sees, so a
+    warn or danger token that was quietly redefined green must fail too."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    css = _css(page)
+
+    rules = dict(re.findall(r'\[data-class="(\w+)"\]\s*\{([^}]*)\}', css))
+    for cls in ruleset.precedence:
+        assert cls in rules, f"no [data-class={cls!r}] rule in the template CSS"
+
+    tokens: dict[str, str] = {}
+    for cls, body in rules.items():
+        match = re.search(r"var\((--class-\w+)\)", body)
+        assert match is not None, f"[data-class={cls!r}] does not use a named class token: {body!r}"
+        tokens[cls] = match.group(1)
+
+    neutral_classes = {"NO_CRYPTO_DETECTED", "OPAQUE"}
+    for cls in ruleset.precedence:
+        if cls in neutral_classes:
+            assert tokens[cls] == "--class-neutral", cls
+        else:
+            assert tokens[cls] != "--class-neutral", cls
+
+    # Every definition of every class token, in both themes, must stay out of the
+    # green range: green being the clear maximum channel is what "reads as green",
+    # regardless of which token or theme carries it.
+    for name, hexvalue in re.findall(r"(--class-\w+):\s*(#[0-9a-fA-F]{6})", css):
+        red, green, blue = (int(hexvalue[i : i + 2], 16) for i in (1, 3, 5))
+        assert not (green > red + 20 and green > blue + 20), f"{name} is {hexvalue}, too green"
+
+    assert "--success" not in css
+    assert "--ok" not in css
+    assert "green" not in css.lower()
+
+
+def test_html_unknown_class_falls_back_to_a_warning_colour_not_neutral() -> None:
+    """A class from a custom ruleset that carries no `[data-class=...]` rule of its
+    own reads through the `.badge`/`.swatch` CSS fallback, `var(--class-color,
+    ...)`. That default must not be `--class-neutral`: a class a custom ruleset put
+    at the top of its own precedence would otherwise read the same grey as
+    `NO_CRYPTO_DETECTED`, repeating on the page the exact confusion the
+    OPAQUE-vs-NO_CRYPTO_DETECTED distinction exists to prevent. The two classes
+    that do mean "nothing decided" are unaffected: each carries its own explicit
+    `[data-class=...]` rule, so the fallback never applies to them."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    css = _css(page)
+    fallbacks = re.findall(r"var\(--class-color,\s*var\((--class-\w+)\)\)", css)
+    assert fallbacks, "no var(--class-color, var(--class-X)) fallback found in the template CSS"
+    assert all(token != "--class-neutral" for token in fallbacks), fallbacks
+
+
+def test_every_precedence_class_has_help() -> None:
+    """Reads `LINKAGE_VALUES`, the vocabulary the loader itself validates a ruleset's
+    `openssl_linkage` against, rather than a hardcoded copy of it: a value added to the
+    vocabulary without a matching `LINKAGE_HELP` entry must fail this, the way a rule
+    naming an unknown token already fails at load time."""
+    ruleset = load_ruleset(None)
+    assert set(ruleset.precedence) <= set(CLASS_HELP)
+    assert LINKAGE_VALUES <= set(LINKAGE_HELP)
+
+
+def test_class_help_matches_the_output_schema_verdict_table() -> None:
+    """`CLASS_HELP` claims (in its own comment) to be verbatim from SCHEMA.md's
+    "Verdict classes" table. Parse that table directly, rather than asserting the
+    claim only in prose, so the two cannot drift apart silently the way `record.py`
+    and `data/schema.json` are already held to."""
+    schema = Path(__file__).parent.parent / "SCHEMA.md"
+    text = schema.read_text(encoding="utf-8")
+    section = text.split("### Verdict classes", 1)[1].split("\n## ", 1)[0]
+    rows = re.findall(r"\|\s*`(\w+)`\s*\|\s*(.+?)\s*\|\s*\n", section)
+    documented = {cls: meaning.replace("**", "").replace("`", "") for cls, meaning in rows}
+    assert documented, "no verdict-class rows parsed from SCHEMA.md"
+    assert documented == CLASS_HELP
+
+
+def test_html_is_self_contained() -> None:
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    assert "<link" not in page
+    assert "@import" not in page
+    assert re.search(r'(?:src|href)\s*=\s*"https?://', page) is None
+
+
+def test_html_embeds_only_referenced_rules() -> None:
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "CONDITIONAL", "bundled", rule_id="BIN_BUNDLED_OPENSSL")
+    page = render_html([rec], ruleset)
+    payload = _extract_payload(page)
+    assert set(payload["rules"]) == {"BIN_BUNDLED_OPENSSL"}
+    assert payload["rules"]["BIN_BUNDLED_OPENSSL"]["why"] == ruleset.rule("BIN_BUNDLED_OPENSSL").why
+
+
+def test_html_handles_an_empty_run() -> None:
+    ruleset = load_ruleset(None)
+    page = render_html([], ruleset)
+    assert "No wheels scanned" in page
+    payload = _extract_payload(page)
+    assert payload["records"] == []
+
+
+def test_html_is_ascii() -> None:
+    """`--format html` to a redirected stdout must not crash on a non-UTF-8 locale:
+    the template, and therefore every render of it, must stay pure ASCII."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    assert page.isascii()
+
+
+def test_html_drilldown_is_not_keyed_by_filename() -> None:
+    """Two records can share a filename -- a cpu and a cuda build of the same wheel
+    name, for instance -- and both stay independently reachable from the table. The
+    script holds no `{filename: record}` map, so a collision cannot drop one; the
+    embedded data keeps both, distinctly. `test_browser_drilldown_uses_position_not_filename`
+    below exercises the actual click/hash behaviour this data shape backs, in a real
+    browser."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = _js(page)
+    assert "recordsByFilename" not in script
+    assert re.search(r"\[\s*wheel\.filename\s*\]\s*=\s*record\b", script) is None
+
+    # Two records that share a filename must both still be present, and distinct, in
+    # the embedded data the drill-down reads from.
+    dup_a = html_record("dup", "FIPS_BREAKING", "static")
+    dup_b = html_record("dup", "OPAQUE", "none")
+    page = render_html([dup_a, dup_b], ruleset)
+    payload = _extract_payload(page)
+    assert len(payload["records"]) == 2
+    assert payload["records"][0]["wheel"]["filename"] == payload["records"][1]["wheel"]["filename"]
+    assert payload["records"][0]["verdict"]["class"] != payload["records"][1]["verdict"]["class"]
+
+
+def test_html_classes_payload_covers_classes_outside_precedence() -> None:
+    """The class filter and legend read `classes` straight off the embedded
+    payload, with no union of their own left to get wrong: a ruleset's own
+    `[verdict] precedence` need not list every class `classify()` can emit
+    (`NO_CRYPTO_DETECTED`'s fallback is hardcoded in `verdict.py` rather than
+    required there), so `render_html` folds in any class a record actually
+    carries that precedence left out. `test_browser_class_filter_covers_a_class_outside_precedence`
+    below checks the same case end to end, in a real browser."""
+    ruleset = load_ruleset(None)
+    narrowed = dataclasses.replace(
+        ruleset,
+        precedence=tuple(cls for cls in ruleset.precedence if cls != "NO_CRYPTO_DETECTED"),
+    )
+    rec = html_record("a", "NO_CRYPTO_DETECTED", "none")
+    payload = _extract_payload(render_html([rec], narrowed))
+    assert "NO_CRYPTO_DETECTED" not in narrowed.precedence
+    assert "NO_CRYPTO_DETECTED" in payload["classes"]
+
+
+def test_html_binaries_tab_shows_go_and_truncated_fields() -> None:
+    """`go` (go_version, boring_crypto, markers), `truncated` (symbols, strings) and
+    `symbol_counts` (dynsym, symtab) are all emitted by `record.py` and documented in
+    SCHEMA.md, and the Binaries tab shows all three: a capped sample of matched
+    symbols or strings reads as a sample, and a Go build's evidence is visible
+    without opening the Raw JSON tab. The `test_browser_binaries_tab_shows_go_...`
+    test below renders the tab in a real browser and reads the values back."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = _js(page)
+    assert "binary.go" in script
+    assert "binary.truncated" in script or "truncated.symbols" in script
+    assert "symbol_counts" in script
+
+
+def test_html_detail_view_has_a_verdict_section() -> None:
+    """The detail view's Verdict section shows `verdict.classes` (every class that
+    fired, not only the headline), the full `reasons` list (the table caps it at
+    three plus a chip with no way to expand it), and `conditions`.
+    `test_browser_detail_view_shows_verdict_section` below renders the section in a
+    real browser and reads the values back."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = _js(page)
+    assert "verdict.classes" in script
+    assert "verdict.conditions" in script
+    assert "verdict.reasons" in script
+
+
+# --- HTML rendered in a real browser -------------------------------------------------
+#
+# The tests above check the source: what the page is built out of. They pass just as
+# well when the JavaScript that reads that source is wrong, because nothing in them
+# runs it. The tests below render the page in headless Chrome (or Chromium) instead,
+# and read the DOM it actually produces, so a regression in what the script *does*
+# with the data -- not just what it mentions -- fails one of these. Each self-skips
+# without a browser on the host; see `_render_in_browser`.
+
+
+def test_browser_detail_view_shows_verdict_section(tmp_path: Path) -> None:
+    """Opening a wheel's detail view renders its Verdict section: the class badge,
+    the openssl_linkage condition, and the reason text -- not just the Findings
+    table below it."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "FIPS_BREAKING", "static", rule_id="RULE_FIPS")
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
+    findings_tab = _tab(dom, "findings")
+
+    assert "Verdict" in findings_tab
+    assert 'data-class="FIPS_BREAKING"' in findings_tab
+    assert "static" in findings_tab
+    assert "RULE_FIPS: a" in findings_tab
+
+
+def test_browser_drilldown_uses_position_not_filename(tmp_path: Path) -> None:
+    """Two records that share a filename -- a cpu and a cuda build of the same wheel
+    name, for instance -- stay independently reachable: opening the wheel at one
+    table position shows that record's own evidence, never the other one's, even
+    though both carry the same `wheel.filename`."""
+    ruleset = load_ruleset(None)
+    dup_a = html_record("dup", "FIPS_BREAKING", "static", rule_id="RULE_FIPS")
+    dup_b = html_record("dup", "OPAQUE", "none", rule_id="RULE_OPAQUE")
+    page = render_html([dup_a, dup_b], ruleset)
+    payload = _extract_payload(page)
+    assert payload["records"][0]["verdict"]["class"] == "FIPS_BREAKING"
+    assert payload["records"][1]["verdict"]["class"] == "OPAQUE"
+
+    first = _tab(_render_in_browser(tmp_path, page, fragment="wheel=0"), "findings")
+    second = _tab(_render_in_browser(tmp_path, page, fragment="wheel=1"), "findings")
+
+    assert 'data-class="FIPS_BREAKING"' in first
+    assert 'data-class="OPAQUE"' not in first
+    assert 'data-class="OPAQUE"' in second
+    assert 'data-class="FIPS_BREAKING"' not in second
+
+
+def test_browser_class_filter_covers_a_class_outside_precedence(tmp_path: Path) -> None:
+    """A wheel whose class a custom ruleset's own `[verdict] precedence` leaves out
+    still shows in the table: the class filter's default state, and the legend,
+    both cover it. `NO_CRYPTO_DETECTED`'s fallback is hardcoded in `verdict.py`
+    rather than required in precedence, so this is the case a ruleset can actually
+    produce, not a hypothetical one."""
+    ruleset = load_ruleset(None)
+    narrowed = dataclasses.replace(
+        ruleset,
+        precedence=tuple(cls for cls in ruleset.precedence if cls != "NO_CRYPTO_DETECTED"),
+    )
+    rec = html_record("a", "NO_CRYPTO_DETECTED", "none")
+    page = render_html([rec], narrowed)
+
+    dom = _render_in_browser(tmp_path, page)
+
+    assert "1 of 1 wheels" in dom
+    assert 'data-class="NO_CRYPTO_DETECTED"' in dom
+
+
+def test_browser_binaries_tab_shows_go_truncated_and_symbol_counts(tmp_path: Path) -> None:
+    """The Binaries tab shows `go`, `truncated` and `symbol_counts` with their
+    actual values, not only their labels: a capped sample reads as a sample, and a
+    Go build's evidence is visible without switching to the Raw JSON tab."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "OPAQUE", "none")
+    rec["binaries"][0]["go"] = {
+        "go_version": "go1.22.3",
+        "boring_crypto": True,
+        "markers": ["+boringcrypto"],
+    }
+    rec["binaries"][0]["truncated"] = {"symbols": True, "strings": False}
+    rec["binaries"][0]["symbol_counts"] = {"dynsym": 42, "symtab": 7}
+    rec["binaries"][0]["matched_symbols"] = [
+        {"name": "EVP_DigestInit", "group": "digest", "binding": "defined"}
+    ]
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(
+        tmp_path, page, fragment="wheel=0", extra_script=_click_tab("binaries")
+    )
+    binaries_tab = _tab(dom, "binaries")
+
+    assert "go1.22.3" in binaries_tab
+    assert "boringcrypto" in binaries_tab
+    assert re.search(r"truncated\.symbols</dt><dd>true</dd>", binaries_tab)
+    assert re.search(r"symbol_counts\.dynsym</dt><dd>42</dd>", binaries_tab)
+    assert re.search(r"symbol_counts\.symtab</dt><dd>7</dd>", binaries_tab)
+    assert "sample" in binaries_tab
+
+
+def test_browser_wheel_tab_shows_artifact_entries_and_generator_raw(tmp_path: Path) -> None:
+    """The Wheel and artifacts tab lists the evidence behind its counts -- bundled
+    library names, skipped paths with their reasons, symlink targets, extension
+    paths with their format, sbom paths -- and the wheel's `generator.raw`, not
+    only the summary counts the Raw JSON tab already carries."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "OPAQUE", "none")
+    rec["wheel"]["generator"] = {
+        "name": "bdist_wheel",
+        "version": "0.42.0",
+        "raw": "bdist_wheel (0.42.0)",
+    }
+    rec["artifacts"]["skipped"] = [{"path": "a/big.bin", "reason": "size_limit_exceeded"}]
+    rec["artifacts"]["symlinks"] = [{"path": "a/lib.so", "target": "lib.so.1.2.3"}]
+    rec["artifacts"]["sboms"] = ["a/sbom.spdx.json"]
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=_click_tab("wheel"))
+    wheel_tab = _tab(dom, "wheel")
+
+    assert "bdist_wheel (0.42.0)" in wheel_tab
+    assert "a.libs/libcrypto.so" in wheel_tab
+    assert "a/big.bin: size_limit_exceeded" in wheel_tab
+    assert "a/lib.so -&gt; lib.so.1.2.3" in wheel_tab or "a/lib.so -> lib.so.1.2.3" in wheel_tab
+    assert "a/sbom.spdx.json" in wheel_tab
+    assert "a/_native.so (elf)" in wheel_tab
+
+
+def test_browser_theme_toggle_cycles_without_storage(tmp_path: Path) -> None:
+    """The theme toggle still reaches every state -- system, light, dark -- when
+    `localStorage` throws on every access, the private-browsing/disabled-storage
+    case the page's own try/catch is written for. Reading the current preference
+    back from storage on every click, instead of holding it in memory, would make
+    every click see "system" and never advance past "light"."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+
+    block_storage = (
+        "<script>Object.defineProperty(window, 'localStorage', "
+        "{ get: function () { throw new DOMException('blocked'); } });</script>"
+    )
+    # Storage must be blocked before the page's own script runs -- it reads the
+    # theme preference at boot -- so this goes in ahead of the data block, not
+    # appended at the end the way `extra_script` runs.
+    rigged = page.replace(
+        '<script type="application/json" id="wcs-data">',
+        block_storage + '<script type="application/json" id="wcs-data">',
+        1,
+    )
+
+    click_and_record = (
+        "var out = [];"
+        "var btn = document.getElementById('theme-toggle');"
+        "out.push(btn.textContent);"
+        "btn.click(); out.push(btn.textContent);"
+        "btn.click(); out.push(btn.textContent);"
+        "btn.click(); out.push(btn.textContent);"
+        "document.title = out.join('|');"
+    )
+    dom = _render_in_browser(tmp_path, rigged, extra_script=click_and_record)
+
+    match = re.search(r"<title>([^<]*)</title>", dom)
+    assert match is not None
+    assert match.group(1).split("|") == [
+        "Theme: system",
+        "Theme: light",
+        "Theme: dark",
+        "Theme: system",
+    ]

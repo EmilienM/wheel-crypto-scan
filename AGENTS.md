@@ -62,6 +62,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `record.py`, `verdict.py` | Output record shape and verdict assembly |
 | `evidence.py` | What extractors may say: the record dataclasses, and the `FORMAT_*`, `STAGE_*`, `BINDING_*` and `PARTIAL_REASONS` vocabularies |
 | `errors.py` | The `ScanError` kinds, which the ruleset can match on |
+| `report.py`, `data/report.html` | Human views of the records: the Markdown table and the self-contained HTML page |
 
 ## Working rules
 

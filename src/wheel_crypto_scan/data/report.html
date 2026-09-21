@@ -1,0 +1,1406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wheel-crypto-scan report</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --bg-alt: #f3f4f6;
+  --fg: #111827;
+  --fg-muted: #4b5563;
+  --border: #d1d5db;
+  --accent: #2563eb;
+  --accent-fg: #ffffff;
+  --class-neutral: #6b7280;
+  --class-warn: #b45309;
+  --class-danger: #b91c1c;
+  --row-hover: #eef2ff;
+  --code-bg: #f8fafc;
+  --shadow: rgba(15, 23, 42, 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f172a;
+    --bg-alt: #1e293b;
+    --fg: #e2e8f0;
+    --fg-muted: #94a3b8;
+    --border: #334155;
+    --accent: #60a5fa;
+    --accent-fg: #0f172a;
+    --class-neutral: #94a3b8;
+    --class-warn: #fbbf24;
+    --class-danger: #f87171;
+    --row-hover: #1e293b;
+    --code-bg: #0b1220;
+    --shadow: rgba(0, 0, 0, 0.5);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f172a;
+  --bg-alt: #1e293b;
+  --fg: #e2e8f0;
+  --fg-muted: #94a3b8;
+  --border: #334155;
+  --accent: #60a5fa;
+  --accent-fg: #0f172a;
+  --class-neutral: #94a3b8;
+  --class-warn: #fbbf24;
+  --class-danger: #f87171;
+  --row-hover: #1e293b;
+  --code-bg: #0b1220;
+  --shadow: rgba(0, 0, 0, 0.5);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 16px 48px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 0 8px;
+  flex-wrap: wrap;
+}
+
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0 0 8px; }
+h3 { font-size: 0.95rem; margin: 16px 0 6px; }
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+button:hover { border-color: var(--accent); }
+
+.banner {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0 0 16px;
+  font-weight: 600;
+}
+
+details.legend {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  background: var(--bg-alt);
+}
+
+details.legend summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.legend-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 10px;
+  margin: 10px 0;
+  align-items: start;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: var(--class-color, var(--class-warn));
+}
+
+#toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+}
+
+#toolbar fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+#toolbar legend {
+  font-weight: 600;
+  padding: 0 4px 0 0;
+}
+
+#search, select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+#count {
+  margin-left: auto;
+  color: var(--fg-muted);
+}
+
+.help-btn {
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 640px;
+}
+
+th, td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+thead th {
+  background: var(--bg-alt);
+  position: sticky;
+  top: 0;
+  white-space: nowrap;
+}
+
+th button.sort-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+}
+
+th button.sort-btn:hover { text-decoration: underline; }
+
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--row-hover); }
+
+.badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-fg);
+  background: var(--class-color, var(--class-warn));
+  cursor: help;
+}
+
+/* Every verdict class maps to one of three tokens, none of them a favourable
+   colour: the two "nothing decided" classes share --class-neutral, and every other
+   class is --class-warn or --class-danger. A class with no rule here -- one a
+   custom ruleset defines that this template was never updated for -- falls back
+   to --class-warn (the .badge/.swatch `var(--class-color, ...)` default above),
+   never --class-neutral: it must not read as "nothing found" by default. */
+[data-class="NON_APPROVED_CRYPTO"] { --class-color: var(--class-danger); }
+[data-class="FIPS_BREAKING"] { --class-color: var(--class-danger); }
+[data-class="CONDITIONAL"] { --class-color: var(--class-warn); }
+[data-class="CONTEXT_DEPENDENT"] { --class-color: var(--class-warn); }
+[data-class="OPAQUE"] { --class-color: var(--class-neutral); }
+[data-class="NO_CRYPTO_DETECTED"] { --class-color: var(--class-neutral); }
+
+.linkage-value {
+  cursor: help;
+  border-bottom: 1px dotted var(--fg-muted);
+}
+
+.review-flag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.review-flag.flagged {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.reasons-list { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.reason-chip {
+  font-size: 12px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: help;
+}
+
+#empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-muted);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+#detail {
+  position: fixed;
+  inset: 0;
+  background: var(--shadow);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 32px 16px;
+  overflow-y: auto;
+  z-index: 20;
+}
+
+#detail-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 960px;
+  width: 100%;
+  padding: 16px;
+}
+
+#detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin: 12px 0;
+}
+
+.tabs button {
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+  background: var(--bg);
+}
+
+.tabs button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.tab-panel { padding-top: 4px; }
+
+.kv-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 10px;
+}
+
+.kv-grid dt { font-weight: 600; color: var(--fg-muted); }
+.kv-grid dd { margin: 0; word-break: break-word; }
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.count-badge {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.note {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+#popover {
+  position: fixed;
+  max-width: 320px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  box-shadow: 0 4px 16px var(--shadow);
+  z-index: 30;
+  font-size: 13px;
+}
+
+[hidden] { display: none !important; }
+
+@media (max-width: 640px) {
+  #toolbar { flex-direction: column; align-items: stretch; }
+  #count { margin-left: 0; }
+  header { flex-direction: column; align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>wheel-crypto-scan report</h1>
+  <button id="theme-toggle" type="button">Theme: system</button>
+</header>
+
+<p class="banner">
+  This report shows evidence. It does not decide FIPS compatibility; a human does.
+</p>
+
+<details class="legend">
+  <summary>Legend and column help</summary>
+  <div id="legend-body"></div>
+</details>
+
+<section id="toolbar">
+  <input id="search" type="search" placeholder="Filter by filename or reason">
+  <fieldset id="class-filter">
+    <legend>Class</legend>
+  </fieldset>
+  <label for="linkage-filter">OpenSSL linkage
+    <select id="linkage-filter">
+      <option value="">any</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="review-only"> needs review only</label>
+  <span id="count"></span>
+</section>
+
+<div class="table-scroll">
+  <table id="wheel-table">
+    <thead>
+      <tr id="header-row"></tr>
+    </thead>
+    <tbody id="wheel-rows"></tbody>
+  </table>
+</div>
+
+<div id="empty" hidden>No wheels scanned.</div>
+
+<div id="detail" hidden>
+  <div id="detail-panel" role="dialog" aria-modal="true">
+    <div id="detail-head">
+      <h2 id="detail-title"></h2>
+      <button id="detail-close" type="button">Close</button>
+    </div>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div id="tab-findings" class="tab-panel" role="tabpanel"></div>
+    <div id="tab-binaries" class="tab-panel" role="tabpanel" hidden></div>
+    <div id="tab-wheel" class="tab-panel" role="tabpanel" hidden></div>
+    <div id="tab-errors" class="tab-panel" role="tabpanel" hidden></div>
+    <div id="tab-raw" class="tab-panel" role="tabpanel" hidden></div>
+  </div>
+</div>
+
+<div id="popover" hidden role="tooltip"></div>
+
+<script type="application/json" id="wcs-data">/*WCS_DATA*/</script>
+<script>
+// Every value from a record reaches the DOM through textContent or element
+// properties such as .value, never through innerHTML: a filename, a matched string
+// or a piece of evidence is untrusted, wheel-controlled text.
+(function () {
+  "use strict";
+
+  var COLUMNS = [
+    { key: "filename", label: "wheel", help: "The wheel's filename. The primary key for this report." },
+    { key: "version", label: "version", help: "The project version declared in the wheel's own metadata." },
+    { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel. See the legend for what each class means." },
+    { key: "openssl", label: "openssl", help: "conditions.openssl_linkage: where the OpenSSL evidence in this wheel's binaries points, when there is any." },
+    { key: "review", label: "review", help: "Whether a rule flagged this wheel as needing a human look." },
+    { key: "reasons", label: "reasons", help: "The rule ids and subjects behind the verdict, in short form. Hover a chip for its full reason." }
+  ];
+
+  var NO_HELP = "No description; see the output schema.";
+
+  var raw = document.getElementById("wcs-data").textContent;
+  var DATA = raw ? JSON.parse(raw) : { records: [], rules: {}, classes: [], class_help: {}, linkage_help: {}, tool: [] };
+  DATA.records = DATA.records || [];
+  DATA.rules = DATA.rules || {};
+  DATA.classes = DATA.classes || [];
+  DATA.class_help = DATA.class_help || {};
+  DATA.linkage_help = DATA.linkage_help || {};
+
+  // DATA.classes already carries every class a record can actually carry, not only
+  // the ones named in the ruleset's own precedence: render_html computes that union
+  // in Python (see report.py's _all_classes), so this page is a plain renderer of
+  // what it is handed and never needs to recompute the union itself.
+
+  var state = {
+    search: "",
+    classes: new Set(DATA.classes),
+    linkage: "",
+    reviewOnly: false,
+    sortKey: "filename",
+    sortDir: "asc"
+  };
+
+  var els = {
+    themeToggle: document.getElementById("theme-toggle"),
+    search: document.getElementById("search"),
+    classFilter: document.getElementById("class-filter"),
+    linkageFilter: document.getElementById("linkage-filter"),
+    reviewOnly: document.getElementById("review-only"),
+    count: document.getElementById("count"),
+    headerRow: document.getElementById("header-row"),
+    rows: document.getElementById("wheel-rows"),
+    table: document.getElementById("wheel-table"),
+    empty: document.getElementById("empty"),
+    detail: document.getElementById("detail"),
+    detailPanel: document.getElementById("detail-panel"),
+    detailTitle: document.getElementById("detail-title"),
+    detailClose: document.getElementById("detail-close"),
+    tabs: document.getElementById("tabs"),
+    popover: document.getElementById("popover"),
+    legendBody: document.getElementById("legend-body")
+  };
+
+  var TAB_PANELS = ["findings", "binaries", "wheel", "errors", "raw"];
+  var TAB_LABELS = { findings: "Findings", binaries: "Binaries", wheel: "Wheel and artifacts", errors: "Errors", raw: "Raw JSON" };
+  var activeTab = "findings";
+
+  // Two records can share a filename (a cpu and a cuda build of the same wheel name,
+  // for instance), so the drill-down is keyed on a record's position in DATA.records
+  // -- the embedded, sorted list -- never on the filename, which can collide and would
+  // silently make one record's row open the other's evidence.
+
+  // --- theme -------------------------------------------------------------
+
+  function readThemePref() {
+    try {
+      return window.localStorage.getItem("wcs-theme") || "system";
+    } catch (err) {
+      return "system";
+    }
+  }
+
+  function writeThemePref(pref) {
+    try {
+      window.localStorage.setItem("wcs-theme", pref);
+    } catch (err) {
+      // Storage unavailable (private browsing, disabled cookies, a data: origin):
+      // the toggle still cycles within this view from themePref below, it just
+      // forgets the choice on reload.
+    }
+  }
+
+  function applyTheme(pref) {
+    if (pref === "light" || pref === "dark") {
+      document.documentElement.setAttribute("data-theme", pref);
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
+    els.themeToggle.textContent = "Theme: " + pref;
+  }
+
+  // The current preference lives in this closure variable, not re-read from
+  // localStorage on every click: when storage throws, readThemePref() always
+  // answers "system", which would make every click compute "system" -> "light"
+  // and never reach "dark".
+  var themePref = readThemePref();
+
+  function cycleTheme() {
+    var order = ["system", "light", "dark"];
+    themePref = order[(order.indexOf(themePref) + 1) % order.length];
+    writeThemePref(themePref);
+    applyTheme(themePref);
+  }
+
+  els.themeToggle.addEventListener("click", cycleTheme);
+  applyTheme(themePref);
+
+  // --- popover -------------------------------------------------------------
+
+  var popoverOwner = null;
+
+  function closePopover() {
+    els.popover.hidden = true;
+    popoverOwner = null;
+  }
+
+  function openPopover(anchor, text) {
+    if (popoverOwner === anchor) {
+      closePopover();
+      return;
+    }
+    els.popover.textContent = text;
+    els.popover.hidden = false;
+    var rect = anchor.getBoundingClientRect();
+    var top = rect.bottom + 6;
+    var left = rect.left;
+    var maxLeft = window.innerWidth - els.popover.offsetWidth - 8;
+    if (left > maxLeft) left = Math.max(8, maxLeft);
+    els.popover.style.top = top + "px";
+    els.popover.style.left = left + "px";
+    popoverOwner = anchor;
+  }
+
+  document.addEventListener("click", function (event) {
+    if (popoverOwner && event.target !== popoverOwner && !els.popover.contains(event.target)) {
+      closePopover();
+    }
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") closePopover();
+  });
+
+  function makeHelpButton(text) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "help-btn";
+    btn.textContent = "?";
+    btn.setAttribute("aria-label", "help");
+    btn.addEventListener("click", function (event) {
+      event.stopPropagation();
+      openPopover(btn, text);
+    });
+    return btn;
+  }
+
+  // --- legend --------------------------------------------------------------
+
+  function renderLegend() {
+    var wrap = els.legendBody;
+    wrap.textContent = "";
+
+    var classHeading = document.createElement("h3");
+    classHeading.textContent = "Verdict classes";
+    wrap.appendChild(classHeading);
+
+    var classGrid = document.createElement("div");
+    classGrid.className = "legend-grid";
+    DATA.classes.forEach(function (cls) {
+      var dt = document.createElement("div");
+      var swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.setAttribute("data-class", cls);
+      dt.appendChild(swatch);
+      var code = document.createElement("code");
+      code.textContent = cls;
+      dt.appendChild(code);
+      var dd = document.createElement("div");
+      dd.textContent = DATA.class_help[cls] || NO_HELP;
+      classGrid.appendChild(dt);
+      classGrid.appendChild(dd);
+    });
+    wrap.appendChild(classGrid);
+
+    var linkageHeading = document.createElement("h3");
+    linkageHeading.textContent = "OpenSSL linkage (conditions.openssl_linkage)";
+    wrap.appendChild(linkageHeading);
+
+    var linkageGrid = document.createElement("div");
+    linkageGrid.className = "legend-grid";
+    Object.keys(DATA.linkage_help).sort().forEach(function (value) {
+      var dt = document.createElement("code");
+      dt.textContent = value;
+      var dd = document.createElement("div");
+      dd.textContent = DATA.linkage_help[value];
+      linkageGrid.appendChild(dt);
+      linkageGrid.appendChild(dd);
+    });
+    wrap.appendChild(linkageGrid);
+
+    var columnHeading = document.createElement("h3");
+    columnHeading.textContent = "Columns";
+    wrap.appendChild(columnHeading);
+
+    var columnGrid = document.createElement("div");
+    columnGrid.className = "legend-grid";
+    COLUMNS.forEach(function (column) {
+      var dt = document.createElement("code");
+      dt.textContent = column.label;
+      var dd = document.createElement("div");
+      dd.textContent = column.help;
+      columnGrid.appendChild(dt);
+      columnGrid.appendChild(dd);
+    });
+    wrap.appendChild(columnGrid);
+
+    if (DATA.tool && DATA.tool.length) {
+      var toolHeading = document.createElement("h3");
+      toolHeading.textContent = "Produced by";
+      wrap.appendChild(toolHeading);
+      var toolList = document.createElement("ul");
+      DATA.tool.forEach(function (variant) {
+        var li = document.createElement("li");
+        li.textContent = "wheel-crypto-scan " + variant.version +
+          " (ruleset " + variant.ruleset_version +
+          ", analyzer " + variant.analyzer_version +
+          ", evidence " + variant.evidence_level + ")";
+        toolList.appendChild(li);
+      });
+      wrap.appendChild(toolList);
+    }
+  }
+
+  // Colour comes entirely from the CSS `[data-class="X"]` rules above, keyed off the
+  // `data-class` attribute set on each badge and swatch below: no verdict class is
+  // ever a favourable colour, and the JS never picks one.
+
+  // --- table header ----------------------------------------------------------
+
+  function renderHeader() {
+    els.headerRow.textContent = "";
+    COLUMNS.forEach(function (column) {
+      var th = document.createElement("th");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sort-btn";
+      btn.textContent = columnLabel(column);
+      btn.addEventListener("click", function () {
+        if (state.sortKey === column.key) {
+          state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+        } else {
+          state.sortKey = column.key;
+          state.sortDir = "asc";
+        }
+        renderHeader();
+        renderTable();
+      });
+      th.appendChild(btn);
+      th.appendChild(document.createTextNode(" "));
+      th.appendChild(makeHelpButton(column.help));
+      els.headerRow.appendChild(th);
+    });
+  }
+
+  function columnLabel(column) {
+    var arrow = "";
+    if (state.sortKey === column.key) arrow = state.sortDir === "asc" ? " \u2191" : " \u2193";
+    return column.label + arrow;
+  }
+
+  // --- toolbar -----------------------------------------------------------
+
+  function renderClassFilter() {
+    els.classFilter.querySelectorAll("label").forEach(function (label) { label.remove(); });
+    DATA.classes.forEach(function (cls) {
+      var label = document.createElement("label");
+      var box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = state.classes.has(cls);
+      box.addEventListener("change", function () {
+        if (box.checked) state.classes.add(cls); else state.classes.delete(cls);
+        renderTable();
+      });
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(" " + cls));
+      els.classFilter.appendChild(label);
+    });
+  }
+
+  function renderLinkageOptions() {
+    var values = new Set();
+    DATA.records.forEach(function (record) {
+      var conditions = ((record.verdict || {}).conditions) || {};
+      if (conditions.openssl_linkage) values.add(conditions.openssl_linkage);
+    });
+    Array.prototype.slice.call(els.linkageFilter.options, 1).forEach(function (opt) { opt.remove(); });
+    Array.from(values).sort().forEach(function (value) {
+      var opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = value;
+      els.linkageFilter.appendChild(opt);
+    });
+  }
+
+  els.search.addEventListener("input", function () {
+    state.search = els.search.value;
+    renderTable();
+  });
+  els.linkageFilter.addEventListener("change", function () {
+    state.linkage = els.linkageFilter.value;
+    renderTable();
+  });
+  els.reviewOnly.addEventListener("change", function () {
+    state.reviewOnly = els.reviewOnly.checked;
+    renderTable();
+  });
+
+  // --- filtering and sorting ------------------------------------------------
+
+  function reasonRuleId(reason) {
+    var idx = reason.indexOf(":");
+    return idx === -1 ? reason : reason.slice(0, idx);
+  }
+
+  function summariseReasons(reasons, limit) {
+    limit = limit || 3;
+    var shown = reasons.slice(0, limit).map(reasonRuleId);
+    var text = shown.join(", ");
+    if (reasons.length > limit) text += (text ? ", " : "") + "+" + (reasons.length - limit) + " more";
+    return text || "-";
+  }
+
+  function matchesFilters(record) {
+    var wheel = record.wheel || {};
+    var verdict = record.verdict || {};
+    var conditions = verdict.conditions || {};
+    var reasons = verdict.reasons || [];
+
+    if (state.search) {
+      var haystack = ((wheel.filename || "") + " " + reasons.join(" ")).toLowerCase();
+      if (haystack.indexOf(state.search.toLowerCase()) === -1) return false;
+    }
+    if (!state.classes.has(verdict.class)) return false;
+    if (state.linkage && conditions.openssl_linkage !== state.linkage) return false;
+    if (state.reviewOnly && !verdict.needs_human_review) return false;
+    return true;
+  }
+
+  function sortValue(record, key) {
+    var wheel = record.wheel || {};
+    var verdict = record.verdict || {};
+    var conditions = verdict.conditions || {};
+    switch (key) {
+      case "filename": return wheel.filename || "";
+      case "version": return wheel.version || "";
+      case "class": {
+        var idx = DATA.classes.indexOf(verdict.class);
+        return idx === -1 ? DATA.classes.length : idx;
+      }
+      case "openssl": return conditions.openssl_linkage || "";
+      case "review": return verdict.needs_human_review ? 1 : 0;
+      case "reasons": return summariseReasons(verdict.reasons || []);
+      default: return "";
+    }
+  }
+
+  function visibleRecords() {
+    var rows = DATA.records.filter(matchesFilters);
+    var key = state.sortKey;
+    var sign = state.sortDir === "desc" ? -1 : 1;
+    rows.sort(function (a, b) {
+      var av = sortValue(a, key);
+      var bv = sortValue(b, key);
+      var cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      if (cmp !== 0) return cmp * sign;
+      var af = (a.wheel || {}).filename || "";
+      var bf = (b.wheel || {}).filename || "";
+      return af < bf ? -1 : af > bf ? 1 : 0;
+    });
+    return rows;
+  }
+
+  // --- table body ----------------------------------------------------------
+
+  function renderTable() {
+    if (!DATA.records.length) {
+      els.table.parentNode.hidden = true;
+      document.getElementById("toolbar").hidden = true;
+      document.querySelector("details.legend").hidden = true;
+      els.empty.hidden = false;
+      els.count.textContent = "";
+      return;
+    }
+
+    var rows = visibleRecords();
+    els.rows.textContent = "";
+    rows.forEach(function (record) {
+      els.rows.appendChild(renderRow(record));
+    });
+    els.count.textContent = rows.length + " of " + DATA.records.length + " wheels";
+  }
+
+  function renderRow(record) {
+    var wheel = record.wheel || {};
+    var verdict = record.verdict || {};
+    var conditions = verdict.conditions || {};
+    var reasons = verdict.reasons || [];
+
+    var tr = document.createElement("tr");
+    tr.tabIndex = 0;
+    tr.setAttribute("role", "button");
+    tr.addEventListener("click", function () { goToWheel(DATA.records.indexOf(record)); });
+    tr.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        goToWheel(DATA.records.indexOf(record));
+      }
+    });
+
+    var filenameCell = document.createElement("td");
+    filenameCell.textContent = wheel.filename || "?";
+    tr.appendChild(filenameCell);
+
+    var versionCell = document.createElement("td");
+    versionCell.textContent = wheel.version || "?";
+    tr.appendChild(versionCell);
+
+    var classCell = document.createElement("td");
+    var badge = document.createElement("span");
+    badge.className = "badge";
+    badge.setAttribute("data-class", verdict.class || "?");
+    badge.textContent = verdict.class || "?";
+    badge.title = DATA.class_help[verdict.class] || NO_HELP;
+    classCell.appendChild(badge);
+    tr.appendChild(classCell);
+
+    var linkageCell = document.createElement("td");
+    var linkageValue = conditions.openssl_linkage;
+    if (linkageValue) {
+      var linkageSpan = document.createElement("span");
+      linkageSpan.className = "linkage-value";
+      linkageSpan.textContent = linkageValue;
+      linkageSpan.title = DATA.linkage_help[linkageValue] || NO_HELP;
+      linkageCell.appendChild(linkageSpan);
+    } else {
+      linkageCell.textContent = "-";
+    }
+    tr.appendChild(linkageCell);
+
+    var reviewCell = document.createElement("td");
+    var flag = document.createElement("span");
+    flag.className = "review-flag" + (verdict.needs_human_review ? " flagged" : "");
+    flag.textContent = verdict.needs_human_review ? "needs review" : "not flagged";
+    reviewCell.appendChild(flag);
+    tr.appendChild(reviewCell);
+
+    var reasonsCell = document.createElement("td");
+    if (!reasons.length) {
+      reasonsCell.textContent = "-";
+    } else {
+      var list = document.createElement("div");
+      list.className = "reasons-list";
+      reasons.slice(0, 3).forEach(function (reason) {
+        var chip = document.createElement("span");
+        chip.className = "reason-chip";
+        chip.textContent = reasonRuleId(reason);
+        var rule = DATA.rules[reasonRuleId(reason)];
+        chip.title = rule ? (rule.title + " \u2014 " + rule.why) : reason;
+        list.appendChild(chip);
+      });
+      if (reasons.length > 3) {
+        var more = document.createElement("span");
+        more.className = "reason-chip";
+        more.textContent = "+" + (reasons.length - 3) + " more";
+        list.appendChild(more);
+      }
+      reasonsCell.appendChild(list);
+    }
+    tr.appendChild(reasonsCell);
+
+    return tr;
+  }
+
+  // --- detail panel ----------------------------------------------------------
+
+  function goToWheel(index) {
+    if (index === -1 || index === null || index === undefined) return;
+    window.location.hash = "wheel=" + index;
+  }
+
+  // The hash carries the record's position in DATA.records, not its filename: two
+  // records can share a filename, and a lookup keyed on the filename would silently
+  // hand one record's row the other's detail view.
+  function currentHashIndex() {
+    var hash = window.location.hash.replace(/^#/, "");
+    var match = /(?:^|&)wheel=(\d+)/.exec(hash);
+    if (!match) return null;
+    var index = parseInt(match[1], 10);
+    return index >= 0 && index < DATA.records.length ? index : null;
+  }
+
+  function closeDetail() {
+    els.detail.hidden = true;
+    if (currentHashIndex() !== null) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }
+
+  els.detailClose.addEventListener("click", closeDetail);
+  els.detail.addEventListener("click", function (event) {
+    if (event.target === els.detail) closeDetail();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !els.detail.hidden) closeDetail();
+  });
+
+  function openDetailFromHash() {
+    var index = currentHashIndex();
+    if (index === null) {
+      els.detail.hidden = true;
+      return;
+    }
+    var record = DATA.records[index];
+    if (!record) {
+      els.detail.hidden = true;
+      return;
+    }
+    renderDetail(record);
+    els.detail.hidden = false;
+  }
+
+  window.addEventListener("hashchange", openDetailFromHash);
+
+  function renderTabs(record) {
+    els.tabs.textContent = "";
+    TAB_PANELS.forEach(function (tab) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", tab === activeTab ? "true" : "false");
+      var label = TAB_LABELS[tab];
+      if (tab === "errors") {
+        var count = (record.errors || []).length;
+        btn.appendChild(document.createTextNode(label + " "));
+        var badge = document.createElement("span");
+        badge.className = "count-badge";
+        badge.textContent = String(count);
+        btn.appendChild(badge);
+      } else {
+        btn.textContent = label;
+      }
+      btn.addEventListener("click", function () {
+        activeTab = tab;
+        renderDetail(record);
+      });
+      els.tabs.appendChild(btn);
+    });
+  }
+
+  function clearChildren(el) {
+    el.textContent = "";
+    return el;
+  }
+
+  function kv(dl, key, value) {
+    var dt = document.createElement("dt");
+    dt.textContent = key;
+    var dd = document.createElement("dd");
+    dd.textContent = value === null || value === undefined || value === "" ? "-" : String(value);
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
+
+  function renderVerdictSection(record, panel) {
+    var verdict = record.verdict || {};
+    var heading = document.createElement("h3");
+    heading.textContent = "Verdict";
+    panel.appendChild(heading);
+
+    var classes = verdict.classes || [];
+    var classesLine = document.createElement("p");
+    if (!classes.length) {
+      classesLine.textContent = "-";
+    } else {
+      classes.forEach(function (cls) {
+        var badge = document.createElement("span");
+        badge.className = "badge";
+        badge.setAttribute("data-class", cls);
+        badge.textContent = cls;
+        badge.title = DATA.class_help[cls] || NO_HELP;
+        badge.style.marginRight = "4px";
+        classesLine.appendChild(badge);
+      });
+    }
+    panel.appendChild(classesLine);
+
+    var conditions = verdict.conditions || {};
+    var conditionKeys = Object.keys(conditions).sort();
+    if (conditionKeys.length) {
+      var condHeading = document.createElement("h3");
+      condHeading.textContent = "Conditions";
+      panel.appendChild(condHeading);
+      var condGrid = document.createElement("dl");
+      condGrid.className = "kv-grid";
+      conditionKeys.forEach(function (key) { kv(condGrid, key, conditions[key]); });
+      panel.appendChild(condGrid);
+    }
+
+    var reasons = verdict.reasons || [];
+    var reasonsHeading = document.createElement("h3");
+    reasonsHeading.textContent = "Reasons (" + reasons.length + ")";
+    panel.appendChild(reasonsHeading);
+    if (!reasons.length) {
+      var noReasons = document.createElement("p");
+      noReasons.className = "note";
+      noReasons.textContent = "none";
+      panel.appendChild(noReasons);
+    } else {
+      var reasonsList = document.createElement("ul");
+      reasons.forEach(function (reason) {
+        var li = document.createElement("li");
+        li.textContent = reason;
+        reasonsList.appendChild(li);
+      });
+      panel.appendChild(reasonsList);
+    }
+  }
+
+  function renderFindingsTab(record, panel) {
+    renderVerdictSection(record, panel);
+
+    var findingsHeading = document.createElement("h3");
+    findingsHeading.textContent = "Findings";
+    panel.appendChild(findingsHeading);
+
+    var findings = record.findings || [];
+    if (!findings.length) {
+      var p = document.createElement("p");
+      p.className = "note";
+      p.textContent = "No findings for this wheel.";
+      panel.appendChild(p);
+      return;
+    }
+    var table = document.createElement("table");
+    var thead = document.createElement("thead");
+    var headRow = document.createElement("tr");
+    ["rule", "subject", "severity", "verdict", "occurrences", "locations", "truncated"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    var tbody = document.createElement("tbody");
+    findings.forEach(function (finding) {
+      var tr = document.createElement("tr");
+      var rule = DATA.rules[finding.rule_id];
+      var ruleCell = document.createElement("td");
+      ruleCell.textContent = finding.rule_id;
+      if (rule) ruleCell.title = rule.title + " \u2014 " + rule.why;
+      tr.appendChild(ruleCell);
+      appendCell(tr, finding.subject);
+      appendCell(tr, finding.severity);
+      appendCell(tr, finding.verdict);
+      appendCell(tr, finding.occurrences);
+      var locCell = document.createElement("td");
+      (finding.locations || []).forEach(function (loc) {
+        var div = document.createElement("div");
+        div.textContent = loc.path + (loc.line ? ":" + loc.line : "") + (loc.evidence ? " (" + loc.evidence + ")" : "");
+        locCell.appendChild(div);
+      });
+      tr.appendChild(locCell);
+      appendCell(tr, finding.truncated ? "yes" : "no");
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    panel.appendChild(table);
+  }
+
+  function appendCell(tr, value) {
+    var td = document.createElement("td");
+    td.textContent = value === null || value === undefined || value === "" ? "-" : String(value);
+    tr.appendChild(td);
+    return td;
+  }
+
+  function renderBinariesTab(record, panel) {
+    var binaries = record.binaries || [];
+    var minimal = ((record.tool || {}).evidence_level) === "minimal";
+    if (!binaries.length) {
+      var p = document.createElement("p");
+      p.className = "note";
+      p.textContent = "No native objects were read for this wheel.";
+      panel.appendChild(p);
+      return;
+    }
+    binaries.forEach(function (binary) {
+      var box = document.createElement("div");
+      box.className = "legend";
+      var heading = document.createElement("h3");
+      heading.textContent = binary.path + " (" + binary.format + ")";
+      box.appendChild(heading);
+
+      var dl = document.createElement("dl");
+      dl.className = "kv-grid";
+      kv(dl, "vendored_path", binary.vendored_path);
+      kv(dl, "machine", binary.machine);
+      kv(dl, "bits", binary.bits);
+      kv(dl, "endian", binary.endian);
+      kv(dl, "elf_type", binary.elf_type);
+      kv(dl, "soname", binary.soname);
+      kv(dl, "needed", (binary.needed || []).join(", "));
+      kv(dl, "rpath", (binary.rpath || []).join(", "));
+      kv(dl, "runpath", (binary.runpath || []).join(", "));
+      kv(dl, "stripped", binary.stripped);
+      var symbolCounts = binary.symbol_counts || {};
+      kv(dl, "symbol_counts.dynsym", symbolCounts.dynsym);
+      kv(dl, "symbol_counts.symtab", symbolCounts.symtab);
+      var truncated = binary.truncated || {};
+      kv(dl, "truncated.symbols", truncated.symbols);
+      kv(dl, "truncated.strings", truncated.strings);
+      if (binary.go) {
+        kv(dl, "go.go_version", binary.go.go_version);
+        kv(dl, "go.boring_crypto", binary.go.boring_crypto);
+        kv(dl, "go.markers", (binary.go.markers || []).join(", "));
+      } else {
+        kv(dl, "go", null);
+      }
+      kv(dl, "partial_analysis", binary.partial_analysis);
+      kv(dl, "partial_reasons", (binary.partial_reasons || []).join(", "));
+      box.appendChild(dl);
+
+      appendSymbolSection(box, "matched_symbols", binary.matched_symbols, minimal, truncated.symbols, function (item) {
+        return item.name + " (" + item.group + ", " + item.binding + ")";
+      });
+      appendSymbolSection(box, "matched_strings", binary.matched_strings, minimal, truncated.strings, function (item) {
+        return item.group + ": " + item.value;
+      });
+      appendSymbolSection(box, "rust_crates", binary.rust_crates, minimal, false, function (item) {
+        return item.name + (item.version ? " " + item.version : "");
+      });
+
+      panel.appendChild(box);
+    });
+  }
+
+  function appendSymbolSection(box, title, items, minimal, truncated, describe) {
+    var h = document.createElement("h3");
+    h.textContent = title;
+    box.appendChild(h);
+    if (minimal) {
+      var note = document.createElement("p");
+      note.className = "note";
+      note.textContent = "not recorded (evidence level: minimal)";
+      box.appendChild(note);
+      return;
+    }
+    if (!items || !items.length) {
+      var none = document.createElement("p");
+      none.className = "note";
+      none.textContent = "none found";
+      box.appendChild(none);
+      return;
+    }
+    if (truncated) {
+      var trunc = document.createElement("p");
+      trunc.className = "note";
+      trunc.textContent = "sample: more were found than are listed here (see truncated in the fields above)";
+      box.appendChild(trunc);
+    }
+    var ul = document.createElement("ul");
+    items.forEach(function (item) {
+      var li = document.createElement("li");
+      li.textContent = describe(item);
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
+
+  function appendEntriesSection(panel, title, items, truncated, describe) {
+    var h = document.createElement("h3");
+    h.textContent = title;
+    panel.appendChild(h);
+    if (!items || !items.length) {
+      var none = document.createElement("p");
+      none.className = "note";
+      none.textContent = "none";
+      panel.appendChild(none);
+      return;
+    }
+    if (truncated) {
+      var trunc = document.createElement("p");
+      trunc.className = "note";
+      trunc.textContent = "sample: more were found than are listed here (see the count above)";
+      panel.appendChild(trunc);
+    }
+    var ul = document.createElement("ul");
+    items.forEach(function (item) {
+      var li = document.createElement("li");
+      li.textContent = describe(item);
+      ul.appendChild(li);
+    });
+    panel.appendChild(ul);
+  }
+
+  function renderWheelTab(record, panel) {
+    var wheel = record.wheel || {};
+    var artifacts = record.artifacts || {};
+
+    var wheelHeading = document.createElement("h3");
+    wheelHeading.textContent = "Wheel metadata";
+    panel.appendChild(wheelHeading);
+    var dl = document.createElement("dl");
+    dl.className = "kv-grid";
+    ["filename", "name", "canonical_name", "version", "sha256", "size_bytes", "requires_python", "root_is_purelib"].forEach(function (key) {
+      kv(dl, key, wheel[key]);
+    });
+    kv(dl, "tags", (wheel.tags || []).join(", "));
+    kv(dl, "platform_tags", (wheel.platform_tags || []).join(", "));
+    kv(dl, "requires_dist", (wheel.requires_dist || []).join(", "));
+    if (wheel.generator) {
+      kv(dl, "generator", wheel.generator.name + " " + (wheel.generator.version || ""));
+      kv(dl, "generator.raw", wheel.generator.raw);
+    } else {
+      kv(dl, "generator", null);
+    }
+    panel.appendChild(dl);
+
+    var artifactsHeading = document.createElement("h3");
+    artifactsHeading.textContent = "Artifacts";
+    panel.appendChild(artifactsHeading);
+    var adl = document.createElement("dl");
+    adl.className = "kv-grid";
+    kv(adl, "py_files", artifacts.py_files);
+    kv(adl, "pyc_files", artifacts.pyc_files);
+    kv(adl, "py_files_unparsed", artifacts.py_files_unparsed);
+    kv(adl, "source_available", artifacts.source_available);
+    kv(adl, "record_entries", artifacts.record_entries);
+    kv(adl, "total_uncompressed_bytes", artifacts.total_uncompressed_bytes);
+    kv(adl, "extensions", (artifacts.extensions || []).length);
+    kv(adl, "binaries_truncated", artifacts.binaries_truncated);
+    kv(adl, "bundled_libs", (artifacts.bundled_libs || []).length);
+    kv(adl, "bundled_libs_truncated", artifacts.bundled_libs_truncated);
+    kv(adl, "sboms", (artifacts.sboms || []).length);
+    kv(adl, "symlinks", (artifacts.symlinks || []).length);
+    kv(adl, "symlinks_truncated", artifacts.symlinks_truncated);
+    kv(adl, "skipped", (artifacts.skipped || []).length);
+    kv(adl, "skipped_truncated", artifacts.skipped_truncated);
+    panel.appendChild(adl);
+
+    // The counts above are a summary; the entries themselves are evidence the
+    // drill-down exists to show, so each list is spelled out here rather than
+    // left to the Raw JSON tab.
+    appendEntriesSection(panel, "extensions", artifacts.extensions, artifacts.binaries_truncated, function (item) {
+      return item.path + " (" + item.format + ")";
+    });
+    appendEntriesSection(panel, "bundled_libs", artifacts.bundled_libs, artifacts.bundled_libs_truncated, function (item) {
+      return item;
+    });
+    appendEntriesSection(panel, "sboms", artifacts.sboms, false, function (item) {
+      return item;
+    });
+    appendEntriesSection(panel, "symlinks", artifacts.symlinks, artifacts.symlinks_truncated, function (item) {
+      return item.path + " -> " + item.target;
+    });
+    appendEntriesSection(panel, "skipped", artifacts.skipped, artifacts.skipped_truncated, function (item) {
+      return item.path + ": " + item.reason;
+    });
+  }
+
+  function renderErrorsTab(record, panel) {
+    var errors = record.errors || [];
+    if (!errors.length) {
+      var p = document.createElement("p");
+      p.className = "note";
+      p.textContent = "No errors recorded for this wheel.";
+      panel.appendChild(p);
+      return;
+    }
+    var notice = document.createElement("p");
+    notice.textContent = "part of this wheel was not examined";
+    panel.appendChild(notice);
+    if (record.errors_truncated) {
+      var trunc = document.createElement("p");
+      trunc.className = "note";
+      trunc.textContent = "errors_truncated: true (more errors occurred than are listed)";
+      panel.appendChild(trunc);
+    }
+    var table = document.createElement("table");
+    var thead = document.createElement("thead");
+    var headRow = document.createElement("tr");
+    ["stage", "kind", "path", "message"].forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    var tbody = document.createElement("tbody");
+    errors.forEach(function (error) {
+      var tr = document.createElement("tr");
+      appendCell(tr, error.stage);
+      appendCell(tr, error.kind);
+      appendCell(tr, error.path);
+      appendCell(tr, error.message);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    panel.appendChild(table);
+  }
+
+  function renderRawTab(record, panel) {
+    var pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(record, null, 2);
+    panel.appendChild(pre);
+  }
+
+  function renderDetail(record) {
+    var wheel = record.wheel || {};
+    els.detailTitle.textContent = wheel.filename || "?";
+    renderTabs(record);
+
+    TAB_PANELS.forEach(function (tab) {
+      var panel = document.getElementById("tab-" + tab);
+      clearChildren(panel);
+      panel.hidden = tab !== activeTab;
+    });
+
+    var activePanel = document.getElementById("tab-" + activeTab);
+    if (activeTab === "findings") renderFindingsTab(record, activePanel);
+    else if (activeTab === "binaries") renderBinariesTab(record, activePanel);
+    else if (activeTab === "wheel") renderWheelTab(record, activePanel);
+    else if (activeTab === "errors") renderErrorsTab(record, activePanel);
+    else if (activeTab === "raw") renderRawTab(record, activePanel);
+  }
+
+  // --- boot ------------------------------------------------------------------
+
+  renderLegend();
+  renderHeader();
+  renderClassFilter();
+  renderLinkageOptions();
+  renderTable();
+  openDetailFromHash();
+})();
+</script>
+</body>
+</html>
