@@ -30,7 +30,11 @@ CLASS_HELP: dict[str, str] = {
     "NO_CRYPTO_DETECTED": "Nothing found. Absence of evidence, not evidence of absence.",
 }
 
-# A short form of SCHEMA.md's `conditions.openssl_linkage` value table.
+# A short form of SCHEMA.md's `conditions.openssl_linkage` value table: several of its
+# rows run to a paragraph, too long for a tooltip. A test holds this to the same set of
+# values and requires each entry to name an input (today, the SBOM) exactly when its
+# SCHEMA.md row does, so a short form cannot silently drop where a value's evidence came
+# from.
 LINKAGE_HELP: dict[str, str] = {
     "system": (
         "Resolves libcrypto/libssl from the host, so it inherits the host's FIPS "
@@ -45,10 +49,14 @@ LINKAGE_HELP: dict[str, str] = {
         "consequence as bundled, harder to spot."
     ),
     "mixed": "Both postures found, across different objects or within one object.",
-    "none": "No OpenSSL evidence in any binary object, from objects read far enough to say so.",
+    "none": (
+        "No OpenSSL evidence in any binary object, and no shipped SBOM entry naming "
+        "the library or a crate that binds it, from objects read far enough to say so."
+    ),
     "unknown": (
-        "An object uses OpenSSL without naming where it comes from, or the evidence "
-        "needed to tell is incomplete."
+        "An object uses OpenSSL without naming where it comes from, or the wheel's "
+        "own SBOM names the library or a crate that binds it and no object answers, "
+        "or the evidence needed to tell is incomplete."
     ),
 }
 
