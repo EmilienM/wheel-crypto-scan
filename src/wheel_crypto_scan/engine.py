@@ -23,6 +23,7 @@ from .linkage import (
     LINKAGE_SYSTEM,
     member_stem_counts,
     needed_posture,
+    object_postures,
     wheel_incompletely_read,
 )
 from .ruleset import CryptoLibrary, Limits, Rule, Ruleset
@@ -481,6 +482,17 @@ def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
     The table form exists so that every crypto library with a verdict is reachable.
     Without it a resolved linkage could sit in `verdict.conditions` while the verdict
     class said nothing was found, which is the one thing the headline field must not do.
+
+    `object_values` and `exclude_object_values` are alternatives, mirroring
+    `reasons`/`exclude_reasons` on `partial_binary`: once the aggregate `value` matches,
+    each reads `linkage.object_postures` -- the per-object answers `value` was
+    aggregated from -- and either keeps only the objects whose own posture is one of
+    `object_values`, or drops the whole match when any object's own posture is one of
+    `exclude_object_values`. `object_values` yields one `Hit` per matching object, its
+    `location` naming that object, so the finding's `locations` point at exactly the
+    objects whose own posture justified it rather than at the wheel as a whole.
+    Postures are computed only when one of these keys is present, so every other
+    `linkage` rule pays nothing for them.
     """
     values = frozenset(match.get("values", ())) or frozenset({match["value"]})
     inherit = "table" in match
@@ -490,20 +502,54 @@ def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
         excluded = frozenset(match.get("exclude_libraries", ()))
         names = [name for name in sorted(linkage) if name not in excluded]
 
+    object_values = match.get("object_values")
+    exclude_object_values = match.get("exclude_object_values")
+
     for name in names:
         value = linkage.get(name)
         if value not in values:
             continue
         library = ruleset.libraries.get(name)
+        severity = library.severity if inherit and library else None
+        verdict = library.verdict if inherit and library else None
+        needs_human_review = library.needs_human_review if inherit and library else None
+
+        if object_values is not None:
+            wanted = frozenset(object_values)
+            postures = object_postures(ruleset, evidence, name)
+            for binary, posture in zip(evidence.binaries, postures, strict=True):
+                if posture not in wanted:
+                    continue
+                yield Hit(
+                    subject=name,
+                    subject_kind="library",
+                    location=Location(
+                        path=binary.path,
+                        evidence=(
+                            f"{name} read {posture} on this object; the wheel resolved to {value}"
+                        ),
+                    ),
+                    severity=severity,
+                    verdict=verdict,
+                    needs_human_review=needs_human_review,
+                )
+            continue
+
+        if exclude_object_values is not None:
+            unwanted = frozenset(exclude_object_values)
+            postures = object_postures(ruleset, evidence, name)
+            if any(posture in unwanted for posture in postures):
+                continue
+
         yield Hit(
             subject=name,
             subject_kind="library",
             location=Location(
                 path=evidence.filename, evidence=f"{name} linkage resolved to {value}"
             ),
-            severity=library.severity if inherit and library else None,
-            verdict=library.verdict if inherit and library else None,
-            needs_human_review=library.needs_human_review if inherit and library else None,
+            severity=severity,
+            verdict=verdict,
+            needs_human_review=needs_human_review,
         )
 
 

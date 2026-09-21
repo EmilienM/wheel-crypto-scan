@@ -237,6 +237,38 @@ def test_a_system_dependency_beside_a_compiled_in_copy_stays_mixed(context, tmp_
     assert any(s["group"] == "openssl_build_info" for s in binary_record["matched_strings"])
 
 
+def test_an_import_only_object_beside_a_system_link_is_opaque_not_system_only(
+    context, tmp_path: Path
+) -> None:
+    """A second object imports OpenSSL symbols without declaring a dependency on it --
+    its own posture is `unknown`, so `DERIVED_SYSTEM_OPENSSL_ONLY`'s claim that every
+    piece of OpenSSL evidence points at the system library would be false. The
+    complementary rule carries the wheel's class instead.
+    """
+    wheel = build_wheel(
+        tmp_path / f"demo-1.0-{MANYLINUX}.whl",
+        name="demo",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "demo/__init__.py": b"",
+            "demo/_ext.so": extension(needed=("libc.so.6",), dynsyms=(DynSym(EVP, defined=False),)),
+            "demo/_ssl.so": extension(needed=("libssl.so.3", "libc.so.6")),
+        },
+    )
+    record = scan(context, wheel)
+    rule_ids = set(record["verdict"]["rule_ids"])
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert record["verdict"]["class"] == "OPAQUE"
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in rule_ids
+    assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" in rule_ids
+    assert record["verdict"]["needs_human_review"] is True
+    finding = next(
+        f for f in record["findings"] if f["rule_id"] == "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM"
+    )
+    assert finding["locations"][0]["path"] == "demo/_ext.so"
+
+
 # --------------------------------------------------------------------------
 # delocate: bundled without a rename (#57)
 #

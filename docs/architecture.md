@@ -98,7 +98,9 @@ split, the version banners, the build strings that tell a compiled-in banner fro
 header's, and the Rust crates that bind the library — and returns
 `system`, `bundled`, `static`, `unknown` or `mixed`. `_aggregate` combines the objects'
 answers into the wheel's. Two or more definite postures disagreeing, whether within one
-object or across two, is `mixed`. The whole subsystem's reasoning is in
+object or across two, is `mixed`. `object_postures` exposes the per-object answers
+`_aggregate` combines, so a `linkage` rule can see an object's `unknown` that the
+wheel's answer drops. The whole subsystem's reasoning is in
 [OpenSSL linkage](decisions/linkage.md).
 
 ### 5. The record

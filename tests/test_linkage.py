@@ -41,6 +41,7 @@ from wheel_crypto_scan.linkage import (
     LINKAGE_STATIC,
     LINKAGE_SYSTEM,
     LINKAGE_UNKNOWN,
+    object_postures,
     resolve_linkage,
 )
 from wheel_crypto_scan.ruleset import LinkagePolicy
@@ -787,14 +788,28 @@ def test_an_openssl_crate_never_overrides_the_objects_own_evidence(
 def test_an_openssl_crate_alone_does_not_outvote_a_sibling_that_answers(ruleset) -> None:
     """A crate's `unknown` aggregates like any other: never over a definite posture.
 
-    An accepted residual, in the favourable direction, rather than a virtue: the
-    crate-only object has no `needed` entry and no import, so it is more likely a static
-    copy than a system one, and the wheel still reads `system` beside it.
+    The field keeps the sibling's posture: the crate-only object has no `needed`
+    entry and no import, so it is more likely a static copy than a system one, and
+    `resolve_linkage` still reads `system` for the wheel. The rules withhold
+    `DERIVED_SYSTEM_OPENSSL_ONLY` beside the crate-only object instead (see
+    `tests/test_engine.py::test_an_object_that_read_unknown_withholds_the_system_only_rule`).
     """
     evidence = wheel(
         rust_object(RustCrate("openssl-sys", "0.9.117")),
         binary("pkg/_ssl.so", needed=("libc.so.6", "libssl.so.3")),
     )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
+def test_object_postures_are_what_the_field_is_aggregated_from(ruleset) -> None:
+    """`object_postures` is the per-object tuple `resolve_linkage` reduces through
+    `_aggregate`, in `evidence.binaries` order -- not reversed, not deduplicated.
+    """
+    evidence = wheel(
+        rust_object(RustCrate("openssl-sys", "0.9.117")),
+        binary("pkg/_ssl.so", needed=("libc.so.6", "libssl.so.3")),
+    )
+    assert object_postures(ruleset, evidence, "openssl") == (LINKAGE_UNKNOWN, LINKAGE_SYSTEM)
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
 
 

@@ -338,6 +338,14 @@ def _validate_match_references(
         else:
             for value in values:
                 _check(value, LINKAGE_VALUES, "linkage value", where)
+        if "object_values" in match and "exclude_object_values" in match:
+            raise RulesetError(f"{where}: object_values and exclude_object_values are alternatives")
+        for key in ("object_values", "exclude_object_values"):
+            if key not in match:
+                continue
+            _check_string_sequence(match[key], key, where, allow_empty=False)
+            for value in match[key]:
+                _check(value, LINKAGE_VALUES, "linkage value", where)
     elif kind == "py_call":
         used_for_security = match.get("usedforsecurity")
         if used_for_security is not None:

@@ -316,9 +316,10 @@ some, when `unknown` already means what this case needs.
 **What it costs.**
 
 - The headline stays `CONDITIONAL`; `OPAQUE` and `BIN_OPENSSL_LINKAGE_UNKNOWN` join it.
-- A crate-only object beside a system-linked sibling still lets the wheel read `system`
-  with `DERIVED_SYSTEM_OPENSSL_ONLY`. A residual in the favourable direction, and not a
-  new one: `none` beside `system` aggregates the same way.
+- A crate-only object beside a system-linked sibling still lets the wheel read `system`,
+  but the rules no longer read that alone: `DERIVED_SYSTEM_OPENSSL_ONLY` is withheld
+  beside it, and a complementary rule names the object instead (see "An object that read
+  `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`" below).
 - An SBOM component naming `openssl-sys` does not move the field. The one wheel-level
   signal linkage has is library-agnostic on purpose, and no SBOM-only wheel has been
   measured. It matters most where [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137) bites.
@@ -371,3 +372,34 @@ banner it finds counting as a copy, unchanged. An object that is not read in ful
 any cause, keeps `mixed`.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy)
+
+---
+
+## An object that read `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`
+
+**Fixed.**
+
+`DERIVED_SYSTEM_OPENSSL_ONLY` fired whenever `openssl_linkage` resolved to `system`, but
+its `why` claims every piece of OpenSSL evidence in the wheel points there -- false when
+a sibling object reads `unknown` (a listed crate with nothing else, imported symbols with
+no declared dependency, or an unconfirmed vendor-shaped `needed` entry), since
+`_aggregate` never lets that `unknown` outvote the definite posture. In the import and
+uncertain shapes, the derived rule was the *only* verdict-bearing finding on the wheel,
+so withholding it alone would read `NO_CRYPTO_DETECTED` on a wheel that plainly uses
+OpenSSL.
+
+**The fix.** `linkage.object_postures` exposes the per-object tuple `_aggregate` reduces,
+shared with the engine. `DERIVED_SYSTEM_OPENSSL_ONLY` takes `exclude_object_values =
+["unknown"]`; a complementary rule, `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM`, takes
+`object_values = ["unknown"]` on the same match and carries `OPAQUE`, naming the object.
+The two are complementary by construction: exactly one fires whenever `openssl_linkage`
+is `system`. `openssl_linkage` itself never moves, and an unreadable (opaque) sibling
+still leaves `DERIVED_SYSTEM_OPENSSL_ONLY` firing: `object_postures` never reports
+`unknown` for an object that was not read at all.
+
+**What it costs.** The import-only and uncertain shapes beside a system sibling move
+headline `CONDITIONAL` to `OPAQUE`. The crate shape keeps its `CONDITIONAL` headline and
+gains `OPAQUE`. A known residual: an SBOM component naming a crypto crate does not make
+an object's own posture read `unknown`, so it changes neither rule's firing.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#an-object-that-read-unknown-withholds-derived_system_openssl_only-the-field-stays-system)
