@@ -353,6 +353,9 @@ def test_a_rust_crate_carries_its_own_verdict(ruleset) -> None:
 def test_the_fips_build_of_aws_lc_supersedes_the_aws_lc_rs_finding_on_the_same_object(
     ruleset,
 ) -> None:
+    """aws-lc-rs and aws-lc-fips-sys each own a dedicated rule, so the relation is a
+    rule-level `BIN_AWS_LC_RS_CRATE suppressed_by BIN_AWS_LC_FIPS`, not an entry-level
+    `suppressed_by` naming the crate."""
     evidence = wheel(
         binaries=(
             binary(
@@ -364,10 +367,12 @@ def test_the_fips_build_of_aws_lc_supersedes_the_aws_lc_rs_finding_on_the_same_o
             ),
         )
     )
-    findings = [f for f in run(ruleset, evidence) if f.rule_id == "BIN_RUST_CRYPTO_CRATE"]
-    subjects = {finding.subject for finding in findings}
-    assert subjects == {"aws-lc-fips-sys"}
-    assert one(findings, "BIN_RUST_CRYPTO_CRATE").verdict == "CONDITIONAL"
+    findings = run(ruleset, evidence)
+    rule_ids = {finding.rule_id for finding in findings}
+    assert "BIN_AWS_LC_RS_CRATE" not in rule_ids
+    fips = one(findings, "BIN_AWS_LC_FIPS")
+    assert fips.subject == "aws-lc-fips-sys"
+    assert fips.verdict == "CONDITIONAL"
 
 
 def test_aws_lc_fips_sys_in_another_object_does_not_supersede_aws_lc_rs(ruleset) -> None:
@@ -377,9 +382,10 @@ def test_aws_lc_fips_sys_in_another_object_does_not_supersede_aws_lc_rs(ruleset)
             binary("demo/_fips.so", rust_crates=(RustCrate("aws-lc-fips-sys", "0.13.0"),)),
         )
     )
-    findings = [f for f in run(ruleset, evidence) if f.rule_id == "BIN_RUST_CRYPTO_CRATE"]
-    subjects = {finding.subject for finding in findings}
-    assert subjects == {"aws-lc-rs", "aws-lc-fips-sys"}
+    findings = run(ruleset, evidence)
+    owners = {(finding.rule_id, finding.subject) for finding in findings}
+    assert ("BIN_AWS_LC_RS_CRATE", "aws-lc-rs") in owners
+    assert ("BIN_AWS_LC_FIPS", "aws-lc-fips-sys") in owners
 
 
 def test_aws_lc_sys_is_not_superseded_by_the_fips_build(ruleset) -> None:
@@ -399,26 +405,41 @@ def test_aws_lc_sys_is_not_superseded_by_the_fips_build(ruleset) -> None:
     assert subjects["aws-lc-sys"] == "NON_APPROVED_CRYPTO"
 
 
-def test_aws_lc_rs_is_superseded_even_when_the_fips_crate_is_routed_to_its_own_rule() -> None:
+def test_an_entry_level_suppressed_by_is_superseded_even_when_routed_to_its_own_rule() -> None:
     """The resolved suppressor key names the finding the *named* crate's own routing
-    produces, not whichever rule the suppressed entry belongs to. Routing
-    aws-lc-fips-sys to a rule of its own must not silently break the aws-lc-rs
-    relation -- which is exactly what a loader that keyed on the suppressed entry's
-    own owner, instead of the named crate's, would do."""
+    produces, not whichever rule the suppressed entry belongs to. Routing a crate to
+    a rule of its own must not silently break an entry-level `suppressed_by` naming
+    it -- which is exactly what a loader that keyed on the suppressed entry's own
+    owner, instead of the named crate's, would do. Built on a synthetic crate pair
+    rather than the shipped aws-lc-rs/aws-lc-fips-sys entries, which no longer carry
+    an entry-level relation of their own now that each has a dedicated rule."""
     data = shipped_data()
     data["rule"].append(
-        rule_entry("BIN_AWS_LC_FIPS", {"kind": "rust_crate", "table": "rust_crate"})
+        rule_entry("TEST_ROUTED_CRATE", {"kind": "rust_crate", "table": "rust_crate"})
     )
-    for entry in data["rust_crate"]:
-        if entry["name"] == "aws-lc-fips-sys":
-            entry["rule"] = "BIN_AWS_LC_FIPS"
+    data["rust_crate"].append(
+        {
+            "name": "test-fips-crate",
+            "verdict": "CONDITIONAL",
+            "rule": "TEST_ROUTED_CRATE",
+            "why": "w",
+        }
+    )
+    data["rust_crate"].append(
+        {
+            "name": "test-stock-crate",
+            "verdict": "NON_APPROVED_CRYPTO",
+            "why": "w",
+            "suppressed_by": ["test-fips-crate"],
+        }
+    )
     evidence = wheel(
         binaries=(
             binary(
                 "demo/_rs.so",
                 rust_crates=(
-                    RustCrate("aws-lc-rs", "1.13.0"),
-                    RustCrate("aws-lc-fips-sys", "0.13.0"),
+                    RustCrate("test-stock-crate", "1.0.0"),
+                    RustCrate("test-fips-crate", "1.0.0"),
                 ),
             ),
         )
@@ -426,9 +447,9 @@ def test_aws_lc_rs_is_superseded_even_when_the_fips_crate_is_routed_to_its_own_r
     owners = {
         (finding.rule_id, finding.subject)
         for finding in run(parse_ruleset(data), evidence)
-        if finding.subject in {"aws-lc-rs", "aws-lc-fips-sys"}
+        if finding.subject in {"test-stock-crate", "test-fips-crate"}
     }
-    assert owners == {("BIN_AWS_LC_FIPS", "aws-lc-fips-sys")}
+    assert owners == {("TEST_ROUTED_CRATE", "test-fips-crate")}
 
 
 def test_a_fips_go_binary_does_not_hide_a_stock_one_beside_it(ruleset) -> None:
@@ -630,6 +651,24 @@ def test_stock_go_crypto_is_reported_when_boringcrypto_is_absent(ruleset) -> Non
         )
     )
     assert "BIN_GO_STOCK_CRYPTO" in ids(run(ruleset, evidence))
+
+
+def test_the_aws_lc_fips_version_string_suppresses_the_stock_aws_lc_finding(ruleset) -> None:
+    """Both the aws_lc and aws_lc_fips string groups really match this run."""
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_ext.pyd",
+                matched_strings=(
+                    StringMatch("aws_lc", "AWS-LC FIPS 4.2.0"),
+                    StringMatch("aws_lc_fips", "AWS-LC FIPS 4.2.0"),
+                ),
+            ),
+        )
+    )
+    findings = ids(run(ruleset, evidence))
+    assert "BIN_AWS_LC_FIPS" in findings
+    assert "BIN_AWS_LC" not in findings
 
 
 # --- linkage-driven rules ---------------------------------------------------

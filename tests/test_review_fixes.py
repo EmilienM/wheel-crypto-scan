@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from helpers.binfmt import DynSym, ElfBuilder
+from helpers.binfmt.elf import STT_FUNC
 from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan.cli import main
@@ -556,3 +557,184 @@ def test_a_stock_go_build_is_unchanged(context, tmp_path: Path) -> None:
     assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
     assert "BIN_GO_STOCK_CRYPTO" in record["verdict"]["rule_ids"]
     assert "BIN_GO_FIPS140" not in record["verdict"]["rule_ids"]
+
+
+# --- an AWS-LC FIPS build is a condition, not a non-approved stack ---------------
+#
+# `STB_LOCAL` is not exported by `helpers.binfmt.elf`: local bindings are rare enough
+# in that module's own tests that it only exports `STB_GLOBAL`.
+_STB_LOCAL = 0
+_LOCAL_FUNC = (_STB_LOCAL << 4) | STT_FUNC
+
+# The measured shapes: a FIPS object carries the aws-lc-rs cargo path (both builds do),
+# the FIPS symbol prefix as a local .symtab definition, and the version string plus the
+# "failure caused by" message in .text, exactly where the real build puts them (measured
+# offset 0xd0888 in .text on aws-lc-fips-sys 0.14.2). The real stock build drops the
+# message entirely -- gc-sections removes it, since nothing in the non-FIPS build path
+# references it. The stock fixture below puts the message in .rodata anyway, on purpose:
+# it is not what a real stock build carries, but it is the worst case the ELF strings
+# pass can read -- a stock build is not delocated, so .rodata is where the message would
+# land if a future stock build kept it. Without a version digit after `FIPS `, that
+# placement would make a bare `AWS-LC FIPS` substring false-positive on a stock object
+# read end to end through this fixture, not only in the direct group test in
+# `test_binfmt_strings.py`.
+_AWS_LC_RODATA = (
+    b"\x00/aws-lc/crypto/mem.c\x00"
+    b"/root/.cargo/registry/src/index.crates.io-x/aws-lc-rs-1.18.1/src/lib.rs\x00"
+)
+_AWS_LC_FIPS_TEXT = b"\x00AWS-LC FIPS 4.2.0\x00AWS-LC FIPS failure caused by:\n\x00"
+_AWS_LC_STOCK_RODATA = _AWS_LC_RODATA + b"AWS-LC FIPS failure caused by:\n\x00"
+
+
+def _aws_lc_binary(*, symtab_name: str, rodata: bytes, text: bytes = b"") -> bytes:
+    return ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym(symtab_name, defined=True, info=_LOCAL_FUNC),),
+        rodata=rodata,
+        text=text,
+    ).build()
+
+
+def test_the_aws_lc_fips_sys_crate_alone_reads_as_a_condition(context, tmp_path: Path) -> None:
+    """An object whose only evidence is the aws-lc-fips-sys cargo path."""
+    wheel = build_wheel(
+        tmp_path / f"awslcrepro-1.0-{MANYLINUX}.whl",
+        name="awslcrepro",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcrepro/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                rodata=(
+                    b"\x00/root/.cargo/registry/src/index.crates.io-1/"
+                    b"aws-lc-fips-sys-0.13.7/src/lib.rs\x00"
+                ),
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_AWS_LC_FIPS" in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC" not in record["verdict"]["rule_ids"]
+
+
+def test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix(context, tmp_path: Path) -> None:
+    """The measured FIPS object. Its version string sits in `.text`, which the ELF
+    strings pass does not read, so this test relies on the symbol prefix alone, not on
+    the version string.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslcfips-1.0-{MANYLINUX}.whl",
+        name="awslcfips",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcfips/_ext.abi3.so": _aws_lc_binary(
+                symtab_name="aws_lc_fips_0_14_2_SHA256_Init",
+                rodata=_AWS_LC_RODATA,
+                text=_AWS_LC_FIPS_TEXT,
+            ),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_AWS_LC_FIPS" in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC" not in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC_RS_CRATE" not in record["verdict"]["rule_ids"]
+
+
+def test_a_stock_aws_lc_build_is_unchanged(context, tmp_path: Path) -> None:
+    """The other half of the pair: the stock object carries the same aws-lc-rs cargo
+    path, but never the FIPS symbol prefix.
+
+    A real stock build drops the "failure caused by" message entirely. This fixture puts
+    it in `.rodata` on purpose anyway -- the worst case the ELF strings pass can read, and
+    the one place a stock build could plausibly still carry it -- so that widening the
+    string group to a bare "AWS-LC FIPS" (dropping the digit) breaks this test directly:
+    `.rodata` is part of the strings pass, unlike `.text`. `test_aws_lc_fips_group_needs_
+    a_version_after_fips` in `test_binfmt_strings.py` pins the same mutation at the group
+    level.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslcstock-1.0-{MANYLINUX}.whl",
+        name="awslcstock",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcstock/_ext.abi3.so": _aws_lc_binary(
+                symtab_name="aws_lc_0_45_0_SHA256_Init",
+                rodata=_AWS_LC_STOCK_RODATA,
+            ),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "BIN_AWS_LC" in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC_RS_CRATE" in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC_FIPS" not in record["verdict"]["rule_ids"]
+
+
+def test_a_stock_aws_lc_sys_crate_beside_the_fips_one_is_still_reported(
+    context, tmp_path: Path
+) -> None:
+    """A wheel carrying both crates' cargo paths on the same object still reports the
+    stock one: aws-lc-sys names the non-FIPS variant and is never suppressed.
+    """
+    rodata = (
+        b"\x00/root/.cargo/registry/src/index.crates.io-1/aws-lc-fips-sys-0.14.2/src/lib.rs\x00"
+        b"/root/.cargo/registry/src/index.crates.io-1/aws-lc-sys-0.45.0/src/lib.rs\x00"
+    )
+    wheel = build_wheel(
+        tmp_path / f"awslcboth-1.0-{MANYLINUX}.whl",
+        name="awslcboth",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcboth/_ext.abi3.so": ElfBuilder(needed=("libc.so.6",), rodata=rodata).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert "NON_APPROVED_CRYPTO" in record["verdict"]["classes"]
+    assert "BIN_AWS_LC_FIPS" in record["verdict"]["rule_ids"]
+    crate_finding = next(
+        finding for finding in record["findings"] if finding["rule_id"] == "BIN_RUST_CRYPTO_CRATE"
+    )
+    assert crate_finding["subject"] == "aws-lc-sys"
+
+
+def test_a_fips_object_does_not_suppress_a_stock_aws_lc_object_elsewhere_in_the_wheel(
+    context, tmp_path: Path
+) -> None:
+    """Suppression is per object, not per wheel: a wheel with one FIPS object and one
+    separate stock AWS-LC object keeps `BIN_AWS_LC` and `BIN_AWS_LC_RS_CRATE` for the
+    stock object, since a suppressing hit only drops a finding on the same object
+    (`Location.path`). `NON_APPROVED_CRYPTO` stays in `classes` alongside `CONDITIONAL`
+    rather than leaving it entirely.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslctwo-1.0-{MANYLINUX}.whl",
+        name="awslctwo",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "two/_fips.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                rodata=(
+                    b"\x00/root/.cargo/registry/src/index.crates.io-1/"
+                    b"aws-lc-fips-sys-0.13.7/src/lib.rs\x00"
+                ),
+            ).build(),
+            "two/_stock.abi3.so": _aws_lc_binary(
+                symtab_name="aws_lc_0_45_0_SHA256_Init",
+                rodata=_AWS_LC_RODATA,
+            ),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert set(record["verdict"]["classes"]) == {"CONDITIONAL", "NON_APPROVED_CRYPTO"}
+    rule_ids = record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC_FIPS" in rule_ids
+    assert "BIN_AWS_LC" in rule_ids
+    assert "BIN_AWS_LC_RS_CRATE" in rule_ids

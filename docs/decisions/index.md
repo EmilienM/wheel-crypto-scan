@@ -64,6 +64,7 @@ Three habits in that file are worth knowing before you read it:
 | [The sweep that followed, and the two kinds of list it separated](policy.md#the-sweep-that-followed-and-the-two-kinds-of-list-it-separated) | Accepted |
 | [A Go FIPS build is told from a stock one by its build settings](policy.md#a-go-fips-build-is-told-from-a-stock-one-by-its-build-settings) | Accepted |
 | [A static OpenSSL's legacy primitives lead the headline](policy.md#a-static-openssls-legacy-primitives-lead-the-headline) | Accepted, knowing what it costs |
+| [An AWS-LC FIPS build is told from a stock one by its symbol prefix](policy.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix) | Accepted |
 
 ## [Caps, budgets and record size](limits.md)
 

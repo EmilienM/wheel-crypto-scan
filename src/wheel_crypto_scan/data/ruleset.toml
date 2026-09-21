@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "27"
+ruleset_version = "28"
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +524,12 @@ exact = ["AWSLC_version_string"]
 why = "AWS-LC. A separate FIPS-validated variant exists (aws-lc-fips), so the presence of AWS-LC alone does not tell you which one this is."
 
 [[symbol_group]]
+name = "aws_lc_fips"
+prefixes = ["aws_lc_fips_"]
+exact = []
+why = "The prefix aws-lc-fips-sys gives every AWS-LC symbol it compiles in, aws_lc_fips_<major>_<minor>_<patch>_, where the stock aws-lc-sys build uses aws_lc_<major>_<minor>_<patch>_. Measured on aws-lc-rs 1.18.1: the FIPS build (aws-lc-fips-sys 0.14.2) carries 2118 such names as local definitions in .symtab and the stock build (aws-lc-sys 0.45.0) carries none. Only the Rust crate applies this prefix; a C build of AWS-LC FIPS is unprefixed, and its FIPS-only symbols (BORINGSSL_bcm_text_hash and the like) are shared with BoringSSL's FIPS module, so they are not listed. A stripped object loses these names."
+
+[[symbol_group]]
 name = "bcrypt_blowfish"
 prefixes = ["BF_", "blowfish_", "bcrypt_", "_crypt_blowfish"]
 exact = ["crypt_blowfish_rn", "bcrypt_hashpass", "bcrypt_checkpass"]
@@ -586,6 +592,11 @@ why = "BoringSSL identifies itself in read-only data."
 name = "aws_lc"
 substrings = ["AWS-LC", "aws-lc"]
 why = "AWS-LC writes its own name into read-only data, which is how we spot it when its symbols are hidden by a version script."
+
+[[string_group]]
+name = "aws_lc_fips"
+substrings = ["AWS-LC FIPS 0.", "AWS-LC FIPS 1.", "AWS-LC FIPS 2.", "AWS-LC FIPS 3.", "AWS-LC FIPS 4.", "AWS-LC FIPS 5.", "AWS-LC FIPS 6.", "AWS-LC FIPS 7.", "AWS-LC FIPS 8.", "AWS-LC FIPS 9."]
+why = "AWS-LC's version string, which a FIPS build spells AWS-LC FIPS <version> and a stock build spells AWS-LC <version>. A digit alone is not enough: the message AWS-LC FIPS failure caused by: is compiled from both builds' source, and a digit with nothing else also matches prose such as AWS-LC FIPS 140-3 validated or AWS-LC FIPS 3's legacy provider failed to load, neither of which names a build. The measured stock build's linker drops the failure message entirely, but a stock build that kept it would carry it outside .text, where this group would see it, so the digit-and-dot requirement still has to hold. Mirrors openssl_banner: a dot after the digit is required, and every leading digit is listed rather than the majors that shipped, so the list going stale is silent the same way. No AWS-LC FIPS release has a two-digit major yet -- the measured build is 4.2.0 -- so the dot costs nothing today; if one ships, this group needs a further, undotted entry for it. On ELF this reaches nothing: the FIPS build moves the module's constants into .text so its integrity check covers them, and the ELF strings pass reads only non-executable sections. Measured on aws-lc-fips-sys 0.14.2, AWS-LC FIPS 4.2.0 appears once, in .text. Readers that scan the whole object, as Mach-O, PE and the fallback do, can see it; on ELF the aws_lc_fips symbol group carries the answer."
 
 [[string_group]]
 name = "libsodium"
@@ -677,14 +688,15 @@ why = "Statically links AWS-LC into the extension. The separately validated buil
 
 [[rust_crate]]
 name = "aws-lc-rs"
+rule = "BIN_AWS_LC_RS_CRATE"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
-suppressed_by = ["aws-lc-fips-sys"]
-why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so on an object that also carries aws-lc-fips-sys this finding is dropped and the FIPS build's CONDITIONAL finding stands. Without that crate in the same object the object does not say which build it compiled against, so confirm before concluding. aws-lc-fips-sys can contribute no cargo path and leave this finding in place, which over-flags. suppressed_by is read by the rust_crate matcher only: an SBOM naming both crates over sbom_component still reports this finding beside aws-lc-fips-sys's, which over-flags the same way and is accepted for the same reason (see DECISIONS.md)."
+why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so this finding does not by itself say which build it compiled against. Its own rule, BIN_AWS_LC_FIPS, names BIN_AWS_LC_RS_CRATE in its rule-level suppressed_by, so an object that also carries aws-lc-fips-sys drops this finding and the FIPS build's CONDITIONAL finding stands; no entry-level relation is needed here. An SBOM naming both crates over sbom_component still reports this finding beside aws-lc-fips-sys's, which over-flags and is accepted for the same reason (see DECISIONS.md)."
 
 [[rust_crate]]
 name = "aws-lc-fips-sys"
+rule = "BIN_AWS_LC_FIPS"
 verdict = "CONDITIONAL"
 severity = "medium"
 needs_human_review = true
@@ -1558,10 +1570,48 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "AWS-LC present"
-why = "AWS-LC statically linked into the wheel. A FIPS variant of AWS-LC exists and is a different build, so confirm which one before concluding."
+why = "AWS-LC statically linked into the wheel. A FIPS variant of AWS-LC exists and is a different build, so confirm which one before concluding. Suppressed on an object where the FIPS build is also identified, because the aws_lc substrings match both builds, and lowercase aws-lc also matches the cargo path of either crate; a stock AWS-LC object elsewhere in the same wheel keeps this finding."
+suppressed_by = ["BIN_AWS_LC_FIPS"]
 [rule.match]
 kind = "binary_string"
 group = "aws_lc"
+
+[[rule]]
+id = "BIN_AWS_LC_FIPS"
+layer = "binary"
+category = "bundled-crypto"
+severity = "medium"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "AWS-LC FIPS build present"
+why = "The FIPS build of AWS-LC, identified by its version string, by the symbol prefix aws-lc-fips-sys applies, or by that crate's cargo path. A condition rather than an answer: it is still a static copy bundled into the wheel rather than the system provider, and which validated version was compiled in is not something the wheel states. A stripped ELF object carries none of the three outside .text and reads as stock AWS-LC. Suppresses BIN_AWS_LC and BIN_AWS_LC_RS_CRATE on the same object only, so a wheel shipping one FIPS object and one stock one keeps the stock object's own finding; the per-object evidence stays in matched_symbols and matched_strings."
+[[rule.match]]
+kind = "binary_string"
+group = "aws_lc_fips"
+
+[[rule.match]]
+kind = "dynamic_symbol"
+group = "aws_lc_fips"
+binding = "any"
+
+[[rule.match]]
+kind = "rust_crate"
+table = "rust_crate"
+
+[[rule]]
+id = "BIN_AWS_LC_RS_CRATE"
+layer = "binary"
+category = "rust-crate"
+severity = "high"
+confidence = "medium"
+needs_human_review = true
+title = "aws-lc-rs compiled in"
+why = "Inferred from the aws-lc-rs cargo path, which both AWS-LC builds carry. The crate's own entry supplies the class. It has its own rule, rather than the default crate rule, so that it can be suppressed when the FIPS build is identified: measured on aws-lc-rs 1.18.1, a FIPS build carries this path and no aws-lc-fips-sys path, so without the suppression a validated build reads as non-approved through this crate alone."
+suppressed_by = ["BIN_AWS_LC_FIPS"]
+[rule.match]
+kind = "rust_crate"
+table = "rust_crate"
 
 [[rule]]
 id = "BIN_BCRYPT_BLOWFISH"
