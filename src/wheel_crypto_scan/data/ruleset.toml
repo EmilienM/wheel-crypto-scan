@@ -109,9 +109,15 @@ windows_library_suffixes = [".dll", ".pyd"]
 windows_version_suffix_regex = '^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<decoration>[A-Za-z0-9_]+))?$'
 
 # Go toolchain string groups, named here rather than in the Go reader, so renaming a
-# group in this file cannot silently flip a verdict-relevant field in the record.
+# group in this file cannot silently flip a verdict-relevant field in the record. Every
+# Go group belongs here, not just the ones a rule reads: `binaries[].go.markers` is the
+# structured summary a consumer reads instead of the findings, and a group the reader
+# does not know about makes that summary contradict the verdict built from the same
+# evidence -- a FIPS build reporting markers ["go_stock_crypto"] while its verdict says
+# BIN_GO_FIPS140.
 go_boring_group = "go_boring"
 go_stock_group = "go_stock_crypto"
+go_fips140_group = "go_fips140"
 
 # Rust objects embed the source path of every crate they were built from. Both
 # separators, because the path is spelled the way the machine that built the wheel
@@ -606,7 +612,7 @@ why = "A Go binary built with the BoringCrypto backend rather than stock Go cryp
 [[string_group]]
 name = "go_fips140"
 substrings = ["GOFIPS140=", "fips140=on"]
-why = "Build settings a Go binary records in .go.buildinfo when it was built against Go's own FIPS 140-3 module: GOFIPS140 names the module version, and DefaultGODEBUG=fips140=on says the build defaults to enforcing it. Measured on go1.27.1: a GOFIPS140=v1.0.0 build carries both and a stock build carries neither, while crypto/internal/fips140 package paths appear in both (381 in the stock binary, 334 in the FIPS one) and so cannot tell them apart."
+why = "Build settings a Go binary records in .go.buildinfo when it was built against Go's own FIPS 140-3 module: GOFIPS140 names the module version, and DefaultGODEBUG=fips140=on says the build defaults to enforcing it. Measured on go1.27.1/linux-amd64: a GOFIPS140=v1.0.0 build carries both and a stock build carried neither, while crypto/internal/fips140 package paths appear in both (381 in the stock binary, 334 in the FIPS one) and so cannot tell them apart. GOFIPS140=off records no build setting at all, so an opted-out build reads as the stock build it is. fips140=on is matched without its key on purpose: DefaultGODEBUG is a comma-joined list and fips140 need not be first, so DefaultGODEBUG=fips140=on would stop matching a build that sets any other godebug default beside it. The values GOFIPS140 accepts are not enumerated for the reason openssl_banner does enumerate: latest, inprocess and certified all resolve to different recorded strings, so a list of them is a list that goes stale silently."
 
 [[string_group]]
 name = "go_stock_crypto"

@@ -82,5 +82,11 @@ allocated section the strings pass already reads, so this needed no reader chang
 The verdict is `CONDITIONAL`: the module being compiled in does not mean it is in force,
 since `GODEBUG=fips140` can be turned back off at run time.
 
+The record needed a change even though the verdict did not. `binaries[].go.markers` is
+built from the Go group names `[conventions]` lists, so a rule on a group missing from
+that list made one record say two things — `markers: ["go_stock_crypto"]` beside a
+verdict of `BIN_GO_FIPS140`, from the same strings. `[conventions]` now names every Go
+group, and `ANALYZER_VERSION` moves with it.
+
 Full argument, with the measurements and what the sweep deliberately left open:
 [`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md).

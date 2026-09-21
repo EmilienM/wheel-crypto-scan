@@ -455,7 +455,14 @@ def _go_buildinfo(version: str, settings: str) -> bytes:
     return header + uvarint(len(version)) + version.encode() + uvarint(len(modinfo)) + modinfo
 
 
-_GO_STOCK_RODATA = b"\x00crypto/sha256.block\x00crypto/aes.NewCipher\x00"
+# A real go1.24+ stock binary carries the fips140 package paths too -- 381 of them,
+# measured -- because the standard library implements its crypto on top of them. The
+# fixture carries one for the same reason: without it, widening `go_fips140` to a
+# bare "fips140" flips every Go wheel in an index to CONDITIONAL and no test moves.
+_GO_STOCK_RODATA = (
+    b"\x00crypto/sha256.block\x00crypto/aes.NewCipher"
+    b"\x00crypto/internal/fips140/sha256.blockGeneric\x00"
+)
 _GO_FIPS_SETTINGS = (
     "build\t-tags=fips140v1.0\nbuild\tDefaultGODEBUG=fips140=on\nbuild\tGOFIPS140=v1.0.0-c2097c7c\n"
 )
@@ -485,6 +492,14 @@ def _go_wheel(tmp_path: Path, name: str, buildinfo: bytes) -> Path:
         ("both", _GO_FIPS_SETTINGS),
         ("module version only", "build\tGOFIPS140=v1.0.0-c2097c7c\n"),
         ("godebug default only", "build\tDefaultGODEBUG=fips140=on\n"),
+        # DefaultGODEBUG is a comma-joined list and fips140 need not be first, which
+        # is why the substring is matched without its key. Tightening it to
+        # "DefaultGODEBUG=fips140=on" passes every case above and silently stops
+        # matching this one.
+        (
+            "godebug among others",
+            "build\tDefaultGODEBUG=asynctimerchan=1,fips140=on,httplaxcontentlength=1\n",
+        ),
     ],
 )
 def test_a_go_fips140_build_is_a_condition_not_a_non_approved_primitive(
@@ -501,6 +516,31 @@ def test_a_go_fips140_build_is_a_condition_not_a_non_approved_primitive(
     assert record["verdict"]["class"] == "CONDITIONAL"
     assert "BIN_GO_FIPS140" in record["verdict"]["rule_ids"]
     assert "BIN_GO_STOCK_CRYPTO" not in record["verdict"]["rule_ids"]
+
+
+def test_the_go_block_and_the_verdict_never_disagree(context, tmp_path: Path) -> None:
+    """`binaries[].go.markers` is the structured summary a consumer reads instead of
+    the findings, and it is built in the reader from the group names `[conventions]`
+    lists. Adding a rule on a Go group without adding it there made the same record
+    say two things: `markers: ["go_stock_crypto"]` beside a verdict of BIN_GO_FIPS140,
+    from the identical strings. The same shape as "partial_analysis and
+    partial_reasons never disagree", in a place nothing was checking.
+    """
+    wheel = _go_wheel(tmp_path, "gofips", _go_buildinfo("go1.27.1", _GO_FIPS_SETTINGS))
+    record = scan_wheel(wheel, context)
+    markers = record["binaries"][0]["go"]["markers"]
+    assert "go_fips140" in markers
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    # Every Go group the ruleset names is a marker the reader knows: a group a rule
+    # can fire on but the reader cannot report is how the two came to disagree.
+    ruleset = load_ruleset()
+    named = {
+        ruleset.conventions.go_boring_group,
+        ruleset.conventions.go_stock_group,
+        ruleset.conventions.go_fips140_group,
+    }
+    go_groups = {name for name in ruleset.string_groups if name.startswith("go_")}
+    assert go_groups == named
 
 
 def test_a_stock_go_build_is_unchanged(context, tmp_path: Path) -> None:

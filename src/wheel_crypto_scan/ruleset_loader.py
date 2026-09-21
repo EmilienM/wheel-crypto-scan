@@ -129,6 +129,7 @@ def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
         windows_library_suffixes=windows_suffixes,
         go_boring_group=str(_require(data, "go_boring_group", where)),
         go_stock_group=str(_require(data, "go_stock_group", where)),
+        go_fips140_group=str(_require(data, "go_fips140_group", where)),
     )
 
 
@@ -290,7 +291,7 @@ def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
     where = "[conventions]"
     conventions = _require(ruleset_data, "conventions", where)
     known = {entry["name"] for entry in ruleset_data["string_group"]}
-    for key in ("go_boring_group", "go_stock_group"):
+    for key in ("go_boring_group", "go_stock_group", "go_fips140_group"):
         name = str(_require(conventions, key, where))
         if name not in known:
             raise RulesetError(f"{where}: {key} names unknown string group {name!r}")
