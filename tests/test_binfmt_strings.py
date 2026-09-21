@@ -239,6 +239,16 @@ def test_scan_strings_finds_banners_and_crates_in_one_pass() -> None:
     assert [(c.name, c.version) for c in found.rust_crates] == [("ring", "0.17.8")]
 
 
+def test_scan_strings_wires_the_registry_pattern_ahead_of_the_vendor_one() -> None:
+    """A `vendor/` tree inside a registry crate's directory must read as part of that
+    crate, which only holds if `scan_strings` passes `cargo_path_regex` as `registry`
+    and `cargo_vendor_path_regex` as `vendor` -- swapping the two keywords would treat
+    the vendor pattern as the one that claims a directory and misread this case."""
+    raw = b"\x00/r/cargo/registry/src/idx/bar-1.0.0/vendor/ring/src/x.rs\x00"
+    found = scan_strings(raw, PATTERNS, 1 << 20)
+    assert [(c.name, c.version) for c in found.rust_crates] == [("bar", "1.0.0")]
+
+
 def test_scan_strings_keeps_the_joined_text_for_the_go_reader() -> None:
     """All three structural readers hand `text` to `build_go_info`; it is not spare."""
     found = scan_strings(b"\x00alpha\x00beta\x00", PATTERNS, 1 << 20)

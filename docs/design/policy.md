@@ -102,6 +102,15 @@ the registry pattern. Every negated character class in both patterns also exclud
 the run separator printable runs are joined with, so a match can never bridge two
 strings that never sat next to each other in the object.
 
+A `vendor/` tree inside a registry crate's own directory —
+`.../bar-1.0.0/vendor/ring/src/x.rs` — is that crate's own vendored source, not a
+crate of its own: it reads as `bar` 1.0.0, and the nested `ring` match is dropped. The
+registry crate's directory is taken to end at its first `.rs` file rather than the end
+of the printable run, since rustc packs panic locations for unrelated crates back to
+back in read-only data; a `vendor/` match after that point is a separate path and is
+kept. Precedence runs one way — a registry match nested inside an outer `vendor/`
+directory is unaffected.
+
 `RustCrate.version` is `str | None`: a layout that names no version records `null`,
 never an invented one. That makes `rust_crates[].version` nullable in the record, which
 is why `schema_version` is 2.
