@@ -101,7 +101,17 @@ def _check_string_sequence(value: Any, label: str, where: str, *, allow_empty: b
             raise RulesetError(f"{where}: {label} must be a list of strings")
 
 
-def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
+def _parse_conventions(data: Mapping[str, Any], string_group_names: Iterable[str]) -> Conventions:
+    """Build `Conventions`, including the two group names the Go reader is driven by.
+
+    `string_group_names` is required rather than optional because the names are the
+    whole point of naming them here: `binfmt.golang` reads `go_boring_group` and
+    `go_stock_group` out of the ruleset so that renaming a group cannot silently flip
+    `GoBuildInfo.boring_crypto`, which the ruleset says in [conventions]. Unvalidated,
+    the indirection delivered the opposite -- a name no group has loaded clean and
+    left the field permanently false, while every other group reference in the file
+    was checked. So the caller has to have parsed `[[string_group]]` first.
+    """
     where = "[conventions]"
     try:
         mangled = re.compile(str(_require(data, "mangled_soname_regex", where)))
@@ -119,6 +129,11 @@ def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
     unknown = sorted(set(windows_suffixes) - set(suffixes))
     if unknown:
         raise RulesetError(f"{where}: windows_library_suffixes {unknown} are not library_suffixes")
+    known_groups = set(string_group_names)
+    for key in ("go_boring_group", "go_stock_group"):
+        name = str(_require(data, key, where))
+        if name not in known_groups:
+            raise RulesetError(f"{where}: {key} names unknown string group {name!r}")
     return Conventions(
         vendor_dir_globs=tuple(_require(data, "vendor_dir_globs", where)),
         mangled_soname_regex=mangled,
@@ -578,7 +593,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         version=str(version),
         precedence=precedence,
         limits=limits,
-        conventions=_parse_conventions(_require(data, "conventions", source)),
+        conventions=_parse_conventions(_require(data, "conventions", source), string_groups),
         linkage_policy=_parse_linkage_policy(data.get("linkage_policy"), rules),
         rules=rules,
         distributions=MappingProxyType(distributions),

@@ -107,6 +107,9 @@ def test_a_vendored_dll_is_recognised_as_bundled(context, tmp_path: Path) -> Non
         ("libcrypto.dll", "libcrypto", False),
         ("libcrypto-3a1f2b4c.dll", "libcrypto", True),
         ("libssl-1_1-x64.dll", "libssl", False),
+        # A vendor spelling nobody enumerated: with the arch written as an alternation
+        # of four tokens this resolved to no library at all (#123).
+        ("libcrypto-3-aarch64.dll", "libcrypto", False),
         ("_ext.pyd", "_ext", False),
     ],
 )
@@ -358,3 +361,33 @@ def test_a_statically_linked_openssl_4_is_not_reported_as_clean(context, tmp_pat
     record = scan_wheel(wheel, context)
     assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
     assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+# --- a vendored-OpenSSL Rust build names itself, and must be read ------------
+
+
+def test_a_vendored_openssl_crate_path_is_not_reported_as_clean(context, tmp_path: Path) -> None:
+    """`openssl-src` is what `openssl-sys`'s vendored feature builds OpenSSL with.
+
+    An extension that went that way carries no libcrypto dependency and no vendor
+    directory, so the crate path is the one place the build states the posture rather
+    than leaving it to be inferred from a banner that a stripped build may not carry.
+    It was missing from [[rust_crate]] (#123), found while fixing the banner list.
+    """
+    cargo_path = b"/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openssl-src-300.5.2/"
+    wheel = build_wheel(
+        tmp_path / f"vendoredssl-1.0-{MANYLINUX}.whl",
+        name="vendoredssl",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "vendoredssl/_rust.abi3.so": ElfBuilder(
+                needed=("libc.so.6",), rodata=b"\x00" + cargo_path + b"\x00"
+            ).build()
+        },
+    )
+    record = scan_wheel(wheel, context)
+    crates = [crate["name"] for binary in record["binaries"] for crate in binary["rust_crates"]]
+    assert "openssl-src" in crates
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+    assert "BIN_RUST_CRYPTO_CRATE" in record["verdict"]["rule_ids"]

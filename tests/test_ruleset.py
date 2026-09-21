@@ -63,7 +63,13 @@ def minimal(**overrides: Any) -> dict[str, Any]:
         "symbol_group": [
             {"name": "openssl", "prefixes": ["EVP_"], "exact": ["RAND_bytes"], "why": "api"}
         ],
-        "string_group": [{"name": "openssl_banner", "substrings": ["OpenSSL 3."], "why": "banner"}],
+        # The two Go groups are here because `[conventions]` names them: a ruleset whose
+        # go_boring_group/go_stock_group point at nothing is refused at load time.
+        "string_group": [
+            {"name": "openssl_banner", "substrings": ["OpenSSL 3."], "why": "banner"},
+            {"name": "go_boring", "substrings": ["crypto/internal/boring"], "why": "boring"},
+            {"name": "go_stock_crypto", "substrings": ["crypto/sha256."], "why": "stock"},
+        ],
         "rust_crate": [
             {"name": "ring", "verdict": "NON_APPROVED_CRYPTO", "severity": "high", "why": "own"}
         ],
@@ -93,7 +99,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "20"
+    assert ruleset.version == "21"
     assert len(ruleset.rules) > 20
 
 
@@ -103,20 +109,37 @@ def test_shipped_ruleset_knows_the_bundled_openssl_rule() -> None:
     assert [match["kind"] for match in rule.matches] == ["bundled_library"]
 
 
-def test_the_shipped_banner_group_matches_every_openssl_major() -> None:
-    """A major this group does not name is a static copy that reads as no OpenSSL.
+@pytest.mark.parametrize(
+    ("group_name", "product"),
+    [("openssl_banner", "OpenSSL"), ("nss", "NSS")],
+)
+def test_a_version_anchored_group_matches_every_major(group_name: str, product: str) -> None:
+    """A major a group does not name is evidence that reads as absent.
 
     Written against the property rather than against the group's own substrings: a
     test that reads the list back and matches each entry against itself passes
-    whatever the list says, which is how this group came to stop at major 3 while
-    cryptography's own PyPI wheels already compiled 4 in (#123). The negative case is
-    the string that rules out the cheaper fix -- `OpenSSL ` with no digit also claims
-    prose that a wheel linking the system library carries.
+    whatever the list says, which is how `openssl_banner` came to stop at major 3
+    while cryptography's own PyPI wheels already compiled 4 in (#123). The negative
+    case is the string that rules out the cheaper fix -- the product name and a space,
+    with no digit, also claims prose that a wheel linking the system library carries.
     """
-    pattern = load_ruleset().compile_patterns().binary.string_group("openssl_banner").pattern
+    pattern = load_ruleset().compile_patterns().binary.string_group(group_name).pattern
     for major in range(10):
-        assert pattern.search(f"OpenSSL {major}.0.14 4 Jun 2024"), major
-    assert pattern.search("OpenSSL 3's legacy provider failed to load") is None
+        assert pattern.search(f"{product} {major}.0.14 4 Jun 2024"), major
+    assert pattern.search(f"{product} 3's legacy provider failed to load") is None
+
+
+@pytest.mark.parametrize("key", ["go_boring_group", "go_stock_group"])
+def test_a_go_group_naming_nothing_is_refused(key: str) -> None:
+    """[conventions] says renaming a group cannot silently flip a verdict-relevant
+    field, and until this check it could: `binfmt.golang` reads these two names to
+    decide `GoBuildInfo.boring_crypto`, an unknown name matched no group, and the
+    field stayed false for every Go binary in the run. Every other group reference in
+    the ruleset was already refused at load time; these two were the exception."""
+    data = minimal()
+    data["conventions"][key] = "typo_not_a_group"
+    with pytest.raises(RulesetError, match=f"{key} names unknown string group"):
+        parse_ruleset(data)
 
 
 def test_rules_can_be_selected_by_matcher_kind() -> None:

@@ -4781,9 +4781,28 @@ re-evaluation of already-scanned wheels is already bought by the bump that was m
 `ANALYZER_VERSION` states in the record that extraction changed, and here only policy
 did.
 
-**Revisit if** another `[[string_group]]` needs the same treatment. `nss` (`NSS 3.`)
-has the identical shape and survives only because its two other arms carry no version.
-A second case is the point at which a pattern capability stops being more machinery
-than the problem deserves.
+**What followed.** The same review swept the ruleset for lists of the same shape, and
+three more were taken the same way rather than left as a second case to be rediscovered.
+`nss` (`NSS 3.`) now names every digit too; it had survived only because its two other
+arms carry no version. `[conventions] windows_version_suffix_regex` spelled the
+architecture as `x64|x86|arm64|arm64ec`, four spellings of a field whose fifth
+(a vendor writing `aarch64`) left `libcrypto-3-aarch64.dll` resolving to no library at
+all, and is now a token. `[[rust_crate]]` gained `openssl-src`, the crate
+`openssl-sys`'s `vendored` feature builds OpenSSL with, which names from the Rust side
+exactly the posture this entry is about, plus `boring`/`boring-sys` and `sha-1`, the
+name RustCrypto's SHA-1 crate published before 0.10. None of the four changes a record
+in the 18-wheel corpus: they add reach, and the synthetic tests are what exercise them.
+
+The fourth of that sweep was not an enumeration but a guarantee that was not there.
+`[conventions]` said naming the Go string groups in the ruleset meant renaming a group
+could not silently flip `GoBuildInfo.boring_crypto`, and `binfmt.golang` reads those
+names for exactly that reason -- but the loader never checked them, so a name no group
+had loaded clean and left the field false for every Go binary in the run, while every
+other group reference in the file was refused. `_parse_conventions` now takes the
+parsed group names and refuses an unknown one.
+
+**Revisit if** a fifth list of this shape turns up, or a `[[string_group]]` needs a
+pattern no enumeration can spell. That is the point at which a pattern capability
+stops being more machinery than the problem deserves.
 
 Tracked in [#123](https://github.com/EmilienM/wheel-crypto-scan/issues/123).
