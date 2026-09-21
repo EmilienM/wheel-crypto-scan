@@ -4680,9 +4680,9 @@ looking at a table that could contradict it. No wheel in the corpus is partial f
 reason alone, which is what the real-corpus check above pins.
 
 The third is a policy consequence this reader surfaces rather than creates. A statically
-linked OpenSSL defines every legacy primitive OpenSSL ships, so `BF_*`, `MD4_*`,
-`X25519_*` and the rest match even where a version script hides them from dynamic
-symbol resolution, and rules that carry `NON_APPROVED_CRYPTO` outrank
+linked OpenSSL defines every legacy primitive OpenSSL ships, so `BF_*`, `MD4_*`, its
+Curve25519 entry points and the rest match even where a version script hides them from
+dynamic symbol resolution, and rules that carry `NON_APPROVED_CRYPTO` outrank
 `BIN_STATIC_OPENSSL`'s `CONDITIONAL` in `[verdict] precedence`. `confluent-kafka` is one
 instance and will not be the last: the headline class for static-OpenSSL wheels drifts
 toward `NON_APPROVED_CRYPTO`, which is true but less actionable than "carries its own
@@ -4977,23 +4977,23 @@ were not there.
 
 Reading `.symtab` local definitions beside a present `.dynsym` (above) surfaces a
 static OpenSSL's own low-level API: `BF_*`, `MD4_*`, `SHA1_*` and `RIPEMD160_*` are
-entry points OpenSSL defines itself, and so is a slice of its Curve25519 code. A static
-OpenSSL 3 defines the `x25519_fe51_*`/`x25519_fe64_*` field-arithmetic helpers
-(assembly on x86_64) and a few plain `x25519_*` helpers, all in libcrypto's `crypto/ec`
-code rather than in a provider; OpenSSL 3's actual provider entry points are spelled
-`ossl_x25519`, `ossl_ed25519_sign` and so on, which the `curve25519` symbol group's
-prefixes do not match. `X25519_*` is the 1.1.1-era public API
-(`X25519_public_from_private` and so on); 1.1.1 spells its Ed25519 functions
-`ED25519_sign`, both letters capitalised, which the group's `Ed25519_` prefix does not
-match either. OpenSSL 3's lowercase field helpers are the only Curve25519 names either
-build actually trips this group on. A statically linked copy, even one a version
-script kept out of `.dynsym`, matches `BIN_BCRYPT_BLOWFISH`, `BIN_OWN_WEAK_HASH_IMPL`
-and `BIN_CURVE25519` alongside `BIN_STATIC_OPENSSL`, and a bundled `libcrypto` matches
-`BIN_BCRYPT_BLOWFISH` and `BIN_OWN_WEAK_HASH_IMPL` the same way through its own
-`.dynsym` exports alongside `BIN_BUNDLED_OPENSSL` -- that path needs no `.symtab` read
-at all. `BIN_CURVE25519`'s field helpers are not part of libcrypto's public API and so
-are not exported, so a bundled copy matches it too only if the bundle still carries its
-own `.symtab`. Every one of those three carries `NON_APPROVED_CRYPTO`, which outranks
+entry points OpenSSL defines itself, and so is its Curve25519 code. The `curve25519`
+symbol group names every spelling OpenSSL itself uses for an X25519/Ed25519 entry
+point: 1.1.1's `X25519`/`ED25519_*`, 3.x's `ossl_x25519`/`ossl_ed25519_*` provider
+names, and the internal `x25519_fe51_*`/`x25519_fe64_*` field-arithmetic helpers both
+versions define wherever the build includes the assembly path, in libcrypto's
+`crypto/ec` code rather than in a provider. A static 1.1.1 build also defines
+`X25519_public_from_private`, itself internal rather than public API; naming
+OpenSSL's own spellings, not only the field helpers, is what keeps the finding the
+same on every architecture rather than only where the assembly path exists. A
+statically linked copy, even one a version script kept out of `.dynsym`, matches
+`BIN_BCRYPT_BLOWFISH`, `BIN_OWN_WEAK_HASH_IMPL` and `BIN_CURVE25519` alongside
+`BIN_STATIC_OPENSSL`, and a bundled `libcrypto` matches `BIN_BCRYPT_BLOWFISH` and
+`BIN_OWN_WEAK_HASH_IMPL` the same way through its own `.dynsym` exports alongside
+`BIN_BUNDLED_OPENSSL` -- that path needs no `.symtab` read at all. None of
+`BIN_CURVE25519`'s OpenSSL names is part of libcrypto's public API and so is not
+exported, so a bundled copy matches it too only if the bundle still carries its own
+`.symtab`. Every one of those three carries `NON_APPROVED_CRYPTO`, which outranks
 `BIN_STATIC_OPENSSL`'s and `BIN_BUNDLED_OPENSSL`'s `CONDITIONAL` in `[verdict]
 precedence`, so such a wheel's headline is `NON_APPROVED_CRYPTO`.
 
@@ -5020,6 +5020,26 @@ which rules fired together needs a new match kind and changes what `verdict.clas
 means for every wheel, not just this one. It is the more thorough answer, but it wants a
 corpus wider than the 18 wheels measured for `.symtab` local definitions before anyone
 changes precedence.
+
+**Why dropping the field helpers was rejected.** The field helpers are not a separate
+match: `x25519_fe51_*`/`x25519_fe64_*` reach `BIN_CURVE25519` through the same generic
+`x25519_` prefix that also catches every other lowercase X25519 implementation,
+OpenSSL's or not. The alternative actually weighed was dropping that reach, so every
+static OpenSSL, with or without the assembly path, reads consistently silent about a
+primitive it still bundles. That was rejected because there is no way to narrow the
+match to only OpenSSL's own field helpers without narrowing the `x25519_` prefix
+itself, which would also drop the group's hits on every other implementation's plain
+`x25519_*` names, breaking the rule that absence of evidence is not evidence of
+absence. Naming OpenSSL's other spellings (`X25519`/`ED25519_*`,
+`ossl_x25519`/`ossl_ed25519_*`) alongside the generic prefix is what lets a static
+build without the assembly path still be found, on any architecture; a bundled copy
+still needs a kept `.symtab` to match any of them, field helpers included. A residual
+worth recording: BoringSSL and an unprefixed C build of AWS-LC FIPS also export
+`X25519` and `ED25519_sign`, so this widens nothing new for either -- a static
+BoringSSL already reads `NON_APPROVED_CRYPTO` through `BIN_BORINGSSL`, and both read
+`BIN_CURVE25519` through `X25519_public_from_private`/`X25519_keypair` under the
+group's plain `X25519_` prefix on their own, independent of the OpenSSL-specific names
+above.
 
 **What it costs.** The headline for a static or bundled-OpenSSL wheel that carries any
 of these three legacy groups drifts to `NON_APPROVED_CRYPTO`. `confluent-kafka` is the

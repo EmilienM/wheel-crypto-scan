@@ -155,26 +155,31 @@ Full argument, with the measurements and what is deliberately left open:
 **Accepted, knowing what it costs.**
 
 Reading `.symtab` local definitions beside a present `.dynsym` surfaces a statically
-linked OpenSSL's own low-level API — `BF_*`, `MD4_*`, `SHA1_*`, `RIPEMD160_*`, and a
-static OpenSSL 3's `x25519_fe51_*`/`x25519_fe64_*` field-arithmetic helpers, internal
-`crypto/ec` code rather than provider entry points (those are `ossl_x25519`,
-`ossl_ed25519_sign` and so on, which the group does not match; nor does 1.1.1's own
-`ED25519_sign`, capitalised differently from the group's `Ed25519_` prefix) — so such a
-wheel also matches `BIN_BCRYPT_BLOWFISH`, `BIN_OWN_WEAK_HASH_IMPL` and `BIN_CURVE25519`
-alongside `BIN_STATIC_OPENSSL`. A bundled `libcrypto` matches `BIN_BCRYPT_BLOWFISH` and
+linked OpenSSL's own low-level API — `BF_*`, `MD4_*`, `SHA1_*`, `RIPEMD160_*`, and its
+Curve25519 entry points: 1.1.1's `X25519`/`ED25519_*`, 3.x's
+`ossl_x25519`/`ossl_ed25519_*` provider names, and both versions' internal `crypto/ec`
+`x25519_fe51_*`/`x25519_fe64_*` field-arithmetic helpers (present only where the build
+includes the assembly path, not provider entry points) — so such a wheel also matches
+`BIN_BCRYPT_BLOWFISH`, `BIN_OWN_WEAK_HASH_IMPL` and `BIN_CURVE25519` alongside
+`BIN_STATIC_OPENSSL`. A bundled `libcrypto` matches `BIN_BCRYPT_BLOWFISH` and
 `BIN_OWN_WEAK_HASH_IMPL` the same way, through its own `.dynsym` exports alongside
-`BIN_BUNDLED_OPENSSL`, with no `.symtab` read involved; `BIN_CURVE25519`'s field helpers
-are not part of libcrypto's public API, so a bundled copy matches it only if the bundle
-still carries a `.symtab`. Either way `NON_APPROVED_CRYPTO` outranks the `CONDITIONAL` of
-`BIN_STATIC_OPENSSL` or `BIN_BUNDLED_OPENSSL`. The taxonomy calls this correctly: a
-static or bundled OpenSSL bundles those primitives and the host FIPS provider cannot
-refuse them.
+`BIN_BUNDLED_OPENSSL`, with no `.symtab` read involved; none of `BIN_CURVE25519`'s
+OpenSSL names is part of libcrypto's public API, so a bundled copy matches it only if
+the bundle still carries a `.symtab`. Either way `NON_APPROVED_CRYPTO` outranks the
+`CONDITIONAL` of `BIN_STATIC_OPENSSL` or
+`BIN_BUNDLED_OPENSSL`. The taxonomy calls this correctly: a static or bundled OpenSSL
+bundles those primitives and the host FIPS provider cannot refuse them.
 
 **What was rejected.** A narrower `binding` on the three rules, because the record has
 no way to tell an exported symbol from one a version script kept local, and the names
 that would need separating are OpenSSL's own. Co-occurrence-aware precedence, because it
 changes what `verdict.class` means for every wheel and wants a wider corpus than the one
-measured for `.symtab` local definitions.
+measured for `.symtab` local definitions. Dropping the field helpers' reach, because
+they match through the same generic `x25519_` prefix as every other lowercase
+Curve25519 implementation, so narrowing that prefix to exclude OpenSSL's own would
+also drop the group's hits on those other implementations, leaving every static
+OpenSSL, with or without the assembly path, consistently silent about a primitive it
+still bundles.
 
 **What it costs.** The headline for a static or bundled-OpenSSL wheel carrying any of
 the three legacy groups drifts to `NON_APPROVED_CRYPTO`. `confluent-kafka` is the

@@ -143,7 +143,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "32"
+    assert ruleset.version == "33"
     assert len(ruleset.rules) > 20
 
 
@@ -207,6 +207,60 @@ def test_the_shipped_crate_table_decides_what_it_says_it_decides(crate: str, ver
     SHA-1 and of MD5 have to agree with each other or a build pinned to the older name
     reads differently from the same code under the newer one."""
     assert load_ruleset().rust_crates[crate].verdict == verdict
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        pytest.param("ossl_x25519", id="openssl3-provider-ossl_x25519"),
+        pytest.param(
+            "ossl_x25519_public_from_private",
+            id="openssl3-provider-ossl_x25519_public_from_private",
+        ),
+        pytest.param("ossl_ed25519_sign", id="openssl3-provider-ossl_ed25519_sign"),
+        pytest.param("ossl_ed25519_verify", id="openssl3-provider-ossl_ed25519_verify"),
+        pytest.param(
+            "ossl_ed25519_public_from_private",
+            id="openssl3-provider-ossl_ed25519_public_from_private",
+        ),
+        pytest.param("X25519", id="openssl111-X25519"),
+        pytest.param("X25519_public_from_private", id="openssl111-X25519_public_from_private"),
+        pytest.param("ED25519_sign", id="openssl111-ED25519_sign"),
+        pytest.param("ED25519_verify", id="openssl111-ED25519_verify"),
+        pytest.param("ED25519_public_from_private", id="openssl111-ED25519_public_from_private"),
+        pytest.param("x25519_fe51_mul", id="openssl-field-helper-x25519_fe51_mul"),
+        pytest.param("x25519_fe64_mul", id="openssl-field-helper-x25519_fe64_mul"),
+    ],
+)
+def test_the_shipped_curve25519_group_claims_what_the_docs_say(symbol: str) -> None:
+    """The design docs and the `BIN_CURVE25519` `why` tell a reviewer which OpenSSL
+    names reach this rule, so the group has to keep agreeing with them: every spelling
+    OpenSSL itself uses for X25519/Ed25519, on 1.1.1 and on 3.x, and the internal
+    field-arithmetic helpers both versions define on their assembly paths. Changing
+    either side means changing the other.
+    """
+    patterns = load_ruleset().compile_patterns().binary
+    assert patterns.symbol_groups_for(symbol) == ("curve25519",)
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        pytest.param("ossl_x448", id="different-curve-openssl3"),
+        pytest.param("ossl_ed448_sign", id="different-curve-openssl3"),
+        pytest.param("X448", id="different-curve-openssl111"),
+        pytest.param("ED448_sign", id="different-curve-openssl111"),
+        pytest.param("X25519x", id="not-a-prefix-match-X25519x"),
+        pytest.param("ossl_x25519x", id="not-a-prefix-match-ossl_x25519x"),
+    ],
+)
+def test_the_shipped_curve25519_group_stays_scoped_to_curve25519(symbol: str) -> None:
+    """Pins the scope to Curve25519 and guards against `X25519`/`ossl_x25519` being
+    turned into a bare prefix: X448 and Ed448 are a different curve and must not match
+    just because their names share a prefix with X25519/Ed25519.
+    """
+    patterns = load_ruleset().compile_patterns().binary
+    assert patterns.symbol_groups_for(symbol) == ()
 
 
 def test_rules_can_be_selected_by_matcher_kind() -> None:
