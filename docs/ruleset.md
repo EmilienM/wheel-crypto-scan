@@ -35,6 +35,13 @@ several classes at once; the record reports every class that fired in `verdict.c
 and the first one in this list as the single `verdict.class`. Reorder the list to change
 which concern wins.
 
+A static or bundled OpenSSL's own entry points for Blowfish, MD4/MD5/SHA-1/RIPEMD-160
+and (a bundled copy only when it still carries a `.symtab`) the Curve25519 family are
+compiled in by OpenSSL itself, so such a wheel's headline lands under
+`NON_APPROVED_CRYPTO` rather than `CONDITIONAL`. `verdict.conditions.openssl_linkage`
+is the field that may tell that case apart from a wheel whose own code defines a weak
+primitive, though not when a wheel carries both.
+
 ### `[limits]`
 
 Bounds on record size. They never change what is detected — only how much of what was

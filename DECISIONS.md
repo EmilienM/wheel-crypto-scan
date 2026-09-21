@@ -5027,8 +5027,8 @@ rules that carry `NON_APPROVED_CRYPTO` outrank `BIN_STATIC_OPENSSL`'s `CONDITION
 last: the headline class for static-OpenSSL wheels drifts toward `NON_APPROVED_CRYPTO`,
 which is true but less actionable than "carries its own OpenSSL". Nothing is lost from
 the record -- `verdict.classes` lists both -- and the fix, if one is wanted, is in the
-ruleset rather than here: see
-[#135](https://github.com/EmilienM/wheel-crypto-scan/issues/135).
+ruleset rather than here: see "A static OpenSSL's legacy primitives lead the headline;
+the linkage condition says why", below.
 
 **Revisit if** a consumer needs to tell a `.dynsym` export from a `.symtab` local
 definition. Both record `binding: defined`, which is the honest answer to "does this
@@ -5321,3 +5321,70 @@ component naming `openssl-sys` beside a system object does not make that object'
 posture read `unknown`: `DERIVED_SYSTEM_OPENSSL_ONLY` still fires, and
 `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` stays silent, exactly as if the SBOM component
 were not there.
+
+## A static OpenSSL's legacy primitives lead the headline; the linkage condition says why
+
+**Accepted, knowing what it costs.**
+
+Reading `.symtab` local definitions beside a present `.dynsym` (above) surfaced a
+static OpenSSL's own low-level API: `BF_*`, `MD4_*`, `SHA1_*` and `RIPEMD160_*` are
+entry points OpenSSL defines itself, and so is a slice of its Curve25519 code. A static
+OpenSSL 3 defines the `x25519_fe51_*`/`x25519_fe64_*` field-arithmetic helpers
+(assembly on x86_64) and a few plain `x25519_*` helpers, all in libcrypto's `crypto/ec`
+code rather than in a provider; OpenSSL 3's actual provider entry points are spelled
+`ossl_x25519`, `ossl_ed25519_sign` and so on, which the `curve25519` symbol group's
+prefixes do not match. `X25519_*` is the 1.1.1-era public API
+(`X25519_public_from_private` and so on); 1.1.1 spells its Ed25519 functions
+`ED25519_sign`, both letters capitalised, which the group's `Ed25519_` prefix does not
+match either. OpenSSL 3's lowercase field helpers are the only Curve25519 names either
+build actually trips this group on. A statically linked copy, even one a version
+script kept out of `.dynsym`, matches `BIN_BCRYPT_BLOWFISH`, `BIN_OWN_WEAK_HASH_IMPL`
+and `BIN_CURVE25519` alongside `BIN_STATIC_OPENSSL`, and a bundled `libcrypto` matches
+`BIN_BCRYPT_BLOWFISH` and `BIN_OWN_WEAK_HASH_IMPL` the same way through its own
+`.dynsym` exports alongside `BIN_BUNDLED_OPENSSL` -- that path needs no `.symtab` read
+at all and predates this change. `BIN_CURVE25519`'s field helpers are not part of
+libcrypto's public API and so are not exported, so a bundled copy matches it too only
+if the bundle still carries its own `.symtab`. Every one of those three carries
+`NON_APPROVED_CRYPTO`, which outranks `BIN_STATIC_OPENSSL`'s and `BIN_BUNDLED_OPENSSL`'s
+`CONDITIONAL` in `[verdict] precedence`, so such a wheel's headline moves.
+
+**Why this is correct rather than a false positive.** The taxonomy's own definition of
+`NON_APPROVED_CRYPTO` is "implements or bundles a non-FIPS-approved primitive". A
+statically linked OpenSSL does bundle Blowfish, MD4 and the rest, and because it is
+static the host FIPS provider has no way to refuse them -- the exact argument
+`BIN_OWN_WEAK_HASH_IMPL`'s own `why` already made for a private implementation. The
+record is telling the truth; the tool's accepted error direction is over-flagging, and
+it has no passing class to be tricked into.
+
+**Why a narrower `binding` was rejected.** The finding is already `binding = "defined"`,
+so nothing sharpens it there. The distinction that would help -- exported versus kept
+local by a version script -- needs a third `SymbolMatch.binding` value the record
+contract does not have, which the entry above already deferred as a change nobody has
+asked for. It would also fail the tool's own admission test: a hidden-visibility C or
+Rust extension that compiles its own `MD5_Init` or bcrypt has only a local definition,
+and an exported-only binding would let exactly that object read clean. The names do not
+separate the two either -- `BF_`, `MD4_`, `MD5_` and `RIPEMD160_` are OpenSSL's own
+prefixes, not something written to look like OpenSSL.
+
+**Why co-occurrence-aware precedence was deferred.** Making `verdict.class` depend on
+which rules fired together needs a new match kind and changes what `verdict.class`
+means for every wheel, not just this one. It is the more thorough fix, but it wants a
+corpus wider than the 18 wheels measured for `.symtab` local definitions before anyone
+changes precedence.
+
+**What it costs.** The headline for a static or bundled-OpenSSL wheel that carries any
+of these three legacy groups drifts to `NON_APPROVED_CRYPTO`. `confluent-kafka` is the
+measured static instance; the bundled path fires through ordinary `.dynsym` exports on
+any auditwheel-vendored `libcrypto`, which is the more common manylinux shape, so the
+affected population is wider than the static case alone -- this entry's corpus measured
+only the static side. An index page that sorts on the headline alone will surface both
+there rather than under `CONDITIONAL`. Nothing is lost from the record: `verdict.classes`
+keeps `CONDITIONAL` alongside it, and `verdict.conditions.openssl_linkage` is the field
+that answers the actionable question, "does this wheel carry its own OpenSSL" -- though
+not, on its own, whether the headline came from that OpenSSL or from a weak primitive
+the wheel's own code defines, when a wheel has both.
+
+**Revisit if** a second, non-OpenSSL case turns up where a bundled library's own contents
+dominate a wheel's headline the same way, or a consumer asks to tell an exported symbol
+from a local definition -- either is the moment for a co-occurrence match kind or a
+third binding value, measured over a wider corpus than this one.

@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "25"
+ruleset_version = "26"
 
 
 # ---------------------------------------------------------------------------
@@ -1551,7 +1551,7 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Blowfish or bcrypt implementation present"
-why = "Blowfish-based password hashing compiled into the wheel. Not approved under any configuration."
+why = "Blowfish-based password hashing compiled into the wheel. Not approved under any configuration. A statically linked or bundled OpenSSL defines this entry point too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
 [rule.match]
 kind = "dynamic_symbol"
 group = "bcrypt_blowfish"
@@ -1566,7 +1566,7 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Ships its own MD4/MD5/SHA-1 implementation"
-why = "Defined, not imported, so the wheel carries the code itself. That matters more than it first appears: a private implementation of a broken hash cannot be refused by FIPS mode the way hashlib can, so it will keep working silently on a FIPS-enforcing host."
+why = "Defined, not imported, so the wheel carries the code itself. That matters more than it first appears: a private implementation of a broken hash cannot be refused by FIPS mode the way hashlib can, so it will keep working silently on a FIPS-enforcing host. A statically linked or bundled OpenSSL defines these entry points too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy-provider code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
 [rule.match]
 kind = "dynamic_symbol"
 group = "weak_hash_impl"
@@ -1623,7 +1623,7 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Curve25519 family implementation present"
-why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here."
+why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here. A statically linked or bundled OpenSSL 3 defines some of these entry points too, through its own x25519_fe51_/x25519_fe64_ field-arithmetic helpers rather than through its provider-level ossl_x25519/ossl_ed25519_ names, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
 [rule.match]
 kind = "dynamic_symbol"
 group = "curve25519"

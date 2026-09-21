@@ -90,3 +90,40 @@ group, and `ANALYZER_VERSION` moves with it.
 
 Full argument, with the measurements and what the sweep deliberately left open:
 [`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md).
+
+## A static OpenSSL's legacy primitives lead the headline
+
+**Accepted, knowing what it costs.**
+
+Reading `.symtab` local definitions beside a present `.dynsym` surfaced a statically
+linked OpenSSL's own low-level API — `BF_*`, `MD4_*`, `SHA1_*`, `RIPEMD160_*`, and a
+static OpenSSL 3's `x25519_fe51_*`/`x25519_fe64_*` field-arithmetic helpers, internal
+`crypto/ec` code rather than provider entry points (those are `ossl_x25519`,
+`ossl_ed25519_sign` and so on, which the group does not match; nor does 1.1.1's own
+`ED25519_sign`, capitalised differently from the group's `Ed25519_` prefix) — so such a
+wheel now also matches `BIN_BCRYPT_BLOWFISH`, `BIN_OWN_WEAK_HASH_IMPL` and
+`BIN_CURVE25519` alongside `BIN_STATIC_OPENSSL`. A bundled `libcrypto` matches
+`BIN_BCRYPT_BLOWFISH` and `BIN_OWN_WEAK_HASH_IMPL` the same way, through its own
+`.dynsym` exports alongside `BIN_BUNDLED_OPENSSL`, unrelated to `.symtab` reading;
+`BIN_CURVE25519`'s field helpers are not part of libcrypto's public API, so a bundled
+copy matches it only if the bundle still carries a `.symtab`.
+Either way `NON_APPROVED_CRYPTO` outranks the `CONDITIONAL` of `BIN_STATIC_OPENSSL` or
+`BIN_BUNDLED_OPENSSL`. The taxonomy calls this correctly: a static or bundled OpenSSL
+bundles those primitives and the host FIPS provider cannot refuse them.
+
+**What was rejected.** A narrower `binding` on the three rules, because the record has
+no way to tell an exported symbol from one a version script kept local, and the names
+that would need separating are OpenSSL's own. Co-occurrence-aware precedence, because it
+changes what `verdict.class` means for every wheel and wants a wider corpus than the one
+measured for `.symtab` local definitions.
+
+**What it costs.** The headline for a static or bundled-OpenSSL wheel carrying any of
+the three legacy groups drifts to `NON_APPROVED_CRYPTO`. `confluent-kafka` is the
+measured static instance; a bundled `libcrypto` is the more common PyPI shape and hits
+the same drift through ordinary `.dynsym` exports. `verdict.classes` still carries
+`CONDITIONAL`, and `verdict.conditions.openssl_linkage` answers whether the wheel
+carries its own OpenSSL at all -- though not, on its own, which case produced the
+headline when a wheel carries both; the object's own `matched_symbols` is what tells
+them apart.
+
+Full argument: [`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md).
