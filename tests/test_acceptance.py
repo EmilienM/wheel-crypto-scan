@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from helpers.binfmt import (
+    STB_LOCAL,
     ArMember,
     DynSym,
     ElfBuilder,
@@ -267,6 +268,201 @@ def test_an_import_only_object_beside_a_system_link_is_opaque_not_system_only(
         f for f in record["findings"] if f["rule_id"] == "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM"
     )
     assert finding["locations"][0]["path"] == "demo/_ext.so"
+
+
+def test_a_static_openssls_legacy_primitives_lead_the_headline_and_keep_the_condition(
+    context, tmp_path: Path
+) -> None:
+    """A version-scripted static OpenSSL defines Blowfish, MD4 and x25519_ alongside EVP.
+
+    `x25519_fe51_mul` is one of OpenSSL 3's own field-arithmetic helpers for Curve25519
+    (assembly on x86_64, `crypto/ec`), not a provider entry point and not the 1.1.1-era
+    `X25519_*` name -- OpenSSL 3 does not define an uppercase `X25519_*`/`Ed25519_*`
+    symbol at all, and its provider entry points are `ossl_x25519`/`ossl_ed25519_*`,
+    which this group does not match either.
+
+    Those definitions are OpenSSL's own code, not something the wheel's own logic
+    wrote, but they are still definitions: the wheel carries them and the host FIPS
+    provider cannot refuse them. The taxonomy has no passing class and no
+    co-occurrence-aware precedence, so `NON_APPROVED_CRYPTO` leads the headline the
+    same way it would for any other object that defines these entry points. Nothing is
+    lost: `BIN_STATIC_OPENSSL` and `BIN_OPENSSL_SYMBOLS_DEFINED` both keep the
+    CONDITIONAL class in `verdict.classes`. `verdict.conditions.openssl_linkage` says
+    whether the wheel carries its own OpenSSL at all, not which case this is -- and not
+    when a wheel carries both -- so telling this apart from a wheel whose own code
+    defines a weak primitive is a question for the object's own `matched_symbols`.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, "static-legacy") / f"fakecrypto-43.0.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="43.0.0",
+        tags=(MANYLINUX,),
+        generator="maturin (1.7.0)",
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _rust\n",
+            "fakecrypto/_rust.abi3.so": extension(
+                dynsyms=(DynSym("PyInit__rust", defined=True),),
+                with_symtab=True,
+                symtab_syms=(
+                    DynSym("EVP_DigestInit_ex", defined=True),
+                    DynSym("BF_encrypt", defined=True, info=(STB_LOCAL << 4) | 2),  # STT_FUNC
+                    DynSym("MD4_Init", defined=True, info=(STB_LOCAL << 4) | 2),  # STT_FUNC
+                    DynSym("x25519_fe51_mul", defined=True, info=(STB_LOCAL << 4) | 2),  # STT_FUNC
+                ),
+                rodata=OPENSSL_BANNER,
+            ),
+        },
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "CONDITIONAL" in record["verdict"]["classes"]
+    assert {
+        "BIN_STATIC_OPENSSL",
+        "BIN_OPENSSL_SYMBOLS_DEFINED",
+        "BIN_BCRYPT_BLOWFISH",
+        "BIN_OWN_WEAK_HASH_IMPL",
+        "BIN_CURVE25519",
+    } <= set(record["verdict"]["rule_ids"])
+
+
+def test_a_private_weak_hash_kept_local_is_still_found_without_openssl(
+    context, tmp_path: Path
+) -> None:
+    """The reason a narrower `binding` on the legacy rules was rejected.
+
+    A hidden-visibility C extension that compiles its own MD5 has only a `.symtab`
+    local definition, no `.dynsym` export and no OpenSSL banner. It must still read
+    `NON_APPROVED_CRYPTO`: an "exported only" binding would let exactly this object
+    read clean, which is the case the ruleset's own admission test rules out.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, "private-weak-hash") / f"fakecrypto-1.0.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _ext\n",
+            "fakecrypto/_ext.abi3.so": extension(
+                dynsyms=(DynSym("PyInit__ext", defined=True),),
+                with_symtab=True,
+                symtab_syms=(
+                    DynSym("MD5_Init", defined=True, info=(STB_LOCAL << 4) | 2),  # STT_FUNC
+                ),
+            ),
+        },
+    )
+    record = scan(context, wheel)
+    assert "BIN_OWN_WEAK_HASH_IMPL" in record["verdict"]["rule_ids"]
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "none"
+
+
+def test_a_bundled_openssls_legacy_primitives_lead_the_headline_too(
+    context, tmp_path: Path
+) -> None:
+    """The same drift as the static case, through an auditwheel-bundled libcrypto.
+
+    A bundled `libcrypto` is an ordinary shared object: it exports `BF_encrypt` and
+    `MD4_Init` from `.dynsym` the way the host's own `libcrypto.so.3` does, no
+    `.symtab` read involved. `BIN_BUNDLED_OPENSSL`'s own `CONDITIONAL` is outranked by
+    `BIN_BCRYPT_BLOWFISH`'s and `BIN_OWN_WEAK_HASH_IMPL`'s `NON_APPROVED_CRYPTO` the
+    same way `BIN_STATIC_OPENSSL`'s is, so the headline drift this ruleset's `why`
+    text describes is not a static-only cost.
+
+    Nothing here spells a Curve25519 name, and none of the exported entry points do
+    either, so `BIN_CURVE25519` does not fire: see the paired
+    `test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab` for the
+    `.symtab` case that does.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, "bundled-legacy") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="42.0.5",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libcrypto-3a1f2b4c.so.3", "libc.so.6"),
+                runpath=("$ORIGIN/../fakecrypto.libs",),
+                dynsyms=(DynSym(EVP, defined=False),),
+            ),
+            "fakecrypto.libs/libcrypto-3a1f2b4c.so.3": ElfBuilder(
+                soname="libcrypto-3a1f2b4c.so.3",
+                needed=("libc.so.6",),
+                dynsyms=(
+                    DynSym(EVP, defined=True),
+                    DynSym("BF_encrypt", defined=True),
+                    DynSym("MD4_Init", defined=True),
+                ),
+                rodata=OPENSSL_BANNER,
+            ).build(),
+        },
+    )
+    record = scan(context, wheel)
+    rule_ids = set(record["verdict"]["rule_ids"])
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "bundled"
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "CONDITIONAL" in record["verdict"]["classes"]
+    assert {
+        "BIN_BUNDLED_OPENSSL",
+        "BIN_BCRYPT_BLOWFISH",
+        "BIN_OWN_WEAK_HASH_IMPL",
+    } <= rule_ids
+    assert "BIN_CURVE25519" not in rule_ids
+
+
+def test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab(
+    context, tmp_path: Path
+) -> None:
+    """The `.symtab` half of the pair above.
+
+    `x25519_fe51_mul` is a field-arithmetic helper, not part of `libcrypto`'s public
+    API, so an auditwheel-bundled copy only exports it from `.dynsym` if the packager
+    never strips the library. Give the same bundled `libcrypto` a `.symtab` that keeps
+    that helper as a local definition and `BIN_CURVE25519` joins the other two.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, "bundled-legacy-symtab") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="42.0.5",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libcrypto-3a1f2b4c.so.3", "libc.so.6"),
+                runpath=("$ORIGIN/../fakecrypto.libs",),
+                dynsyms=(DynSym(EVP, defined=False),),
+            ),
+            "fakecrypto.libs/libcrypto-3a1f2b4c.so.3": ElfBuilder(
+                soname="libcrypto-3a1f2b4c.so.3",
+                needed=("libc.so.6",),
+                dynsyms=(
+                    DynSym(EVP, defined=True),
+                    DynSym("BF_encrypt", defined=True),
+                    DynSym("MD4_Init", defined=True),
+                ),
+                with_symtab=True,
+                symtab_syms=(
+                    DynSym(EVP, defined=True),
+                    DynSym("BF_encrypt", defined=True),
+                    DynSym("MD4_Init", defined=True),
+                    DynSym("x25519_fe51_mul", defined=True, info=(STB_LOCAL << 4) | 2),
+                ),
+                rodata=OPENSSL_BANNER,
+            ).build(),
+        },
+    )
+    record = scan(context, wheel)
+    rule_ids = set(record["verdict"]["rule_ids"])
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "bundled"
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert {
+        "BIN_BUNDLED_OPENSSL",
+        "BIN_BCRYPT_BLOWFISH",
+        "BIN_OWN_WEAK_HASH_IMPL",
+        "BIN_CURVE25519",
+    } <= rule_ids
 
 
 # --------------------------------------------------------------------------

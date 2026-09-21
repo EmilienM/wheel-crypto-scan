@@ -110,6 +110,9 @@ jq -r 'select(.verdict.class == "OPAQUE" or (.errors | length > 0)) | .wheel.fil
 
 # Everything still needing a human
 jq -r 'select(.verdict.needs_human_review) | .wheel.filename' index.jsonl | wc -l
+
+# Non-approved headline that may come from a wheel's own OpenSSL build rather than its own code
+jq -r 'select(.verdict.class == "NON_APPROVED_CRYPTO" and (.verdict.conditions.openssl_linkage | IN("static","bundled","mixed"))) | .wheel.filename' index.jsonl
 ```
 
 ## Pinning the interpreter
