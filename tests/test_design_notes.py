@@ -3,7 +3,8 @@
 AGENTS.md's "Write down the current design, not its history" is a rule about prose, and
 prose fails nothing when it breaks it. These tests hold the parts of it a machine can
 check: no issue or PR citation and no review framing in code, tests, the ruleset or the
-docs, and every `DESIGN.md` heading that something quotes or links to still exists.
+docs, every `DESIGN.md` heading that something quotes or links to still exists, and no
+Markdown heading wraps onto a second source line.
 """
 
 from __future__ import annotations
@@ -53,6 +54,26 @@ _REVIEW_FRAMING = re.compile(
     r"|rounds? of review|(?<!\")found by review|DECISIONS\.md|docs/decisions/",
     re.IGNORECASE,
 )
+_FENCE = re.compile(r"^\s*(?:```|~~~)")
+_HEADING = re.compile(r"^#{1,6} ")
+
+
+def _wrapped_headings(text: str) -> list[int]:
+    """1-based line numbers of ATX headings, outside fenced code, whose next line is
+    not blank: Markdown ends a heading at the newline, so a wrapped one renders cut
+    short and its anchor is built from the truncated text."""
+    lines = text.split("\n")
+    hits = []
+    fenced = False
+    for number, line in enumerate(lines, start=1):
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced or not _HEADING.match(line):
+            continue
+        if number < len(lines) and lines[number].strip():
+            hits.append(number)
+    return hits
 
 
 def _hits(pattern: re.Pattern[str]) -> list[str]:
@@ -167,3 +188,35 @@ def test_every_design_anchor_link_exists() -> None:
     ]
     assert links, "no DESIGN.md anchor links found; the pattern has gone stale"
     assert [(path, slug) for path, slug in links if slug not in slugs] == []
+
+
+def test_no_markdown_heading_wraps_onto_a_second_line() -> None:
+    """A heading wrapped in the source renders cut short, and a quote of its full
+    title or a link to its full anchor resolves to nothing."""
+    markdown = [path for path in _SOURCES if path.suffix == ".md"]
+    assert any(path.name == "DESIGN.md" for path in markdown)
+    hits = [
+        f"{path.relative_to(ROOT)}:{number}"
+        for path in markdown
+        for number in _wrapped_headings(path.read_text(encoding="utf-8"))
+    ]
+    assert hits == []
+
+
+@pytest.mark.parametrize(
+    ("text", "wrapped"),
+    [
+        ("## A heading\n\nbody", []),
+        ("## A heading that\ncontinues here\n", [1]),
+        ("text\n### Deep heading\n- a list item\n", [2]),
+        ("## Last line", []),
+        ("```bash\n# a shell comment\necho hi\n```\n", []),
+        ("#1/<N> is not a heading\nnext", []),
+        ("# Top\nnext", [1]),
+        ("###### Six\nnext", [1]),
+    ],
+)
+def test_the_heading_check_tells_a_wrapped_heading_from_a_fenced_comment(
+    text: str, wrapped: list[int]
+) -> None:
+    assert _wrapped_headings(text) == wrapped

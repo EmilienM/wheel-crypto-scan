@@ -3723,8 +3723,7 @@ and a loader-depends-on-binfmt edge stays closed, the same edge "The loader live
 `ruleset_loader.py`, a sibling module, not a package" (above) refuses from the other
 direction.
 
-## `py_call`/`py_attr`/`py_constant` match fields are validated, and their subject
-fields made required
+## `py_call`/`py_attr`/`py_constant` match fields are validated, and their subject fields made required
 
 **Accepted. It prevents a crash, not just a silent-match-nothing gap.**
 
