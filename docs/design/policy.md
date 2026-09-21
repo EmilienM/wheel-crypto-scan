@@ -267,3 +267,27 @@ correctly but still reads `NON_APPROVED_CRYPTO`, because `curve25519_x25519` and
 that class is defined to catch, condition or not.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix-not-its-name)
+
+## A BoringSSL FIPS module is told from a stock build by its integrity test
+
+**Accepted.**
+
+`boringssl` matches `BoringSSL` in read-only data, but a stripped stock BoringSSL object
+(measured on `grpcio`'s `cygrpc` extension) carries that string, `BoringCrypto` and
+`FIPS self test` too, so none of them tell a validated BoringCrypto build apart.
+`BORINGSSL_integrity_test`, the FIPS module's power-on self-test entry point, does:
+upstream compiles it only into a FIPS build without ASAN, and it is a local `.symtab`
+definition, read the same way as the AWS-LC symbol prefix above.
+
+The rule is fork-neutral: AWS-LC's FIPS module shares the same source and the same
+symbol, so the rule names a FIPS build of the BoringSSL-lineage module rather than which
+fork compiled it, and suppresses only `BIN_BORINGSSL`. Every Go binary built with the
+BoringCrypto backend also suppresses `BIN_BORINGSSL`, since it vendors BoringSSL's own
+strings regardless of whether the integrity-test symbol survives stripping.
+
+The verdict is `CONDITIONAL`, the same reasoning as the AWS-LC entry above. A stripped
+static object that carries neither marker still reads as stock `NON_APPROVED_CRYPTO`,
+and an unstripped BoringCrypto binary keeps `NON_APPROVED_CRYPTO` in `classes` through
+its own primitives, unsuppressed for the same reason AWS-LC's are.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-boringssl-fips-module-is-told-from-a-stock-build-by-its-integrity-test-not-its-strings)

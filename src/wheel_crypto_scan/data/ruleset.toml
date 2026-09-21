@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "35"
+ruleset_version = "36"
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +582,13 @@ why = "AWS-LC. A separate FIPS-validated variant exists (aws-lc-fips), so the pr
 name = "aws_lc_fips"
 prefixes = ["aws_lc_fips_"]
 exact = []
-why = "The prefix aws-lc-fips-sys gives every AWS-LC symbol it compiles in, aws_lc_fips_<major>_<minor>_<patch>_, where the stock aws-lc-sys build uses aws_lc_<major>_<minor>_<patch>_. Measured on aws-lc-rs 1.18.1: the FIPS build (aws-lc-fips-sys 0.14.2) carries 2118 such names as local definitions in .symtab and the stock build (aws-lc-sys 0.45.0) carries none. Only the Rust crate applies this prefix; a C build of AWS-LC FIPS is unprefixed, and its FIPS-only symbols (BORINGSSL_bcm_text_hash and the like) are shared with BoringSSL's FIPS module, so they are not listed. A stripped object loses these names."
+why = "The prefix aws-lc-fips-sys gives every AWS-LC symbol it compiles in, aws_lc_fips_<major>_<minor>_<patch>_, where the stock aws-lc-sys build uses aws_lc_<major>_<minor>_<patch>_. Measured on aws-lc-rs 1.18.1: the FIPS build (aws-lc-fips-sys 0.14.2) carries 2118 such names as local definitions in .symtab and the stock build (aws-lc-sys 0.45.0) carries none. Only the Rust crate applies this prefix; a C build of AWS-LC FIPS is unprefixed, and its FIPS-only symbols (BORINGSSL_bcm_text_hash and the like) are shared with BoringSSL's FIPS module; boringssl_fips_module lists the one FIPS-only name upstream exports, BORINGSSL_integrity_test, whose rule names neither fork. A stripped object loses these names."
+
+[[symbol_group]]
+name = "boringssl_fips_module"
+prefixes = []
+exact = ["BORINGSSL_integrity_test"]
+why = "Defined only in a FIPS build of the BoringSSL-lineage module, where the power-on self-test calls it. Upstream's header documents it as existing only in FIPS mode without ASAN. Measured as a local definition in Go 1.26.7's BoringCrypto syso and in AWS-LC FIPS's .symtab, and absent from AWS-LC's stock build. It is shared by BoringCrypto and AWS-LC's FIPS module, so it names the module, not the fork. A stripped static object loses it. A shared-library build exports it instead of keeping it local, so it survives as a defined dynamic symbol after stripping removes the local one (source reading: crypto.h declares it OPENSSL_EXPORT; no shared FIPS build was measured)."
 
 [[symbol_group]]
 name = "bcrypt_blowfish"
@@ -1608,10 +1614,26 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "BoringSSL present"
-why = "BoringSSL is a separate stack from OpenSSL and ignores the system crypto policy. A separately validated BoringCrypto build exists, so a reviewer has to determine which build this is rather than assuming the worst or the best."
+why = "BoringSSL is a separate stack from OpenSSL and ignores the system crypto policy. A separately validated BoringCrypto build exists, so a reviewer has to determine which build this is rather than assuming the worst or the best. Suppressed on an object where the FIPS module's integrity test or a Go BoringCrypto build is identified, because both carry BoringSSL's own strings in read-only data; a stock BoringSSL object elsewhere in the wheel keeps its own finding."
+suppressed_by = ["BIN_BORINGSSL_FIPS_MODULE", "BIN_GO_BORING_CRYPTO"]
 [rule.match]
 kind = "binary_string"
 group = "boringssl"
+
+[[rule]]
+id = "BIN_BORINGSSL_FIPS_MODULE"
+layer = "binary"
+category = "bundled-crypto"
+severity = "medium"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "BoringSSL-lineage FIPS module present"
+why = "The FIPS module's power-on integrity test is compiled in. The symbol is shared by BoringCrypto and AWS-LC FIPS, so it identifies a FIPS build of the BoringSSL-lineage module, not which fork compiled it; the fork itself is still named by BIN_BORINGSSL's or BIN_AWS_LC's own strings. It is a condition, not a pass: the module is a static copy, and which validated version was compiled in is not something the wheel states. Suppresses BIN_BORINGSSL on the same object only, so a FIPS-built binary does not hide a stock one beside it in the wheel; a stripped static object loses this symbol along with everything else that would tell it apart and reads as stock BoringSSL."
+[rule.match]
+kind = "dynamic_symbol"
+group = "boringssl_fips_module"
+binding = "defined"
 
 [[rule]]
 id = "BIN_AWS_LC"
