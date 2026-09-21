@@ -84,15 +84,15 @@ class MachOBuilder:
     cpusubtype: int = 0x80000003
     filetype: int = 6  # MH_DYLIB
     id_dylib: str | None = None
-    # #85: one or more further `LC_ID_DYLIB` commands, written immediately after the
-    # first one (if any). Real objects carry at most one; this is how a test builds
-    # the decoy shape -- `cmd` alone cannot tell the real one from a decoy, unlike a
+    # One or more further `LC_ID_DYLIB` commands, written immediately after the first
+    # one (if any). Real objects carry at most one; this is how a test builds the decoy
+    # shape -- `cmd` alone cannot tell the real one from a decoy, unlike a
     # dylib-loading command's string.
     extra_id_dylibs: tuple[str, ...] = ()
     load_dylibs: tuple[str, ...] = ()
     # `LC_LOAD_DYLIB`'s siblings: same `dylib_command` layout, different load-time
     # tolerance or timing (`weak`/`lazy`/`upward`), or the target's exports folded into
-    # this object's own surface (`reexport`). #59.
+    # this object's own surface (`reexport`).
     weak_load_dylibs: tuple[str, ...] = ()
     lazy_load_dylibs: tuple[str, ...] = ()
     upward_load_dylibs: tuple[str, ...] = ()
@@ -113,28 +113,27 @@ class MachOBuilder:
     # bytes, an unguarded offset into this range reads a name the object never spelt
     # out, rather than the empty string zero bytes there would produce.
     malformed_dylib_header_fields: tuple[int, int, int] = (0, 0, 0)
-    # #84: a load command whose own `cmd`/`cmdsize` header cannot be trusted, written
-    # after `load_dylibs` and its siblings and before `honest_load_dylib_after_poison`,
-    # so a test can assert that the ones before it survive and the one after it does
-    # not. Only `cmd` and `cmdsize` are ever written -- the header lies about its own
-    # size, so a reader has no basis to read anything past it as this command's body.
+    # A load command whose own `cmd`/`cmdsize` header cannot be trusted, written after
+    # `load_dylibs` and its siblings and before `honest_load_dylib_after_poison`, so a
+    # test can assert that the ones before it survive and the one after it does not.
+    # Only `cmd` and `cmdsize` are ever written -- the header lies about its own size,
+    # so a reader has no basis to read anything past it as this command's body.
     # Distinct from `malformed_dylib_cmd`, whose `cmdsize` is honest and only the name
     # offset inside it is bad: that command's `cmd`/`cmdsize` can be trusted, so the
     # walk continues past it. `poison_cmdsize` is the value under test: `< 8` (too
     # small to hold the header), large enough to run past the end of the load
-    # commands, or -- #90 -- internally consistent by both of those measures yet not a
-    # multiple of the ABI's own alignment (8 on a 64-bit object, 4 on a 32-bit one),
-    # which desyncs every command after it without tripping either check above.
+    # commands, or internally consistent by both of those measures yet not a multiple
+    # of the ABI's own alignment (8 on a 64-bit object, 4 on a 32-bit one), which
+    # desyncs every command after it without tripping either check above.
     poison_cmdsize: int | None = None
     poison_cmd: int = LC_LOAD_DYLIB
-    # #84: one honest `LC_LOAD_DYLIB`, written immediately after the poison command --
-    # the concrete dependency a truncated walk drops. Naming the system library the
-    # way the issue's own reproduction does, so a test can assert it is gone.
+    # One honest `LC_LOAD_DYLIB`, written immediately after the poison command -- the
+    # concrete dependency a truncated walk drops. It names the system library, the
+    # dependency that matters most to lose, so a test can assert it is gone.
     honest_load_dylib_after_poison: str | None = None
-    # #84: raw bytes shorter than the 8-byte `cmd`/`cmdsize` header, appended after
-    # every other command and counted as one more in `ncmds` -- the
-    # `pos + 8 > len(commands)` trigger, distinct from a `cmdsize` that parses but
-    # lies about its own extent.
+    # Raw bytes shorter than the 8-byte `cmd`/`cmdsize` header, appended after every
+    # other command and counted as one more in `ncmds` -- the `pos + 8 > len(commands)`
+    # trigger, distinct from a `cmdsize` that parses but lies about its own extent.
     dangling_command_bytes: bytes | None = None
     # The `LC_RPATH` counterpart: `rpath_command`'s fixed header is 12 bytes, with no
     # payload of its own.
@@ -155,14 +154,14 @@ class MachOBuilder:
     declared_nsyms: int | None = None
     declared_stroff: int | None = None
     declared_strsize: int | None = None
-    # #85: one or more decoy `LC_SYMTAB` commands, honestly shaped -- a full
+    # One or more decoy `LC_SYMTAB` commands, honestly shaped -- a full
     # `symtab_command` -- but pointing at garbage offsets, which is exactly what makes
     # counting occurrences rather than trusting content the only sound check: content
     # alone cannot tell a decoy from a table nobody has read yet. `_before` writes
     # ahead of the real one (if `with_symtab` or `symbols` is set), the shape a
-    # last-wins reader would have gotten right by accident; `_after` writes behind it,
-    # the shape that actually demonstrates the pre-fix bug -- the decoy is the one a
-    # last-wins reader keeps.
+    # last-wins reader would get right by accident; `_after` writes behind it, the
+    # shape that actually demonstrates why a last-wins reader is wrong -- the decoy is
+    # the one it would keep.
     decoy_symtabs_before: int = 0
     decoy_symtabs_after: int = 0
     trailing: bytes = b""
@@ -215,7 +214,7 @@ class MachOBuilder:
         if self.malformed_rpath_name_offset is not None:
             # No string payload at all, so the padding is pure trailing NUL bytes --
             # `_cmdsize_pad` is safe here the same way it is for `all_nonprintable_dylib_name`
-            # below, since there is no name to prematurely terminate. #90.
+            # below, since there is no name to prematurely terminate.
             rpath_pad = self._cmdsize_pad(12, b"")
             cmdsize = 12 + len(rpath_pad)
             commands += (
@@ -226,8 +225,8 @@ class MachOBuilder:
         if self.unterminated_dylib_name is not None:
             # Deliberately NOT run through `_cmdsize_pad`: its trailing NUL bytes would
             # terminate the very run this fixture exists to leave unterminated. Any
-            # padding #90's alignment check still requires has to be non-NUL filler
-            # instead, so the run stays open all the way to the command's own edge.
+            # padding the `cmdsize` alignment check still requires has to be non-NUL
+            # filler instead, so the run stays open all the way to the command's own edge.
             header_len = 24
             name_bytes = self.unterminated_dylib_name.encode("utf-8", "surrogateescape")
             alignment = self._cmd_alignment()
@@ -241,9 +240,9 @@ class MachOBuilder:
             ncmds += 1
         if self.all_nonprintable_dylib_name:
             header_len = 24
-            # control bytes, then the terminating NUL, then #90's alignment padding --
-            # safe here because the name is already NUL-terminated before the padding
-            # starts, unlike `unterminated_dylib_name` above.
+            # control bytes, then the terminating NUL, then the `cmdsize` alignment
+            # padding -- safe here because the name is already NUL-terminated before the
+            # padding starts, unlike `unterminated_dylib_name` above.
             name_bytes = self._cmdsize_pad(header_len, b"\x01\x02\x03\x00")
             cmdsize = header_len + len(name_bytes)
             commands += (
@@ -371,15 +370,15 @@ class MachOBuilder:
         return len(data) - len(table) - len(strtab), len(data) - len(strtab)
 
     def _cmd_alignment(self) -> int:
-        # #90: the ABI itself requires `cmdsize` to be a multiple of 8 on a 64-bit
-        # object, 4 on a 32-bit one -- not just a multiple of 4 regardless of bitness,
-        # which is what every command here padded to before #90's alignment check
-        # existed to notice the difference.
+        # The ABI itself requires `cmdsize` to be a multiple of 8 on a 64-bit object, 4
+        # on a 32-bit one -- not just a multiple of 4 regardless of bitness, which is
+        # the difference the reader's alignment check notices.
         return 8 if self.is64 else 4
 
     def _cmdsize_pad(self, header_len: int, payload: bytes) -> bytes:
-        # A "well-formed" fixture has to actually honour `_cmd_alignment`, or the new
-        # check reads every ordinary 64-bit command in this file as malformed.
+        # A "well-formed" fixture has to actually honour `_cmd_alignment`, or the
+        # reader's alignment check reads every ordinary 64-bit command in this file as
+        # malformed.
         pad = (-(header_len + len(payload))) % self._cmd_alignment()
         return payload + b"\x00" * pad
 

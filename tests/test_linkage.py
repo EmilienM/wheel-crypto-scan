@@ -158,8 +158,8 @@ def test_the_other_crypto_libraries_resolve_on_windows_too(ruleset, dll: str, li
     """MSYS2 and conda spell every one of them this way, not just OpenSSL.
 
     Reducing the name in `[conventions]` is what makes this hold for the whole table.
-    Enumerating spellings on the openssl entry would have fixed one library out of
-    thirteen and left the rest reporting a dependency the resolver cannot see.
+    Enumerating spellings on the openssl entry would cover one library out of thirteen
+    and leave the rest reporting a dependency the resolver cannot see.
     """
     evidence = wheel(binary("pkg/_ext.pyd", format=FORMAT_PE, needed=(dll, "python312.dll")))
     assert resolve_linkage(ruleset, evidence)[library] == LINKAGE_SYSTEM
@@ -197,7 +197,7 @@ def test_a_wheel_shipping_its_own_openssl_is_bundled(ruleset) -> None:
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
 
 
-# --- delocate: bundled without a rename (#57) --------------------------------
+# --- delocate: bundled without a rename -------------------------------------
 #
 # delocate copies a dependency into `.dylibs/` and rewrites the load command to point
 # there, but never renames the file the way auditwheel and delvewheel do. A plain
@@ -208,8 +208,9 @@ def test_a_wheel_shipping_its_own_openssl_is_bundled(ruleset) -> None:
 def test_a_loader_path_dependency_resolving_to_a_shipped_object_is_bundled(ruleset) -> None:
     """`@loader_path/.dylibs/libcrypto.3.dylib`: delocate's usual load-command form.
 
-    Before #57 this read `mixed`: the extension's `needed` entry was unmangled, so it
-    resolved to `system`, disagreeing with the vendored copy's own `bundled` record.
+    Keyed on `mangled` alone this reads `mixed`: the extension's `needed` entry is
+    unmangled, so it resolves to `system`, disagreeing with the vendored copy's own
+    `bundled` record.
     """
     evidence = wheel(
         binary(
@@ -288,23 +289,23 @@ def test_an_unreadable_vendored_copy_still_lets_the_needed_entry_resolve(ruleset
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
 
 
-# --- BLOCKING 1 (adversarial review of #57): a needed entry cannot confirm itself ---
+# --- a needed entry cannot confirm itself -----------------------------------
 #
 # `member_stem_counts` is built from every object in the wheel, the querying object
 # included. An object's own file name can coincidentally share a stem with a dependency
 # it declares -- most sharply, an object literally called `libcrypto.so` that itself
 # declares an absolute, genuinely-system `/usr/lib64/libcrypto.so.3` -- and without
-# discounting the object's own contribution, that coincidence answered the object's own
-# question, reading a plain system dependency as `bundled` with nothing behind it.
+# discounting the object's own contribution, that coincidence would answer the object's
+# own question, reading a plain system dependency as `bundled` with nothing behind it.
 #
-# #80 later gave every absolute `needed` entry its own, earlier short-circuit in
-# `needed_posture`, so the original reproduction just below -- an absolute dependency --
-# no longer reaches `_resolves_within_wheel` at all, and no longer exercises the discount
-# it once pinned; its own assertion still holds, just through a different route now (see
-# the "closed by #80" test further down, which is what actually pins that route). The
-# discount itself is still live code for a *relative* same-named dependency, which
-# `test_a_relative_needed_entry_matching_its_own_declaring_objects_name_is_not_self_
-# confirmed`, just below, exists to keep pinned.
+# Every absolute `needed` entry has its own, earlier short-circuit in `needed_posture`,
+# so the reproduction just below -- an absolute dependency -- does not reach
+# `_resolves_within_wheel` at all, and does not exercise the discount; its assertion
+# holds through the short-circuit's route instead, which
+# `test_an_absolute_needed_entrys_basename_collision_reads_as_system` further down pins
+# explicitly. The discount itself is live code for a *relative* same-named dependency,
+# and the test just below exists to pin it:
+# `test_a_relative_needed_entry_matching_its_own_declaring_objects_name_is_not_self_confirmed`.
 
 
 def test_a_needed_entry_matching_its_own_declaring_objects_name_is_not_self_confirmed(
@@ -314,9 +315,9 @@ def test_a_needed_entry_matching_its_own_declaring_objects_name_is_not_self_conf
     an absolute path to the host's OpenSSL and can never resolve to the object that
     names it, whatever its own file name happens to be.
 
-    This no longer exercises `_resolves_within_wheel`'s own-stem discount: #80's
-    absolute short-circuit in `needed_posture` answers `system` before that function
-    is ever called, for this exact reproduction. It stays as a characterization pin
+    This does not exercise `_resolves_within_wheel`'s own-stem discount: the absolute
+    short-circuit in `needed_posture` answers `system` before that function is ever
+    called, for this exact reproduction. It stands as a characterization pin
     of the end-to-end answer; the discount itself is pinned by the relative sibling
     just below, which cannot take the absolute short-circuit.
     """
@@ -334,8 +335,9 @@ def test_a_needed_entry_matching_its_own_declaring_objects_name_is_not_self_conf
 def test_a_relative_needed_entry_matching_its_own_declaring_objects_name_is_not_self_confirmed(
     ruleset,
 ) -> None:
-    """The discount's own regression test, now that the absolute reproduction above
-    no longer reaches it: one object, named `libcrypto.so`, declares a plain relative
+    """The discount's own test, reached through a relative entry since the
+    absolute short-circuit above answers before `_resolves_within_wheel` is reached
+    for an absolute one: one object, named `libcrypto.so`, declares a plain relative
     `libcrypto.so.3` -- exactly its own stem -- with no vendor directory and no second
     file. `member_stem_counts` must not let the object answer its own question just
     because a relative dependency, unlike an absolute one, genuinely could resolve
@@ -353,15 +355,15 @@ def test_a_relative_needed_entry_matching_its_own_declaring_objects_name_is_not_
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
 
 
-def test_an_absolute_needed_entrys_basename_collision_no_longer_confirms_bundled(ruleset) -> None:
-    """Closed by #80. This used to be the documented residual: discounting an object's
-    own contribution to its own answer left a second, real object that happens to
-    share the same stem free to confirm `bundled` -- but the `needed` entry here is an
-    absolute path, and no real dynamic loader ever resolves an absolute path against
+def test_an_absolute_needed_entrys_basename_collision_reads_as_system(ruleset) -> None:
+    """The absolute short-circuit applies here too. Discounting an object's own
+    contribution to its own answer alone would leave a second, real object that happens
+    to share the same stem free to confirm `bundled` -- but the `needed` entry here is
+    an absolute path, and no real dynamic loader ever resolves an absolute path against
     anything the wheel ships. The basename coincidence is exactly as meaningless for a
-    second object as it was for the declaring object's own name in the test above; only
-    the object count differed, and the object count was never the right test for an
-    absolute path in the first place.
+    second object as it is for the declaring object's own name in the test above; only
+    the object count differs, and the object count is never the right test for an
+    absolute path.
     """
     evidence = wheel(
         binary(
@@ -373,12 +375,12 @@ def test_an_absolute_needed_entrys_basename_collision_no_longer_confirms_bundled
 
 
 def test_a_relative_needed_entrys_basename_collision_still_confirms_bundled(ruleset) -> None:
-    """#80 narrows the residual to absolute entries only. A relative, unmangled
+    """The short-circuit covers absolute entries only. A relative, unmangled
     `needed` entry can genuinely be resolved by `$ORIGIN`/`RPATH`/`RUNPATH`, so a
     second, real object elsewhere in the wheel that happens to share its stem still
     confirms `bundled` -- imprecise when the coincidence is not real vendoring, but
     never silent about it (`BIN_NEEDED_VENDORED_CRYPTO`), and still the accepted trade
-    `DECISIONS.md` documents for anything that is not an absolute path.
+    `DESIGN.md` documents for anything that is not an absolute path.
     """
     evidence = wheel(
         binary("fakecrypto/_ext.so", needed=("libcrypto.so.3",)),
@@ -388,14 +390,14 @@ def test_a_relative_needed_entrys_basename_collision_still_confirms_bundled(rule
 
 
 def test_an_archive_members_soname_never_confirms_a_siblings_needed_entry(ruleset) -> None:
-    """#99's adversarial review: the same basename-collision shape as the test
-    above, but the colliding object is `from_archive=True` -- a relocatable object
-    `binfmt.ar` read out of a `.a`/`.lib` static archive. Unlike a real zip member,
-    such an object was never a file any dynamic loader could resolve a `needed`
-    entry to, and its `SONAME` is bytes the archive itself wrote, read exactly as
-    written -- attacker-controlled the same way any other bytes in the wheel are.
-    Before `member_stem_counts` excluded these, a crafted archive member could flip
-    a genuinely system-linked sibling extension's own posture to `bundled`.
+    """The same basename-collision shape as the test above, but the colliding object
+    is `from_archive=True` -- a relocatable object `binfmt.ar` read out of a
+    `.a`/`.lib` static archive. Unlike a real zip member, such an object is never a
+    file any dynamic loader could resolve a `needed` entry to, and its `SONAME` is
+    bytes the archive itself wrote, read exactly as written -- attacker-controlled the
+    same way any other bytes in the wheel are. If `member_stem_counts` counted these,
+    a crafted archive member could flip a genuinely system-linked sibling extension's
+    own posture to `bundled`.
     """
     evidence = wheel(
         binary("fakecrypto/_ext.so", needed=("libcrypto.so.3",)),
@@ -410,7 +412,7 @@ def test_an_archive_members_soname_never_confirms_a_siblings_needed_entry(rulese
 
 
 def test_an_absolute_mangled_needed_entry_is_still_bundled(ruleset) -> None:
-    """The `mangled` check is unaffected by absoluteness on purpose (#80): a
+    """The `mangled` check is unaffected by absoluteness on purpose: a
     hash-renamed basename is strong enough evidence on its own, independent of
     whether the path that carries it happens to be absolute, so this still reads
     `bundled` even though the entry itself is a path no loader could resolve within
@@ -426,7 +428,7 @@ def test_an_absolute_macho_install_name_basename_collision_is_not_manufactured_b
     """Mach-O is where an absolute `needed` entry is the norm, not the exception: an
     unrepaired Homebrew build's `LC_LOAD_DYLIB` genuinely does carry a literal
     install name like `/usr/local/opt/openssl@3/lib/libcrypto.3.dylib`, resolved by
-    `dyld` exactly as written, never against the wheel. Same fix, same reproduction
+    `dyld` exactly as written, never against the wheel. Same rule, same reproduction
     as the ELF tests above, checked against the other format the docstring claims it
     for.
     """
@@ -446,23 +448,23 @@ def test_an_absolute_macho_install_name_basename_collision_is_not_manufactured_b
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
 
 
-def test_an_absolute_basename_collision_beside_a_real_system_match_no_longer_self_disagrees(
+def test_an_absolute_basename_collision_beside_a_real_system_match_does_not_self_disagree(
     ruleset,
 ) -> None:
     """One object declares two `needed` entries: the absolute, basename-colliding one
-    from the tests above, and a second, ordinary relative entry that genuinely does
-    match the system library. Before #80 the absolute entry's spurious `bundled`
-    combined with the second entry's `system` on the *same* object, and
-    `_binary_posture`'s `sum((system, bundled, static)) > 1` check read that as the
-    object's evidence disagreeing with itself: `mixed`, which would have added
+    from the tests above, and a second, ordinary relative entry that genuinely matches
+    the system library. The absolute short-circuit reads the absolute entry as
+    `system` too, so there is only one definite posture on the object, not two: plain
+    `system`, `DERIVED_SYSTEM_OPENSSL_ONLY` -- the accurate answer for a wheel that
+    only ever links the system library, reached directly instead of by two postures
+    disagreeing over a coincidence. Without that check, the absolute entry's spurious
+    `bundled` would combine with the second entry's `system` on the *same* object, and
+    `_binary_posture`'s `sum((system, bundled, static)) > 1` check would read that as
+    the object's evidence disagreeing with itself: `mixed`, adding
     `BIN_OPENSSL_LINKAGE_UNKNOWN` to the findings and `OPAQUE` to `verdict.classes`
     (the headline stays `CONDITIONAL` either way here, since `BIN_NEEDED_VENDORED_
-    CRYPTO` already forces it pre-fix -- what changes is that tuple and those rule
-    ids, not the headline). After #80 the absolute entry is `system` too, so there is
-    only one definite posture, not two: plain `system`, `DERIVED_SYSTEM_OPENSSL_ONLY`
-    -- the accurate answer for a wheel that only ever linked the system library,
-    reached correctly instead of by two postures happening to disagree over a
-    coincidence. See `test_an_absolute_basename_collision_is_not_manufactured_bundled`
+    CRYPTO` already forces it -- what the short-circuit decides is that tuple and those rule
+    ids, not the headline). See `test_an_absolute_basename_collision_is_not_manufactured_bundled`
     and `test_an_absolute_needed_entry_beside_an_unreadable_basename_collision_stays_
     system` in `tests/test_acceptance.py` for the full-record assertions on findings
     and `verdict.classes` this unit test does not itself carry.
@@ -474,14 +476,13 @@ def test_an_absolute_basename_collision_beside_a_real_system_match_no_longer_sel
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
 
 
-# --- BLOCKING 2 (adversarial review of #57): vendoring something else is not evidence
-# --- about openssl -------------------------------------------------------------------
+# --- vendoring something else is not evidence about openssl -----------------
 #
-# `_looks_vendored` used to treat "this object HAS a vendor-shaped rpath/runpath
+# `_looks_vendored` must not treat "this object HAS a vendor-shaped rpath/runpath
 # anywhere" as grounds for `unknown`, regardless of whether anything the wheel ships
 # could plausibly be the target -- so a FIPS-conscious build that genuinely links the
 # system OpenSSL (auditwheel's `--exclude libcrypto.so.3`) while vendoring an unrelated
-# library in the same wheel read as `unknown`/`OPAQUE` instead of `system`.
+# library in the same wheel would read as `unknown`/`OPAQUE` instead of `system`.
 
 
 def test_a_genuine_system_openssl_dependency_beside_unrelated_vendoring_stays_system(
@@ -539,7 +540,7 @@ def test_a_vendor_shaped_loader_path_naming_nothing_shipped_is_system_when_fully
     anything under it, and every member of the wheel was read: `member_stem_counts`
     already speaks for the whole wheel, so this is genuine `system`, not `unknown`
     -- asserting `unknown` from the path shape alone would be a different overconfident
-    misreading in the other direction. #57.
+    misreading in the other direction.
     """
     evidence = wheel(
         binary(
@@ -619,13 +620,13 @@ def test_a_vendor_shaped_path_is_unknown_when_the_archive_skipped_a_member(rules
 def test_an_absolute_needed_entry_beside_a_vendor_shaped_runpath_stays_system_even_incomplete(
     ruleset,
 ) -> None:
-    """Closed by #80. `_looks_vendored` joins the *whole* `needed` string to each
-    `RPATH`/`RUNPATH` entry, so an absolute path can produce a joined string that
-    contains a vendor directory component by pure coincidence -- `$ORIGIN/pkg.libs`
-    joined with `/usr/lib64/libcrypto.so.3` mentions `pkg.libs` in the combined
-    string, even though a real loader never resolves an absolute path via RUNPATH at
-    all. Before the fix this incompletely-read wheel read `unknown`; an absolute path
-    must never consult `_looks_vendored`, incomplete or not.
+    """`_looks_vendored` joins the *whole* `needed` string to each `RPATH`/`RUNPATH`
+    entry, so an absolute path can produce a joined string that contains a vendor
+    directory component by pure coincidence -- `$ORIGIN/pkg.libs` joined with
+    `/usr/lib64/libcrypto.so.3` mentions `pkg.libs` in the combined string, even
+    though a real loader never resolves an absolute path via RUNPATH at all. Consulted
+    for this entry, `_looks_vendored` reads this incompletely-read wheel as `unknown`;
+    an absolute path must never consult it, incomplete or not.
     """
     evidence = wheel(
         binary(
@@ -648,7 +649,7 @@ def test_an_absolute_needed_entry_beside_a_vendor_shaped_runpath_stays_system_ev
 def test_an_absolute_needed_entry_shaped_like_a_vendor_path_itself_stays_system_even_incomplete(
     ruleset,
 ) -> None:
-    """Closed by #80, the other half of `_looks_vendored`: its *direct* branch,
+    """The other half of `_looks_vendored`: its *direct* branch,
     `conventions.is_vendor_path(needed)`, reads the `needed` string's own directory
     components without any `RPATH`/`RUNPATH` join at all -- delocate's exact
     convention, `@loader_path/.dylibs/...`, where the vendor-directory component
@@ -704,7 +705,7 @@ def test_a_symlinked_vendored_library_is_treated_as_incompletely_read(ruleset) -
     """`layers.binaries.is_binary_member` returns `False` for every symlink, so a
     vendored library shipped as one is never read as a binary at all: it records
     neither a `skipped` entry nor a `STAGE_BINARY` error, only `artifacts.symlinks`.
-    Without checking that field, the extension's vendor-shaped `needed` entry read
+    Without checking that field, the extension's vendor-shaped `needed` entry reads
     `system` -- `BIN_NEEDED_SYSTEM_OPENSSL`'s "Links the system OpenSSL" and
     `DERIVED_SYSTEM_OPENSSL_ONLY`'s "All OpenSSL use resolves to the system library"
     are both affirmatively wrong for an `@loader_path`-anchored load command, which
@@ -833,8 +834,8 @@ def test_object_postures_are_what_the_field_is_aggregated_from(ruleset) -> None:
 
 @pytest.mark.parametrize("name", ["openssl", "openssl-sys", "openssl-src"])
 def test_an_sbom_naming_an_openssl_crate_with_no_object_evidence_is_unknown(ruleset, name) -> None:
-    """The issue's own reproduction: an SBOM naming `openssl-sys` with only an
-    unrelated dependency in the one object present must not read `none`."""
+    """An SBOM naming `openssl-sys`, with only an unrelated dependency in the one
+    object present, must not read `none`."""
     evidence = wheel(
         binary("pkg/_rust.abi3.so", needed=("libc.so.6",), dynsym_count=1),
         metadata=sbom(name),
@@ -950,21 +951,21 @@ def test_an_sbom_never_overrides_what_an_object_answers(ruleset, fields, posture
     assert resolve_linkage(ruleset, evidence)["openssl"] == posture
 
 
-# --- system and static within one object (#60) ------------------------------
+# --- system and static within one object ------------------------------------
 #
-# `_binary_posture` used to test `needed` first and return as soon as it found a
-# system match, so an object that both declares `DT_NEEDED libssl.so.3` and defines
-# `EVP_DigestInit_ex` itself (or carries an OpenSSL banner) never reached the
-# defined/banner check at all: it read `system`, and the record then paired
+# Testing `needed` first and returning as soon as `_binary_posture` finds a system
+# match would mean an object that both declares `DT_NEEDED libssl.so.3` and defines
+# `EVP_DigestInit_ex` itself (or carries an OpenSSL banner) never reaches the
+# defined/banner check at all: it reads `system`, and the record then pairs
 # `DERIVED_SYSTEM_OPENSSL_ONLY` ("every piece of OpenSSL evidence points at the
 # system library") with `BIN_OPENSSL_SYMBOLS_DEFINED` ("OpenSSL was compiled into
 # it") -- a record contradicting itself in the favourable direction. Both
 # observations are independently true, so the object's own posture is `mixed`,
-# the same value `_aggregate` already gives two objects that disagree.
+# the same value `_aggregate` gives two objects that disagree.
 
 
 def test_a_needed_system_match_and_a_defined_symbol_together_are_mixed(ruleset) -> None:
-    """The reproduction from #60: one object, both signals, in the same record."""
+    """One object, both signals, in the same record."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1088,8 +1089,8 @@ def test_a_banner_and_imports_without_a_system_dependency_are_still_static(rules
 def test_a_library_without_a_copy_string_group_always_counts_its_banner(ruleset) -> None:
     """libsodium names no `copy_string_group`, so it has no way to tell a header
     banner from a copy, and a banner beside a system dependency and imports stays a
-    real posture disagreement: `mixed`, the same as OpenSSL got before this gate
-    existed."""
+    real posture disagreement: `mixed`, the reading OpenSSL's banner would get with no
+    `copy_string_group` to consult either."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1101,14 +1102,13 @@ def test_a_library_without_a_copy_string_group_always_counts_its_banner(ruleset)
     assert resolve_linkage(ruleset, evidence)["libsodium"] == LINKAGE_MIXED
 
 
-def test_a_merged_universal_binary_whose_slices_disagreed_is_now_mixed(ruleset) -> None:
-    """`DECISIONS.md`'s "A universal binary is one record, and its slices are
+def test_a_merged_universal_binary_whose_slices_disagree_is_mixed(ruleset) -> None:
+    """`DESIGN.md`'s "A universal binary is one record, and its slices are
     merged": an x86_64 slice linking the host OpenSSL and an arm64 slice with it
     compiled in, reduced by the Mach-O reader into one `BinaryEvidence` whose
-    `needed` and `matched_symbols` are the union of both slices. This used to read
-    `system` because `needed` was tested first; #60 makes it `mixed`, matching
-    what reading the slices separately and letting `_aggregate` combine them would
-    have said all along.
+    `needed` and `matched_symbols` are the union of both slices. Testing `needed`
+    first would read this `system`; it is `mixed`, matching what reading the slices
+    separately and letting `_aggregate` combine them says.
     """
     evidence = wheel(
         binary(
@@ -1125,7 +1125,7 @@ def test_a_merged_universal_binary_whose_slices_disagreed_is_now_mixed(ruleset) 
 
 
 def test_a_needed_system_match_alone_is_still_system(ruleset) -> None:
-    """No defined symbol and no banner: the ordinary system case is unchanged."""
+    """No defined symbol and no banner: the ordinary system case."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1137,7 +1137,7 @@ def test_a_needed_system_match_alone_is_still_system(ruleset) -> None:
 
 
 def test_a_defined_symbol_alone_is_still_static(ruleset) -> None:
-    """No `needed` match at all: the ordinary static case is unchanged."""
+    """No `needed` match at all: the ordinary static case."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1148,22 +1148,21 @@ def test_a_defined_symbol_alone_is_still_static(ruleset) -> None:
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
 
 
-# --- uncertain and static within one object (#87) ----------------------------
+# --- uncertain and static within one object ---------------------------------
 #
-# `_binary_posture` returned `LINKAGE_UNKNOWN` for the `uncertain` case -- a `needed`
-# entry whose path/rpath shape looks vendored but that an incompletely-read wheel
-# cannot confirm either way (#57) -- before the defined/banner check a few lines
-# below it ever ran. An object with both an unconfirmed vendor-shaped `needed` entry
-# and a confirmed static definition (or banner) read `unknown` regardless, silently
-# discarding the confirmed evidence. This is #60's own fix, extended: `mixed`, not a
-# value that erases one of the two facts.
+# Returning `LINKAGE_UNKNOWN` from `_binary_posture` for the `uncertain` case -- a
+# `needed` entry whose path/rpath shape looks vendored but that an incompletely-read
+# wheel cannot confirm either way -- before the defined/banner check a few lines below
+# it ever runs would read an object with both an unconfirmed vendor-shaped `needed`
+# entry and a confirmed static definition (or banner) as `unknown` regardless,
+# silently discarding the confirmed evidence. The same rule as `system` beside
+# `static` applies: `mixed`, not a value that erases one of the two facts.
 
 
 def test_an_uncertain_needed_match_and_a_defined_symbol_together_are_mixed(ruleset) -> None:
-    """The reproduction from #87: an incompletely-read wheel (`errors` at
-    `STAGE_BINARY`), a `needed` entry whose `RUNPATH` looks vendor-shaped but names
-    nothing the wheel actually ships, and a real `EVP_DigestInit_ex` definition in
-    the same object.
+    """An incompletely-read wheel (`errors` at `STAGE_BINARY`), a `needed` entry
+    whose `RUNPATH` looks vendor-shaped but names nothing the wheel actually ships, and
+    a real `EVP_DigestInit_ex` definition in the same object.
     """
     evidence = wheel(
         binary(
@@ -1186,7 +1185,7 @@ def test_an_uncertain_needed_match_and_a_defined_symbol_together_are_mixed(rules
 
 def test_an_uncertain_needed_match_and_a_banner_together_are_mixed(ruleset) -> None:
     """Same shape, the banner-only variant: a version script hides the symbols but
-    the string survives it, same as #60's banner variant."""
+    the string survives it, same as the `system`-beside-`static` banner variant."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1207,7 +1206,7 @@ def test_an_uncertain_needed_match_and_a_banner_together_are_mixed(ruleset) -> N
 
 
 def test_an_uncertain_needed_match_alone_is_still_unknown(ruleset) -> None:
-    """No static evidence at all: the ordinary `uncertain` case (#57) is unchanged."""
+    """No static evidence at all: the ordinary `uncertain` case."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1236,7 +1235,7 @@ def test_a_confirmed_system_match_beside_an_uncertain_one_stays_system(ruleset) 
     outvotes a definite one present elsewhere (`len(definite) == 1: return
     definite[0]`, discarding `LINKAGE_UNKNOWN`) -- the same rule applied here within
     one object: the confirmed `system` match needs no vote from the unconfirmed
-    `uncertain` one, so this stays plain `system`, not a three-way `mixed`. See #87.
+    `uncertain` one, so this stays plain `system`, not a three-way `mixed`.
     """
     evidence = wheel(
         binary(
@@ -1264,19 +1263,18 @@ def test_system_uncertain_and_static_together_still_read_mixed(ruleset) -> None:
     same three signals as the test above, plus a confirmed static definition.
 
     Whenever `system` and `uncertain` can both be true on one object, `system` and
-    `static` are also both true here, so #60's `if system and static: return
-    LINKAGE_MIXED` branch already answers `mixed` before `_binary_posture` ever
-    reaches the new `if uncertain and static` branch #87 added. That makes this
-    specific shape provably unable to distinguish the two branches, or their
-    relative order, from `resolve_linkage`'s output alone: deleting the `#87`
-    branch entirely, or moving it ahead of the `system` checks, both still leave
-    this test green, because #60's branch (or the reordered #87 branch) produces
-    the identical `mixed` either way. Confirmed by mutation during review.
+    `static` are also both true here, so the `_DEFINITE`-count branch already answers
+    `mixed` before `_binary_posture` ever reaches the `if uncertain and static`
+    branch. That makes this specific shape provably unable to distinguish the two
+    branches, or their relative order, from `resolve_linkage`'s output alone:
+    deleting the `uncertain`-and-`static` branch entirely, or moving it ahead of the
+    `system` checks, both leave this test green, because either branch produces the
+    identical `mixed`. Mutation confirms it.
 
-    The `#87` branch's own ordering is pinned by the two-signal reproduction tests
-    instead (`test_an_uncertain_needed_match_and_a_defined_symbol_together_are_mixed`
-    and its banner variant, above), where `system` is false and only the new branch
-    can produce `mixed` at all; reverting the fix turns those two red. This test
+    The `uncertain`-and-`static` branch's own ordering is pinned by the two-signal
+    tests instead (`test_an_uncertain_needed_match_and_a_defined_symbol_together_are_
+    mixed` and its banner variant, above), where `system` is false and only that
+    branch can produce `mixed` at all; removing it turns those two red. This test
     stays only to confirm the three-way shape reads sensibly, not to attribute the
     answer to either branch.
     """
@@ -1302,22 +1300,23 @@ def test_system_uncertain_and_static_together_still_read_mixed(ruleset) -> None:
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
 
 
-# --- bundled and system/static within one object (#88) -----------------------
+# --- bundled and system/static within one object ----------------------------
 #
-# `_binary_posture`'s `needed` loop used to return `LINKAGE_BUNDLED` as soon as one
-# entry resolved that way, before a second, disagreeing `needed` entry on the same
-# object -- or the defined/static check a few lines below -- ever ran. A universal
-# Mach-O object merges its slices' `needed` tuples into one (`binfmt.macho`, pinned by
-# `test_load_dylibs_merge_across_slices` in `test_binfmt_macho.py`), so a fat object
-# whose slices disagreed about `bundled` versus `system` or `static` read `bundled`
-# outright instead of `mixed`, unlike the same evidence read as two separate objects.
+# Returning `LINKAGE_BUNDLED` from `_binary_posture`'s `needed` loop as soon as one
+# entry resolves that way, before a second, disagreeing `needed` entry on the same
+# object -- or the defined/static check a few lines below -- ever runs, would lose the
+# disagreement. A universal Mach-O object merges its slices' `needed` tuples into one
+# (`binfmt.macho`, pinned by `test_load_dylibs_merge_across_slices` in
+# `test_binfmt_macho.py`), so a fat object whose slices disagree about `bundled` versus
+# `system` or `static` would read `bundled` outright instead of `mixed`, unlike the
+# same evidence read as two separate objects.
 
 
 def test_a_bundled_needed_match_and_a_system_needed_match_together_are_mixed(ruleset) -> None:
-    """The reproduction from #88: one object, one `needed` entry hash-renamed
-    (`bundled`), a different `needed` entry an absolute path to the host library
-    (`system`). Same evidence in two separate objects already reads `mixed` via
-    `_aggregate`; this object's own evidence must read the same way.
+    """One object, one `needed` entry hash-renamed (`bundled`), a different `needed`
+    entry an absolute path to the host library (`system`). Same evidence in two separate
+    objects already reads `mixed` via `_aggregate`; this object's own evidence must read
+    the same way.
     """
     evidence = wheel(
         binary(
@@ -1329,10 +1328,9 @@ def test_a_bundled_needed_match_and_a_system_needed_match_together_are_mixed(rul
 
 
 def test_a_bundled_needed_match_and_a_defined_symbol_together_are_mixed(ruleset) -> None:
-    """The second reproduction from #88: one hash-renamed `needed` entry, and a real
-    `EVP_DigestInit_ex` definition in the same object -- the shape a Mach-O universal
-    binary merges into one record when one slice declares the vendored dependency and
-    the other has OpenSSL compiled in.
+    """One hash-renamed `needed` entry, and a real `EVP_DigestInit_ex` definition in
+    the same object -- the shape a Mach-O universal binary merges into one record when
+    one slice declares the vendored dependency and the other has OpenSSL compiled in.
     """
     evidence = wheel(
         binary(
@@ -1346,8 +1344,8 @@ def test_a_bundled_needed_match_and_a_defined_symbol_together_are_mixed(ruleset)
 
 
 def test_a_bundled_needed_match_and_a_banner_together_are_mixed(ruleset) -> None:
-    """The banner-only variant of the same contradiction, matching #60's and #87's
-    own banner variants."""
+    """The banner-only variant of the same contradiction, matching the `system` and
+    `uncertain` banner variants above."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1359,8 +1357,8 @@ def test_a_bundled_needed_match_and_a_banner_together_are_mixed(ruleset) -> None
 
 
 def test_a_bundled_needed_match_alone_is_still_bundled(ruleset) -> None:
-    """No other signal: the ordinary bundled case, now reached after the
-    `_DEFINITE`-count check instead of returning from inside the loop, is unchanged.
+    """No other signal: the ordinary bundled case, reached after the `_DEFINITE`-count
+    check rather than by returning from inside the loop.
     """
     evidence = wheel(binary("pkg/_ext.so", needed=("libcrypto-3a1f2b4c.so.3",)))
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
@@ -1371,8 +1369,8 @@ def test_a_bundled_needed_match_beside_an_uncertain_one_stays_bundled(ruleset) -
     `bundled`, and a second whose own path is vendor-shaped (delocate's convention)
     but that this incompletely-read wheel cannot confirm. `bundled`, like `system`,
     is read off `binary.needed` in the loop above, and a confirmed entry from that
-    loop needs no vote from a different, unconfirmed one -- the same rule #87
-    established for `system` beside `uncertain`, extended here to `bundled`. See #88.
+    loop needs no vote from a different, unconfirmed one -- the same rule as `system`
+    beside `uncertain`, applied to `bundled`.
     """
     evidence = wheel(
         binary(
@@ -1446,15 +1444,14 @@ def test_an_opaque_binary_makes_the_answer_unknown_not_none(ruleset) -> None:
 
 
 def test_an_opaque_binary_only_costs_the_libraries_always_reported(ruleset) -> None:
-    """#68: `_binary_posture` used to answer `LINKAGE_UNKNOWN` for `is_opaque` directly,
-    once per `(binary, library)` pair in `resolve_linkage`'s loop over the whole
-    ruleset -- so an opaque object made every one of the thirteen libraries in the
-    shipped ruleset read `unknown`, not only `openssl` (the only one with
-    `always_report = true`). That bypassed the `unanswered and library.always_report`
-    gate `_left_unanswered` already computes for exactly this signal, which
+    """Answering `LINKAGE_UNKNOWN` for `is_opaque` directly, once per `(binary,
+    library)` pair in `resolve_linkage`'s loop over the whole ruleset, would make an
+    opaque object read every one of the thirteen libraries in the shipped ruleset as
+    `unknown`, not only `openssl` (the only one with `always_report = true`). Going
+    through the `unanswered and library.always_report` gate `_left_unanswered` already
+    computes for exactly this signal, which
     `test_an_unanswered_object_costs_only_the_libraries_always_reported` pins for a
-    *partially*-read object; this is the same promise for a wholly opaque one, which
-    the `is_opaque` arm answered through a different, ungated path.
+    *partially*-read object, gives the same promise for a wholly opaque one instead.
     """
     evidence = wheel(binary("pkg/_ext.so", stripped=True))
     resolved = resolve_linkage(ruleset, evidence)
@@ -1475,9 +1472,9 @@ def test_a_binary_is_opaque_only_when_it_yielded_nothing() -> None:
 def test_which_symbol_count_means_something_is_read_depends_on_the_format() -> None:
     """Mach-O and PE never set `dynsym_count`; their counts land in `symtab_count`.
 
-    Keying on `dynsym_count` for every format called every Mach-O and every PE opaque
-    however much of it was read, which is how a crypto-free universal2 wheel whose
-    slices all parsed came back saying it had told us nothing.
+    Keying on `dynsym_count` for every format would call every Mach-O and every PE
+    opaque however much of it was read, so a crypto-free universal2 wheel whose slices
+    all parsed would come back saying it had told us nothing.
     """
     for fmt in (FORMAT_MACHO, FORMAT_PE):
         assert not binary("pkg/_ext", format=fmt, symtab_count=12).is_opaque, fmt
@@ -1498,8 +1495,9 @@ def test_an_elf_with_a_symtab_and_no_dynsym_is_still_opaque() -> None:
 def test_a_readable_crypto_free_macho_resolves_openssl_to_none(ruleset) -> None:
     """`is_opaque` is what `linkage` falls back on, and it is the half users filter.
 
-    Both of this property's callers in `linkage` could be deleted with the whole suite
-    still green, which is how the format bug reached the field at all.
+    Without this test, both of this property's callers in `linkage` could be deleted
+    with the whole suite green, and a format that reads every object as opaque would
+    reach the field unnoticed.
     """
     evidence = wheel(binary("pkg/_ext.so", format=FORMAT_MACHO, symtab_count=12))
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
@@ -1535,12 +1533,12 @@ def test_real_evidence_beats_an_opaque_sibling(ruleset) -> None:
 
 
 def test_a_binary_not_read_in_full_costs_the_answer(ruleset) -> None:
-    """The case the record used to answer twice, each time differently.
+    """A case that must not answer twice, each time differently.
 
-    A stripped macOS extension: `LC_SYMTAB` was not read, so the imported/defined
+    A stripped macOS extension: `LC_SYMTAB` is not read, so the imported/defined
     split is missing, and every loadable dylib links `libSystem`, so `is_opaque` is
-    false and the errors are empty. Nothing else in the wheel said anything, so
-    `openssl_linkage` used to read `none` beside a `partial_reasons` saying we could
+    false and the errors are empty. Nothing else in the wheel says anything, so
+    `openssl_linkage` must not read `none` beside a `partial_reasons` saying we could
     not look.
     """
     evidence = wheel(
@@ -1559,9 +1557,8 @@ def test_a_linker_convention_still_leaves_a_definite_posture(ruleset) -> None:
     """Why the tuple is not simply counted wholesale.
 
     `WS2_32` is normally bound by ordinal, so this is the ordinary shape of a Windows
-    extension that touches sockets. Counting every cause would have made every one of
-    them `unknown`, which is the noise removed when the same split was drawn for
-    verdicts.
+    extension that touches sockets. Counting every cause would make every one of them
+    `unknown`, the same noise the routine-cause split keeps out of verdicts.
     """
     evidence = wheel(
         binary(
@@ -1614,13 +1611,13 @@ def test_a_cause_the_policy_does_not_name_costs_the_answer(ruleset) -> None:
     asserted to be exactly the three the ruleset names, so widening that list has to
     be done on purpose.
 
-    `PARTIAL_ELF_SYMTAB_UNREAD` was on this list and is not any more (#117):
-    `.symtab` now drives the imported-versus-defined split too, for a relocatable
-    object with no `.dynsym`, so a cause that used to cost only `stripped` and
-    `symbol_counts.symtab` can now cost the split linkage reads as well. The ruleset
-    cannot tell, from the cause name alone, which of the two shapes fired -- so the
-    safe direction this vocabulary already takes elsewhere (a cause added later costs
-    the answer until someone decides otherwise) applies here too.
+    `PARTIAL_ELF_SYMTAB_UNREAD` is not on this list: `.symtab` drives the
+    imported-versus-defined split too, for a relocatable object with no `.dynsym`,
+    and supplies local definitions beside one, so a cause that costs only `stripped` and
+    `symbol_counts.symtab` on its own also costs the split linkage reads. The ruleset
+    cannot tell, from the cause name alone, which of the two shapes fired -- so the safe
+    direction this vocabulary already takes elsewhere (a cause added later costs the
+    answer until someone decides otherwise) applies here too.
     """
     excluded = ruleset.linkage_policy.exclude_reasons
     assert excluded == frozenset(
@@ -1659,8 +1656,8 @@ def test_a_partial_read_that_names_no_cause_costs_the_answer(ruleset) -> None:
 
     `engine._match_partial_binary` singles this shape out as the most serious there
     is: no reader produces it, so the evidence was built by hand. Reading the empty
-    tuple as "nothing excluded, so nothing costs us anything" made `linkage` the one
-    consumer that quietly downgraded it.
+    tuple as "nothing excluded, so nothing costs us anything" would make `linkage` the
+    one consumer that quietly downgrades it.
     """
     evidence = wheel(
         binary("pkg/_ext.so", needed=("libc.so.6",), partial_analysis=True, partial_reasons=())
@@ -1674,8 +1671,9 @@ def test_an_unanswered_object_costs_only_the_libraries_always_reported(ruleset) 
     `_aggregate` is handed `unanswered and library.always_report`, and without the
     second half a wheel whose one object was not read in full reports every library in
     the ruleset as `unknown` -- a dozen keys, none of them backed by any evidence that
-    the library is anywhere near this wheel. Deleting that clause left the whole suite
-    green, which is how a documented promise turns out to be a coincidence.
+    the library is anywhere near this wheel. Without this test, deleting that clause
+    leaves the whole suite green, which is how a documented promise turns out to be a
+    coincidence.
     """
     evidence = wheel(
         binary(

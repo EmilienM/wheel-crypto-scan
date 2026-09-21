@@ -1,8 +1,8 @@
-"""Regressions from the adversarial correctness review.
+"""Hardening against malformed and hostile input.
 
-Every test here corresponds to a reproduced failure: a wheel that read as clean
-because we could not examine it, an exception that escaped and destroyed a run, or a
-cache that served the wrong record.
+Every test here corresponds to a reproduced failure mode: a wheel that reads as clean
+because it cannot be examined, an exception that escapes and destroys a run, or a
+cache that serves the wrong record.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def read_records(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-# --- H1: an unreadable format must not take its own evidence with it --------
+# --- an unreadable format must not take its own evidence with it ----------
 
 
 def test_an_unrecognised_binary_keeps_the_evidence_it_produced(context, tmp_path: Path) -> None:
@@ -81,7 +81,7 @@ def test_an_unrecognised_binary_keeps_the_evidence_it_produced(context, tmp_path
     assert record["artifacts"]["extensions"]
 
 
-# --- H3: symlink targets must obey the archive limits -----------------------
+# --- symlink targets must obey the archive limits ---------------------------
 
 
 def test_a_huge_symlink_target_is_refused_rather_than_read(tmp_path: Path) -> None:
@@ -107,7 +107,7 @@ def test_an_oversized_symlink_does_not_bloat_the_record(context, tmp_path: Path)
     assert len(line) < 100_000, "the symlink target was copied into the record verbatim"
 
 
-# --- H4: a corrupt streamed member must not raise ---------------------------
+# --- a corrupt streamed member must not raise -------------------------------
 
 
 def test_a_corrupt_streamed_member_is_recorded_not_raised(tmp_path: Path) -> None:
@@ -142,7 +142,7 @@ def test_a_corrupt_streamed_member_is_recorded_not_raised(tmp_path: Path) -> Non
     assert record["verdict"]["needs_human_review"] is True
 
 
-# --- H5: two identical archives under different names are two wheels --------
+# --- two identical archives under different names are two wheels -----------
 
 
 def test_identical_archives_with_different_names_stay_distinct(tmp_path: Path) -> None:
@@ -165,7 +165,7 @@ def test_identical_archives_with_different_names_stay_distinct(tmp_path: Path) -
     assert cold.read_bytes() == warm.read_bytes()
 
 
-# --- H8: one unreadable file must not destroy the run -----------------------
+# --- one unreadable file must not destroy the run ---------------------------
 
 
 def test_an_unreadable_wheel_does_not_abort_the_whole_scan(tmp_path: Path) -> None:
@@ -195,7 +195,7 @@ def test_a_wheel_deleted_between_discovery_and_scan_is_recorded(context, tmp_pat
     assert record["errors"]
 
 
-# --- M2: the limits that change a record belong in the cache key ------------
+# --- the limits that change a record belong in the cache key ----------------
 
 
 def test_a_constrained_run_does_not_poison_the_cache(tmp_path: Path) -> None:
@@ -234,7 +234,7 @@ def test_a_constrained_run_does_not_poison_the_cache(tmp_path: Path) -> None:
     assert normal.read_bytes() == fresh.read_bytes()
 
 
-# --- M3: a BOM must not silently discard every header -----------------------
+# --- a BOM must not silently discard every header ---------------------------
 
 
 def test_a_byte_order_mark_in_metadata_does_not_lose_the_headers(context, tmp_path: Path) -> None:
@@ -279,7 +279,7 @@ def test_metadata_with_no_parseable_headers_is_recorded(context, tmp_path: Path)
     assert any(e["kind"] == errors.METADATA_DECODE_ERROR for e in record["errors"])
 
 
-# --- M4: a declared-huge NOBITS section must not allocate -------------------
+# --- a declared-huge NOBITS section must not allocate ------------------------
 
 
 def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> None:
@@ -323,7 +323,7 @@ def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> 
 
     assert elapsed < 5, f"the scan took {elapsed:.1f}s"
     # Comfortably above the wheel-scan machinery's own bookkeeping, nowhere near the
-    # 3 GiB an unfixed reader would have to materialise to honour the declared size.
+    # 3 GiB a reader without this guard would have to materialise to honour the declared size.
     assert peak < 4 * 1024 * 1024, f"peaked at {peak} bytes"
     assert record["wheel"]["name"] == "fakenobits"
     # Pins the NOBITS skip itself, not just the budget check behind it: without it this
@@ -332,15 +332,15 @@ def test_a_nobits_comment_section_does_not_allocate(context, tmp_path: Path) -> 
     assert record["errors"] == []
 
 
-# --- #62: a SHF_COMPRESSED section's declared size is checked before it is inflated --
+# --- a SHF_COMPRESSED section's declared size is checked before it is inflated ---
 #
 # `Chdr.ch_size` is `SHT_NOBITS`'s `sh_size` one call deeper: an attacker-controlled
 # 64-bit field, except `Section.data()` actually decompresses that many bytes rather
-# than materialising zero ones. The issue's own reproduction is a 255 KiB object
-# declaring 256 MiB, peaking at 512 MiB on `main`. These two scale that down to a
+# than materialising zero ones. Reproduced directly, a 255 KiB object declaring
+# 256 MiB peaks at 512 MiB without this guard. These two scale that down to a
 # declared 8 MiB against a 64 KiB budget -- the same shape, sized so the mutation
-# check below (reverting the fix and watching this fail) can actually decompress the
-# unfixed path in a normal test run rather than skipping it.
+# check (removing the guard and watching this fail) can actually decompress the path
+# without the guard in a normal test run rather than skipping it.
 
 
 def _compressed_chdr(ch_size: int, *, addralign: int = 1) -> bytes:
@@ -353,7 +353,7 @@ def _compressed_zero_run(size: int) -> bytes:
 
     All zero compresses to a few KiB regardless of `size`, so the fixture itself, and
     the honest compress/decompress this measures against, stay cheap -- only the
-    *declared*, logical size drives what an unfixed reader would inflate.
+    *declared*, logical size drives what a reader without this guard would inflate.
     """
     return _compressed_chdr(size) + zlib.compress(b"\x00" * size, 9)
 
@@ -380,8 +380,8 @@ def test_a_compressed_elf_rodata_declaring_more_than_the_budget_does_not_allocat
     tracemalloc.stop()
 
     assert elapsed < 5, f"the read took {elapsed:.1f}s"
-    # Comfortably above the budget's own bookkeeping, nowhere near the 8 MiB an
-    # unfixed reader would have to inflate to reach the same declared size.
+    # Comfortably above the budget's own bookkeeping, nowhere near the 8 MiB a
+    # reader without this guard would have to inflate to reach the same declared size.
     assert peak < 2 * 1024 * 1024, f"peaked at {peak} bytes"
     assert ev.partial_analysis is True
     assert "elf_section_data_unread" in ev.partial_reasons
@@ -392,8 +392,8 @@ def test_a_compressed_elf_dynstr_declaring_more_than_the_budget_does_not_allocat
     context,
 ) -> None:
     """The symbol-table half of the same exposure: `.dynsym`'s string table, resolved
-    through a corroborated decoy `SHT_STRTAB` the way #56's own tests already build
-    one, so the fixture can declare and (unfixed) genuinely inflate an 8 MiB
+    through a corroborated decoy `SHT_STRTAB` the way the section-lookup tests build
+    one, so the fixture can declare and (without the guard) genuinely inflate an 8 MiB
     `.dynstr` without the builder needing a raw-bytes hook for the real one.
     """
     honest = ElfBuilder(dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),)).build()
@@ -429,8 +429,8 @@ def test_a_compressed_elf_go_buildinfo_declaring_more_than_the_budget_does_not_a
     context,
 ) -> None:
     """`.go.buildinfo` is the third call site sharing `_bounded_section_data`, found
-    while auditing every `.data()` call in `binfmt/elf.py` for the same exposure --
-    the issue itself only names `.rodata`/`.comment` and `.dynsym`/`.dynstr`. Unlike
+    while auditing every `.data()` call in `binfmt/elf.py` for the same exposure
+    beyond `.rodata`/`.comment` and `.dynsym`/`.dynstr`. Unlike
     those, `ElfBuilder` accepts `.go.buildinfo`'s raw bytes directly, so no decoy or
     corroboration step is needed to control what it declares.
     """
@@ -500,29 +500,28 @@ def test_a_nobits_named_go_buildinfo_does_not_allocate(context) -> None:
     assert errs != ()
 
 
-# --- #95: an ordinary, uncompressed section is checked against the budget too -------
+# --- an ordinary, uncompressed section is checked against the budget too -------
 #
-# `_bounded_section_data` only refused before `.data()` ran when the section was
-# `compressed` or `SHT_NOBITS`, the two shapes #62 measured. An ordinary, honest,
-# uncompressed section -- an honestly large `.rodata`, or `.dynsym`/`.dynstr` from a
-# real symbol table -- fell through that `and` entirely and reached `.data()` with no
-# budget check at all: read in full regardless of size, with only the *accumulated*
-# buffer cut afterwards. The issue's own reproduction: an honest 8 MiB `.rodata`
-# against a 64 KiB budget reads it whole (largest single `read()` 8388608 bytes, peak
-# 8605805) and reports `strings_bytes_unread` -- truncated after the fact, not refused
-# before it; an honest `.dynsym`/`.dynstr` from 200,000 real symbols (~4.8 MiB
-# `.dynstr`) reads whole the same way and comes back `partial_analysis: False` -- a
-# fully clean, complete record, paid for at the size of the honest table rather than
-# the budget.
+# A guard that only refuses before `.data()` runs when the section is `compressed` or
+# `SHT_NOBITS` misses an ordinary, honest, uncompressed section -- an honestly large
+# `.rodata`, or `.dynsym`/`.dynstr` from a real symbol table -- which falls through
+# that `and` entirely and reaches `.data()` with no budget check at all: read in full
+# regardless of size, with only the *accumulated* buffer cut afterwards. Reproduced
+# directly with that narrower guard: an honest 8 MiB `.rodata` against a 64 KiB budget
+# reads it whole (largest single `read()` 8388608 bytes, peak 8605805) and reports
+# `strings_bytes_unread` -- truncated after the fact, not refused before it; an honest
+# `.dynsym`/`.dynstr` from 200,000 real symbols (~4.8 MiB `.dynstr`) reads whole the
+# same way and comes back `partial_analysis: False` -- a fully clean, complete record,
+# paid for at the size of the honest table rather than the budget.
 
 
 def test_an_ordinary_elf_rodata_declaring_more_than_the_budget_does_not_allocate(
     context,
 ) -> None:
     """The uncompressed counterpart of the compressed `.rodata` hardening test above,
-    at the issue's own scale: an honest 8 MiB `.rodata` against a 64 KiB budget, with
+    at the same scale: an honest 8 MiB `.rodata` against a 64 KiB budget, with
     an OpenSSL banner at offset 0 -- comfortably inside the budget -- the same shape
-    an independent review of this fix found reachable on a real host library
+    reachable on a real host library
     (`libLLVM.so`, 68 MiB of eligible sections against the 64 MiB default budget):
     bounding the *read* must not cost the *evidence* a smaller, honest read would
     still recover.
@@ -546,8 +545,8 @@ def test_an_ordinary_elf_rodata_declaring_more_than_the_budget_does_not_allocate
     tracemalloc.stop()
 
     assert elapsed < 5, f"the read took {elapsed:.1f}s"
-    # Comfortably above the budget's own bookkeeping, nowhere near the 8 MiB an
-    # unfixed reader would have to read to reach the same declared size.
+    # Comfortably above the budget's own bookkeeping, nowhere near the 8 MiB a
+    # reader without this guard would have to read to reach the same declared size.
     assert peak < 2 * 1024 * 1024, f"peaked at {peak} bytes"
     assert stream.largest_read < 1024 * 1024, (
         f"largest single read() was {stream.largest_read} bytes"
@@ -560,14 +559,14 @@ def test_an_ordinary_elf_rodata_declaring_more_than_the_budget_does_not_allocate
 
 def test_an_honest_large_dynsym_and_dynstr_does_not_allocate(context) -> None:
     """The `.dynsym`/`.dynstr` half of the same exposure, for an honest, real symbol
-    table rather than a crafted lie -- the issue's own reproduction, scaled down only
-    in how the fixture is built (200,000 distinct real names, the same count the issue
-    itself measured, builds in well under a second).
+    table rather than a crafted lie -- the same reproduction as above, scaled down only
+    in how the fixture is built (200,000 distinct real names, builds in well under a
+    second).
 
-    Correctness matters as much as cost here: pre-fix this reads in full regardless of
-    `max_strings_bytes` and comes back `partial_analysis: false`, a fully clean,
-    complete record -- silently losing the fact that a crypto-matching name in this
-    table was never actually resolved. Refusing the read must not regress into the
+    Correctness matters as much as cost here: without this guard, this reads in full
+    regardless of `max_strings_bytes` and comes back `partial_analysis: false`, a fully
+    clean, complete record -- silently losing the fact that a crypto-matching name in
+    this table was never actually resolved. Refusing the read must not fall into the
     same silence from the other direction: it has to flag `elf_dynsym_unread`, not
     just cost less.
     """
@@ -599,7 +598,7 @@ def test_an_honest_large_dynsym_and_dynstr_does_not_allocate(context) -> None:
     assert "elf_dynsym_unread" in ev.partial_reasons
     # Refused, not silently shortened: no row from this table is reported as read,
     # crypto-matching or not, which is the honest answer for a table this reader
-    # refused rather than the empty-but-clean one it used to give.
+    # cannot walk.
     assert ev.matched_symbols == ()
     assert errs != ()
 
@@ -635,10 +634,10 @@ def test_a_mach_o_that_declares_a_giant_symbol_table_does_not_allocate(
 class _CountingReadStream(io.BytesIO):
     """Remembers the largest single `read()` call it was ever asked to satisfy.
 
-    #63's own reproduction technique: proving a read is bounded by a fixed cap, rather
-    than by how large the object happens to be, is cheapest measured at the call the
-    reader actually makes, not by building an object large enough to feel the
-    difference in wall-clock time or `tracemalloc`.
+    Proving a read is bounded by a fixed cap, rather than by how large the object
+    happens to be, is cheapest measured at the call the reader actually makes, not by
+    building an object large enough to feel the difference in wall-clock time or
+    `tracemalloc`.
     """
 
     def __init__(self, data: bytes) -> None:
@@ -653,16 +652,16 @@ class _CountingReadStream(io.BytesIO):
 
 def test_a_mach_o_with_a_giant_sizeofcmds_does_not_read_it(context) -> None:
     """`sizeofcmds` is the load-command version of the same 32-bit self-declared-size
-    attack `nsyms` has a test for above, closed the same way #62 closed it for a
-    compressed ELF section: checked before the read, not clamped after it. #63.
+    attack `nsyms` has a test for above, handled the same way as a compressed ELF
+    section: checked before the read, not clamped after it.
 
-    Scaled down from the issue's 300 MiB member: the property under test is that the
-    single `read()` call `_read_thin` makes for the load commands is bounded by
+    Scaled down from the 300 MiB member DESIGN.md measures ("sizeofcmds and the symbol
+    table are capped, not just clamped to the member"): the property under test is that
+    the single `read()` call `_read_thin` makes for the load commands is bounded by
     `_MAX_SIZEOFCMDS`, not by how much padding follows the header, so a few MiB of
-    padding proves the same shape the issue measured at three hundred -- and with the
-    cap in place that read is never attempted at all, so the largest read anywhere in
-    the whole call is `max_strings_bytes`, from the strings fallback this failure
-    falls back to.
+    padding proves the same shape at three hundred -- and with the cap in place that
+    read is never attempted at all, so the largest read anywhere in the whole call is
+    `max_strings_bytes`, from the strings fallback this failure falls back to.
     """
     budget = 64 * 1024
     base = MachOBuilder(load_dylibs=("libcrypto.3.dylib",)).build()
@@ -685,16 +684,16 @@ def test_a_mach_o_with_a_giant_sizeofcmds_does_not_read_it(context) -> None:
 
 
 def test_a_mach_o_symbol_table_declaring_more_than_the_budget_does_not_allocate(context) -> None:
-    """`nsyms` bought a read (and a walk) proportional to what the header claimed once
-    `_available` clamped it only to the slice, never to a fixed budget -- the second
-    half of #63, sibling to the compressed ELF `.dynsym`/`.dynstr` budget
-    `_bounded_section_data` already enforces above. `strsize` shares the same shape and
-    is capped the same way.
+    """`nsyms` buys a read (and a walk) proportional to what the header claims when
+    `_available` clamps it only to the slice, never to a fixed budget -- the symbol
+    table's half of the Mach-O cap, sibling to the ELF `.dynsym`/`.dynstr` budget
+    `_bounded_section_data` enforces above. `strsize` shares the same shape and is
+    capped the same way.
 
-    Scaled down from the issue's 300 MiB member / 664 MiB peak: `nsyms` only has to
-    clear a small budget, not 64 MiB, to prove the read is capped rather than clamped
-    to the member -- and the member is padded well past that budget so the fixed cap,
-    not the slice's own size, is what is doing the work.
+    Scaled down from the 300 MiB member / 664 MiB peak DESIGN.md measures for the same
+    cap: `nsyms` only has to clear a small budget, not 64 MiB, to prove the read is
+    capped rather than clamped to the member -- and the member is padded well past that
+    budget so the fixed cap, not the slice's own size, is what is doing the work.
     """
     budget = 64 * 1024
     entry_size = 16  # nlist_64
@@ -705,7 +704,7 @@ def test_a_mach_o_symbol_table_declaring_more_than_the_budget_does_not_allocate(
         declared_nsyms=over_budget_nsyms,
     ).build()
     # Comfortably more than `over_budget_nsyms * entry_size`, so the slice's own size
-    # is not what would have bounded this even before the fix.
+    # alone would not bound this either.
     payload += b"\x00" * (4 * 1024 * 1024)
 
     tracemalloc.start()
@@ -738,10 +737,9 @@ def test_a_mach_o_string_table_declaring_more_than_the_budget_does_not_allocate(
     `min(symtab.strsize, max_strings_bytes)` asks for, and without that `min` this
     would cost as much as `symtab.strsize` claims, up to the whole member.
 
-    A review of the first version of this fix found this half of the cap had no test
-    of its own: reverting only `str_length`'s `min(symtab.strsize, max_strings_bytes)`
-    back to plain `symtab.strsize`, leaving `sym_length`'s own cap untouched, left the
-    full suite green. This closes that gap.
+    `str_length`'s own `min(symtab.strsize, max_strings_bytes)` needs a test as direct
+    as `sym_length`'s: changing it alone to plain `symtab.strsize`, leaving
+    `sym_length`'s cap untouched, must not leave the suite green.
     """
     budget = 64 * 1024
     over_budget_strsize = budget + (2 * 1024 * 1024)
@@ -750,8 +748,8 @@ def test_a_mach_o_string_table_declaring_more_than_the_budget_does_not_allocate(
         symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
         declared_strsize=over_budget_strsize,
     ).build()
-    # Comfortably more than `over_budget_strsize`, so the slice's own size is not what
-    # would have bounded this even before the fix.
+    # Comfortably more than `over_budget_strsize`, so the slice's own size alone
+    # would not bound this either.
     payload += b"\x00" * (4 * 1024 * 1024)
 
     tracemalloc.start()
@@ -874,10 +872,10 @@ def test_a_pe_whose_descriptors_share_one_thunk_array_stays_bounded(
 
     Nothing stops every import descriptor pointing its lookup table at the same thunk
     array, so a cap per descriptor and a cap per DLL multiply: 512 descriptors sharing
-    one 65,536-entry table is 33.5 million iterations, each of which was appending a
-    fresh string to a list that nothing deduplicated. Measured on the reader before the
-    budget was made whole-object: 0.25 s and 5 MiB per descriptor, i.e. minutes of CPU
-    and gigabytes of resident memory out of a wheel under two kilobytes.
+    one 65,536-entry table is 33.5 million iterations, each appending a fresh string to
+    a list that nothing deduplicates. Measured on a reader with per-scope caps and no
+    whole-object budget: 0.25 s and 5 MiB per descriptor, i.e. minutes of CPU and
+    gigabytes of resident memory out of a wheel under two kilobytes.
     """
     payload = PEBuilder(
         imports=tuple(PEImport(f"d{index:04d}.dll") for index in range(512)),
@@ -912,17 +910,18 @@ def test_a_pe_whose_descriptors_share_one_thunk_array_stays_bounded(
     assert any(e["kind"] == errors.PE_PARSE_ERROR for e in record["errors"])
 
 
-# --- M5b: the ELF and Mach-O symbol-name cap and budget (#61) ----------------
+# --- the ELF and Mach-O symbol-name cap and budget ---------------------------
 
 
 def test_an_elf_aiming_every_dynsym_at_one_over_cap_name_stays_bounded(
     context, tmp_path: Path
 ) -> None:
-    """Every row pointing at the same enormous name used to cost rows times its length.
+    """Every row pointing at the same enormous name would cost rows times its length
+    without a per-name bound.
 
     `ElfBuilder` interns `.dynstr` by exact text, so `rows` symbols sharing one string
-    already produce the shape #61 reports with no manual re-aiming needed: every row's
-    `st_name` pointing at the same one offset. Measured on the reader before the cap:
+    already produce the shape with no manual re-aiming needed: every row's `st_name`
+    pointing at the same one offset. Measured without this cap:
     243.7s for 2000 rows against a 2 MiB name. `binfmt.symtab.BoundedNames` bounds the
     per-name search to `_MAX_NAME_BYTES`, so an over-cap name costs one O(cap) search
     once (memoized thereafter) rather than one search per row proportional to its real
@@ -986,7 +985,7 @@ def test_repeated_elf_dynsym_offsets_resolve_the_same_valid_name(context, tmp_pa
 def test_a_mach_o_aiming_every_symbol_at_one_over_cap_name_stays_bounded(
     context, tmp_path: Path
 ) -> None:
-    """The Mach-O counterpart: `n_strx=1` is #61's own reproduction of the shape.
+    """The Mach-O counterpart: `n_strx=1` on every row reproduces the shape.
 
     `MachOBuilder` writes every symbol's own name to the string table regardless of
     `strx`, so the placeholder rows below each add one byte for their own empty name
@@ -1046,15 +1045,15 @@ def test_repeated_mach_o_symbol_offsets_resolve_the_same_valid_name(
 def test_a_mach_o_aiming_every_alias_at_one_over_cap_target_stays_bounded(
     context, tmp_path: Path
 ) -> None:
-    """`N_INDR`'s target is a string-table offset too, and #61's first pass missed it.
+    """`N_INDR`'s target is a string-table offset too, so the per-name cap must bound
+    it the same way it bounds `n_strx`.
 
     `MachOBuilder` interns `indirect_to` by exact text the same way `ElfBuilder` interns
     `.dynstr`, so `rows` symbols all aliasing one string already produce the shape: every
     row's `n_value` pointing at the same one offset, with no manual re-aiming needed.
-    Measured on the reader after #61's first pass, before this follow-up: 200 rows
-    against a 2 MiB target cost 30.4s (linear in rows, the identical shape #61 closed
-    for `n_strx`, one call site over -- `resolver` was already in scope for this
-    function and simply was not being used here).
+    Measured without the bound at this call site: 200 rows against a 2 MiB target cost
+    30.4s, linear in rows -- the identical shape the per-name cap bounds for `n_strx`,
+    through the same `resolver` in scope for this function.
     """
     rows = 2000
     target = "_" + "X" * (2 * 1024 * 1024)
@@ -1148,7 +1147,7 @@ def test_repeated_mach_o_alias_targets_resolve_the_same_valid_name(context, tmp_
     assert [m["name"] for m in record["binaries"][0]["matched_symbols"]] == [target[1:]]
 
 
-# --- M6: record size must be bounded in member count too --------------------
+# --- record size must be bounded in member count too -------------------------
 
 
 def test_a_wheel_with_thousands_of_objects_produces_a_bounded_record(
@@ -1168,7 +1167,7 @@ def test_a_wheel_with_thousands_of_objects_produces_a_bounded_record(
     assert record["artifacts"]["binaries_truncated"] is True
 
 
-# --- M9: a cap on the record must not cap what a rule sees ------------------
+# --- a cap on the record must not cap what a rule sees -----------------------
 
 
 def _crypto_past_the_cap_wheel(tmp_path: Path, filler_count: int = 256):
@@ -1193,10 +1192,9 @@ def _crypto_past_the_cap_wheel(tmp_path: Path, filler_count: int = 256):
 
 
 def test_an_object_past_the_binaries_cap_is_still_evaluated(context, tmp_path: Path) -> None:
-    """#55: 256 filler objects plus one crypto object that sorts 257th used to read
-    clean, because `Evidence.binaries` was truncated to the cap before linkage and the
-    rules ever ran. They must see every object that was actually read, not just the
-    ones that fit in the record's `binaries[]` list."""
+    """256 filler objects plus one crypto object that sorts 257th must still read as
+    crypto: the rules run over every object that was actually read, not just the
+    ones that fit in the record's capped `binaries[]` list."""
     wheel = _crypto_past_the_cap_wheel(tmp_path)
     record = scan_wheel(wheel, context)
 
@@ -1207,18 +1205,18 @@ def test_an_object_past_the_binaries_cap_is_still_evaluated(context, tmp_path: P
 
 
 def test_the_binaries_cap_still_bounds_the_serialised_record(context, tmp_path: Path) -> None:
-    """The other half of the fix: evaluation is complete, but `binaries[]` itself
+    """Evaluation sees every object, but `binaries[]` itself
     still stops at `max_binaries_per_record` -- the record must not grow unbounded
-    just because evaluation no longer does."""
+    just because evaluation does not."""
     wheel = _crypto_past_the_cap_wheel(tmp_path)
     record = scan_wheel(wheel, context)
 
     assert len(record["binaries"]) == context.max_binaries_per_record
     assert record["artifacts"]["binaries_truncated"] is True
-    # #75: the crypto object sorted last, past the plain prefix, but a finding names
-    # it, so the finding-aware selection keeps it -- at the cost of the one filler
-    # object that would otherwise have been the last one in. See the tests below and
-    # DECISIONS.md, "A cap bounds the record, it does not pick the evidence" (#51).
+    # The crypto object sorts last, past a plain prefix, but a finding names it, so the
+    # finding-aware selection keeps it -- at the cost of the one filler object that
+    # would otherwise have been the last one in. See the tests below and DESIGN.md,
+    # "`binaries[]` keeps what a finding points at, before filling the rest".
     assert any(binary["path"] == "pkg/_zzz_crypto.so" for binary in record["binaries"])
     symbol_finding = next(
         f for f in record["findings"] if f["rule_id"] == "BIN_OPENSSL_SYMBOLS_DEFINED"
@@ -1229,8 +1227,8 @@ def test_the_binaries_cap_still_bounds_the_serialised_record(context, tmp_path: 
 def test_binaries_truncated_becomes_a_finding_naming_the_full_count(
     context, tmp_path: Path
 ) -> None:
-    """The transparency half of the fix (option 2): a human reading one JSON line must
-    be able to see that `binaries[]` is a prefix, without knowing in advance to check
+    """The transparency half of the cap: a human reading one JSON line must be able to
+    see that `binaries[]` is a prefix, without knowing in advance to check
     `artifacts.binaries_truncated`."""
     wheel = _crypto_past_the_cap_wheel(tmp_path)
     record = scan_wheel(wheel, context)
@@ -1253,13 +1251,13 @@ def test_binaries_truncated_finding_does_not_fire_under_the_cap(context, tmp_pat
     assert not any(f["rule_id"] == "WHEEL_BINARIES_TRUNCATED" for f in record["findings"])
 
 
-# --- M10: binaries[] keeps what a finding points at, before filling the rest (#75) --
+# --- binaries[] keeps what a finding points at, before filling the rest ------
 
 
 def _sorts_last_referenced_objects_wheel(tmp_path: Path, filler_count: int = 300):
-    """#75's own reproduction: `filler_count` inert filler objects, plus a partial ELF
-    carrying an OpenSSL banner (`zz1_broken.so`) and an unparseable object
-    (`zz2_opaque.so`), both sorting after every filler."""
+    """`filler_count` inert filler objects, plus a partial ELF carrying an OpenSSL
+    banner (`zz1_broken.so`) and an unparseable object (`zz2_opaque.so`), both sorting
+    after every filler."""
     tiny = ElfBuilder(needed=("libc.so.6",)).build()
     broken = patch_header_field(
         patch_header_field(
@@ -1287,12 +1285,11 @@ def _sorts_last_referenced_objects_wheel(tmp_path: Path, filler_count: int = 300
 def test_finding_referenced_objects_sorting_last_still_appear_in_binaries(
     context, tmp_path: Path
 ) -> None:
-    """#75's own reproduction. #55 already made every object be evaluated regardless
-    of the cap; this is the other half -- a human reading the record must be able to
-    corroborate the verdict against the objects that actually earned it, not just
-    whichever 256 objects happened to sort first. Mirrors #51's fix for the
-    per-binary string/symbol/crate caps one layer down (DECISIONS.md, "A cap bounds
-    the record, it does not pick the evidence")."""
+    """Every object is evaluated regardless of the cap; this is the other half -- a
+    human reading the record must be able to corroborate the verdict against the
+    objects that actually earned it, not just whichever 256 objects happened to sort
+    first. Mirrors what `caps.cap` does for the per-binary string/symbol/crate caps one
+    layer down (DESIGN.md, "A cap bounds the record, it does not pick the evidence")."""
     wheel = _sorts_last_referenced_objects_wheel(tmp_path)
     record = scan_wheel(wheel, context)
 
@@ -1306,7 +1303,7 @@ def test_finding_referenced_objects_sorting_last_still_appear_in_binaries(
     assert "pkg/zz1_broken.so" in paths
     assert "pkg/zz2_opaque.so" in paths
     # Still bounded: a cap that keeps the referenced objects must not stop being a
-    # cap. The remaining room is filled with fillers, same as the plain prefix did.
+    # cap. The remaining room is filled with fillers, the same as a plain prefix.
     assert len(record["binaries"]) == context.max_binaries_per_record
     assert record["artifacts"]["binaries_truncated"] is True
 
@@ -1330,10 +1327,10 @@ def test_the_binaries_truncated_finding_still_fires_with_finding_aware_selection
 def test_finding_referenced_selection_is_deterministic_across_repeated_scans(
     context, tmp_path: Path
 ) -> None:
-    """#75 flagged this as unverified: the new selection must be exactly as
-    deterministic as the plain prefix it replaces. `test_parallel_output_matches_serial_output`
-    in test_cli.py pins this across `--jobs`; this pins it for the one wheel shaped to
-    actually exercise the new selection logic, independent of process scheduling."""
+    """The finding-aware selection must be exactly as deterministic as a plain prefix.
+    `test_parallel_output_matches_serial_output` in test_cli.py pins this across
+    `--jobs`; this pins it for the one wheel shaped to actually exercise the selection
+    logic, independent of process scheduling."""
     wheel = _sorts_last_referenced_objects_wheel(tmp_path)
     first = scan_wheel(wheel, context)
     second = scan_wheel(wheel, context)
@@ -1353,7 +1350,7 @@ def test_sbom_component_sort_key_covers_every_field_dedup_uses() -> None:
     assert first.sort_key() != second.sort_key()
 
 
-# --- H7: a streamed member must not re-decompress per symbol ----------------
+# --- a streamed member must not re-decompress per symbol ---------------------
 
 
 def test_a_streamed_member_serves_backward_seeks_from_its_window(tmp_path: Path) -> None:
@@ -1403,7 +1400,7 @@ def test_a_backward_seek_outside_the_window_is_still_correct(tmp_path: Path) -> 
         stream.close()
 
 
-# --- H6: unparsed Python must not read as clean -----------------------------
+# --- unparsed Python must not read as clean -----------------------------------
 
 
 def test_a_wheel_whose_only_source_fails_to_parse_is_opaque(context, tmp_path: Path) -> None:
@@ -1508,16 +1505,16 @@ def test_a_fat_binary_that_declares_a_giant_arch_count_does_not_reparse_itself(
     assert binary["symbol_counts"]["symtab"] == 2000
 
 
-# --- M11: bundled_libs and errors[] are capped too (#76) ---------------------
+# --- bundled_libs and errors[] are capped too ---------------------------------
 
 
 def test_a_wheel_vendoring_thousands_of_libraries_produces_a_bounded_bundled_libs_list(
     context, tmp_path: Path
 ) -> None:
-    """#76: `bundled_libs` is a *subset* of `binaries[]`/`extensions`, built from the
-    full, untruncated object list independently of `max_binaries_per_record` -- before
-    this it had no cap of its own at all, so a wheel vendoring thousands of small
-    libraries under `*.libs/` produced a correspondingly unbounded array."""
+    """`bundled_libs` is a *subset* of `binaries[]`/`extensions`, built from the full,
+    untruncated object list independently of `max_binaries_per_record` -- without a cap
+    of its own, a wheel vendoring thousands of small libraries under `*.libs/` produces
+    a correspondingly unbounded array."""
     tiny = ElfBuilder(needed=("libc.so.6",)).build()
     files = {f"many.libs/libfoo{index:05d}-deadbeef.so": tiny for index in range(3000)}
     wheel = build_wheel(
@@ -1528,8 +1525,8 @@ def test_a_wheel_vendoring_thousands_of_libraries_produces_a_bounded_bundled_lib
         files=files,
     )
     record = scan_wheel(wheel, context)
-    # A real bound, not a decorative one: #76 measured the pre-fix, uncapped shape of
-    # this exact reproduction at 274 KB for 5000 objects; this one, capped, is under a
+    # A real bound, not a decorative one: without this cap, the same
+    # reproduction measures at 274 KB for 5000 objects; this one, capped, is under a
     # third of that even at 3000.
     assert len(json.dumps(record)) < 200_000, "bundled_libs is not actually bounded"
     assert len(record["artifacts"]["bundled_libs"]) == context.max_binaries_per_record
@@ -1577,9 +1574,9 @@ def test_exactly_the_cap_worth_of_libraries_is_not_reported_as_truncated(
 def test_a_wheel_with_thousands_of_the_same_error_produces_a_bounded_errors_list(
     context, tmp_path: Path
 ) -> None:
-    """#76: `errors[]` had no cap either -- a wheel that hits the same recordable
-    failure on thousands of members produced a correspondingly unbounded JSON line.
-    Measured during #55's adversarial review at 5000 vendored objects, a 274 KB line."""
+    """`errors[]` needs its own cap -- a wheel that hits the same recordable failure on
+    thousands of members produces a correspondingly unbounded JSON line. Measured at
+    5000 vendored objects, a 274 KB line."""
     # Starts with the ELF magic, so it is sniffed as ELF, but has nothing past it for
     # `ELFFile` to read: one `binary_unknown_format` error per member, same (stage,
     # kind) pair three thousand times over.
@@ -1593,8 +1590,8 @@ def test_a_wheel_with_thousands_of_the_same_error_produces_a_bounded_errors_list
         files=files,
     )
     record = scan_wheel(wheel, context)
-    # A real bound, not a decorative one: #76 measured the pre-fix, uncapped shape of
-    # this exact reproduction at 274 KB for 5000 objects; this one, capped, is under a
+    # A real bound, not a decorative one: without this cap, the same
+    # reproduction measures at 274 KB for 5000 objects; this one, capped, is under a
     # third of that even at 3000.
     assert len(json.dumps(record)) < 200_000, "errors[] is not actually bounded"
     assert len(record["errors"]) == context.max_binaries_per_record
@@ -1602,14 +1599,14 @@ def test_a_wheel_with_thousands_of_the_same_error_produces_a_bounded_errors_list
 
 
 def test_a_rare_error_survives_a_flood_of_a_common_one(context, tmp_path: Path) -> None:
-    """The representative-per-kind half of the fix (`ScanError.cap_key`): a wheel
+    """The representative-per-kind half of the cap (`ScanError.cap_key`): a wheel
     drowning in one kind of failure must not crowd a different, rarer one out of the
-    capped `errors[]`, mirroring #51's fix for the per-binary string/symbol/crate caps
-    and #75's fix for `binaries[]` itself."""
+    capped `errors[]`, mirroring the per-binary string/symbol/crate caps and the
+    finding-aware cap on `binaries[]` itself."""
     opaque = b"\x7fELF" + b"\x00" * 60
     flood = {f"many/_ext{index:05d}.so": opaque for index in range(3000)}
     # A distinct kind of error, sorting after every flooded path -- a plain
-    # path-sorted prefix would have dropped it. Padded past _SNIFF_MIN_BYTES so it is
+    # path-sorted prefix would drop it. Padded past _SNIFF_MIN_BYTES so it is
     # still opened as a candidate binary member at all.
     files = {**flood, "zzz_archive.a": b"!<arch>\n" + b"\x00" * 64}
     wheel = build_wheel(
@@ -1648,7 +1645,7 @@ def test_exactly_the_cap_worth_of_errors_is_not_reported_as_truncated(
     assert record["errors_truncated"] is False
 
 
-# --- M12: skipped and symlinks are capped too (#119) -------------------------
+# --- skipped and symlinks are capped too ---------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -1661,11 +1658,10 @@ def tiny_member_context() -> ScanContext:
 def test_a_wheel_with_thousands_of_refused_members_produces_a_bounded_skipped_list(
     tiny_member_context, tmp_path: Path
 ) -> None:
-    """#119: `artifacts.skipped` had no cap of its own -- found while verifying #76's
-    fix, a wheel with 3000 members refused by `ArchiveLimits.max_member_bytes` produced
-    a correctly capped `errors: 256` beside an uncapped `artifacts.skipped: 3003`, a
-    220 KB record whose own `errors_truncated` gave no hint that `skipped` was also
-    incomplete."""
+    """`artifacts.skipped` needs a cap of its own too: without one, a wheel with 3000
+    members refused by `ArchiveLimits.max_member_bytes` produces a correctly capped
+    `errors: 256` beside an uncapped `artifacts.skipped: 3003`, a 220 KB record whose
+    own `errors_truncated` gives no hint that `skipped` is also incomplete."""
     files = {f"many/_ext{index:05d}.so": b"x" * 100 for index in range(3000)}
     wheel = build_wheel(
         tmp_path / f"many-1.0-{MANYLINUX}.whl",
@@ -1730,7 +1726,7 @@ def test_exactly_the_cap_worth_of_skipped_is_not_reported_as_truncated(
 def _build_symlink_wheel(path: Path, count: int, *, target: bytes = b"libfoo.so.1") -> Path:
     """A wheel whose only members are symlinks -- no metadata needed, since only
     `artifacts.symlinks` is under test here, the same minimal shape
-    `test_an_oversized_symlink_does_not_bloat_the_record` (H3) already uses."""
+    `test_an_oversized_symlink_does_not_bloat_the_record` uses."""
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         for index in range(count):
             info = zipfile.ZipInfo(f"many/lib{index:05d}.so", date_time=FIXED_DATE)
@@ -1743,9 +1739,9 @@ def _build_symlink_wheel(path: Path, count: int, *, target: bytes = b"libfoo.so.
 def test_a_wheel_with_thousands_of_symlinks_produces_a_bounded_symlinks_list(
     context, tmp_path: Path
 ) -> None:
-    """#119: `artifacts.symlinks` is the same uncapped shape #76 fixed for
-    `bundled_libs`/`errors[]` -- a wheel with thousands of symlinked members produced a
-    correspondingly unbounded array."""
+    """`artifacts.symlinks` needs the same bound `bundled_libs`/`errors[]` get: a
+    wheel with thousands of symlinked members must not produce a correspondingly
+    unbounded array."""
     wheel = _build_symlink_wheel(tmp_path / f"many-1.0-{MANYLINUX}.whl", 3000)
     record = scan_wheel(wheel, context)
     assert len(json.dumps(record)) < 200_000, "symlinks is not actually bounded"
@@ -1777,7 +1773,7 @@ def test_exactly_the_cap_worth_of_symlinks_is_not_reported_as_truncated(
 def test_a_rare_skipped_reason_survives_a_flood_of_a_common_one(
     tiny_member_context, tmp_path: Path
 ) -> None:
-    """The representative-per-reason half of the fix: `skipped`'s `reason` is
+    """The representative-per-reason half of the cap: `skipped`'s `reason` is
     `ScanError.kind` projected onto `(path, kind)`, the same axis `ScanError.cap_key`
     already protects for `errors[]` -- a flood of one reason must not crowd a
     different, rarer one out of the capped `skipped`, mirroring
@@ -1792,7 +1788,7 @@ def test_a_rare_skipped_reason_survives_a_flood_of_a_common_one(
                     b"x" * 100,
                 )
             # A distinct reason, sorting after every flooded path -- a plain
-            # path-sorted prefix would have dropped it entirely.
+            # path-sorted prefix would drop it entirely.
             dup_info = zipfile.ZipInfo("zzz_dup.so", date_time=FIXED_DATE)
             archive.writestr(dup_info, b"x" * 100)
             archive.writestr(dup_info, b"x" * 100)
@@ -1803,8 +1799,8 @@ def test_a_rare_skipped_reason_survives_a_flood_of_a_common_one(
 
 
 def test_a_rare_symlink_target_survives_a_flood_of_a_common_one(context, tmp_path: Path) -> None:
-    """The representative-per-target half of the fix: `target` is the axis a consumer
-    actually keys on (#57 -- a bundled library reachable only through the one symlink
+    """The representative-per-target half of the cap: `target` is the axis a consumer
+    actually keys on (a bundled library can be reachable only through the one symlink
     naming it), so a flood of one boring target must not crowd a rare, crypto-relevant
     one out of the capped `symlinks`, mirroring `caps.py`'s own `ring`-behind-`anyhow`
     crate example one array over."""
@@ -1816,7 +1812,7 @@ def test_a_rare_symlink_target_survives_a_flood_of_a_common_one(context, tmp_pat
             info.external_attr = 0o120777 << 16
             archive.writestr(info, b"libfoo.so.1")
         # A distinct, crypto-relevant target, sorting after every flooded path -- a
-        # plain path-sorted prefix would have dropped it entirely.
+        # plain path-sorted prefix would drop it entirely.
         rare = zipfile.ZipInfo("zzz/openssl.so", date_time=FIXED_DATE)
         rare.create_system = 3
         rare.external_attr = 0o120777 << 16
@@ -1828,17 +1824,17 @@ def test_a_rare_symlink_target_survives_a_flood_of_a_common_one(context, tmp_pat
 
 
 def test_a_shrunken_strtab_cannot_hide_a_local_definition(context, tmp_path: Path) -> None:
-    """The attack the sole-table path has always caught, now caught in both modes.
+    """The sole-table path's attack applies equally when `.dynsym` is present.
 
     `.symtab` keeps every row, every count and every structural check; `.strtab`'s
     `sh_size` is shrunk so the rows point past it. Nothing about the object looks
-    wrong, and the definition the rows name is unreachable. #127 read `.symtab` for
-    local definitions on every dynamically linked object, so it has to answer this the
-    way #117's path already does, or a statically linked OpenSSL hides behind one
-    edited field. A first draft prefiltered the string table with `symbol_locator`
-    before walking, to save the walk on tables holding nothing -- which read the
+    wrong, and the definition the rows name is unreachable. Reading `.symtab` for
+    local definitions on every dynamically linked object has to answer this the
+    same way the `.symtab`-without-`.dynsym` path does, or a statically linked OpenSSL
+    hides behind one edited field. Prefiltering the string table with `symbol_locator`
+    before walking, to save the walk on tables holding nothing, must not read the
     shrunken `.strtab` as holding nothing and let the object come out
-    NO_CRYPTO_DETECTED with `partial_analysis: false`. Measured, the prefilter saved
+    NO_CRYPTO_DETECTED with `partial_analysis: false`: the prefilter saves
     0.32s against 0.55s on a 26.7 MiB object with half a million symbols, which is not
     worth a silent clean.
     """
@@ -1873,12 +1869,12 @@ def test_a_shrunken_strtab_cannot_hide_a_local_definition(context, tmp_path: Pat
 
 
 def test_a_very_large_symtab_is_walked_in_reasonable_time(context, tmp_path: Path) -> None:
-    """Every row of `.symtab` is now visited on every dynamically linked object.
+    """Every row of `.symtab` is visited on every dynamically linked object.
 
     The budget bounds the bytes, not the rows, so the walk is the thing to hold: half a
     million symbols is past anything a real wheel carries and well inside
     `MAX_STRINGS_BYTES`. Measured at 0.55s here, so the assertion has an order of
-    magnitude of headroom and still fails a per-row cost that regressed by one.
+    magnitude of headroom and still fails a per-row cost ten times higher.
     """
     symbols = tuple(
         DynSym(f"unrelated_symbol_number_{index:07d}", defined=True) for index in range(500_000)
@@ -1911,10 +1907,9 @@ def test_a_decoy_strtab_cannot_hide_a_local_definition(context, tmp_path: Path) 
     Point `.symtab`'s `sh_link` at an appended `SHT_STRTAB` of nothing but NULs and
     every row resolves -- to the empty name -- so no row is unresolved, nothing
     matches, and the real names sit unread in the table the decoy displaced. The
-    sole-table path has caught this since #117 through
-    `_any_strtab_holds_a_name_not_read`; #127 had to run the same check in the
-    supplementary mode or the same object reads clean depending only on whether it
-    also has a `.dynsym`.
+    sole-table path catches this through `_any_strtab_holds_a_name_not_read`; the
+    supplementary mode runs the same check, or the same object would read clean
+    depending only on whether it also has a `.dynsym`.
     """
     honest = ElfBuilder(
         needed=("libc.so.6",),
@@ -1945,9 +1940,9 @@ def test_a_source_file_symbol_is_not_read_as_a_definition(context, tmp_path: Pat
     """`.symtab` names translation units, and a linked shared object carries one per
     unit. A file called `EVP_md5.c` must not match a symbol group by coincidence of a
     filename with the code it happens to implement -- which would read as a definition,
-    i.e. as a statically linked copy. #117 skips `STT_FILE`/`STT_SECTION` in the
-    sole-table path and both of its tests build relocatable objects, so the same skip
-    in the supplementary path was held by nothing (#127).
+    i.e. as a statically linked copy. The sole-table path skips
+    `STT_FILE`/`STT_SECTION`, and its tests build relocatable objects, so this is what
+    holds the same skip in the supplementary path.
     """
     payload = ElfBuilder(
         needed=("libc.so.6",),
@@ -2033,11 +2028,10 @@ def test_cargo_vendor_pattern_stays_linear_over_digit_and_dot_near_misses() -> N
     """`vendor/a/` alone does not exercise what keeps a digit-and-dot run cheap: there is
     nothing after `vendor/` for the name group to walk through, and no `-` to try the
     version group at. A run built from digits and dots is the shape that stresses the
-    name class's `.` exclusion: put `.` back in the name class and the name and version
-    groups can split the same run several ways, which is what made this case quadratic.
-    This is a guard on that exclusion, not on the `{0,63}` repetition bounds: the same
-    run stays linear even with those bounds removed, as long as `.` still cannot appear
-    in the name.
+    name class's `.` exclusion: with `.` in the name class, the name and version groups
+    can split the same run several ways, which makes this case quadratic. This is a
+    guard on that exclusion, not on the `{0,63}` repetition bounds: the same run stays
+    linear even with those bounds removed, as long as `.` cannot appear in the name.
     """
     conventions = load_ruleset().conventions
     text = ("vendor/" + "1-1.1.1" * 9 + "/") * 10_000

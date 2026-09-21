@@ -121,11 +121,11 @@ def test_parallel_output_matches_serial_output(corpus: Path, tmp_path: Path) -> 
 
 
 def test_parallel_output_matches_serial_output_when_binaries_are_capped(tmp_path: Path) -> None:
-    """#75: the `binaries[]` cap now picks which objects to keep based on `findings`,
-    not just a path sort. `--jobs` must not be able to reach that choice -- each
-    wheel is still scanned end to end inside one worker, but this pins it directly for
-    the one wheel shaped to actually exercise the new selection, rather than relying
-    on the general corpus above happening to hit it."""
+    """The `binaries[]` cap picks which objects to keep based on `findings`, not just a
+    path sort. `--jobs` must not be able to reach that choice -- each wheel is scanned
+    end to end inside one worker, but this pins it directly for the one wheel shaped to
+    actually exercise the finding-aware selection, rather than relying on the general
+    corpus above happening to hit it."""
     directory = tmp_path / "wheels"
     directory.mkdir()
     tiny = ElfBuilder(needed=("libc.so.6",)).build()
@@ -184,15 +184,37 @@ def test_resume_discards_a_truncated_final_line(corpus: Path, tmp_path: Path) ->
     assert len(read_records(out)) == 2
 
 
-# --- transient failures (#64) ------------------------------------------------
+def test_resume_produces_the_same_bytes_as_a_full_scan(tmp_path: Path) -> None:
+    """Parallelism is careful not to reorder output; resume must be too."""
+    resume_corpus = tmp_path / "wheels"
+    resume_corpus.mkdir()
+    for name in ("alpha", "bravo", "charlie", "delta"):
+        build_wheel(
+            resume_corpus / f"{name}-1.0-py3-none-any.whl",
+            name=name,
+            version="1.0",
+            files={f"{name}/__init__.py": b"import hashlib\nh = hashlib.md5()\n"},
+        )
+    full = tmp_path / "full.jsonl"
+    main(["scan", str(resume_corpus), "-o", str(full), "--no-cache", "-q"])
+    expected = full.read_bytes()
+
+    partial = tmp_path / "partial.jsonl"
+    lines = expected.decode().splitlines(keepends=True)
+    partial.write_text("".join(lines[2:]), encoding="utf-8")
+    main(["scan", str(resume_corpus), "-o", str(partial), "--no-cache", "--resume", "-q"])
+    assert partial.read_bytes() == expected
+
+
+# --- transient failures -----------------------------------------------------
 #
 # A `MemoryError` (or any exception `_collect` did not specifically anticipate) must
 # read as `unexpected_error`, never `bad_zip`, and a record carrying it must never be
 # treated as a final answer for that wheel -- not by the on-disk cache, and not by
 # `--resume` reading its own prior output back. Both are exercised through
 # `cli._scan_path` / `cli.main` directly rather than `scan_wheel` alone, because the
-# bug was never in what `scan_wheel` returns for one call: it was in what the caller
-# around it decided to do with that record afterward.
+# risk is not in what `scan_wheel` returns for one call: it is in what the caller
+# around it does with that record afterward.
 
 
 def _flaky_collect(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
@@ -213,8 +235,8 @@ def _flaky_collect(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 def test_a_transient_failure_is_retried_not_served_from_cache_forever(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The reproduction from #64: one `MemoryError` must not calcify into a permanent
-    stale `OPAQUE` record that a later, successful attempt never gets to override.
+    """One `MemoryError` must not calcify into a permanent stale `OPAQUE` record that a
+    later, successful attempt never gets to override.
     """
     wheel = build_wheel(
         tmp_path / "flaky-1.0-py3-none-any.whl",
@@ -252,9 +274,9 @@ def test_a_genuinely_corrupt_zip_is_bad_zip_and_is_not_cached_either(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A malformed zip is a specific, checked claim about the archive's own bytes, so
-    it keeps `bad_zip` rather than the new kind. It is cheap to re-fail -- nothing
-    past `zipfile.ZipFile()` ever ran -- so it is not cached either, the same as an
-    unexpected-error record.
+    it reads as `bad_zip` rather than `unexpected_error`. It is cheap to re-fail --
+    nothing past `zipfile.ZipFile()` ever ran -- so it is not cached either, the same
+    as an unexpected-error record.
     """
     wheel = tmp_path / "broken-1.0-py3-none-any.whl"
     wheel.write_bytes(b"not a zip")
@@ -311,7 +333,7 @@ def test_resume_does_not_treat_an_aborted_scan_as_already_done(
     """`--resume` reads its own prior output back to decide what to skip. A wheel
     whose only prior record is an aborted scan must be treated as still pending, the
     same way the cache treats it, or a transient failure sticks just as permanently
-    through `--resume` as it did through the cache in #64.
+    through `--resume` as it would through a cache that stored it.
     """
     wheel = build_wheel(
         tmp_path / "flaky-1.0-py3-none-any.whl",
@@ -396,7 +418,7 @@ def test_a_transient_member_read_failure_is_retried_not_cached(
 # `ELF_PARSE_ERROR`, `MACHO_PARSE_ERROR` and `PE_PARSE_ERROR` share the identical risk,
 # one layer deeper still: `binfmt/elf.py`, `binfmt/macho.py` and `binfmt/pe.py` each
 # catch broadly around their own parsing and record one of these kinds, below where
-# `MEMBER_READ_ERROR` is produced. #97.
+# `MEMBER_READ_ERROR` is produced.
 
 
 def _flaky(monkeypatch: pytest.MonkeyPatch, module: object, name: str) -> dict[str, int]:
@@ -424,14 +446,14 @@ def _flaky(monkeypatch: pytest.MonkeyPatch, module: object, name: str) -> dict[s
 def test_a_transient_elf_parse_failure_is_retried_not_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The reproduction from #97: a transient `MemoryError` inside `elf.py`'s own
-    `.dynamic` reading (one layer below `MEMBER_READ_ERROR`) must not calcify a lost
-    `DT_NEEDED` entry into a permanent record. `_validated_strtab` is on the path both
-    `.dynamic`'s tags and `.dynsym`'s string table are read through, so one scan calls
-    it twice -- once for each -- and the first of those two calls is the one this test
-    makes fail, which is the `.dynamic` block (`read_elf` reads `.dynamic` before
-    `.dynsym`): its own `except Exception` is what actually records `elf_parse_error`
-    and loses `needed` here.
+    """A transient `MemoryError` inside `elf.py`'s own `.dynamic` reading (one layer
+    below `MEMBER_READ_ERROR`) must not calcify a lost `DT_NEEDED` entry into a
+    permanent record. `_validated_strtab` is on the path both `.dynamic`'s tags and
+    `.dynsym`'s string table are read through, so one scan calls it twice -- once for
+    each -- and the first of those two calls is the one this test makes fail, which is
+    the `.dynamic` block (`read_elf` reads `.dynamic` before `.dynsym`): its own
+    `except Exception` is what actually records `elf_parse_error` and loses `needed`
+    here.
     """
     wheel = build_wheel(
         tmp_path / f"fakesodium-1.0-{MANYLINUX}.whl",
@@ -476,14 +498,14 @@ def test_a_transient_elf_parse_failure_is_retried_not_cached(
 def test_a_recursion_error_is_retried_not_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#109: `python_recursion_limit_exceeded` joined `SCAN_ABORTED_KINDS`, unlike the
-    `python_syntax_error` kind it used to share with a real, permanent `SyntaxError`
-    -- caching THAT kind wholesale would mean an ordinary syntax error gets re-scanned
-    forever, which is why it stays out. This is the same reproduction shape
+    """`python_recursion_limit_exceeded` is in `SCAN_ABORTED_KINDS`, unlike the
+    `python_syntax_error` kind it shares with a real, permanent `SyntaxError` -- caching
+    THAT kind wholesale would mean an ordinary syntax error gets re-scanned forever,
+    which is why it stays out. This is the same reproduction shape
     `test_a_transient_elf_parse_failure_is_retried_not_cached` above uses for
-    `elf_parse_error`, one layer up in the Python source reader instead of a binary
-    one: `ast.parse` fails once with a `RecursionError`, and the second attempt must
-    not be served the first attempt's stale, evidence-free record.
+    `elf_parse_error`, one layer up in the Python source reader instead of a binary one:
+    `ast.parse` fails once with a `RecursionError`, and the second attempt must not be
+    served the first attempt's stale, evidence-free record.
     """
     real_parse = python_ast.ast.parse
     calls = {"n": 0}
@@ -662,11 +684,11 @@ def test_a_transient_pe_parse_failure_is_retried_not_cached(
 def test_resume_skips_a_malformed_line_instead_of_crashing_the_run(
     corpus: Path, tmp_path: Path
 ) -> None:
-    """`_scan_was_aborted` reads two levels deeper into a record than the surrounding
-    try/except originally guarded (`errors[i]["kind"]`). A line that parses as JSON
-    but not as a well-shaped record -- however that got into the output file -- must
-    still be dropped and rescanned like any other malformed line, not raise out of
-    `_run_scan` and take the rest of the wheels down with it.
+    """`_scan_was_aborted` reads two levels deeper into a record (`errors[i]["kind"]`)
+    than JSON parsing alone checks. A line that parses as JSON but not as a well-shaped
+    record -- however that got into the output file -- must still be dropped and
+    rescanned like any other malformed line, not raise out of `_run_scan` and take the
+    rest of the wheels down with it.
     """
     out = tmp_path / "out.jsonl"
     main(["scan", str(corpus), "-o", str(out), "--no-cache", "-q"])
@@ -691,9 +713,9 @@ def test_resume_skips_a_malformed_line_instead_of_crashing_the_run(
 def test_the_null_device_still_scans_every_wheel(
     corpus: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The half of the bug that read as a scan failure. Opening `<path>.partial`
-    before consuming the scan generator meant `-o /dev/null` did no work at all, so
-    the progress line is what proves the wheels were really read.
+    """Opening `<path>.partial` before consuming the scan generator would leave
+    `-o /dev/null` doing no work at all, so the progress line is what proves the
+    wheels were really read.
     """
     assert main(["scan", str(corpus), "-o", "/dev/null", "--no-cache"]) == 0
     assert "2/2 wheels" in capsys.readouterr().err

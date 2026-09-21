@@ -231,10 +231,11 @@ def test_debug_entries_are_not_read_as_definitions() -> None:
 def test_a_table_of_nothing_but_debug_records_has_declared_nothing() -> None:
     """The fourth cheap way to look clean, alongside the three `complete` already names.
 
-    A debug record's name is readable, so it used to count toward "we read every name
-    here". But it is not a symbol the object declares, so a table holding nothing else
-    has declared nothing and we have checked nothing. One crafted entry was the whole
-    difference between `OPAQUE` and a clean verdict on an object that told us nothing.
+    A debug record's name is readable, so counting it toward "we read every name
+    here" would be wrong: it is not a symbol the object declares, so a table holding
+    nothing else has declared nothing and checked nothing. One crafted entry is the
+    whole difference between `OPAQUE` and a clean verdict on an object that told us
+    nothing.
     """
     stabs_only = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -335,9 +336,9 @@ def test_fat_symbol_offsets_are_relative_to_the_slice() -> None:
 def test_a_fat_binary_whose_every_slice_read_cleanly_is_not_partial() -> None:
     """Most macOS wheels are universal2, so this is the common case, not the exotic one.
 
-    While only the first slice was read, every fat object stayed partial, and a
-    universal2 wheel with no crypto in it came out `OPAQUE` rather than
-    `NO_CRYPTO_DETECTED`. That put every crypto-free universal2 wheel in the index on
+    Reading only the first slice would leave every fat object partial, and a
+    universal2 wheel with no crypto in it would come out `OPAQUE` rather than
+    `NO_CRYPTO_DETECTED`, putting every crypto-free universal2 wheel in the index on
     the README's `OPAQUE` triage list.
     """
     slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
@@ -411,10 +412,10 @@ def test_an_object_without_a_symbol_table_stays_partial() -> None:
 
 
 def test_an_empty_symbol_table_has_declared_nothing() -> None:
-    """`nsyms = 0` used to be exempt from `complete`, and that was the hole.
+    """`nsyms = 0` must not be exempt from `complete`.
 
     A table declaring nothing tells us exactly what an absent `LC_SYMTAB` tells us, and
-    an absent one has always been incomplete. The exemption let an object carry rows
+    an absent one is always incomplete. Exempting `nsyms = 0` would let an object carry rows
     full of crypto imports, declare none of them, and read clean.
 
     No error, though: like an absent table, declaring nothing is what `strip` leaves
@@ -483,7 +484,7 @@ def test_a_string_table_that_claims_more_than_exists_is_an_error() -> None:
 def test_sizeofcmds_exactly_at_the_cap_is_read_while_one_byte_over_is_refused() -> None:
     """`sizeofcmds` is checked against `_MAX_SIZEOFCMDS` before the load commands are
     read at all, so the boundary is on the declared field, not on how much of the
-    object is actually there to back it up. #63.
+    object is actually there to back it up.
     """
     base = MachOBuilder(id_dylib="libfoo.dylib", load_dylibs=("libcrypto.3.dylib",)).build()
     header, commands = base[:32], base[32:]
@@ -496,15 +497,15 @@ def test_sizeofcmds_exactly_at_the_cap_is_read_while_one_byte_over_is_refused() 
         pad_len = total - len(commands)
         struct.pack_into("<I", patched, 20, total)
         if not honest:
-            # Rejected on `sizeofcmds` alone before the load commands are even read
-            # (#63's own check), so this padding is never walked and does not need a
-            # command of its own to account for it.
+            # Rejected on `sizeofcmds` alone before the load commands are even read, so
+            # this padding is never walked and does not need a command of its own to
+            # account for it.
             return bytes(patched) + commands + b"\x00" * pad_len
-        # #90: padding has to be a load command `ncmds` accounts for, not dead bytes
-        # past what the walk consumes -- raw zero bytes here would trip #90's own new
-        # "ncmds understated the real count" check for a reason this test has nothing
-        # to do with. `cmd` 0 is not one this reader treats specially, so the walk
-        # reads it and moves on, the same as any other command type it does not know.
+        # Padding has to be a load command `ncmds` accounts for, not dead bytes past
+        # what the walk consumes -- raw zero bytes here would trip the "ncmds
+        # understated the real count" check for a reason this test has nothing to do
+        # with. `cmd` 0 is not one this reader treats specially, so the walk reads it
+        # and moves on, the same as any other command type it does not know.
         struct.pack_into("<I", patched, 16, ncmds + 1)
         filler = struct.pack("<II", 0, pad_len) + b"\x00" * (pad_len - 8)
         return bytes(patched) + commands + filler
@@ -537,7 +538,7 @@ def test_sizeofcmds_exactly_at_the_cap_is_read_while_one_byte_over_is_refused() 
 def test_symtab_bytes_exactly_at_the_budget_are_read_while_one_entry_over_is_incomplete() -> None:
     """`nsyms * entry_size` is capped against `max_strings_bytes` before `_available`
     ever measures it against the slice, so an honest table one entry past the budget
-    is incomplete even though every byte of it is genuinely present. #63.
+    is incomplete even though every byte of it is genuinely present.
     """
     entry_size = 16  # nlist_64
     budget = 4096
@@ -577,7 +578,7 @@ def test_strsize_exactly_at_the_budget_is_read_while_one_byte_over_is_incomplete
     """`strsize` is capped against `max_strings_bytes` the same way `nsyms * entry_size`
     is above. Isolated here by keeping the symbol table itself honest and tiny -- one
     real, non-crypto entry -- so the declared string-table byte count is the only thing
-    that can be the constraint, not `nsyms`'s own cap. #63.
+    that can be the constraint, not `nsyms`'s own cap.
     """
     budget = 4096
 
@@ -706,9 +707,9 @@ def test_a_string_table_running_off_the_end_of_the_object_does_not_raise() -> No
     """The tables are written nlist first, so the last six bytes are the string table's.
 
     What survives is a name cut short, and a name cut short is not a name this object
-    carries. Recording `EVP_DigestIn` used to look like the safe direction -- noisy,
-    but unable to hide anything -- and it is not safe: the record then asserts a symbol
-    that does not exist, in the field the whole tool turns on, and asserts it as read.
+    carries. Recording `EVP_DigestIn` looks like the safe direction -- noisy,
+    but unable to hide anything -- and it is not safe: the record would then assert a symbol
+    that does not exist, in the field the whole tool turns on, and assert it as read.
     A run the table never closes is a name we could not resolve, which is what the flag
     and the error below say instead.
     """
@@ -743,16 +744,16 @@ def test_a_table_straddling_the_end_of_the_string_read_is_not_re_read_from_the_s
     )
 
     assert errors == ()
-    # The strings read was cut short on purpose to set the straddle up, and that is now
-    # a cause of its own. It is the only one: the symbol table on the far side of the
-    # cut was still read in full, which is what this test is about.
+    # The strings read was cut short on purpose to set the straddle up, and that is a
+    # cause of its own. It is the only one: the symbol table on the far side of the cut
+    # was still read in full, which is what this test is about.
     assert ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
     assert ev.matched_symbols == (
         _symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),
         _symbol("EVP_EncryptInit_ex", evidence.BINDING_IMPORTED),
     )
     # Seeking back over the header to sniff it is free; seeking back into the tables is
-    # the regression.
+    # the cost this pins out.
     assert [seek for seek in stream.backwards if seek[1] >= symoff] == []
 
 
@@ -923,9 +924,9 @@ def test_every_unreadable_slice_says_why_it_was_unreadable() -> None:
 def test_a_64_bit_fat_binary_reads_the_same_as_a_32_bit_one() -> None:
     """`FAT_MAGIC_64` changes the arch table and nothing else.
 
-    The magic is one bit from the 32-bit one, which is how an object of this shape gets
-    missed: it used to sniff as `unknown` and fall to the strings-only reader, so its
-    install name, its dependencies and its imported OpenSSL symbol were all lost.
+    The magic is one bit from the 32-bit one, which is how an object of this shape can
+    be missed: sniffing it as `unknown` and falling to the strings-only reader would
+    lose its install name, its dependencies and its imported OpenSSL symbol.
     """
     slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
     slice_b = MachOBuilder(
@@ -1213,15 +1214,15 @@ def test_an_alias_row_cannot_launder_a_hidden_symbol() -> None:
     assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
 
 
-# --- a symbol name has a cap, and the table a whole-table budget (#61) --------
+# --- a symbol name has a cap, and the table a whole-table budget ---------------
 #
-# `_iter_symbols` used to decode and `sanitize` every nlist name in full, with no
-# per-name bound and no table-wide budget: a table pointing many rows at `n_strx=1`
-# cost rows times that one name's length, all of it in `sanitize`, a per-character
-# Python pass. `binfmt.symtab.BoundedNames` ports `binfmt.pe`'s `_MAX_NAME_BYTES` /
-# `_MAX_NAME_TOTAL_BYTES` (#53) to close it. `tests/test_hardening.py` holds the
-# bounded-time and memoization-effectiveness cases; these hold the boundary itself and
-# the whole-table budget a repeated single name does not exercise.
+# Decoding and `sanitize`-ing every nlist name in full, with no per-name bound and no
+# table-wide budget, costs rows times a name's length for a table pointing many rows
+# at `n_strx=1`, all of it in `sanitize`, a per-character Python pass.
+# `binfmt.symtab.BoundedNames` applies `binfmt.pe`'s `_MAX_NAME_BYTES` /
+# `_MAX_NAME_TOTAL_BYTES` to bound it. `tests/test_hardening.py` holds the bounded-time
+# and memoization-effectiveness cases; these hold the boundary itself and the
+# whole-table budget a repeated single name does not exercise.
 
 
 def _macho_crypto_name(index: int, length: int) -> str:
@@ -1252,7 +1253,8 @@ def test_a_symbol_name_one_byte_over_the_cap_is_not_read() -> None:
     """One byte further and the row is unresolved, not truncated into the record.
 
     Raising a limit is how a limit quietly stops being one, so the far side of it is
-    pinned rather than assumed -- the same reason #53's PE test pins its own boundary.
+    pinned rather than assumed -- the same reason PE's name-cap test pins its own
+    boundary.
     """
     name = "_EVP_" + "A" * (symtab._MAX_NAME_BYTES - 4)
     assert len(name) == symtab._MAX_NAME_BYTES + 1
@@ -1284,14 +1286,14 @@ def test_many_long_names_under_the_cap_exhaust_the_table_wide_budget() -> None:
     assert [e.message for e in errors] == ["mach-o symbol table names strings it does not hold"]
 
 
-# --- the N_INDR alias target has the same cap as an ordinary name (#61 follow-up) ---
+# --- the N_INDR alias target has the same cap as an ordinary name --------------
 #
 # An alias's target is a string-table offset exactly like any `n_strx`: `n_value`
 # rather than the entry's own index, but the same table, the same terminator search,
-# the same cost if a table points many rows' `n_value` at one enormous string. The
-# first pass at #61 read it straight out of `strings` with no cap, no budget and no
-# memoization -- the identical shape closed for ordinary names, one call site over.
-# These mirror the ordinary-name cap tests above, against the alias path instead.
+# the same cost if a table points many rows' `n_value` at one enormous string.
+# Reading it straight out of `strings` with no cap, no budget and no memoization would
+# be the identical shape the per-name cap bounds for ordinary names, one call site
+# over. These mirror the ordinary-name cap tests above, against the alias path instead.
 
 
 def test_an_alias_target_exactly_at_the_cap_is_still_read() -> None:
@@ -1333,14 +1335,14 @@ def test_an_alias_target_one_byte_over_the_cap_is_not_read() -> None:
     ]
 
 
-# --- #59: LC_LOAD_DYLIB's siblings, and a name offset outside its own body ----
+# --- LC_LOAD_DYLIB's siblings, and a name offset outside its own body ----------
 #
 # `_LC_DYLIB_DEPENDENCIES` in `binfmt.macho` reads `LC_LOAD_DYLIB`, `LC_LOAD_WEAK_DYLIB`,
 # `LC_LAZY_LOAD_DYLIB`, `LC_LOAD_UPWARD_DYLIB` and `LC_REEXPORT_DYLIB` into `needed` the
 # same way, because the dynamic linker resolves every one of them as a real dependency
-# at load time. Before #59, only `LC_LOAD_DYLIB` and `LC_ID_DYLIB` were read: the other
-# four were skipped without a trace, and a name offset outside a command's own body was
-# dropped the same silent way.
+# at load time. Reading only `LC_LOAD_DYLIB` and `LC_ID_DYLIB` would skip the other four
+# without a trace, and a name offset outside a command's own body must not be dropped
+# the same silent way.
 
 
 @pytest.mark.parametrize(
@@ -1349,10 +1351,10 @@ def test_an_alias_target_one_byte_over_the_cap_is_not_read() -> None:
 def test_a_dylib_loading_sibling_command_reaches_needed(field: str) -> None:
     """Each of `LC_LOAD_DYLIB`'s four siblings is read into `needed`, not skipped.
 
-    Before #59 these four command types were not recognised at all: the dependency
-    they name dropped out of `needed` with no trace, `partial_analysis` stayed False,
-    and a wheel that used one of them to reach libcrypto read as though it never
-    named the dependency.
+    Left unrecognised, any of these four command types would drop the dependency it
+    names out of `needed` with no trace, `partial_analysis` would stay False, and a
+    wheel that used one of them to reach libcrypto would read as though it never named
+    the dependency.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1366,14 +1368,15 @@ def test_a_dylib_loading_sibling_command_reaches_needed(field: str) -> None:
     assert ev.partial_analysis is False
 
 
-def test_a_reexporting_shim_no_longer_reads_clean() -> None:
-    """The reproduction from issue #59, the Mach-O analogue of #54's PE forwarder.
+def test_a_reexporting_shim_does_not_read_clean() -> None:
+    """A re-exporting shim, the Mach-O analogue of a PE forwarder.
 
     `LC_REEXPORT_DYLIB` folds the target's exports into this object's own API surface,
     so a shim re-exporting libcrypto is itself an OpenSSL API surface in the sense
-    `linkage._binary_posture` cares about. Before #59 this read `NO_CRYPTO_DETECTED`
-    with `needs_human_review: false`, `openssl_linkage: none` and `needed` carrying
-    only libSystem: nothing about the object said it re-exported OpenSSL at all.
+    `linkage._binary_posture` cares about. Skipping the command reads this
+    `NO_CRYPTO_DETECTED` with `needs_human_review: false`, `openssl_linkage: none` and
+    `needed` carrying only libSystem: nothing about the object says it re-exports
+    OpenSSL at all.
     """
     shim = MachOBuilder(
         id_dylib="@rpath/libshim.dylib",
@@ -1390,7 +1393,7 @@ def test_a_reexporting_shim_no_longer_reads_clean() -> None:
     )
 
     # The evidence alone is not the whole claim: run it through the same engine that
-    # decides the verdict, the way `test_binfmt_pe.py`'s forwarder test does for #54.
+    # decides the verdict, the way `test_binfmt_pe.py`'s forwarder test does.
     from wheel_crypto_scan.engine import apply_rules
     from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
     from wheel_crypto_scan.linkage import resolve_linkage
@@ -1417,9 +1420,9 @@ def test_a_reexporting_shim_no_longer_reads_clean() -> None:
 def test_a_dylib_name_offset_outside_its_own_body_is_a_partial_read() -> None:
     """A name offset past the command's own body is a lost dependency, not silence.
 
-    Before #59 `_read_cstring` returning `None` here was treated exactly like a
-    command that simply had nothing else to say: the load command vanished with no
-    error and no `partial_reasons` entry, and `partial_analysis` stayed False.
+    Treating `_read_cstring` returning `None` here exactly like a command that simply
+    had nothing else to say would make the load command vanish with no error and no
+    `partial_reasons` entry, with `partial_analysis` left False.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1482,9 +1485,9 @@ def test_a_name_offset_below_the_command_header_is_not_trusted() -> None:
     `name_offset = 12` points at the `timestamp` field. `timestamp` is set to
     `b"AAAA"` and `current_version` to zero (a NUL right after it), so a reader with
     no floor check would resolve a clean, printable name -- "AAAA" -- out of an
-    integer field the object never used to name anything. The class of bug #56's ELF
-    work was the precedent for closing: this is deliberately not the all-zeros case,
-    which would sanitize to empty and pass whether or not the floor check exists.
+    integer field the object never uses to name anything, the same decoy shape
+    `binfmt.elf` refuses for its section tables: this is deliberately not the all-zeros
+    case, which would sanitize to empty and pass whether or not the floor check exists.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1620,9 +1623,9 @@ def test_a_load_command_string_unread_in_one_fat_slice_still_flags_the_object() 
 
 
 def test_a_cmdsize_overrunning_the_object_truncates_the_walk_rather_than_the_command() -> None:
-    """#84: a `cmdsize` claiming to run past the load commands used to abandon the
-    walk with no signal at all, silently dropping every command after it -- including
-    an honest, later `LC_LOAD_DYLIB` naming the system OpenSSL.
+    """A `cmdsize` claiming to run past the load commands must not abandon the walk
+    with no signal at all, silently dropping every command after it -- including an
+    honest, later `LC_LOAD_DYLIB` naming the system OpenSSL.
 
     The command before the poison one still has to survive: this is the walk being
     cut short at the point of the lie, not the whole object going dark.
@@ -1648,8 +1651,9 @@ def test_a_cmdsize_overrunning_the_object_truncates_the_walk_rather_than_the_com
 
 @pytest.mark.parametrize("cmdsize", [0, 4])
 def test_a_cmdsize_too_small_for_its_own_header_truncates_the_walk(cmdsize: int) -> None:
-    """The other half of #84's break: `cmdsize < 8` cannot even hold `cmd`/`cmdsize`
-    itself, so nothing about the command -- let alone what follows it -- can be read.
+    """The other half of the extent check's break: `cmdsize < 8` cannot even hold
+    `cmd`/`cmdsize` itself, so nothing about the command -- let alone what follows
+    it -- can be read.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1687,16 +1691,18 @@ def test_a_command_too_short_to_even_carry_a_cmdsize_field_truncates_the_walk() 
 
 
 def test_this_object_never_reads_as_no_crypto_detected() -> None:
-    """The invariant #84 exists to hold: unreadable or uncertain, never clean.
+    """The invariant the load-command extent check exists to hold: unreadable or
+    uncertain, never clean.
 
     `MachOBuilder` always places its own `LC_SYMTAB` last, so a fixture built from its
     fields alone can never show a poison command losing a *later* command while the
     symbol table still reads in full -- the symtab itself would already be truncated
-    away, and an absent symtab is partial for reasons #84 has nothing to do with. This
-    builds the honest case first, then splices the poison command and one more honest
-    `LC_LOAD_DYLIB` in after a working `LC_SYMTAB`, patching `symoff`/`stroff` for the
-    bytes inserted ahead of them, so the object that reaches the poison command has
-    already read a complete symbol table -- isolating #84's own effect on the verdict.
+    away, and an absent symtab is partial for reasons the extent check has nothing to do
+    with. This builds the honest case first, then splices the poison command and one
+    more honest `LC_LOAD_DYLIB` in after a working `LC_SYMTAB`, patching
+    `symoff`/`stroff` for the bytes inserted ahead of them, so the object that reaches
+    the poison command has already read a complete symbol table -- isolating the extent
+    check's own effect on the verdict.
     """
     end = "<"
     data = MachOBuilder(
@@ -1729,7 +1735,7 @@ def test_this_object_never_reads_as_no_crypto_detected() -> None:
     assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
 
     # Built end to end through `linkage` and `verdict`, the way a wheel actually gets
-    # scored: the reproduction that motivated this fix was a `NO_CRYPTO_DETECTED`
+    # scored: what this closes is a `NO_CRYPTO_DETECTED`
     # verdict on an object that could not be read in full, not a wrong flag alone.
     from wheel_crypto_scan.engine import apply_rules
     from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
@@ -1753,8 +1759,8 @@ def test_this_object_never_reads_as_no_crypto_detected() -> None:
     assert verdict.needs_human_review is True
 
 
-def test_the_ordinary_multi_command_walk_is_completely_unchanged() -> None:
-    """Regression guard: several honest commands, none of them malformed.
+def test_an_ordinary_multi_command_walk_reaches_every_command() -> None:
+    """Several honest commands, none of them malformed.
 
     `ncmds` exhausts exactly when the last real command ends, so neither break site
     in the walk is ever reached for an object that never lies about its own shape.
@@ -1778,9 +1784,9 @@ def test_the_ordinary_multi_command_walk_is_completely_unchanged() -> None:
 def test_a_non_ascii_install_name_is_sanitized_not_dropped() -> None:
     """A stray non-ASCII byte in a dependency name is sanitized, matching `binfmt.elf`.
 
-    Before #59 `_read_cstring` raised `UnicodeDecodeError` on a non-ASCII byte and the
-    caller treated that exactly like an out-of-bounds offset: the whole name was
-    dropped rather than the one byte that could not be kept.
+    Raising `UnicodeDecodeError` on a non-ASCII byte and treating that exactly like an
+    out-of-bounds offset would drop the whole name rather than the one byte that
+    cannot be kept.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1793,8 +1799,8 @@ def test_a_non_ascii_install_name_is_sanitized_not_dropped() -> None:
     assert ev.partial_analysis is False
 
 
-def test_the_plain_load_dylib_case_is_unchanged() -> None:
-    """Regression guard: the ordinary case #59 leaves untouched."""
+def test_the_ordinary_load_dylib_case_reads_normally() -> None:
+    """The ordinary case: one `LC_LOAD_DYLIB` per dependency, nothing malformed."""
     data = MachOBuilder(
         id_dylib="@rpath/libfoo.dylib",
         load_dylibs=("/usr/lib/libcrypto.3.dylib", "/usr/lib/libSystem.B.dylib"),
@@ -1807,34 +1813,36 @@ def test_the_plain_load_dylib_case_is_unchanged() -> None:
     assert ev.partial_analysis is False
 
 
-# --- #90: a misaligned cmdsize or an understated ncmds also truncates the walk ------
+# --- a misaligned cmdsize or an understated ncmds also truncates the walk ------
 #
-# #84 added the walk's two break sites -- a `cmd`/`cmdsize` pair with no bytes left to
-# hold it, and a `cmdsize` that runs past the end of the load commands -- but neither
-# one fires for a `cmdsize` that stays inside the commands and is at least 8 while
-# still lying about its own extent by not landing on the ABI's own alignment (8 bytes
-# on a 64-bit object, 4 on a 32-bit one), or for a header whose own `ncmds` undercounts
-# how many commands the object actually carries. Both desync the walk exactly the way
-# #84's two shapes do, just without either of #84's checks ever seeing the lie. Reuses
-# `macho_load_command_walk_truncated` rather than minting a new token: both are still
-# "the walk did not honestly account for all its bytes", the same claim #84's token
-# already makes -- see DECISIONS.md's #84 entry, extended for #90.
+# The walk's two extent breaks -- a `cmd`/`cmdsize` pair with no bytes left to hold it,
+# and a `cmdsize` that runs past the end of the load commands -- do not fire for a
+# `cmdsize` that stays inside the commands and is at least 8 while still lying about
+# its own extent by not landing on the ABI's own alignment (8 bytes on a 64-bit
+# object, 4 on a 32-bit one), or for a header whose own `ncmds` undercounts how many
+# commands the object actually carries. Both desync the walk exactly the way the
+# extent breaks' two shapes do, just without either extent check ever seeing the lie.
+# Reuses `macho_load_command_walk_truncated` rather than minting a new token: both are
+# still "the walk did not honestly account for all its bytes", the same claim that
+# token already makes -- see DESIGN.md, "A misaligned `cmdsize` or an understated
+# `ncmds` flags the walk too".
 
 
 def test_a_misaligned_cmdsize_desyncs_the_walk_rather_than_landing_clean() -> None:
-    """#90(i): a `cmdsize` that is internally consistent by #84's own two checks --
+    """Shape (i): a `cmdsize` that is internally consistent by the extent checks --
     at least 8, and not running past the end of the load commands -- but not a
     multiple of the ABI's 8-byte (64-bit) alignment silently desyncs every command
-    read after it. Before this fix, neither of #84's breaks ever fired for this shape:
-    the walk read on, landed on the wrong offset for the honest `LC_LOAD_DYLIB` naming
-    libcrypto that followed, and the object read as though nothing were wrong.
+    read after it. Neither extent break fires for this shape on its own: without the
+    alignment check, the walk would read on, land on the wrong offset for the honest
+    `LC_LOAD_DYLIB` naming libcrypto that follows, and the object would read as though
+    nothing were wrong.
 
     `poison_cmdsize=12` writes only the 8-byte `cmd`/`cmdsize` pair `MachOBuilder`
     always writes for this fixture, so the claimed 12-byte extent runs 4 bytes into
     the next command's own bytes once the walk advances `pos` by it -- the same
     "written bytes for a poison command are shorter than its claimed cmdsize" shape
-    #84's other `poison_cmdsize` fixtures already use, just aligned instead of too
-    small or overrunning.
+    the other `poison_cmdsize` fixtures use, just misaligned instead of too small or
+    overrunning.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1849,7 +1857,7 @@ def test_a_misaligned_cmdsize_desyncs_the_walk_rather_than_landing_clean() -> No
     # The break happens the moment the lie is read, before any later byte is ever
     # reinterpreted as a command of its own -- so a misaligned cmdsize cannot desync
     # the walk into misreading subsequent bytes as a decoy `LC_ID_DYLIB` and firing
-    # #85's ambiguity check for the wrong reason.
+    # the duplicate-command ambiguity check for the wrong reason.
     assert evidence.PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS not in ev.partial_reasons
     assert [error.kind for error in errors] == [MACHO_PARSE_ERROR]
     # Lost, not fabricated: its true extent is unknown, so nothing past the poison
@@ -1864,9 +1872,9 @@ def test_a_misaligned_cmdsize_desyncs_the_walk_rather_than_landing_clean() -> No
 def test_every_misaligned_offset_around_the_8_byte_boundary_truncates_the_walk(
     cmdsize: int,
 ) -> None:
-    """Adversarial sweep: not just 12, every value near the 8-byte boundary that is
-    `>= 8` and does not overrun must trip #90's check, not just the one value the
-    main reproduction above happens to use.
+    """Every value near the 8-byte boundary that is `>= 8` and does not overrun must
+    trip the alignment check, not just the one value the main reproduction above
+    happens to use.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1883,20 +1891,20 @@ def test_every_misaligned_offset_around_the_8_byte_boundary_truncates_the_walk(
 
 
 def test_ncmds_understating_the_real_count_drops_a_real_command_silently() -> None:
-    """#90(ii): the header's own `ncmds` undercounts how many commands the object
+    """Shape (ii): the header's own `ncmds` undercounts how many commands the object
     actually carries. The loop simply stops after `ncmds` iterations with real command
-    bytes still unread -- no command lied about its own header, so neither of #84's
-    breaks fires, and nothing before #90 checked `ncmds` against `sizeofcmds` at all.
+    bytes still unread -- no command lied about its own header, so neither extent break
+    fires, and only the end-of-walk check compares `ncmds` against `sizeofcmds` at all.
 
     Mirrors `test_this_object_never_reads_as_no_crypto_detected`'s splicing technique:
     a real, honest `LC_LOAD_DYLIB` naming libcrypto is appended after a complete,
     already-read `LC_SYMTAB`, patching `symoff`/`stroff` for the bytes inserted ahead
     of them, so the object that reaches the end of its declared `ncmds` has already
-    read a complete symbol table -- isolating #90(ii)'s own effect from the
-    absent-`LC_SYMTAB` cause the same way that test isolates #84's. `sizeofcmds` grows
-    to cover the new command's real bytes; `ncmds` does not, which is the lie under
-    test: the header says 3 commands (`LC_ID_DYLIB`, one `LC_LOAD_DYLIB`, `LC_SYMTAB`)
-    and the object carries 4.
+    read a complete symbol table -- isolating shape (ii)'s own effect from the
+    absent-`LC_SYMTAB` cause the same way that test isolates the extent check's.
+    `sizeofcmds` grows to cover the new command's real bytes; `ncmds` does not, which is
+    the lie under test: the header says 3 commands (`LC_ID_DYLIB`, one `LC_LOAD_DYLIB`,
+    `LC_SYMTAB`) and the object carries 4.
     """
     end = "<"
     data = MachOBuilder(
@@ -1922,7 +1930,8 @@ def test_ncmds_understating_the_real_count_drops_a_real_command_silently() -> No
     tail = data[32 + sizeofcmds :]  # nlist + strtab, byte-identical, just further out now
     ev, errors = _read(header + new_commands + tail)
     # The symbol table read in full: this is not the absent-`LC_SYMTAB` cause, and
-    # isolates #90(ii)'s own effect the same way #84's own version of this test does.
+    # isolates shape (ii)'s own effect the same way the extent check's own version of
+    # this test does.
     assert ev.stripped is False
     assert ev.symtab_count == 1
     assert ev.matched_symbols == (_symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED),)
@@ -1937,12 +1946,13 @@ def test_ncmds_understating_the_real_count_drops_a_real_command_silently() -> No
 
 
 def test_misalignment_and_understated_ncmds_combine_without_contradiction() -> None:
-    """Interaction check: a fat object whose two slices each trip a *different* #90
+    """Interaction check: a fat object whose two slices each trip a *different* walk
     cause -- one a misaligned `cmdsize`, the other an understated `ncmds` -- still
     reads as one shared `macho_load_command_walk_truncated` reason and one error
-    message, not two contradictory or duplicated ones. Same shape #85's own entry
-    checks against #84's truncation ("neither one swallowing the other"), here
-    checking #90's two causes against each other instead.
+    message, not two contradictory or duplicated ones. The same shape the
+    duplicate-command ambiguity tests check against the extent check's truncation
+    ("neither one swallowing the other"), here checking the two walk causes against
+    each other instead.
     """
     misaligned_slice = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -1992,9 +2002,9 @@ def test_misalignment_and_understated_ncmds_combine_without_contradiction() -> N
 def test_a_properly_aligned_cmdsize_of_every_boundary_length_reads_clean(
     is64: bool, name: str
 ) -> None:
-    """Boundary sweep for #90(i): every dependency-name length long enough to push
+    """Boundary sweep for shape (i): every dependency-name length long enough to push
     `cmdsize` across each padding boundary, on both 32- and 64-bit objects, must not
-    falsely trip the new alignment check now that `MachOBuilder` pads each command to
+    falsely trip the alignment check, given that `MachOBuilder` pads each command to
     the ABI's own boundary (8 bytes on 64-bit, 4 on 32-bit) rather than always 4.
     """
     data = MachOBuilder(
@@ -2011,17 +2021,18 @@ def test_a_properly_aligned_cmdsize_of_every_boundary_length_reads_clean(
     assert name in ev.needed
 
 
-# --- #85: LC_ID_DYLIB and LC_SYMTAB, more than one is ambiguous, not last-wins -------
+# --- LC_ID_DYLIB and LC_SYMTAB: more than one is ambiguous, not last-wins ------
 #
-# `binfmt.macho` set `soname` and `symtab` unconditionally on every `LC_ID_DYLIB` or
-# `LC_SYMTAB` it walked, so a second, decoy command silently overwrote the honest one
-# instead of being noticed. #56 closed the identical shape for ELF's section tables
+# Setting `soname` and `symtab` unconditionally on every `LC_ID_DYLIB` or `LC_SYMTAB`
+# walked would let a second, decoy command silently overwrite the honest one instead of
+# being noticed. `binfmt.elf` refuses the identical shape for its section tables
 # (`elf_section_type_ambiguous`): more than one candidate of the same significant kind
 # is refused outright, not resolved by picking whichever one the walk reached last.
 
 
 def test_two_id_dylib_commands_leave_soname_unresolved() -> None:
-    """The baseline case #85 asks to mirror: a decoy `LC_ID_DYLIB` used to win outright."""
+    """The baseline case: a decoy `LC_ID_DYLIB` that a last-wins walk would let win
+    outright."""
     data = MachOBuilder(
         id_dylib="libfoo.dylib", extra_id_dylibs=("decoy.dylib",), symbols=(IMPORTED_OPENSSL,)
     ).build()
@@ -2033,7 +2044,7 @@ def test_two_id_dylib_commands_leave_soname_unresolved() -> None:
 
 
 def test_three_id_dylib_commands_are_still_ambiguous() -> None:
-    """Adversarial probe: more than two candidates is not a special case.
+    """More than two candidates is not a special case.
 
     The check counts occurrences rather than comparing two values, so it does not need
     a third arm to keep refusing a third decoy.
@@ -2067,7 +2078,7 @@ def test_a_decoy_id_dylib_before_the_honest_one_is_also_not_trusted() -> None:
 
 
 def test_an_ambiguous_id_dylib_names_that_command_specifically() -> None:
-    """#103: the error message names which command was ambiguous, matching
+    """The error message names which command was ambiguous, matching
     `elf_section_type_ambiguous`'s per-kind messages in `binfmt/elf.py` instead of
     merging both possible causes into one "one of two things" sentence.
     """
@@ -2109,10 +2120,10 @@ def test_both_ambiguities_at_once_produce_two_distinct_messages() -> None:
 
 
 def test_each_ambiguity_on_a_different_fat_slice_still_yields_both_messages() -> None:
-    """#103's threading survives the fat-slice merge too: `id_dylib_ambiguous` on one
-    slice and `symtab_ambiguous` on a different slice must not collapse into a single
-    flag read off `read[0]` alone -- each `_SliceEvidence` carries its own pair, and
-    `read_macho`'s two `any(...)` passes each look across every slice independently.
+    """The per-command message survives the fat-slice merge too: `id_dylib_ambiguous`
+    on one slice and `symtab_ambiguous` on a different slice must not collapse into a
+    single flag read off `read[0]` alone -- each `_SliceEvidence` carries its own pair,
+    and `read_macho`'s two `any(...)` passes each look across every slice independently.
     """
     id_dylib_ambiguous_slice = MachOBuilder(
         id_dylib="libfoo.dylib", extra_id_dylibs=("decoy.dylib",), symbols=(IMPORTED_OPENSSL,)
@@ -2130,10 +2141,11 @@ def test_each_ambiguity_on_a_different_fat_slice_still_yields_both_messages() ->
 
 
 def test_a_second_symtab_after_the_real_one_discards_both() -> None:
-    """The shape that actually demonstrates the pre-fix bug: last-wins keeps the decoy.
+    """The shape that demonstrates the last-wins hazard: trusting the last `LC_SYMTAB`
+    keeps the decoy.
 
     `decoy_symtabs_after` writes the decoy behind the real, honest table, so a reader
-    that trusted whichever `LC_SYMTAB` it walked last used to keep the decoy's garbage
+    that trusts whichever `LC_SYMTAB` it walked last would keep the decoy's garbage
     offsets -- losing the real table's crypto import with nothing to say so.
     """
     data = MachOBuilder(
@@ -2187,17 +2199,17 @@ def test_two_symtab_commands_is_a_different_fact_from_one_missing_entirely() -> 
 
 
 def test_ambiguity_and_a_truncated_walk_combine_without_contradiction() -> None:
-    """Adversarial probe: an ambiguous `LC_ID_DYLIB` *and* #84's truncation shape in
-    the same object. Both are read from the same walk over the same commands, so
+    """An ambiguous `LC_ID_DYLIB` *and* the extent check's truncation shape in the same
+    object. Both are read from the same walk over the same commands, so
     nothing about detecting one should stop the other from being detected too.
 
     `MachOBuilder` always places `LC_SYMTAB` last, so the poison command -- placed,
     like every `poison_cmdsize` fixture in this file, after the honest dependency it
     is there to protect -- also cuts the walk off before it ever reaches the real
-    symbol table. That is `macho_symtab_incomplete`, the same #84-and-symtab
+    symbol table. That is `macho_symtab_incomplete`, the same extent-check-and-symtab
     interaction `test_this_object_never_reads_as_no_crypto_detected` isolates
-    separately; this probe is about the other two tokens combining, not about
-    isolating every field, so it does not fight that placement.
+    separately; this test is about the other two tokens combining, not about isolating
+    every field, so it does not fight that placement.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -2214,16 +2226,16 @@ def test_ambiguity_and_a_truncated_walk_combine_without_contradiction() -> None:
     assert evidence.PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED in ev.partial_reasons
     assert {error.kind for error in errors} == {MACHO_PARSE_ERROR}
     # Read before the poison command, so still present -- the ambiguity check costing
-    # `soname` must not also cost evidence #84 already protects.
+    # `soname` must not also cost evidence the extent check protects.
     assert ev.needed == ("/usr/lib/libSystem.B.dylib",)
-    # Lost to the truncation, same as #84 alone: the ambiguity fix must not resync the
-    # walk past a command that already lied about its own extent.
+    # Lost to the truncation, same as the extent check alone: the ambiguity check must
+    # not resync the walk past a command that already lied about its own extent.
     assert "/usr/lib/libcrypto.3.dylib" not in ev.needed
 
 
-def test_the_ordinary_single_id_dylib_and_symtab_case_is_unchanged() -> None:
-    """Regression guard: exactly one `LC_ID_DYLIB` and one `LC_SYMTAB`, the shape every
-    other Mach-O test in this file already builds, must read exactly as it did before.
+def test_a_single_id_dylib_and_symtab_reads_normally() -> None:
+    """Exactly one `LC_ID_DYLIB` and one `LC_SYMTAB`, the shape every
+    other Mach-O test in this file already builds, reads without ambiguity.
     """
     data = MachOBuilder(
         id_dylib="libfoo.dylib",
@@ -2240,16 +2252,16 @@ def test_the_ordinary_single_id_dylib_and_symtab_case_is_unchanged() -> None:
 
 
 def test_an_ambiguous_install_name_never_reads_a_bundled_copy_as_clean() -> None:
-    """The issue's own reproduction, end to end: a vendored libcrypto under a neutral
+    """The motivating reproduction, end to end: a vendored libcrypto under a neutral
     filename, where `LC_ID_DYLIB` is the only signal tying the object to that
     identity, corrupted by a decoy second `LC_ID_DYLIB`.
 
     `own_base` reads `soname` first and falls back to the file name only when `soname`
     is `None`, so once the ambiguity check refuses to guess, this object's identity is
     unrecoverable from this evidence alone -- correctly, since the object never really
-    said which name was its own. What #85 exists to hold is that the wheel must not
-    read this as though the object had said nothing was wrong: `partial_analysis` and
-    the linkage answer both have to show the loss.
+    said which name was its own. What the ambiguity check exists to hold is that the
+    wheel must not read this as though the object had said nothing was wrong:
+    `partial_analysis` and the linkage answer both have to show the loss.
     """
     data = MachOBuilder(
         id_dylib="libcrypto.3.dylib",
@@ -2288,14 +2300,14 @@ def test_an_ambiguous_install_name_never_reads_a_bundled_copy_as_clean() -> None
 
 
 def test_a_path_that_honestly_names_the_library_recovers_despite_the_ambiguity() -> None:
-    """The issue's other variant: the member's own file name is `libcrypto.3.dylib`,
-    unambiguous on its own, but a decoy `LC_ID_DYLIB` still corrupted the record --
-    degrading `bundled` to `mixed` and reporting a wrong install name, per the issue.
+    """The other variant: the member's own file name is `libcrypto.3.dylib`,
+    unambiguous on its own, but a decoy `LC_ID_DYLIB` beside the real one -- trusting
+    the last one walked degrades `bundled` to `mixed` and reports a wrong install name.
 
-    Once the ambiguity check leaves `soname` unresolved rather than trusting the
-    decoy, `own_base` falls back to the file name the same way it always has for an
-    object that never declared `LC_ID_DYLIB` at all, and recovers the correct answer
-    -- `bundled`, not corrupted, and not merely `unknown` either.
+    With the ambiguity check leaving `soname` unresolved rather than trusting the
+    decoy, `own_base` falls back to the file name the same way it does for an object
+    that never declared `LC_ID_DYLIB` at all, and recovers the correct answer --
+    `bundled`, not corrupted, and not merely `unknown` either.
     """
     data = MachOBuilder(
         id_dylib="unrelated_name.dylib", extra_id_dylibs=("another_unrelated.dylib",)

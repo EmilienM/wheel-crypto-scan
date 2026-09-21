@@ -1,20 +1,19 @@
-"""The `real` marker's own gate: see #72.
+"""The `real` marker's own gate.
 
-`tox -e real` has run `pytest -m "real or hostbin"` since the `real` testenv was
-added, and `WCS_CORPUS_DIR` has been in its `passenv` for just as long, but nothing in
-the suite ever carried the `real` marker -- the env var was passed through and read by
-nothing. `tools/make_corpus.py` builds a corpus of *synthetic* wheels for a separate,
+`tox -e real` runs `pytest -m "real or hostbin"` with `WCS_CORPUS_DIR` in its
+`passenv`, and the tests in this file are what carry the `real` marker and read that
+variable. `tools/make_corpus.py` builds a corpus of *synthetic* wheels for a separate,
 always-on determinism check; this is the real-wheel gate the `real` marker's own name
-promised and never had.
+promises.
 
-What is pinned here is exactly what DECISIONS.md's own hand-verified measurements over
+What is pinned here is exactly what DESIGN.md's own hand-verified measurements over
 real corpora depend on being true, restated as an automated, re-runnable check rather
 than a one-off note: every wheel scans without a Python exception escaping (the "one
 bad wheel never aborts a run" invariant), the same corpus produces byte-identical
 output at `--jobs 1` and `--jobs 8` (the ordering promise `cli.py` documents), and a
 cache-warm run matches a cold one (the cache-key promise `AGENTS.md` documents). It
 also prints -- never asserts, because corpus contents vary from one `WCS_CORPUS_DIR` to
-the next -- the shapes DECISIONS.md discusses from real wheels: `.exe` members, ELF
+the next -- the shapes DESIGN.md discusses from real wheels: `.exe` members, ELF
 objects with no section header table at all (`e_shoff == 0`, the `cryptography`
 static-OpenSSL exposure "Sections are found by type, not by a name nobody checks"
 measures), and how many objects came back `partial_analysis`. Weak dylibs and
@@ -113,18 +112,18 @@ def test_a_warm_cache_run_matches_a_cold_one(tmp_path: Path) -> None:
 
 @pytest.mark.real
 def test_no_wheel_is_opaque_only_because_symtab_was_read(tmp_path: Path) -> None:
-    """#127 made `.symtab` load-bearing on the dynamically linked path, where it was
-    previously read for `stripped` and the count alone. That means a new way to be
-    marked partial: an object whose `.symtab` or `.strtab` is over the byte budget, or
-    whose rows name strings `.strtab` does not hold, now says so where before it said
-    nothing. The DECISIONS entry claims that costs no real wheel its answer, which was
-    measured over 18 wheels by hand and is exactly the kind of claim this file exists
-    to restate as a re-runnable check.
+    """Reading `.symtab`'s local definitions makes it load-bearing on the dynamically
+    linked path too, beyond `stripped` and the count alone. That is a way to be marked
+    partial that a read ignoring `.symtab` on this path would miss: an object whose
+    `.symtab` or `.strtab` is over the byte budget, or whose rows name strings
+    `.strtab` does not hold, says so. DESIGN.md claims that costs no real wheel its
+    answer, measured over 18 wheels by hand, and this file exists to restate exactly
+    that kind of claim as a re-runnable check.
 
-    Corpus-independent, unlike the before/after diff it comes from: an object that is
-    partial *only* for this reason, with every other cause absent, is the regression.
-    An object partial for `elf_symtab_unread` alongside another cause was already
-    partial before.
+    Corpus-independent, unlike the with-and-without comparison the measurement comes
+    from: an object that is partial *only* for this reason, with every other cause
+    absent, is the failure. An object partial for `elf_symtab_unread` alongside another
+    cause is already partial regardless.
     """
     corpus, _wheels = _corpus()
     out = tmp_path / "out.jsonl"

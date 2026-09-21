@@ -2,22 +2,22 @@
 
 Every per-binary limit exists for one reason: an object with half a million matching
 symbols must not produce an unbounded JSON line. None of them exists to choose which
-evidence survives, and until this module they did exactly that, because each one sorted
-and cut and the sort key has nothing to do with what an item is worth.
+evidence survives, and a limit that sorts and cuts does exactly that, because the sort
+key has nothing to do with what an item is worth.
 
-What that cost, against the shipped ruleset: `openssl_banner` is tenth of thirteen
-string group names, so seventy `mbedtls_` runs take the OpenSSL banner with them and the
-object then reports `openssl_linkage: none` while carrying it. `libsodium` sorts before
-`openssl`, so seventy defined `crypto_box_*` symbols do the same to a defined
-`EVP_DigestInit_ex`. Worst of the three, a Rust object's crates sorted by name and cut at
-128 dropped `ring` behind an `anyhow` and read `NO_CRYPTO_DETECTED` with nothing recorded
-at all.
+What a plain sorted prefix costs, against the shipped ruleset: `openssl_banner` is tenth
+of thirteen string group names, so seventy `mbedtls_` runs take the OpenSSL banner with
+them and the object then reports `openssl_linkage: none` while carrying it. `libsodium`
+sorts before `openssl`, so seventy defined `crypto_box_*` symbols do the same to a
+defined `EVP_DigestInit_ex`. Worst of the three, a Rust object's crates sorted by name
+and cut at 128 drop `ring` behind an `anyhow` and read `NO_CRYPTO_DETECTED` with nothing
+recorded at all.
 
-The fix is to notice how little a consumer keys on, which is what each type's `cap_key`
-states: a string's group, a symbol's group and binding, a crate's name, an error's stage
-and kind. Two items sharing a `cap_key` are interchangeable to every consumer, so a cap
-that keeps one of each before filling the remainder answers every question the record is
-read for.
+This module works from how little a consumer keys on, which is what each type's
+`cap_key` states: a string's group, a symbol's group and binding, a crate's name, an
+error's stage and kind. Two items sharing a `cap_key` are interchangeable to every
+consumer, so a cap that keeps one of each before filling the remainder answers every
+question the record is read for.
 
 **This is only sound over a total `sort_key`.** The callers hand over sets, whose
 iteration order is not stable across runs, and `sorted` is stable -- so two items whose
@@ -68,21 +68,21 @@ def cap(
     named by nothing, and an unclaimed crate must not take the room a claimed one needs.
 
     When the keys alone outnumber `limit` the lowest-sorting ones win, which is
-    arbitrary -- but no more arbitrary than the truncation it replaces, and stable.
-    `ruleset_loader.parse_ruleset` refuses a ruleset whose limits are small enough for that to
-    happen to the shipped groups, so reaching it means someone chose to.
+    arbitrary -- but no more arbitrary than a plain sorted prefix, and stable.
+    `ruleset_loader.parse_ruleset` refuses a ruleset whose limits are small enough for
+    that to happen to the shipped groups, so reaching it means someone chose to.
 
     Every pass scans `ordered` itself rather than a `pinned`/`rest` split materialised
-    up front: those two lists, plus a third for whatever did not make the cut, used to
+    up front: those two lists, plus a third for whatever did not make the cut, would
     hold references to nearly every input item at once. The sort dominates this
     function's peak memory regardless -- `sorted` itself has to hold `ordered` plus one
-    key tuple per item -- so this is not a peak-memory fix; it shrinks what the *tail*
+    key tuple per item -- so this does not lower peak memory; it shrinks what the *tail*
     after the sort needs to keep alive. `kept_at`, the set of indices already kept, is
     bounded by `limit` rather than by how many items came in, since an index is only
     added when `kept` grows. `pinned_at` is not bounded the same way: it is `pin`'s
     answer for every index, one bool per item, computed once so `pin` runs once per
-    item rather than twice -- a real reduction on the three item-reference lists it
-    replaces, but not `O(limit)`.
+    item rather than twice -- a real reduction against three item-reference lists, but
+    not `O(limit)`.
     """
     ordered = sorted(items, key=lambda item: item.sort_key())
     if len(ordered) <= limit:

@@ -497,7 +497,7 @@ def insert_bogus_section_before(
     would get wrong, and the one `append_duplicate_dynsym_section` cannot reach.  Every
     `sh_link` and `e_shstrndx` naming an index at or past the insertion point is bumped
     by one first, so every other cross-reference in the file still points at the
-    section it used to: real toolchains never emit two sections of the same type, but a
+    same section: real toolchains never emit two sections of the same type, but a
     hand-crafted object that does is not otherwise malformed, and this fixture should
     not be either. `sh_link` points at `.shstrtab` (post-bump), always a valid
     `SHT_STRTAB`, so the decoy is harmless if it is read by mistake. Only defined for a
@@ -563,8 +563,8 @@ def append_strtab_decoy(data: bytes, content: bytes, *, sh_addr: int = 0x1000) -
     `ElfBuilder` writes every section's `sh_addr`, and `DT_STRTAB`'s own `d_ptr`, as
     0, so `sh_addr` defaults away from that: a decoy has to be pointed at deliberately
     (`patch_section_header(..., "sh_link", index)` on the section under test) to be
-    read at all, and this default alone is enough to fail the corroboration check
-    #56 round 4 added, which only trusts a same-address `SHT_STRTAB`.
+    read at all, and this default alone is enough to fail `binfmt.elf`'s `DT_STRTAB`
+    corroboration check, which only trusts a same-address `SHT_STRTAB`.
 
     `content` is inserted as raw bytes just ahead of the section header table, which
     only pushes the table itself later in the file -- no existing section's own

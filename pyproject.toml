@@ -61,13 +61,12 @@ jobs = 0
 
 [tool.pylint.format]
 max-line-length = 100
-# max-module-lines stays at pylint's own default (1000). #84 and #85 each raised it in
-# turn to fit binfmt/macho.py's growth; #85 replaced that with a module-local
-# `# pylint: disable=too-many-lines` in macho.py itself instead, so the default keeps
-# policing every other module and only the one file whose growth is deliberate
-# (a documentation-heavy `partial_analysis` docstring, per AGENTS.md's "every policy
-# entry carries a why") is exempted. See DECISIONS.md, "A module-local line-count
-# exemption instead of a third global bump" (#85).
+# max-module-lines stays at pylint's own default (1000) so it keeps policing every
+# module; binfmt/macho.py and binfmt/elf.py each carry a module-local
+# `# pylint: disable=too-many-lines` because their growth is deliberate
+# (documentation-heavy docstrings, per AGENTS.md's "every policy entry carries a
+# why"). See DESIGN.md, "`binfmt/macho.py` carries a module-local line-count
+# exemption".
 
 [tool.pylint."messages control"]
 # Each of these is a deliberate design choice rather than an oversight. The reasons

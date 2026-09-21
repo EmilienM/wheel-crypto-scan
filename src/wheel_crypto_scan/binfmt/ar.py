@@ -36,20 +36,19 @@ which is a bug this module does not want to introduce for the sake of one.
 A member whose name cannot be resolved -- a `#1/<N>` claiming more bytes than the
 member holds, a `/<offset>` past the end of the long-name table or into a run that
 never closes -- is still read, under a synthetic path that says so, with an error
-naming the offset. Dropping it instead, which an earlier version of this module did,
-loses the object's evidence to what is only a labelling failure: "unreadable means
-`OPAQUE`, never `NO_CRYPTO_DETECTED`" applies to a name exactly as much as to a
-structure. See #99.
+naming the offset. Dropping it instead would lose the object's evidence to what is
+only a labelling failure: "unreadable means `OPAQUE`, never `NO_CRYPTO_DETECTED`"
+applies to a name exactly as much as to a structure.
 
-This module needed no change to close #117, for an ELF member: a `.o`'s own symbol
-table is `.symtab`, not `.dynsym`, and `binfmt.elf` now matches crypto symbol groups
-against `.symtab` whenever `.dynsym` is genuinely absent -- exactly the shape every
-relocatable ELF archive member has. Once `read_binary` (called on each member above)
-picked that up, this module inherited the fix for free, the same as every earlier
-`binfmt.elf` improvement. Left open: a Windows `.lib`'s `.obj` members are COFF, not
-ELF, and `binfmt.pe` deliberately does not read the COFF symbol table at all (every
-modern linker strips it in favour of a PDB); such a member is read as `FORMAT_UNKNOWN`,
-strings-only, and #117 does nothing for it.
+An ELF member's symbols need nothing from this module: a `.o`'s own symbol table is
+`.symtab`, not `.dynsym`, and `binfmt.elf` matches crypto symbol groups against
+`.symtab` whenever `.dynsym` is genuinely absent -- exactly the shape every
+relocatable ELF archive member has. Each member goes through `read_binary`, so it
+gets whatever `binfmt.elf` reads, with nothing to keep in step here. Left open: a
+Windows `.lib`'s `.obj` members are COFF, not ELF, and `binfmt.pe` deliberately does
+not read the COFF symbol table at all (every modern linker strips it in favour of a
+PDB); such a member is read as `FORMAT_UNKNOWN`, strings-only, with no symbol
+matching at all.
 
 Archive-derived evidence never confirms another object's `needed` entry as resolving
 inside the wheel: `BinaryEvidence.from_archive` marks every member this module
@@ -86,10 +85,10 @@ _END_MAGIC = b"\x60\x0a"
 # (`__.SYMDEF`, `__.SYMDEF SORTED` on newer toolchains, `__.SYMDEF_64` for a 64-bit
 # archive) and GNU's own 64-bit index (`/SYM64/`, no long-name reference needed
 # since it is short enough to write inline). Not dispatched as objects: their
-# content is `ar`'s own bookkeeping, not something `read_binary` has any use for,
-# and misreading one as an unrecognised object used to cost the *whole archive* a
+# content is `ar`'s own bookkeeping, not something `read_binary` has any use for.
+# Misreading one as an unrecognised object would cost the *whole archive* a
 # spurious `partial_analysis`/`BIN_PARTIAL_FORMAT` verdict hit for every ordinary
-# macOS or `.lib` import archive, not just a crafted one. See #99.
+# macOS or `.lib` import archive, not just a crafted one.
 _PSEUDO_MEMBERS = frozenset(
     {b"/", b"//", b"/SYM64/", b"/SYM64", b"__.SYMDEF", b"__.SYMDEF SORTED", b"__.SYMDEF_64"}
 )
@@ -206,7 +205,7 @@ def _dedupe(name: str, seen: dict[str, int]) -> str:
     """`name`, or `name` with a disambiguating suffix if this archive has already
     used it. Duplicate member names are ordinary in `ar` (two different object
     files legitimately named the same thing, vendored from different source
-    directories); `binaries[].path` was unique before this module existed, and
+    directories); `binaries[].path` is a unique key elsewhere in the scanner, and
     `record._cap_by_findings` keys a dict on it, so two members silently sharing one
     path would let the second's evidence overwrite the first's even when the cap had
     room for both.

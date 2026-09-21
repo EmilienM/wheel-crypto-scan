@@ -91,7 +91,7 @@ Windows normally binds `WS2_32`. That is recorded in `partial_reasons` but does 
 the wheel `OPAQUE`, because the DLL it names survives in `needed` and is matched there.
 An *export* bound by ordinal is not the same trade and is not carved out: it loses a
 definition, which is how a statically linked copy is recognised, and it names no
-dependency to fall back on. `DECISIONS.md` says what both cost.
+dependency to fall back on. `DESIGN.md` says what both cost.
 
 ## The ruleset
 
@@ -115,7 +115,7 @@ so a wheel using syntax newer than the scanner's interpreter will not parse. **P
 interpreter** if you need output comparable across hosts. That difference is never
 silently favourable: unparsed files are counted in `artifacts.py_files_unparsed`, and a
 wheel whose every source file failed reports `source_available: false` and comes out
-`OPAQUE`, not clean. `DECISIONS.md` records why this is documented rather than fixed.
+`OPAQUE`, not clean. `DESIGN.md` records why this is documented rather than fixed.
 
 ## Performance
 

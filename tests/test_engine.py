@@ -181,8 +181,8 @@ def test_a_hash_renamed_dependency_is_treated_as_vendored(ruleset) -> None:
     assert "BIN_NEEDED_SYSTEM_OPENSSL" not in ids(findings)
 
 
-# --- BLOCKING 1 (adversarial review of #57): a resolved-but-unmangled needed entry
-# --- must carry its own finding, never a silent `bundled` ---------------------------
+# --- a needed entry cannot confirm itself: a resolved-but-unmangled one carries
+# --- its own finding, never a silent `bundled` ------------------------------
 
 
 def test_an_unmangled_needed_entry_resolving_to_a_shipped_object_gets_its_own_rule(
@@ -211,7 +211,7 @@ def test_an_unmangled_needed_entry_resolving_to_a_shipped_object_gets_its_own_ru
 def test_a_self_referencing_absolute_system_dependency_is_not_manufactured_bundled(
     ruleset,
 ) -> None:
-    """The sharpest case the review found: one object, named `libcrypto.so`, declaring
+    """The sharpest case: one object, named `libcrypto.so`, declaring
     an absolute, genuinely-system `/usr/lib64/libcrypto.so.3`. Before excluding an
     object's own stem from its own answer, this read `bundled` with no rule behind it
     at all -- `verdict.conditions.openssl_linkage == "bundled"` while `rule_ids` was
@@ -235,8 +235,8 @@ def test_a_self_referencing_absolute_system_dependency_is_not_manufactured_bundl
 
 
 def test_a_self_referencing_relative_dependency_is_not_manufactured_bundled(ruleset) -> None:
-    """#80 gives an absolute entry its own short-circuit ahead of the own-stem
-    discount above, so the reproduction just above no longer exercises it: one object
+    """An absolute entry has its own short-circuit ahead of the own-stem discount
+    above, so this needs a relative entry to reach that discount at all: one object
     declaring a plain *relative* `libcrypto.so.3` -- its own stem, and one a real
     loader genuinely could resolve via `RUNPATH $ORIGIN` -- must still not answer its
     own question, or `BIN_NEEDED_VENDORED_CRYPTO` would manufacture a `bundled`
@@ -260,13 +260,13 @@ def test_a_self_referencing_relative_dependency_is_not_manufactured_bundled(rule
     assert "BIN_BUNDLED_OPENSSL" not in ids(findings)
 
 
-def test_an_absolute_basename_collision_no_longer_reads_as_bundled(ruleset) -> None:
-    """Closed by #80. This was the documented residual: two different objects that
-    happen to share a basename, with the `needed` entry naming the absolute path. An
-    absolute path is never resolved via search order by a real loader, so the second
-    object's basename is as meaningless here as the declaring object's own name was in
+def test_an_absolute_basename_collision_reads_as_system(ruleset) -> None:
+    """Two different objects that happen to share a basename, with the `needed` entry
+    naming the absolute path. An absolute path is never resolved via search order by a
+    real loader, so the second object's basename is as meaningless here as the
+    declaring object's own name is in
     `test_a_self_referencing_absolute_system_dependency_is_not_manufactured_bundled` --
-    the object *count* was never the right test for an absolute path.
+    the object *count* is never the right test for an absolute path.
     """
     evidence = wheel(
         binaries=(
@@ -283,11 +283,11 @@ def test_an_absolute_basename_collision_no_longer_reads_as_bundled(ruleset) -> N
 
 
 def test_the_documented_basename_collision_residual_still_carries_a_finding(ruleset) -> None:
-    """#80 narrows the residual to relative entries. Two different objects that happen
-    to share a basename, with the `needed` entry a relative name that can genuinely be
-    resolved by search order (`DECISIONS.md`'s accepted residual, unchanged for this
-    shape): the `bundled` classification may still be an imprecise false positive from
-    the coincidence, but it must never be silent about it.
+    """The basename-collision residual is confined to relative entries. Two different
+    objects that happen to share a basename, with the `needed` entry a relative name
+    that can genuinely be resolved by search order (`DESIGN.md`'s accepted residual):
+    the `bundled` classification may still be an imprecise false positive from the
+    coincidence, but it must never be silent about it.
     """
     evidence = wheel(
         binaries=(
@@ -410,9 +410,9 @@ def test_an_entry_level_suppressed_by_is_superseded_even_when_routed_to_its_own_
     produces, not whichever rule the suppressed entry belongs to. Routing a crate to
     a rule of its own must not silently break an entry-level `suppressed_by` naming
     it -- which is exactly what a loader that keyed on the suppressed entry's own
-    owner, instead of the named crate's, would do. Built on a synthetic crate pair
-    rather than the shipped aws-lc-rs/aws-lc-fips-sys entries, which no longer carry
-    an entry-level relation of their own now that each has a dedicated rule."""
+    owner, instead of the named crate's, would do. Built on a synthetic crate pair: the
+    shipped aws-lc-rs and aws-lc-fips-sys entries each have a dedicated rule and relate
+    through a rule-level `suppressed_by` instead."""
     data = shipped_data()
     data["rule"].append(
         rule_entry("TEST_ROUTED_CRATE", {"kind": "rust_crate", "table": "rust_crate"})
@@ -503,7 +503,7 @@ def test_a_suppressor_on_a_different_layer_never_fires() -> None:
     binary-layer rule, whose hits never land on the same path, cannot suppress each
     other even when the ruleset names the relation. The loader accepts it (it has no
     way to know two rules can never share a path); this pins that it stays a no-op
-    documented in `docs/ruleset.md` and `DECISIONS.md`, not a silent drop."""
+    documented in `docs/ruleset.md` and `DESIGN.md`, not a silent drop."""
     data = shipped_data()
     by_id = {rule["id"]: rule for rule in data["rule"]}
     by_id["DIST_NON_APPROVED_CRYPTO"]["suppressed_by"] = ["BIN_GO_FIPS140"]
@@ -708,13 +708,13 @@ def test_static_linkage_produces_its_own_finding(ruleset) -> None:
 
 
 def test_system_and_static_evidence_in_one_object_never_reads_as_system_only(ruleset) -> None:
-    """#60: a `needed` match to the system library used to short-circuit before the
-    defined-symbol check ever ran, so a record could carry both
+    """A `needed` match to the system library short-circuiting before the
+    defined-symbol check ever runs would let a record carry both
     `DERIVED_SYSTEM_OPENSSL_ONLY` ("every piece of OpenSSL evidence points at the
     system library") and `BIN_OPENSSL_SYMBOLS_DEFINED` ("OpenSSL was compiled into
     it") at once -- a contradiction in the clean direction. The object's own posture
-    is `mixed`, not `system`, so the two findings can never appear together again,
-    and the `needed`-side finding still fires: neither observation is dropped.
+    is `mixed`, not `system`, so the two findings never appear together, and the
+    `needed`-side finding still fires: neither observation is dropped.
     """
     evidence = wheel(
         binaries=(
@@ -768,12 +768,11 @@ _UNCERTAIN_ERROR = ScanError(stage=STAGE_BINARY, kind=MEMBER_READ_ERROR, message
 def test_an_object_that_read_unknown_withholds_the_system_only_rule(
     ruleset, unknown_object, errors
 ) -> None:
-    """Verified on main: `unknown_object`'s own posture is `unknown` in every shape,
-    yet the wheel's `openssl_linkage` field still reads `system` -- `unknown` never
-    outvotes a definite posture. `DERIVED_SYSTEM_OPENSSL_ONLY`'s `why` would then be
-    false ("every piece of OpenSSL evidence ... points at the system library"), so it
-    is withheld, and `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` names the object
-    instead.
+    """`unknown_object`'s own posture is `unknown` in every shape, yet the wheel's
+    `openssl_linkage` field reads `system`, because `unknown` never outvotes a definite
+    posture. `DERIVED_SYSTEM_OPENSSL_ONLY`'s `why` would then be false ("every piece of
+    OpenSSL evidence ... points at the system library"), so it is withheld, and
+    `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` names the object instead.
     """
     evidence = wheel(binaries=(_SYSTEM_SIBLING, unknown_object), errors=errors)
     assert resolve_linkage(ruleset, evidence)["openssl"] == "system"
@@ -787,10 +786,10 @@ def test_withholding_the_system_only_rule_never_leaves_the_wheel_without_a_class
     ruleset,
 ) -> None:
     """The critical case: for the import and uncertain shapes,
-    `DERIVED_SYSTEM_OPENSSL_ONLY` was the only verdict-bearing finding at all. Simply
-    declining to fire it would read `NO_CRYPTO_DETECTED` on a wheel that plainly uses
-    OpenSSL -- exactly the direction `[linkage_policy]` exists to refuse -- so the
-    complementary rule must carry the verdict instead.
+    `DERIVED_SYSTEM_OPENSSL_ONLY` is the only rule that would carry a verdict at all.
+    Withholding it with nothing in its place would read `NO_CRYPTO_DETECTED` on a wheel
+    that plainly uses OpenSSL -- exactly the direction `[linkage_policy]` exists to
+    refuse -- so the complementary rule carries the verdict instead.
     """
     evidence = wheel(binaries=(_SYSTEM_SIBLING, _IMPORT_UNKNOWN))
     findings = run(ruleset, evidence)
@@ -822,7 +821,8 @@ def test_system_only_still_fires_beside_an_object_with_no_openssl_evidence(rules
 def test_an_sbom_naming_openssl_sys_does_not_reach_object_postures(ruleset) -> None:
     """A known residual: `object_postures` reads only per-object binary evidence, so
     an SBOM component naming a crypto crate cannot make an object read `unknown`
-    beside a system sibling. See the decisions entry by title.
+    beside a system sibling. See `DESIGN.md`, "An object that read `unknown` withholds
+    `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`".
     """
     component = SbomComponent(
         name="openssl-sys",
@@ -975,8 +975,8 @@ def test_a_runtime_chosen_algorithm_is_unresolved(ruleset) -> None:
 
 
 def test_an_explicit_usedforsecurity_true_is_fips_breaking(ruleset) -> None:
-    """#58: usedforsecurity=True is a stronger signal than the no-keyword case, not a
-    weaker one, and it fired nothing at all before this rule's match table grew it."""
+    """usedforsecurity=True is a stronger signal than the no-keyword case, not a weaker
+    one, and the match table names it explicitly rather than leaving it unmatched."""
     evidence = wheel(
         py_sites=(site("py_call", "hashlib.md5", algorithm="md5", usedforsecurity="true"),)
     )
@@ -985,8 +985,9 @@ def test_an_explicit_usedforsecurity_true_is_fips_breaking(ruleset) -> None:
 
 
 def test_a_non_constant_usedforsecurity_on_a_weak_hash_is_unresolved(ruleset) -> None:
-    """#58: PY_WEAK_HASH_UNRESOLVED's own `why` already claimed this shape; nothing
-    matched it until a second [[rule.match]] table was added for it."""
+    """PY_WEAK_HASH_UNRESOLVED's own `why` claims this shape, and a second
+    [[rule.match]] table is what makes the rule match it: the `why` alone matches
+    nothing."""
     evidence = wheel(
         py_sites=(site("py_call", "hashlib.md5", algorithm="md5", usedforsecurity="unresolved"),)
     )
@@ -996,8 +997,8 @@ def test_a_non_constant_usedforsecurity_on_a_weak_hash_is_unresolved(ruleset) ->
 
 
 def test_a_non_constant_usedforsecurity_on_a_strong_hash_is_not_flagged(ruleset) -> None:
-    """#58: sha256 stays approved regardless of usedforsecurity, so a non-constant flag
-    on it must not borrow the weak-hash finding."""
+    """sha256 stays approved regardless of usedforsecurity, so a non-constant flag on it
+    must not borrow the weak-hash finding."""
     evidence = wheel(
         py_sites=(site("py_call", "hashlib.new", algorithm="sha256", usedforsecurity="unresolved"),)
     )

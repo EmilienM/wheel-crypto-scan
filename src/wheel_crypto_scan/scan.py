@@ -40,7 +40,7 @@ class ScanContext:
     # produce an unbounded single JSONL line that no line-at-a-time consumer can read.
     # Every object read is still evaluated by linkage and the rules regardless of this
     # cap; it only bounds what gets serialised. See "A cap bounds the record, not the
-    # evaluation" in DECISIONS.md.
+    # evaluation" in DESIGN.md.
     max_binaries_per_record: int = 256
 
     @classmethod
@@ -66,7 +66,7 @@ def scan_wheel(path: str | Path, context: ScanContext, sha256: str | None = None
         # Not `errors.BAD_ZIP`: this branch catches whatever `_collect` did not
         # specifically anticipate, which says nothing about whether the archive itself
         # is readable -- a `MemoryError` under load leaves the wheel's own bytes
-        # untouched. See errors.UNEXPECTED_ERROR and DECISIONS.md.
+        # untouched. See errors.UNEXPECTED_ERROR and DESIGN.md.
         evidence = _unreadable(
             path, digest, f"unexpected {type(exc).__name__}", kind=errors.UNEXPECTED_ERROR
         )
@@ -119,10 +119,10 @@ def _collect(path: Path, context: ScanContext, digest: str) -> Evidence:
             metadata=metadata,
             # Untruncated. Every object here was already decompressed and read in
             # full, and linkage and the rules must see all of it: a cap that dropped
-            # objects here before the rules ran let a wheel with more than
+            # objects here before the rules ran would let a wheel with more than
             # `max_binaries_per_record` native objects read clean regardless of what
-            # the dropped objects actually held (#55). `build_record` is where the
-            # cap applies, to the *serialised* list alone.
+            # the dropped objects actually held. `build_record` is where the cap
+            # applies, to the *serialised* list alone.
             binaries=binaries,
             py_sites=sites,
             errors=tuple(sorted(set(all_errors), key=ScanError.sort_key)),

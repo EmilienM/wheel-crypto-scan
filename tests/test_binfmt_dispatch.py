@@ -96,7 +96,8 @@ def test_every_registered_format_is_one_detection_can_return() -> None:
     """A reader nothing can sniff its way to is a reader that never runs.
 
     The set of known formats is derived rather than spelled out, so registering a
-    fourth format stays the one-line change #16 was about: a typo'd key still fails,
+    fourth format stays the one-line change this dispatch table exists for: a typo'd key still
+    fails,
     a real new format does not.
     """
     known = {value for name, value in vars(evidence).items() if name.startswith("FORMAT_")}
@@ -167,7 +168,7 @@ def test_a_detected_format_with_no_reader_keeps_its_own_name(monkeypatch) -> Non
     was. A fallback that defaulted the name would put the wrong format into the record,
     into `engine`'s partial-read finding subject and into its evidence line, and
     nothing would fail. The name here is one no reader will ever be registered for, so
-    this test cannot be defeated by someone taking #16 up on its offer.
+    this test cannot be defeated by someone taking that one-line change up on its offer.
     """
     monkeypatch.setattr(binfmt, "detect_format", lambda head: "format-with-no-reader")
     ev, errors = _read(b"\x00\x01\x02\x03 OpenSSL 3.2.1 30 Jan 2024 ", path="mod.bin")

@@ -16,25 +16,26 @@ of `.rodata`.
 `.dynamic`, `.dynsym` and `.symtab` are found by section *type* (`SHT_DYNAMIC`,
 `SHT_DYNSYM`, `SHT_SYMTAB`), not by name. The dynamic linker never reads section names
 or the section header table at all -- it walks `PT_DYNAMIC` and the tags it points
-at -- so a name is not what makes an object loadable, and a name-based lookup trusted a
+at -- so a name is not what makes an object loadable, and a name-based lookup trusts a
 label the loader itself never checks: renaming `.dynsym` to anything else in
-`.shstrtab` left every dynamic symbol unread while the object still ran. `pyelftools`
-already builds the right wrapper class from `sh_type` regardless of what a section is
-called, so this is a lookup change, not a parsing change. `.go.buildinfo`,
-`.note.go.buildid` and `.comment` stay name-based: they are plain `SHT_PROGBITS` or
-`SHT_NOTE` sections with no type of their own, so name is the only signal there is.
+`.shstrtab` leaves every dynamic symbol unread by name while the object still runs.
+`pyelftools` builds the right wrapper class from `sh_type` regardless of what a section
+is called, so the lookup is by type and the parsing is pyelftools' own.
+`.go.buildinfo`, `.note.go.buildid` and `.comment` stay name-based: they are plain
+`SHT_PROGBITS` or `SHT_NOTE` sections with no type of their own, so name is the only
+signal there is.
 
 Two shapes a type-based lookup can be handed are not treated as a clean single answer.
 More than one section can share a type -- unusual, but not forbidden -- and picking the
-first in section order, the way a name-based lookup already did for two sections
-sharing a name, would let a decoy of the real section's type, inserted ahead of it,
-hide the real one just as effectively as a rename did: `_find_section_by_type` reports
-the ambiguity instead of guessing, and none of the candidates is trusted. And a section
-can still be found *by name* -- `.dynamic`, `.dynsym`, `.symtab` -- while its `sh_type`
-does not match what that name is supposed to mean: a forged `sh_type` alone, name left
-untouched, used to make a name-based lookup pick the wrong wrapper class and (usually)
-fail loudly, so treating "not found by type" as "absent" here would have made a
-disguised section read as a clean one instead. `_type_mismatch` catches this and folds
+first in section order, the way a name-based lookup does for two sections sharing a
+name, would let a decoy of the real section's type, inserted ahead of it, hide the real
+one just as effectively as a rename: `_find_section_by_type` reports the ambiguity
+instead of guessing, and none of the candidates is trusted. And a section can still be
+found *by name* -- `.dynamic`, `.dynsym`, `.symtab` -- while its `sh_type` does not
+match what that name is supposed to mean: a forged `sh_type` alone, name left
+untouched, makes a name-based lookup pick the wrong wrapper class and (usually) fail
+loudly, so treating "not found by type" as "absent" here would make a disguised
+section read as a clean one instead. `_type_mismatch` catches this and folds
 it into the same partial cause a read failure on that section already carries, rather
 than reading as though the section were never there. The check runs unconditionally,
 never gated on the type-based lookup having come back empty: a single decoy of the
@@ -63,8 +64,8 @@ the same checks of `nsyms` and `strsize`.
 
 `.symtab`'s size is still believed, and it always drives `stripped` and
 `symbol_counts.symtab`. When `.dynsym` is present it is the authority on imports, and
-`.symtab` is read for *definitions* alone (#127): a statically linked copy whose symbols
-a version script kept local lives there and nowhere else, which is what cryptography
+`.symtab` is read for *definitions* alone: a statically linked copy whose symbols a
+version script kept local lives there and nowhere else, which is what cryptography
 50.0.1 does with 776 `EVP_*` definitions beside a `.dynsym` exporting only its module
 init. Imports are not taken from it in that mode, because a dynamically linked object
 must declare every import in `.dynsym` to link at all, so `.symtab` can only restate
@@ -80,34 +81,37 @@ every member of a `.a`/`.lib` static archive has, see `binfmt.ar`), or a statica
 linked executable, neither of which has any dynamic linking information to carry --
 `.symtab` is the object's only symbol table and is read and matched the same way, with
 its own cross-check, because a symbol compiled straight into it with no accompanying
-string banner was otherwise invisible to symbol-based detection. `.symtab`'s own
+string banner is otherwise invisible to symbol-based detection. `.symtab`'s own
 string table is trusted through its `sh_link` directly, unlike `.dynsym`'s: nothing
 but a section-header-reading tool ever resolves a `.symtab` name, so there is no
 `.dynamic`-equivalent authority to cross-check `sh_link` against, and `sh_link` naming
 it is the ELF spec's own definition of what `.strtab` is -- which is cheaper to
 attack, not safer, so the cross-check spans every `SHT_STRTAB` section in the object
 rather than trusting the one `sh_link` names (`_any_strtab_holds_a_name_not_read`).
-#117 gated `.symtab` matching on `.dynsym`'s absence, which left a dynamically linked
-object unaffected *by construction* rather than by a corpus check this reader could not
-run. That gate also left unread the case this tool exists for, so #127 narrowed it to
-the definitions above and replaced the construction argument with a measurement: over 18
-native wheels off PyPI, five verdict blocks change, three of them the `none`-to-`static`
-this exists for, and no finding and no `(group, binding)` kind is lost from any object.
-What the gate also bought was time, and a `symbol_locator` prefilter over `.strtab` was
-tried to buy it back: it was measured at 0.32s against 0.55s on a 26.7 MiB object with
-half a million symbols, and rejected, because a `.strtab` shrunk to hide a name is one
-the prefilter reads as holding nothing. Every row is walked. `DECISIONS.md` records what
-the narrower gate costs against a hostile object, and why imports stay behind it. See
-#117 and #127.
+
+Gating all `.symtab` matching on `.dynsym`'s absence would leave a dynamically linked
+object unaffected *by construction*, with no corpus check needed, but it would also
+leave unread the case this tool exists for. Reading definitions only is backed by a
+measurement instead: over 18 native wheels off PyPI, it changes five verdict blocks
+against the absence-only gate, three of them the `none`-to-`static` this exists for,
+and loses no finding and no `(group, binding)` kind from any object. The absence-only
+gate would also save time, and a `symbol_locator` prefilter over `.strtab` was
+measured as a way to save it: 0.32s against 0.55s on a 26.7 MiB object with half a
+million symbols, rejected because a `.strtab` shrunk to hide a name is one the
+prefilter reads as holding nothing. Every row is walked. `DESIGN.md` records what
+reading definitions costs against a hostile object, and why imports stay behind the
+absence gate: see "`.symtab` is matched for crypto symbols when `.dynsym` is genuinely
+absent" and "`.symtab` local definitions are read when `.dynsym` is present, and only
+definitions".
 """
 
 # This module documents every way an attacker-controlled label can win a lookup and
 # every cross-check that closes one, by design (AGENTS.md: every policy entry carries
-# a `why`), and #56's chain plus #117 each added more without shrinking any of the
-# others. Disabled here rather than raising `max-module-lines` project-wide, which
-# would quietly give every OTHER module the same headroom this one earns by being
-# documentation-heavy. See DECISIONS.md, "A module-local line-count exemption instead
-# of a third global bump" (#85), the precedent this follows.
+# a `why`), and every cross-check adds lines without shrinking any of the others.
+# Disabled here rather than raising `max-module-lines` project-wide, which would
+# quietly give every OTHER module the same headroom this one earns by being
+# documentation-heavy. DESIGN.md, "`binfmt/macho.py` carries a module-local
+# line-count exemption", has the reasoning, which applies here as well.
 # pylint: disable=too-many-lines
 
 from __future__ import annotations
@@ -164,8 +168,8 @@ def _unparsed(
     The structural read is gone, but the strings are not: a statically linked OpenSSL
     leaves its banner in read-only data whether or not `ELFFile` can make sense of the
     section headers, and that banner is sometimes the only evidence the object carries.
-    This also marks the object `partial_analysis`, which the old empty record did not:
-    an object we could not read has to say so, or nothing flags the record incomplete.
+    This also marks the object `partial_analysis`, which an empty record would not: an
+    object we could not read has to say so, or nothing flags the record incomplete.
 
     `header` is passed when the ELF header itself parsed and only what it pointed at did
     not. Those four fields were read, so by the same contract they survive: a truncated
@@ -209,20 +213,20 @@ _STT_FILE = 4
 def _validated_strtab(elf, sh_link: int, dt_strtab_addr: int | None) -> Section | None:
     """The section `sh_link` names, only when it corroborates `.dynamic`'s own `DT_STRTAB`.
 
-    `sh_link` is a section-header field the loader never reads: `.dynamic` and
-    `.dynsym` both resolve names through `PT_DYNAMIC`'s `DT_STRTAB` tag, never through
-    any section's `sh_link`. Trusting `sh_link` on its own is the same hazard
-    `_find_section_by_type` and `_type_mismatch` already close for `.dynamic`,
-    `.dynsym` and `.symtab` themselves, one level down: a section that is correctly
-    typed `SHT_STRTAB` but is not the real `.dynstr` -- a decoy planted purely to be
-    read through `sh_link`, with `sh_offset` pointing at fabricated or all-NUL bytes --
-    is caught by neither. Appending `N` NUL bytes plus a header pointing at them, then
-    repointing `.dynsym`'s `sh_link` there, resolves every symbol name to `""`: an
-    empty name is not flagged unresolved, so the object read completely clean while a
-    real `libcrypto.so.3` carried 64 crypto symbols. `.dynamic`'s own `sh_link` has the
-    same hole and is worse: a decoy that happens to spell a real dependency name
-    fabricates a `DT_NEEDED` entry the object never declared, rather than merely
-    erasing one.
+    `sh_link` is a section-header field the loader never reads: `.dynamic` and `.dynsym`
+    both resolve names through `PT_DYNAMIC`'s `DT_STRTAB` tag, never through any
+    section's `sh_link`. Trusting `sh_link` on its own is the same hazard
+    `_find_section_by_type` and `_type_mismatch` already close for `.dynamic`, `.dynsym`
+    and `.symtab` themselves, one level down: a section that is correctly typed
+    `SHT_STRTAB` but is not the real `.dynstr` -- a decoy planted purely to be read
+    through `sh_link`, with `sh_offset` pointing at fabricated or all-NUL bytes -- is
+    caught by neither. Appending `N` NUL bytes plus a header pointing at them, then
+    repointing `.dynsym`'s `sh_link` there, resolves every symbol name to `""`: an empty
+    name is not flagged unresolved, so trusting `sh_link` reads the object as completely
+    clean while a real `libcrypto.so.3` carries 64 crypto symbols. `.dynamic`'s own
+    `sh_link` has the same hole and is worse: a decoy that happens to spell a real
+    dependency name fabricates a `DT_NEEDED` entry the object never declared, rather
+    than merely erasing one.
 
     `DT_STRTAB`'s `d_ptr` is data this reader already has in hand from reading
     `.dynamic` -- it needs no string resolution itself, so it is available even when
@@ -235,8 +239,9 @@ def _validated_strtab(elf, sh_link: int, dt_strtab_addr: int | None) -> Section 
     unwitnessed.
 
     Left open: `sh_addr` matching while `sh_offset` alone is forged, which would need
-    program-header-based virtual-address-to-file-offset translation to close and is
-    exactly the scope this issue's chain has repeatedly deferred. See `DECISIONS.md`.
+    program-header-based virtual-address-to-file-offset translation to close, a
+    reader this module does not have. See `DESIGN.md`, "Sections are found by type, not
+    by a name nobody checks".
     """
     if dt_strtab_addr is None:
         return None
@@ -257,10 +262,10 @@ def _bounded_section_data(
     """`section.data()`, refused before it would produce more than `max_bytes`.
 
     `data_size` is the amount `.data()` is actually about to materialise, and it is
-    checked unconditionally here rather than trusted to `sh_size` -- #62 originally
-    only checked it for a `SHF_COMPRESSED` or `SHT_NOBITS` section, on the strength of
-    the two shapes its own reproduction measured, and left an ordinary, uncompressed,
-    file-backed section reaching `.data()` with no check at all (#95).
+    checked unconditionally here rather than trusted to `sh_size`. Checking it only
+    for a `SHF_COMPRESSED` or `SHT_NOBITS` section, the two shapes whose declared size
+    costs nothing to lie about, would leave an ordinary, uncompressed, file-backed
+    section reaching `.data()` with no check at all.
 
     A `SHF_COMPRESSED` section's `Chdr.ch_size` is the logical, decompressed size, and
     it is an attacker-controlled 64-bit field exactly like `sh_size` itself: pyelftools'
@@ -279,13 +284,12 @@ def _bounded_section_data(
     An ordinary section -- neither compressed nor `SHT_NOBITS` -- has `data_size` equal
     to `sh_size` too, the same field `Section.__init__` sets it from, but that size *is*
     file-backed: reading it is one honest `stream.read(sh_size)`. That still costs
-    whatever `sh_size` names before this reader's own budget ever gets a say, which is
-    exactly the exposure #62 closed for the other two shapes and left open here: an
-    honestly large `.rodata`, `.comment`, or a real `.dynsym`/`.dynstr` from a genuine
-    symbol table, all read through this same call, none of them checked. Checking
-    `data_size` unconditionally closes it without changing anything for a section under
-    budget, compressed, `SHT_NOBITS` or ordinary alike: `.data()` still runs and
-    produces exactly what it always did.
+    whatever `sh_size` names before this reader's own budget ever gets a say, the same
+    exposure the other two shapes have: an honestly large `.rodata`, `.comment`, or a
+    real `.dynsym`/`.dynstr` from a genuine symbol table, all read through this same
+    call. Checking `data_size` unconditionally covers it without affecting a section
+    under budget, compressed, `SHT_NOBITS` or ordinary alike: `.data()` runs and
+    produces exactly what it would unchecked.
 
     Checking `data_size` first means an oversized section, whatever shape it is,
     is refused, not inflated: `.data()` is never called at all, so neither the
@@ -293,32 +297,32 @@ def _bounded_section_data(
     runs. A section declaring at most `max_bytes` is unaffected either way.
 
     `keep_prefix` decides what an over-budget ORDINARY section hands back. Default
-    `False` refuses it outright, `(b"", True)`, the same as a compressed or
-    `SHT_NOBITS` section always must regardless of this flag: a compressed section is
-    an all-or-nothing `zlib` call with no cheap way to keep a prefix (#62's own "What
-    was rejected" already declines a second, `max_length`-bounded decompression path
-    for exactly this reason), and an `SHT_NOBITS` "prefix" is `b"\\0"` bytes carrying
-    no evidence either way. `True` reads `max_bytes` bytes of the section's own real,
-    file-backed content instead of refusing it -- one plain `stream.seek`/`.read()` at
-    the section's own offset, no second reader or decompression needed, unlike the
-    compressed case -- and returns that prefix still flagged unread. `.rodata`,
-    `.comment` and `.go.buildinfo` pass `True` (#95): an honestly oversized section's
-    first `max_bytes` are real, readable evidence -- an OpenSSL banner at offset 0 of
-    an otherwise-oversized `.rodata`, say -- the same evidence `_collect_string_bytes`
-    already kept for an ordinary section before this fix started refusing it outright,
-    just bounded at the single-section read now rather than only at the accumulated
-    buffer afterwards. `.dynsym`/`.dynstr`, via `_symbol_bytes`, do not pass it and
-    keep the default: a byte-bounded prefix of a symbol table is not a set of complete
-    rows, and an entry near the cut is as likely to point past a truncated string
-    table as into it, so there is nothing here safe to keep without a further,
-    row-aware cap this fix does not add.
+    `False` refuses it outright, `(b"", True)`, the same as a compressed or `SHT_NOBITS`
+    section always must regardless of this flag: a compressed section is an
+    all-or-nothing `zlib` call with no cheap way to keep a prefix (DESIGN.md, "A
+    compressed section is checked before it is inflated", declines a second,
+    `max_length`-bounded decompression path for exactly this reason), and an
+    `SHT_NOBITS` "prefix" is `b"\\0"` bytes carrying no evidence either way. `True`
+    reads `max_bytes` bytes of the section's own real, file-backed content instead of
+    refusing it -- one plain `stream.seek`/`.read()` at the section's own offset, no
+    second reader or decompression needed, unlike the compressed case -- and returns
+    that prefix still flagged unread. `.rodata`, `.comment` and `.go.buildinfo` pass
+    `True`: an honestly oversized section's first `max_bytes` are real, readable
+    evidence -- an OpenSSL banner at offset 0 of an otherwise-oversized `.rodata`, say
+    -- which `_collect_string_bytes` keeps rather than refusing the section outright,
+    bounded at the single-section read rather than only at the accumulated buffer
+    afterwards. `.dynsym`/`.dynstr`, via `_symbol_bytes`, do not pass it and keep the
+    default: a byte-bounded prefix of a symbol table is not a set of complete rows, and
+    an entry near the cut is as likely to point past a truncated string table as into
+    it, so there is nothing here safe to keep without a further, row-aware cap this
+    reader does not implement.
 
     Returns `(b"", True)` in the refused case (`keep_prefix` false, or the section
     compressed or `SHT_NOBITS` regardless), or `(prefix, True)` when `keep_prefix` is
     honoured -- either way the same "unread" signal a `.data()` call that raises
     already produces one level up. Decompression failures that happen despite an
-    honest declared size (garbage compression bytes, a truncated stream) are
-    unchanged: they still reach `.data()` and still raise there.
+    honest declared size (garbage compression bytes, a truncated stream) are not
+    this function's business: they reach `.data()` and raise there.
     """
     if section.data_size > max_bytes:
         if keep_prefix and not section.compressed and section["sh_type"] != "SHT_NOBITS":
@@ -340,11 +344,11 @@ class _SymtabRead:
 def _read_symtab(elf, symtab, max_strings_bytes: int) -> _SymtabRead:
     """Resolve `.symtab`'s string table and read both sections, bounded.
 
-    The prologue both `.symtab` modes share: the sole-table one #117 added, and the
-    supplementary one #127 added beside it. Their loops differ -- one cross-checks the
-    table it is the only reader of, the other takes definitions beside an authoritative
-    `.dynsym` -- and are deliberately not merged. This is the part that does not differ,
-    and leaving it copied left the same budget message written twice.
+    The prologue both `.symtab` modes share: the sole-table one, for an object with no
+    `.dynsym`, and the supplementary one beside it. Their loops differ -- one
+    cross-checks the table it is the only reader of, the other takes definitions beside
+    an authoritative `.dynsym` -- and are deliberately not merged. This is the part
+    that does not differ, kept in one place so the budget message is written once.
 
     `_symtab_strtab` rather than `_validated_strtab`: `.symtab` trusts its own `sh_link`
     under rules of its own, documented there.
@@ -395,13 +399,13 @@ def _any_strtab_holds_a_name_not_read(
     `.strtab`, wherever it sits in the section table, still spells the name out and is
     still read here, decoy or not.
 
-    A section over `max_bytes` counts as a hit, not a skip: an earlier version treated
-    it as nothing to worry about, which reopened the identical decoy under a second
-    construction -- a small decoy `.symtab` is happy to point at, sitting beside the
-    genuine `.strtab` with its own declared `sh_size` inflated past the budget, reads
-    completely clean, because the one section that could have contradicted the decoy
-    was silently skipped rather than flagged as unchecked. "Unreadable means `OPAQUE`,
-    never `NO_CRYPTO_DETECTED`" applies to a string table this function could not fully
+    A section over `max_bytes` counts as a hit, not a skip: treating it as nothing to
+    worry about would reopen the identical decoy under a second construction -- a small
+    decoy `.symtab` is happy to point at, sitting beside the genuine `.strtab` with its
+    own declared `sh_size` inflated past the budget, would read completely clean,
+    because the one section that could contradict the decoy would be silently skipped
+    rather than flagged as unchecked. "Unreadable means `OPAQUE`, never
+    `NO_CRYPTO_DETECTED`" applies to a string table this function could not fully
     examine exactly as it does to one that spelled a name out.
     """
     for section in sections:
@@ -518,13 +522,13 @@ def _find_section_by_type(sections: Sequence[Section], sh_type: str) -> tuple[Se
     does not fool this one.
 
     Returns `(None, False)` when nothing matches, `(section, False)` when exactly one
-    does, and `(None, True)` when more than one does. Picking the first match in
-    section order -- the rule a name-based lookup already applied to two sections
-    sharing a name -- would let a decoy of the real section's type, spliced in ahead of
-    it, silently win: exactly the "renamed and now reads clean" shape this module
-    exists to close, one level down. An ambiguous count is therefore never trusted;
-    the caller reads the second return value and folds it into `partial_reasons`
-    instead of guessing which candidate is real.
+    does, and `(None, True)` when more than one does. Picking the first match in section
+    order -- the rule a name-based lookup applies to two sections sharing a name --
+    would let a decoy of the real section's type, spliced in ahead of it, silently win:
+    exactly the "renamed and reads clean" shape this module exists to close, one level
+    down. An ambiguous count is therefore never trusted; the caller reads the second
+    return value and folds it into `partial_reasons` instead of guessing which candidate
+    is real.
     """
     matches = [section for section in sections if section["sh_type"] == sh_type]
     if len(matches) > 1:
@@ -538,7 +542,7 @@ def _type_mismatch(sections: Sequence[Section], name: str, sh_type: str) -> bool
     A type-based lookup that finds nothing is not always the same fact as a section
     that is genuinely absent: `.shstrtab` can still call something `.dynsym` while its
     four-byte `sh_type` field alone has been changed to something else, which makes a
-    type-based lookup miss it the same way a rename made a name-based one miss the
+    type-based lookup miss it the same way a rename makes a name-based one miss the
     section entirely. The object is not clean; it carries a section claiming to be one
     this reader cannot trust as one, and the caller folds that into the same cause a
     section of this kind that failed to read already carries.
@@ -551,12 +555,11 @@ def _type_mismatch(sections: Sequence[Section], name: str, sh_type: str) -> bool
     section invisible from both directions.
 
     More than one section can share `name` too, and picking the first the way
-    `_find_section` always has is the identical hazard `_find_section_by_type` was
-    changed to stop guessing about: a correctly-typed decoy sharing the real section's
-    *name* -- rather than its type -- would sort first, report no mismatch, and hide a
-    same-named real section sitting right behind it, still carrying its own forged
-    `sh_type`. Ambiguous by name is therefore also untrusted, the same as ambiguous by
-    type.
+    `_find_section` does is the identical hazard `_find_section_by_type` refuses to
+    guess about: a correctly-typed decoy sharing the real section's *name* -- rather
+    than its type -- would sort first, report no mismatch, and hide a same-named real
+    section sitting right behind it, still carrying its own forged `sh_type`. Ambiguous
+    by name is therefore also untrusted, the same as ambiguous by type.
     """
     matches = [section for section in sections if section.name == name]
     if len(matches) > 1:
@@ -604,9 +607,9 @@ def read_elf(
 
     errors: list[ScanError] = []
     # Every error below is evidence this object has and we did not get, so each names
-    # itself here too. The record used to say `partial_analysis: false` beside them: a
-    # `.dynamic` that would not resolve emptied `needed` and the record then read as a
-    # complete read of an object with no dependencies.
+    # itself here too: a `.dynamic` that will not resolve empties `needed`, and without
+    # a partial_reasons entry beside it the record would read as a complete read of an
+    # object with no dependencies.
     reasons: set[str] = set()
 
     # A proactive truncation check, done before we attempt to read anything the
@@ -660,7 +663,8 @@ def read_elf(
     # `elf_sections_unread`: there is no `.dynamic`, `.dynsym` or `.symtab` to even
     # look for, by type or by name, so nothing past this point can produce anything
     # but empty defaults. Falling through would report that emptiness as a complete
-    # read the same way a renamed section used to.
+    # read, the same false completeness a renamed section produces for a lookup by
+    # name alone.
     if num_sections == 0 and not reasons:
         result, _ = read_strings_only(
             stream,
@@ -711,13 +715,12 @@ def read_elf(
                 sorted(sanitize(tag.runpath) for tag in dynamic.iter_tags("DT_RUNPATH"))
             )
             # `DT_NEEDED`/`DT_SONAME`/`DT_RPATH`/`DT_RUNPATH` above were just resolved
-            # through whatever `.dynamic`'s own `sh_link` names, which pyelftools
-            # accepted at face value the same way `_symbol_bytes` used to: a decoy
-            # `SHT_STRTAB` planted there does not merely erase a name, it can
-            # fabricate one -- a decoy spelling a real dependency name reports a
-            # `DT_NEEDED` entry the object never declared. `d_ptr` needs no string
-            # resolution itself, so it is available to check against regardless of
-            # whether the strings above can be trusted.
+            # through whatever `.dynamic`'s own `sh_link` names, and pyelftools accepts
+            # that at face value: a decoy `SHT_STRTAB` planted there does not merely
+            # erase a name, it can fabricate one -- a decoy spelling a real dependency
+            # name reports a `DT_NEEDED` entry the object never declared. `d_ptr` needs
+            # no string resolution itself, so it is available to check against
+            # regardless of whether the strings above can be trusted.
             dt_strtab_addr, _ = dynamic.get_table_offset("DT_STRTAB")
             if _validated_strtab(elf, dynamic["sh_link"], dt_strtab_addr) is None:
                 errors.append(
@@ -791,7 +794,7 @@ def read_elf(
             if symtab_bytes_unread:
                 # `.dynsym` or its string table (or both) declares more bytes than
                 # the object's own budget: refused before decompression for a
-                # compressed section, or (#95) before the plain file read for an
+                # compressed section, or before the plain file read for an
                 # ordinary one, either way by `_bounded_section_data`, so `table`
                 # and/or `dynstr` may be empty rather than however many bytes were
                 # declared. Named explicitly rather than left to fall out of
@@ -901,12 +904,13 @@ def read_elf(
         #
         # Every row is visited, including on a table holding nothing this ruleset
         # claims. A prefilter over `.strtab` -- the `symbol_locator` scan `.dynsym`'s
-        # own matcher mirrors -- was measured at 0.32s against 0.55s on a 26.7 MiB
-        # object with half a million symbols, and rejected for what it cost rather than
-        # for what it saved: a `.strtab` shrunk to hide a name is a `.strtab` the
-        # prefilter then reads as holding nothing, so the walk that would have found
-        # the rows pointing past it never ran and the object read clean. See
-        # DECISIONS.md.
+        # own matcher mirrors -- measures 0.32s against 0.55s on a 26.7 MiB object
+        # with half a million symbols, and is rejected for what it costs rather than
+        # for what it saves: a `.strtab` shrunk to hide a name is a `.strtab` the
+        # prefilter then reads as holding nothing, so the walk that would find the rows
+        # pointing past it never runs and the object reads clean. See DESIGN.md,
+        # "`.symtab` local definitions are read when `.dynsym` is present, and only
+        # definitions".
         try:
             symtab_read = _read_symtab(elf, symtab, max_strings_bytes)
             if symtab_read.bytes_unread:
@@ -949,7 +953,7 @@ def read_elf(
                         # translation unit called `EVP_md5.c` must not match a group by
                         # coincidence of a filename with what it implements. A linked
                         # shared object carries one per translation unit, so this matters
-                        # more here than in the relocatable objects it was written for.
+                        # more here than in a relocatable object.
                         continue
                     for group in groups:
                         symbol_matches.add(
@@ -997,12 +1001,12 @@ def read_elf(
     # false -- an ambiguous `SHT_DYNSYM`, one forged away from its type, or a section
     # table that would not parse. The object's own section table cannot be trusted
     # about whether `.dynsym` exists, so neither branch runs and `.symtab` is not read
-    # to stand in for a table whose existence could not be established (#117). Already
+    # to stand in for a table whose existence could not be established. Already
     # recorded as partial by whichever cause put it in that state.
 
     if dynsym_absent and symtab is not None:
         # Reached only for a relocatable object with no `.dynsym` at all -- see the
-        # module docstring and #117.
+        # module docstring.
         try:
             symtab_read_crypto: set[str] = set()
             symtab_unresolved = 0
@@ -1074,10 +1078,10 @@ def read_elf(
     # section refused before or during its own read with nothing recovered --
     # compressed or `SHT_NOBITS` over budget, or a genuine read failure -- which
     # records an error where this records none. An ordinary section over budget does
-    # NOT reach that cause since #95: `keep_prefix` reads back its own real, honest
-    # first bytes up to the budget instead of refusing outright, and that recovered
-    # prefix lands here, as `strings_bytes_unread`, the same as any other section this
-    # accumulation ran out of room for.
+    # NOT reach that cause: `keep_prefix` reads back its own real, honest first bytes
+    # up to the budget instead of refusing outright, and that recovered prefix lands
+    # here, as `strings_bytes_unread`, the same as any other section this accumulation
+    # ran out of room for.
     if sections_truncated:
         reasons.add(evidence.PARTIAL_STRINGS_BYTES_UNREAD)
 
@@ -1091,11 +1095,11 @@ def read_elf(
             # before decompression rather than caught after, via
             # `_bounded_section_data`. An actual decompression failure despite an
             # honest declared size still reaches `.data()` and is still caught here.
-            # `keep_prefix=True`, the same as `.rodata`/`.comment` (#95): an ordinary,
+            # `keep_prefix=True`, the same as `.rodata`/`.comment`: an ordinary,
             # uncompressed `.go.buildinfo` over budget still hands back its own real
             # first `max_strings_bytes` rather than nothing, and the Go version string
-            # sits at a fixed offset near the front of the section (#95: `golang.py`'s
-            # own 32-byte header plus a short length-prefixed string), so a prefix this
+            # sits at a fixed offset near the front of the section (`golang.py`'s own
+            # 32-byte header plus a short length-prefixed string), so a prefix this
             # small still parses when the section itself is not.
             buildinfo_bytes, buildinfo_unread = _bounded_section_data(
                 buildinfo_section, max_strings_bytes, keep_prefix=True
@@ -1150,8 +1154,8 @@ def _collect_string_bytes(
     `truncated` is what the caller turns into `strings_bytes_unread`, so it says what
     was actually dropped rather than what was declared. `sh_size` is a field the object
     fills in about itself: a section claiming a gigabyte and decompressing to forty
-    bytes costs nothing and used to set this anyway, which was free while nothing read
-    it and is a wheel on the triage list now that something does.
+    bytes costs nothing, so setting `truncated` off the declared size alone would be
+    a wheel on the triage list for no reason connected to what was actually read.
     """
     buf = bytearray()
     truncated = False
@@ -1184,16 +1188,16 @@ def _collect_string_bytes(
         # that predicate is written, shared with `_symbol_bytes` and `.go.buildinfo`.
         # `keep_prefix=True`: an ordinary, uncompressed section over `remaining` still
         # hands back its own real, honest first `remaining` bytes rather than nothing
-        # (#95) -- a plain `stream.read`, not a decompression guess -- while a
-        # compressed or `SHT_NOBITS` one is still refused outright regardless of this
-        # flag, per `_bounded_section_data`'s own docstring.
+        # -- a plain `stream.read`, not a decompression guess -- while a compressed
+        # or `SHT_NOBITS` one is still refused outright regardless of this flag, per
+        # `_bounded_section_data`'s own docstring.
         try:
             data, section_unread = _bounded_section_data(section, remaining, keep_prefix=True)
         except Exception:
-            # The one failure here that used to be silent: no error, no reason, and the
-            # strings simply absent. A `.rodata` flagged `SHF_COMPRESSED` over bytes
-            # that are not compressed reaches this, and a wheel whose only evidence was
-            # the banner in it came back with no findings and nothing saying why.
+            # A `.rodata` flagged `SHF_COMPRESSED` over bytes that are not compressed
+            # reaches this. Recorded as `unread` rather than left silent: a wheel
+            # whose only evidence is the banner in it must not come back with no
+            # findings and nothing saying why.
             unread = True
             continue
         if section_unread:
@@ -1222,7 +1226,7 @@ def _collect_string_bytes(
             # A compressed or `SHT_NOBITS` section refused with nothing recovered:
             # unlike the ordinary case above, `ch_size` alone cannot tell an honestly
             # oversized declaration apart from a malformed header that happens to
-            # decode to a huge number (see DECISIONS.md, "A compressed section is
+            # decode to a huge number (see DESIGN.md, "A compressed section is
             # checked before it is inflated" -- the existing "elf section data
             # unreadable" fixture in `tests/test_partial_reasons.py` is exactly that
             # shape), so this is a stronger claim than budget alone explains and stays

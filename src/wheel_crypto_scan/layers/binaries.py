@@ -14,7 +14,7 @@ unrecognised structure would, through `read_binary`'s own strings-only fallback,
 `binfmt.ar`'s. `binfmt.ar.read_ar_members` returns *several* `BinaryEvidence` entries
 for one archive member, unlike every other reader here, because an archive holds many
 separate objects a consumer wants told apart -- so it is called directly, in place of
-`read_binary`, rather than through `read_binary`'s own one-in-one-out dispatch. See #99.
+`read_binary`, rather than through `read_binary`'s own one-in-one-out dispatch.
 """
 
 from __future__ import annotations

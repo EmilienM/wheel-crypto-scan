@@ -13,15 +13,16 @@ appear, though, so a name in it that a symbol group claims and that no entry we 
 resolved to is a symbol the object carries and did not declare.
 
 Shared because the check is the same in both readers and a security check that exists
-twice is a security check that drifts. `DECISIONS.md` records what it does not cover.
+twice is a security check that drifts. `DESIGN.md` records what it does not cover.
 
 `BoundedNames` shares the same reasoning one level down, over the read that feeds this
 check rather than the check itself: a name has no length bound of its own here either,
-so nothing stopped many rows pointing at one enormous name, or many rows pointing at
+so nothing stops many rows pointing at one enormous name, or many rows pointing at
 many merely-long ones, from costing rows-times-bytes in `sanitize`, a per-character
-Python pass. `binfmt.pe` solved the identical shape for PE's export and import tables
-in #53; this ports the same two-part bound -- a per-name cap and a whole-table budget --
-to the string table both `binfmt.elf` and `binfmt.macho` read symbol names out of. #61.
+Python pass. `binfmt.pe` bounds the identical shape for PE's export and import tables;
+this is the same two-part bound -- a per-name cap and a whole-table budget -- over the
+string table both `binfmt.elf` and `binfmt.macho` read symbol names out of. See
+`DESIGN.md`, "A symbol name is capped the way PE's are".
 """
 
 from __future__ import annotations
@@ -31,15 +32,15 @@ from collections.abc import Callable
 from ..ruleset import BinaryPatterns
 from .strings import sanitize
 
-# How far to look for one name's terminator, ported from `binfmt.pe`'s
-# `_MAX_NAME_BYTES` (#53) at the same value: PE's own corpus measurement (30,835 export
-# names across 383 real objects, the longest an MSVC-mangled 1027-byte C++ name) is the
-# only real-world sample this reader has, and an Itanium-mangled C++ name or a legacy
-# Rust symbol (a full module path plus a hash) grows unbounded the same way a
-# MSVC-mangled one does, so nothing here argues for a different number without a
-# corpus of our own. A name of exactly this many bytes still resolves; one byte longer
-# does not -- past it the row is reported unresolved, the same as an index past the
-# end of the table or into a run it never closes, never truncated into the record.
+# How far to look for one name's terminator, the same value as `binfmt.pe`'s
+# `_MAX_NAME_BYTES`: PE's own corpus measurement (30,835 export names across 383 real
+# objects, the longest an MSVC-mangled 1027-byte C++ name) is the only real-world sample
+# this reader has, and an Itanium-mangled C++ name or a legacy Rust symbol (a full
+# module path plus a hash) grows unbounded the same way a MSVC-mangled one does, so
+# nothing here argues for a different number without a corpus of our own. A name of
+# exactly this many bytes still resolves; one byte longer does not -- past it the row is
+# reported unresolved, the same as an index past the end of the table or into a run it
+# never closes, never truncated into the record.
 _MAX_NAME_BYTES = 8 * 1024
 
 # One budget for the whole string table, mirroring `binfmt.pe`'s
@@ -59,12 +60,13 @@ _MAX_NAME_TOTAL_BYTES = 8 * 1024 * 1024
 # one per row, all different -- could otherwise grow the cache by one entry per row
 # regardless of `_MAX_NAME_TOTAL_BYTES`. That is exactly the cost `binfmt.elf` and
 # `binfmt.macho` already avoid elsewhere by keeping only the crypto names read rather
-# than every name (a half-million-symbol table costs 24 MiB remembered whole), so the
-# cache that closes #61 cannot reopen it by a different door. Past this many distinct
-# offsets, `resolve` keeps answering correctly, it simply stops remembering -- the same
-# per-row cost an honest, mostly-unique table already paid before this cache existed,
-# never worse. Sized like `binfmt.pe`'s `_MAX_THUNKS`: generous for a real object,
-# nowhere near what #61's shape (many rows, few distinct offsets) needs to be closed.
+# than every name (a half-million-symbol table costs 24 MiB remembered whole), so a
+# cache that exists to bound rows-times-bytes cannot reopen that cost by a different
+# door. Past this many distinct offsets, `resolve` keeps answering correctly, it
+# simply stops remembering -- the same per-row cost an honest, mostly-unique table
+# pays regardless of the cache, never worse. Sized like `binfmt.pe`'s `_MAX_THUNKS`:
+# generous for a real object, nowhere near what the costly shape (many rows, few
+# distinct offsets) needs.
 _MAX_CACHE_ENTRIES = 65536
 
 
@@ -95,12 +97,13 @@ def holds_a_name_not_read(
     whether any name did, so padding and ordinary unreferenced strings do not make every
     object partial. And names are formed the way the table is laid out, from one NUL to
     the next: a name index may point at any byte, so a name that is the tail of a longer
-    string is reachable and is not formed here. `DECISIONS.md` and #39 record why closing
-    that costs more than it is worth -- every Rust or C++ symbol with a crypto name
-    mangled inside it would read as an object hiding one.
+    string is reachable and is not formed here. `DESIGN.md`, "A symbol table is checked
+    against the string table, not taken at its word", records why closing that costs
+    more than it is worth -- every Rust or C++ symbol with a crypto name mangled inside
+    it would read as an object hiding one.
 
     `patterns.symbol_locator` does the scanning in C and this loop only visits the runs
-    it lands in, each of them once. Walking every run in Python instead put a 2 MiB
+    it lands in, each of them once. Walking every run in Python instead puts a 2 MiB
     string table of two-byte runs at nineteen seconds across a universal binary's
     slices, for an object a few megabytes long.
     """

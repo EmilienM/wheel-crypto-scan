@@ -1,10 +1,10 @@
 """A cap bounds the record's size. It must not also choose which evidence survives.
 
 Every per-binary limit exists so one object cannot produce an unbounded JSON line. None
-exists to pick winners, and each of them did, because they sorted and cut and the sort
-key has nothing to do with what a match is worth. Three reproductions are pinned here
-end to end, because the unit test for the helper passes just as well against a reader
-that never calls it.
+exists to pick winners, and a limit that sorts and cuts does pick them, because the
+sort key has nothing to do with what a match is worth. Three reproductions are pinned
+here end to end, because the unit test for the helper passes just as well against a
+reader that never calls it.
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ def _flooded(reader: str, n: int) -> bytes:
 def test_every_reader_caps_symbols_a_group_at_a_time(reader) -> None:
     """Three readers cap symbols and each one is its own chance to cut blind.
 
-    Written against all three because the ELF-only version of this left Mach-O and PE
+    Written against all three because an ELF-only version of this leaves Mach-O and PE
     free to go back to a plain slice with the suite staying green.
     """
     limit = PATTERNS.limits.max_symbols_per_binary
@@ -184,7 +184,7 @@ def test_the_binding_is_part_of_the_key_not_just_the_group(reader) -> None:
     Keying on the group alone keeps whichever `EVP_*` sorts first, and when that is an
     imported one the defined one goes -- `unknown` where the object is `static`, a
     quieter version of the same bug. Parametrised for the same reason its neighbour is:
-    the ELF-only version left Mach-O and PE free to go back to a group-only key with
+    an ELF-only version leaves Mach-O and PE free to go back to a group-only key with
     the suite staying green.
     """
     limit = PATTERNS.limits.max_symbols_per_binary
@@ -285,7 +285,7 @@ def test_a_pinned_item_is_kept_ahead_of_an_unpinned_one() -> None:
 
 
 def test_one_pinned_name_cannot_eat_the_budget_with_its_versions() -> None:
-    """The finding both reviews made: the pinned pass is keyed, not a plain prefix."""
+    """The pinned pass is keyed, not a plain prefix."""
     many = [RustCrate(name="openssl", version=f"3.0.{n}") for n in range(200)]
     ring = RustCrate(name="ring", version="0.17.8")
     claimed = {"openssl", "ring"}

@@ -74,15 +74,15 @@ nav:
       - Architecture: architecture.md
       - Invariants: invariants.md
       - Vocabularies: reference/vocabularies.md
-  - Design decisions:
-      - Overview: decisions/index.md
-      - Determinism and the Python layer: decisions/interpreter.md
-      - Evidence, opacity and verdicts: decisions/opacity.md
-      - OpenSSL linkage: decisions/linkage.md
-      - Policy data: decisions/policy.md
-      - Caps, budgets and record size: decisions/limits.md
-      - ELF: decisions/elf.md
-      - Mach-O: decisions/macho.md
-      - PE: decisions/pe.md
-      - Scanning, caching and layout: decisions/tooling.md
+  - Design:
+      - Overview: design/index.md
+      - Determinism and the Python layer: design/interpreter.md
+      - Evidence, opacity and verdicts: design/opacity.md
+      - OpenSSL linkage: design/linkage.md
+      - Policy data: design/policy.md
+      - Caps, budgets and record size: design/limits.md
+      - ELF: design/elf.md
+      - Mach-O: design/macho.md
+      - PE: design/pe.md
+      - Scanning, caching and layout: design/tooling.md
   - Contributing: contributing.md

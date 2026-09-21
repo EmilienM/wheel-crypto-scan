@@ -30,8 +30,7 @@ network and no committed binaries, and runs byte-identically anywhere. Keep it t
 **Break a guard to see whether it guards.** Much of this suite exists to hold an invariant
 rather than a behaviour, and such a test passes just as well when it asserts nothing.
 Deleting the line under test, or mutating it to the wrong answer, is the only way to tell.
-Several guards in the tree were added after a review showed the obvious version of them
-stayed green.
+The obvious version of a guard often stays green with the line it guards deleted.
 
 ## Adding policy
 
@@ -53,14 +52,18 @@ fails on drift.
 
 ## Writing it down
 
-A design call that cost something goes in `DECISIONS.md`: what was decided, what it costs,
-what was rejected and why, what was measured rather than assumed, and what would make it
-worth revisiting. This site renders those entries under
-[Design decisions](decisions/index.md).
+A design call that cost something goes in `DESIGN.md`: what the code does, what it costs,
+what was rejected and why, what was measured rather than assumed, what is left open, and
+what would make it worth revisiting. This site renders those entries under
+[Design](design/index.md).
 
-The house style there is worth matching. Claims are measured, not asserted; a claim that did
-not survive review is corrected in place rather than quietly dropped; and an entry says what
-it leaves open as plainly as what it closes.
+The house style there is worth matching. Claims are measured, not asserted, and an entry
+says what it leaves open as plainly as what it closes.
+
+Comments, docstrings, test names and `why` text describe the current design, not its
+history: no issue or PR numbers, no "used to" or "before this fix". See AGENTS.md's
+"Write down the current design, not its history." `tests/test_design_notes.py` checks the
+mechanical part of that, and that every `DESIGN.md` heading something quotes still exists.
 
 ## Dependencies
 

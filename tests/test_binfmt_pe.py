@@ -1,6 +1,6 @@
 """Behaviour of `binfmt.pe.read_pe`.
 
-A Windows extension used to be read for printable strings alone, so it had no `needed`,
+Reading a Windows extension for printable strings alone would leave it with no `needed`,
 no `soname` and no imported-versus-defined split. These tests hold the reader to
 recovering all three, to translating addresses through the section table rather than
 around it, and to keeping `partial_analysis` set for everything it did not read: a
@@ -47,7 +47,7 @@ def _extension(**overrides) -> PEBuilder:
     return dataclasses.replace(builder, **overrides)
 
 
-# --- what the issue asked for -------------------------------------------------
+# --- the import directory ------------------------------------------------------
 
 
 def test_the_import_directory_names_every_dll_the_object_depends_on() -> None:
@@ -244,7 +244,8 @@ def test_a_section_pointed_past_the_end_of_the_object_yields_nothing() -> None:
 
 
 def test_an_object_with_no_import_directory_stays_partial() -> None:
-    """It declared no dependency at all, which is what its record said before this reader."""
+    """It declares no dependency at all, and the limit of what this reader can say about
+    an absent import directory."""
     ev, errors = _read(_extension(imports=()).build())
     assert errors == ()  # an absent directory is not a failure, only a limit
     assert ev.needed == ()
@@ -444,14 +445,12 @@ def test_a_forwarder_at_the_export_directory_s_first_byte_is_still_a_forwarder()
 
 
 def test_a_forwarder_names_the_dll_and_symbol_it_forwards_to() -> None:
-    """The reproduction from issue #54.
+    """A wrapper forwarding `my_digest_init` to `libcrypto-3-x64.EVP_DigestInit_ex`.
 
-    A wrapper forwarding `my_digest_init` to `libcrypto-3-x64.EVP_DigestInit_ex` used
-    to read `NO_CRYPTO_DETECTED` with `needs_human_review: false`, because only the
-    wrapper's own export name -- not crypto vocabulary -- ever reached the record. The
-    Windows loader resolves a forwarder exactly like an import at load time, so both
-    the target DLL and the target symbol belong in the record the same way any other
-    dependency does.
+    Recording only the wrapper's own export name -- not crypto vocabulary -- reads this
+    object as `NO_CRYPTO_DETECTED` with `needs_human_review: false`. The Windows loader
+    resolves a forwarder exactly like an import at load time, so both the target DLL
+    and the target symbol belong in the record the same way any other dependency does.
     """
     wrapper = _extension(
         imports=(PEImport("python312.dll", names=("Py_Initialize",)),),
@@ -464,7 +463,7 @@ def test_a_forwarder_names_the_dll_and_symbol_it_forwards_to() -> None:
     assert _symbol("EVP_DigestInit_ex", evidence.BINDING_IMPORTED) in ev.matched_symbols
 
     # The evidence alone is not the whole claim: run it through the same engine that
-    # decides the verdict, to confirm the wheel no longer reads clean.
+    # decides the verdict, to confirm the wheel does not read clean.
     from wheel_crypto_scan.engine import apply_rules
     from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, MetadataEvidence
     from wheel_crypto_scan.linkage import resolve_linkage
@@ -493,12 +492,12 @@ def test_an_ordinal_forwarder_still_names_its_dll() -> None:
     ordinal inside -- only the function name does not, so this reuses
     `pe_ordinal_import` rather than costing the object a verdict of its own.
 
-    `matched_symbols == ()` is checked directly rather than through a substring
-    search: `symbol_groups_for("123")` never matches a ruleset group whether or not
-    the ordinal remainder gets recorded as a symbol name, since a bare number is not
-    a shape any group's prefixes or exact names can produce a hit on -- a check that
-    goes through the matcher can't tell the fixed version from the broken one. The
-    fixture below inspects `_read_exports`'s own output instead, where recording the
+    `matched_symbols == ()` is checked directly rather than through a substring search:
+    `symbol_groups_for("123")` never matches a ruleset group whether or not the ordinal
+    remainder gets recorded as a symbol name, since a bare number is not a shape any
+    group's prefixes or exact names can produce a hit on -- a check that goes through
+    the matcher can't tell a reader that records the remainder from one that does not.
+    The fixture below inspects `_read_exports`'s own output instead, where recording the
     remainder would actually show up as a non-empty `forwarded_targets`.
     """
     wrapper = _extension(
@@ -582,11 +581,10 @@ def test_a_forwarder_with_a_dot_in_its_symbol_half_still_resolves() -> None:
     """MSVC hot/cold splitting embeds a dot in the symbol half of a real forwarder.
 
     `libcrypto-3-x64.EVP_DigestInit_ex.cold` is what MSVC's cold-path split of
-    `EVP_DigestInit_ex` looks like as a forwarder target. A last-dot split reads DLL
-    as `libcrypto-3-x64.EVP_DigestInit_ex` (garbage, matches nothing in the ruleset)
-    and symbol as `cold` (also matches nothing), losing the crypto evidence entirely
-    and reading the wheel clean. Before this fix, that is exactly what happened; this
-    fixture pins that it no longer does.
+    `EVP_DigestInit_ex` looks like as a forwarder target. A last-dot split would read
+    DLL as `libcrypto-3-x64.EVP_DigestInit_ex` (garbage, matches nothing in the
+    ruleset) and symbol as `cold` (also matches nothing), losing the crypto evidence
+    entirely and reading the wheel clean. This fixture pins that it does not.
     """
     forwarder = f"{OPENSSL_DLL[:-4]}.EVP_DigestInit_ex.cold"
     wrapper = _extension(

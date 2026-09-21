@@ -1,8 +1,8 @@
 """Behaviour of `binfmt.ar.read_ar_members`.
 
-Verified during development against real archives from GNU `ar` 2.46 (magic, header
-layout, the `//` long-name table's `name/\\n` entries, odd-size padding) before this
-suite was written; these tests pin that understanding with synthesized bytes, the same
+Verified against real archives from GNU `ar` 2.46 (magic, header
+layout, the `//` long-name table's `name/\\n` entries, odd-size padding); these tests
+pin that understanding with synthesized bytes, the same
 "no compiler, no network, nothing committed as a binary blob" contract every other
 binfmt test file keeps.
 """
@@ -145,11 +145,11 @@ def test_the_gnu_symbol_table_member_is_skipped_not_read_as_an_object() -> None:
 
 
 def test_bsd_symdef_variants_and_gnu_sym64_are_also_skipped() -> None:
-    """#99: every real index/padding convention a real toolchain writes, not just
-    GNU's bare `/`. Before this fix, an ordinary macOS (`__.SYMDEF`) or GNU 64-bit
-    (`/SYM64/`) archive -- the everyday shape, not a crafted one -- picked up a
-    spurious `FORMAT_UNKNOWN` entry per index member and the `BIN_PARTIAL_FORMAT`
-    verdict hit that comes with it.
+    """Every real index/padding convention a real toolchain writes, not just GNU's bare
+    `/`. Without this skip, an ordinary macOS (`__.SYMDEF`) or GNU 64-bit (`/SYM64/`)
+    archive -- the everyday shape, not a crafted one -- would pick up a spurious
+    `FORMAT_UNKNOWN` entry per index member and the `BIN_PARTIAL_FORMAT` verdict hit
+    that comes with it.
     """
     real = ElfBuilder(dynsyms=(IMPORTED_OPENSSL,)).build()
     for index_name in ("__.SYMDEF", "__.SYMDEF SORTED", "__.SYMDEF_64", "/SYM64/"):
@@ -169,12 +169,11 @@ def test_bsd_symdef_variants_and_gnu_sym64_are_also_skipped() -> None:
 
 
 def test_an_out_of_range_gnu_offset_is_still_read_under_a_synthetic_path() -> None:
-    """#99: an earlier version of this module dropped the whole
-    member -- no evidence, no error -- when its name could not be resolved. A wheel
-    whose only crypto evidence was in that member read `NO_CRYPTO_DETECTED` with an
-    empty `errors[]`, the exact thing "unreadable means OPAQUE, never
-    NO_CRYPTO_DETECTED" exists to prevent. The member's bytes are read and reported
-    under `member@<offset>` instead, with its own `AR_PARSE_ERROR`.
+    """Dropping the whole member -- no evidence, no error -- when its name cannot be
+    resolved would let a wheel whose only crypto evidence is in that member read
+    `NO_CRYPTO_DETECTED` with an empty `errors[]`, the exact thing "unreadable means
+    OPAQUE, never NO_CRYPTO_DETECTED" exists to prevent. The member's bytes are read and
+    reported under `member@<offset>` instead, with its own `AR_PARSE_ERROR`.
     """
     member = ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build()
     data = bytearray(build_ar([ArMember("a.o", member)], name_style="gnu"))
@@ -206,11 +205,10 @@ def test_an_oversized_bsd_length_is_still_read_under_a_synthetic_path() -> None:
 
 
 def test_an_unterminated_long_name_entry_is_unresolvable_not_truncated() -> None:
-    """Reporting the rest of the table as the name -- what an earlier version of
-    this module did when a `/\\n` terminator never appeared -- is the same "a name
-    reported is a name read in full" failure this repo's other binary readers were
-    both found and fixed for. A `/<offset>` into a run with no terminator must be
-    unresolvable, not a name nobody wrote.
+    """Reporting the rest of the table as the name when a `/\\n` terminator never
+    appears would be the same "a name reported is a name read in full" failure this
+    repo's other binary readers guard against. A `/<offset>` into a run with no
+    terminator must be unresolvable, not a name nobody wrote.
     """
     member = ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build()
     long_name = "this_is_a_very_long_object_file_name_past_fifteen_chars.o"
@@ -266,15 +264,14 @@ def test_the_member_cap_bounds_dispatch_work_not_just_output_length(monkeypatch)
     assert calls["n"] == 4096
 
 
-# --- the documented gap: .symtab-only definitions are invisible to matching --------
+# --- .symtab-only definitions are matched through an archive member ---------------
 
 
 def test_a_symtab_only_definition_is_matched_through_an_archive_member() -> None:
-    """#117, closed: `binfmt.elf` now also matches crypto symbol groups against
-    `.symtab` when `.dynsym` is absent -- exactly the relocatable-object shape every
-    member of a real static archive has. `binfmt.ar` itself needed no change: once
-    `binfmt.elf` reads the member's `.symtab`, the archive layer above it inherits the
-    fix for free, the same as it did for every earlier `binfmt.elf` improvement.
+    """`binfmt.elf` matches crypto symbol groups against `.symtab` when `.dynsym` is
+    absent -- exactly the relocatable-object shape every member of a real static
+    archive has. `binfmt.ar` does nothing of its own for this: each member goes through
+    `read_binary`, so the archive layer gets whatever `binfmt.elf` reads.
     """
     member = ElfBuilder(
         e_type=ET_REL, dynsyms=(), with_symtab=True, symtab_syms=(DEFINED_OPENSSL,)

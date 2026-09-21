@@ -82,9 +82,9 @@ _SOURCE_SUFFIX = ".py"
 # complex to parse")` instead -- CPython's PEG parser signals its own stack exhaustion
 # that way, not as a `RecursionError`. Both are caught for exactly the same reason: a
 # stack limit reached depends on the interpreter's state at scan time, not the wheel's
-# bytes, and neither is caught anywhere shallower than these two `try` blocks -- an
-# uncaught one used to propagate out of this whole layer, costing every other source
-# file in the wheel its evidence too, not just this one. #109.
+# bytes, and neither is caught anywhere shallower than these two `try` blocks: an
+# uncaught one would propagate out of this whole layer, costing every other source
+# file in the wheel its evidence too, not just this one.
 _STACK_EXHAUSTED = "source nesting exhausted the interpreter's parsing stack"
 
 

@@ -1,11 +1,12 @@
 """Tests for Layer 2's member classification: `layers.binaries.is_binary_member`.
 
 Deciding what is worth reading as a native object is a suffix check first, a vendor
-path check second, and two "no dot in the name" fallbacks last. `.exe` used to fail
-all four: wrong suffix, and the dot disqualified it from both fallbacks (#65). These
-tests pin the suffix check directly, independently of any particular reader, and hold
-the untouched routes (vendor paths, sniff directories, the executable bit, and every
-other recognised suffix) to their exact prior behaviour.
+path check second, and two "no dot in the name" fallbacks last. Without `.exe` in
+`_BINARY_SUFFIX`, a Windows executable fails all four: wrong suffix, and the dot
+disqualifies it from both fallbacks. These tests pin the suffix check directly,
+independently of any particular reader, and hold the other routes (vendor paths,
+sniff directories, the executable bit, and every other recognised suffix) to their
+own behaviour.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def member(
 
 
 # --------------------------------------------------------------------------
-# #65: `.exe` is now a recognised suffix
+# `.exe` is a recognised suffix
 # --------------------------------------------------------------------------
 
 
@@ -48,7 +49,7 @@ def member(
         "somewhere/random/tool.exe",
     ],
 )
-def test_an_exe_member_is_now_recognized(name: str) -> None:
+def test_an_exe_member_is_recognized(name: str) -> None:
     assert is_binary_member(member(name, mode=_MODE_FILE), CONVENTIONS) is True
 
 
@@ -62,10 +63,10 @@ def test_a_symlinked_exe_is_still_never_read_as_a_binary() -> None:
 
 
 # --------------------------------------------------------------------------
-# #99: `.a` and `.lib` are now recognized suffixes, so a static archive is opened at
-# all -- whether `layers.binaries.scan_binaries` then reads it as an `ar` archive or
-# falls through to the ordinary strings-only path is decided later, by sniffing the
-# opened member's magic, not by this suffix check.
+# `.a` and `.lib` are recognized suffixes, so a static archive is opened at all --
+# whether `layers.binaries.scan_binaries` then reads it as an `ar` archive or falls
+# through to the ordinary strings-only path is decided later, by sniffing the opened
+# member's magic, not by this suffix check.
 # --------------------------------------------------------------------------
 
 
@@ -81,7 +82,7 @@ def test_a_symlinked_exe_is_still_never_read_as_a_binary() -> None:
         "somewhere/random/archive.a",
     ],
 )
-def test_a_static_archive_member_is_now_recognized(name: str) -> None:
+def test_a_static_archive_member_is_recognized(name: str) -> None:
     assert is_binary_member(member(name, mode=_MODE_FILE), CONVENTIONS) is True
 
 
@@ -94,7 +95,7 @@ def test_a_symlinked_static_archive_is_still_never_read_as_a_binary() -> None:
 
 
 # --------------------------------------------------------------------------
-# Regression: the suffixes `.exe` joins were already recognized, and stay recognized
+# Every other native suffix is recognized too
 # --------------------------------------------------------------------------
 
 
@@ -112,7 +113,7 @@ def test_a_symlinked_static_archive_is_still_never_read_as_a_binary() -> None:
         "pkg/libcrypto.dylib",
     ],
 )
-def test_every_previously_recognized_suffix_is_unchanged(name: str) -> None:
+def test_every_native_suffix_is_recognized(name: str) -> None:
     assert is_binary_member(member(name, mode=_MODE_FILE), CONVENTIONS) is True
 
 
@@ -125,16 +126,16 @@ def test_every_previously_recognized_suffix_is_unchanged(name: str) -> None:
     ],
 )
 def test_an_unrelated_extension_is_still_not_a_binary_member(name: str) -> None:
-    """A regression guard for suffix matching in general, not just `.exe`.
+    """A guard for suffix matching in general, not just `.exe`.
 
     Each of these sits in a sniff directory or would otherwise pass the "no dot"
-    fallbacks if the dot in its own name were ignored the way `.exe`'s used to be.
+    fallbacks if the dot in its own name were ignored.
     """
     assert is_binary_member(member(name, mode=_MODE_FILE), CONVENTIONS) is False
 
 
 def test_a_suffixless_sniff_directory_member_is_unaffected() -> None:
-    """The route `.exe` used to be locked out of still works for what it always covered."""
+    """The sniff-directory route `.exe`'s own dot locks it out of still works for what it covers."""
     name = "pkg-1.0.data/scripts/openssl"
     assert is_binary_member(member(name, mode=_MODE_FILE), CONVENTIONS) is True
 

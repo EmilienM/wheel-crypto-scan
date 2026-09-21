@@ -75,11 +75,11 @@ def test_match_string_groups_dedupes_and_sorts() -> None:
 
 
 def test_match_string_groups_many_hits_in_one_run_still_dedupe_to_one() -> None:
-    """#67: repeated hits inside a single run must not multiply the survivors.
+    """Repeated hits inside a single run must not multiply the survivors.
 
-    A run with many hits for the same group used to re-slice the whole run once per
-    hit, all producing the same value, which the set collapsed anyway. The fix skips
-    the re-slicing, but the result -- one match, the whole run -- must be unchanged.
+    Re-slicing the whole run once per hit would produce the same value every time,
+    which the set collapses anyway. Skipping the re-slicing must still produce the same
+    result -- one match, the whole run.
     """
     run = "OpenSSL 3." * 50  # 50 hits for the same group, all inside one run
     extracted = ExtractedStrings(text="junk\n" + run + "\nmore junk", truncated=False)
@@ -115,8 +115,8 @@ def test_run_separator_is_outside_printable() -> None:
 
 
 def test_no_shipped_string_group_pattern_can_match_across_the_run_separator() -> None:
-    """#67's optimization depends on this property directly, not on the
-    substrings-are-printable-ASCII check `ruleset_loader` enforces as a proxy for it.
+    """`match_string_groups`'s optimization depends on this property directly, not on
+    the substrings-are-printable-ASCII check `ruleset_loader` enforces as a proxy for it.
 
     Pinned against the shipped ruleset rather than trusted from the proxy alone: a
     future group kind (a regex escape hatch, a case-insensitive flag) could keep that
@@ -133,13 +133,13 @@ def test_no_shipped_string_group_pattern_can_match_across_the_run_separator() ->
 
 
 def test_match_string_groups_does_not_go_quadratic_in_hits_per_run() -> None:
-    """#67: a crafted run with many hits for one group must stay roughly linear.
+    """A crafted run with many hits for one group must stay roughly linear.
 
-    Before the fix, each hit re-sliced the whole enclosing run, so a run with `k`
-    hits cost O(k * run_length). At this shape (200,000 hits in a ~2 MB run),
-    reverting the fix measures ~3.5s; the 0.5s budget keeps a comfortable margin
-    below the fixed time (~0.01s) while staying well clear of that reverted time too,
-    rather than sitting close enough to either that host noise could flip the result.
+    Re-slicing the whole enclosing run for each hit costs O(k * run_length) for a run
+    with `k` hits. At this shape (200,000 hits in a ~2 MB run), re-slicing per hit
+    measures ~3.5s and skipping hits inside the claimed run measures ~0.01s; the 0.5s
+    budget keeps a comfortable margin from both, rather than sitting close enough to
+    either that host noise could flip the result.
     """
     run = "OpenSSL 3." * 200_000
     extracted = ExtractedStrings(text=run, truncated=False)
@@ -183,20 +183,22 @@ def test_sanitize_drops_control_bytes_and_non_ascii() -> None:
 
 
 def _sanitize_reference(text: str) -> str:
-    """The pre-#70 per-character generator, kept only so the two can't silently drift.
+    """A per-character generator definition of `sanitize`, kept only so the two can't
+    silently drift.
 
-    `sanitize` itself is now a compiled-regex `.sub`; this is the original
-    character-by-character definition it replaced, pinned here so a future edit to
-    one without the other is caught rather than assumed equivalent.
+    `sanitize` itself is a compiled-regex `.sub`; this is the plain
+    character-by-character definition it must agree with, pinned here so a future edit
+    to one without the other is caught rather than assumed equivalent.
     """
     return "".join(ch for ch in text if ord(ch) in PRINTABLE)
 
 
 def test_sanitize_matches_the_reference_generator_over_a_random_corpus() -> None:
-    """#70: a compiled regex must stay byte-identical to the generator it replaced.
+    """A compiled regex must stay byte-identical to `_sanitize_reference`, the
+    generator-based implementation kept here for comparison.
 
-    The random sample spans the full `str` code-point range, not just the 0x00-0x1ff
-    the issue itself checked, so it also covers the lone-surrogate and astral-plane
+    The random sample spans the full `str` code-point range, not just 0x00-0x1ff,
+    so it also covers the lone-surrogate and astral-plane
     code points that are the only place a code-point-wise `re` class could plausibly
     diverge from the generator's `ord()` check.
     """

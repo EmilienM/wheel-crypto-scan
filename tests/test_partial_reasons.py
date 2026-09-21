@@ -130,7 +130,7 @@ _REACHABILITY: dict[str, bytes] = {
         delay_import_directory=True,
     ).build(),
     # `e_shoff == 0`: a loadable object with no section header table at all, not a
-    # table that failed to read. #56.
+    # table that failed to read.
     "elf section table absent": patch_header_field(
         patch_header_field(
             ElfBuilder(rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00").build(), "e_shnum", 0
@@ -144,8 +144,8 @@ _REACHABILITY: dict[str, bytes] = {
             needed=("libc.so.6",), dynsyms=(DynSym("EVP_DigestInit_ex", defined=False),)
         ).build()
     ),
-    # `.dynamic` whose bytes lie outside the object: the handler the motivating case
-    # for this field was described by, reached without a monkeypatch.
+    # `.dynamic` whose bytes lie outside the object: the `.dynamic` handler, reached
+    # without a monkeypatch.
     "elf dynamic section unreadable": patch_section_header(
         ElfBuilder(
             needed=("libcrypto.so.3",),
@@ -167,9 +167,9 @@ _REACHABILITY: dict[str, bytes] = {
     # A section flagged compressed over bytes that are not: the first 24 bytes of
     # this text decode as a `Chdr` whose `ch_size` is some large accident of the
     # ASCII (~3.76 * 10^18 here), well over the budget, so `_bounded_section_data`
-    # refuses it before `.data()` is ever called. Before that guard existed, this
-    # used to reach `.data()`, which raised there instead -- either way this was once
-    # the one failure in the reader that recorded nothing at all.
+    # refuses it before `.data()` is ever called. Without that guard, this would
+    # reach `.data()` and raise there instead; either way the section is unread, and
+    # the record has to say so.
     "elf section data unreadable": patch_section_header(
         ElfBuilder(
             rodata=b"OpenSSL 3.0.14 4 Jun 2024\x00",
@@ -217,31 +217,31 @@ _REACHABILITY: dict[str, bytes] = {
             b"\x00" * 64,
         ]
     ),
-    # #59: a dylib-loading command whose name offset lands outside its own body. No
-    # name payload at all, so the offset has nothing to point at.
+    # A dylib-loading command whose name offset lands outside its own body. No name
+    # payload at all, so the offset has nothing to point at.
     "macho dylib name unread": MachOBuilder(
         id_dylib="libfoo.dylib",
         symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
         malformed_dylib_cmd=LC_LOAD_DYLIB,
         malformed_dylib_name_offset=1000,
     ).build(),
-    # #84: a `cmdsize` claiming to run past the load commands, so the walk stops
-    # rather than trusting a value that already lied about its own extent.
+    # A `cmdsize` claiming to run past the load commands, so the walk stops rather
+    # than trusting a value that already lied about its own extent.
     "macho load command walk truncated": MachOBuilder(
         id_dylib="libfoo.dylib",
         symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
         poison_cmdsize=0x10000,
     ).build(),
-    # #85: a second `LC_ID_DYLIB` -- an honest install name, and a decoy that
-    # last-wins would otherwise pick.
+    # A second `LC_ID_DYLIB` -- an honest install name, and a decoy that last-wins
+    # would otherwise pick.
     "macho load command ambiguous": MachOBuilder(
         id_dylib="libfoo.dylib",
         extra_id_dylibs=("decoy.dylib",),
         symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
     ).build(),
-    # #85's other field: a second `LC_SYMTAB`, honestly shaped but pointing at
-    # garbage, written after the real one -- the shape that actually demonstrates the
-    # pre-fix bug, since a last-wins reader keeps the one written last.
+    # The ambiguity's other field: a second `LC_SYMTAB`, honestly shaped but pointing
+    # at garbage, written after the real one -- the shape that actually demonstrates
+    # why a last-wins reader is wrong, since it would keep the one written last.
     "macho symtab ambiguous": MachOBuilder(
         id_dylib="libfoo.dylib",
         symbols=(MachOSym("_EVP_DigestInit_ex", defined=False),),
@@ -249,9 +249,9 @@ _REACHABILITY: dict[str, bytes] = {
     ).build(),
 }
 
-# `read_ar_members` is never reached through `read_binary`'s own dispatch (#99: it
-# returns several `BinaryEvidence` entries, not the one every registered reader
-# promises), so `PARTIAL_AR_MEMBER_TABLE_UNREAD` cannot be reached via `_read` the way
+# `read_ar_members` is never reached through `read_binary`'s own dispatch (it returns
+# several `BinaryEvidence` entries, not the one every registered reader promises), so
+# `PARTIAL_AR_MEMBER_TABLE_UNREAD` cannot be reached via `_read` the way
 # every other token in `_CASES`/`_REACHABILITY` is. The magic alone, with not even one
 # full member header after it, is the archive whose table never yields a single real
 # member -- the fallback case that produces this reason.
@@ -332,11 +332,11 @@ def test_a_pe_header_that_would_not_parse_says_so() -> None:
 
 
 def test_an_ordinal_only_pe_import_is_named_rather_than_left_to_the_boolean() -> None:
-    """The case the issue was filed for: routine on Windows, and it recorded no error.
+    """The routine Windows case, and one that records no error.
 
-    `WS2_32` is normally bound by ordinal, so this is the typical `.pyd` record. It has
-    always been `partial_analysis: true` with `errors: []`, indistinguishable from an
-    object nothing could be read from.
+    `WS2_32` is normally bound by ordinal, so this is the typical `.pyd` record:
+    `partial_analysis: true` with `errors: []`, which without a named reason is
+    indistinguishable from an object nothing could be read from.
     """
     ev, errors = _read(_CASES["pe ordinal import"])
     assert ev.partial_analysis is True
@@ -454,7 +454,7 @@ def test_a_recording_cap_is_not_a_reading_gap(name) -> None:
     three readers out of four if this were written against ELF alone.
 
     What a cap costs instead is a separate matter and a worse one: it can drop crypto
-    evidence that sorts late. `DECISIONS.md` has the reproduction. This test pins only
+    evidence that sorts late. `DESIGN.md` has the reproduction. This test pins only
     that a cap is not spelled as a partial read, which is what the vocabulary means.
     """
     limit = PATTERNS.limits.max_strings_per_binary
@@ -496,20 +496,20 @@ def test_a_pe_whose_header_would_not_parse_still_names_the_unread_bytes() -> Non
 
 
 def test_every_cause_that_records_no_error_says_so_in_the_schema() -> None:
-    """The other marker `SCHEMA.md` carries per row, and the one nothing held.
+    """The other marker `SCHEMA.md` carries per row, held the way the routine one is.
 
-    The routine marker has a drift guard and this did not, which is how the new cause
-    arrived as the only no-error row not saying it. Derived by running the fixtures
-    rather than from a list, so a cause that starts or stops recording an error is
-    caught by the same test.
+    A cause that records no error and whose row does not say so reads, to a consumer,
+    like one that left an error to look at. Derived by running the fixtures rather
+    than from a list, so a cause that starts or stops recording an error is caught by
+    the same test.
     """
     silent: set[str] = set()
     noisy: set[str] = set()
     for data in {**_CASES, **_REACHABILITY}.values():
         ev, errors = _read(data)
         (silent if not errors else noisy).update(ev.partial_reasons)
-    # A budget that cuts into the trailing run and nothing else, so the new cause is
-    # reached on its own: `binfmt.pe` resolves its directories inside this same buffer,
+    # A budget that cuts into the trailing run and nothing else, so the strings-budget cause
+    # is reached on its own: `binfmt.pe` resolves its directories inside this same buffer,
     # so a deeper cut would take the export directory with it and record an error.
     pe = _PER_READER["pe"]
     ev, errors = _read_bounded(pe, len(pe) - len(_BANNER))
@@ -646,7 +646,7 @@ GO_BUILDINFO = b"\xff Go buildinf:" + bytes([8, 2]) + b"\x00" * 16 + b"\x08go1.2
 
 _UNREADABLE_SECTION = {
     # Exploding `.dynamic` also costs `.dynsym`: no readable `DT_STRTAB` to
-    # corroborate `.dynsym`'s own `sh_link` against (#56 round 4).
+    # corroborate `.dynsym`'s own `sh_link` against.
     ".dynamic": (evidence.PARTIAL_ELF_DYNAMIC_UNREAD, evidence.PARTIAL_ELF_DYNSYM_UNREAD),
     ".dynsym": (evidence.PARTIAL_ELF_DYNSYM_UNREAD,),
     ".symtab": (evidence.PARTIAL_ELF_SYMTAB_UNREAD,),
@@ -663,9 +663,9 @@ def _readable_elf() -> bytes:
     ).build()
 
 
-# `.dynamic`, `.dynsym` and `.symtab` are found by `sh_type` now, not by name (#56), so
-# exploding them has to patch that lookup instead of `_find_section`. `.go.buildinfo`
-# is still name-based, out of scope for that issue, and stays on the original helper.
+# `.dynamic`, `.dynsym` and `.symtab` are found by `sh_type`, not by name, so exploding
+# them has to patch that lookup instead of `_find_section`. `.go.buildinfo` is
+# name-based, so it goes through `_find_section`.
 _TYPE_LOOKUP_NAMES = {".dynamic": "SHT_DYNAMIC", ".dynsym": "SHT_DYNSYM", ".symtab": "SHT_SYMTAB"}
 
 
@@ -726,8 +726,8 @@ _BYTE_REACHABLE = {
     "elf section table absent": [evidence.PARTIAL_ELF_SECTION_TABLE_ABSENT],
     "elf section type ambiguous": [evidence.PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS],
     # `.dynamic`'s own sh_link is broken here, so `.dynsym`'s string table has no
-    # `DT_STRTAB` to corroborate against either (#56 round 4) -- this fixture costs
-    # both, not just the section list.
+    # `DT_STRTAB` to corroborate against either -- this fixture costs both, not just
+    # the section list.
     "elf section header unreadable": [
         evidence.PARTIAL_ELF_DYNSYM_UNREAD,
         evidence.PARTIAL_ELF_SECTIONS_UNREAD,
@@ -852,8 +852,8 @@ def test_a_routine_cause_still_leaves_the_dependency_name_in_the_record() -> Non
     crypto dependency bound that way is caught by the same rule that catches any other
     `needed` entry. A delay-load directory loses the dependency name itself, and
     nothing downstream recovers it, so it stays with the strict rule. The ordinal
-    export was once on this side of the line and is not: it names no dependency for
-    this argument to be about.
+    export is not on the routine side either: it names no dependency for this
+    argument to be about.
     """
     data = PEBuilder(
         imports=(PEImport("libcrypto-3-x64.dll", ordinals=(1,)),),
@@ -877,8 +877,9 @@ def test_an_ordinal_import_from_an_unrecognised_dll_answers_nothing() -> None:
 
     So the exemption costs this shape: by name it is `unknown` and a finding, by
     ordinal it is `none` and no verdict at all. Kept, because costing the answer for
-    every ordinal import is the noise removed when the split was drawn for verdicts,
-    and `WS2_32` is bound this way on every Windows extension that touches sockets.
+    every ordinal import is the same noise the routine-cause split keeps out of
+    verdicts, and `WS2_32` is bound this way on every Windows extension that touches
+    sockets.
     Pinned here so it is a known hole rather than an assumed non-hole.
     """
     named = PEBuilder(
@@ -896,14 +897,14 @@ def test_an_ordinal_import_from_an_unrecognised_dll_answers_nothing() -> None:
 
 
 def test_an_understated_export_name_count_does_not_read_clean() -> None:
-    """The shape that made an ordinal export a failure rather than a convention.
+    """The shape that makes an ordinal export a failure rather than a convention.
 
     `NumberOfNames` is a count the object keeps about itself, and PE has no string
     table to check it against. Understate it and the names stop being walked, every
     address slot becomes one no name points at, and `unnamed` fires -- so the cause
-    is recorded. What used to happen next is the whole of the problem: the cause was
-    claimed by the verdict-less rule, so a statically linked OpenSSL came back with no
-    verdict, `openssl_linkage: none` and `needs_human_review: false`.
+    is recorded. The whole of the problem is which rule claims that cause: if it is
+    the verdict-less rule, a statically linked OpenSSL comes back with no verdict,
+    `openssl_linkage: none` and `needs_human_review: false`.
 
     Three counts, one object, no OpenSSL banner in it to fall back on.
     """
@@ -936,7 +937,7 @@ def test_an_understated_export_name_count_does_not_read_clean() -> None:
         )
 
     assert "BIN_STATIC_OPENSSL" in _findings_all(build())
-    # The harm was never which rule fired. It was the three fields a consumer reads.
+    # What matters is not which rule fires but the three fields a consumer reads.
     rule = ruleset.rule("BIN_PARTIAL_FORMAT")
     assert rule.verdict == "OPAQUE"
     assert rule.needs_human_review is True
@@ -978,7 +979,7 @@ def _findings_all(data: bytes) -> set[str]:
 def test_the_documented_linkage_exemptions_are_the_ones_the_ruleset_claims() -> None:
     """The same prose-versus-policy drift guard, for the second split over one vocabulary.
 
-    Two lists are drawn over `PARTIAL_REASONS` now and they are deliberately not the
+    Two lists are drawn over `PARTIAL_REASONS` and they are deliberately not the
     same list: `elf_symtab_unread` is worth a verdict and costs linkage nothing. A
     reader deciding whether a `none` can be trusted reads the table, so the table has
     to be the ruleset.
@@ -996,9 +997,8 @@ def test_exactly_one_cause_is_recorded_without_a_verdict() -> None:
 
     A second routine cause could be added, `SCHEMA.md` updated, the linkage exact-set
     literal updated, and the whole suite stays green while the two files an agent reads
-    first say "one cause" and "one carve-out". The linkage exemptions already have a pin
-    of this shape in `tests/test_linkage.py`; this is the one the verdict side was
-    missing.
+    first say "one cause" and "one carve-out". The linkage exemptions have a pin of
+    this shape in `tests/test_linkage.py`; this is the verdict side's.
 
     Changing this number means changing an invariant, so it should take editing a test
     that says where the prose lives.
@@ -1047,9 +1047,9 @@ def test_a_verdict_less_cause_that_costs_the_linkage_answer_is_refused() -> None
 def test_a_ruleset_with_no_linkage_policy_still_agrees_with_its_own_rules() -> None:
     """Absence derives the exemptions rather than emptying them.
 
-    An empty default would have made every ruleset supplied through `--ruleset` report
+    An empty default would make every ruleset supplied through `--ruleset` report
     `openssl_linkage: unknown` for an ordinary ordinal import, which is both the noise
-    #32 removed and the contradiction the load-time check refuses.
+    the routine-cause split keeps out and the contradiction the load-time check refuses.
     """
     data = tomllib.loads(
         files("wheel_crypto_scan").joinpath("data/ruleset.toml").read_text(encoding="utf-8")
@@ -1061,10 +1061,10 @@ def test_a_ruleset_with_no_linkage_policy_still_agrees_with_its_own_rules() -> N
 
 
 def test_the_documented_routine_causes_are_the_ones_the_ruleset_claims() -> None:
-    """Three copies of this list exist and nothing held the prose to the rule.
+    """Three copies of this list exist, and this holds the prose to the rule.
 
-    `SCHEMA.md` listed `pe_delay_load` as routine after the ruleset had stopped
-    treating it as such, which is exactly the drift a reader would act on.
+    `SCHEMA.md` listing `pe_delay_load` as routine while the ruleset does not treat it
+    as such is exactly the drift a reader would act on.
 
     Read off `verdict is None` rather than off the rule id: the id is one spelling of
     the property, and a second verdict-less rule would slip past a name.

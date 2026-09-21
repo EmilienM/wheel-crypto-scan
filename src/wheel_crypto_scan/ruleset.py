@@ -9,7 +9,7 @@ collect without knowing that rules exist. Only `ScanContext` holds both halves.
 Reading the TOML into this shape, and refusing a malformed one loudly at load time
 rather than silently mis-scanning, is `ruleset_loader`'s job: `load_ruleset` and
 `parse_ruleset` live there, not here, so import them from `ruleset_loader`. See
-`DECISIONS.md` for why the module split this way.
+`DESIGN.md` for why the module split this way.
 """
 
 from __future__ import annotations
@@ -280,7 +280,7 @@ class Conventions:
 
     def raw_stem(self, soname: str | None, path: str) -> str:
         """Like `own_base`, but keeps a content-hash rename instead of undoing it, so a
-        plain `needed` entry cannot match a same-family copy renamed elsewhere. #57."""
+        plain `needed` entry cannot match a same-family copy renamed elsewhere."""
         stem, _ = self._reduced_stem(soname or path.rsplit("/", 1)[-1])
         return stem
 

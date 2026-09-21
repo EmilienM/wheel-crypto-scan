@@ -114,13 +114,13 @@ def test_md5_call_usedforsecurity_unresolved():
 
 def test_every_usedforsecurity_shape_produces_a_value_ruleset_loader_accepts():
     """`ruleset_loader` refuses a `usedforsecurity` value outside
-    `evidence.USED_FOR_SECURITY_VALUES` (#82), on the assumption that those are the
-    only values `_hashlib_usedforsecurity` can ever produce. The four tests above pin
-    each shape's literal string; this pins that the four literals are exactly that
-    set, not a superset or a subset of it, so a fifth shape added to
-    `_hashlib_usedforsecurity` without a matching update to `USED_FOR_SECURITY_VALUES`
-    fails here instead of making the loader wrongly refuse (or wrongly accept) a
-    value the extractor can genuinely produce.
+    `evidence.USED_FOR_SECURITY_VALUES`, on the assumption that those are the only values
+    `_hashlib_usedforsecurity` can ever produce. The four tests above pin each shape's
+    literal string; this pins that the four literals are exactly that set, not a
+    superset or a subset of it, so a fifth shape added to `_hashlib_usedforsecurity`
+    without a matching update to `USED_FOR_SECURITY_VALUES` fails here instead of making
+    the loader wrongly refuse (or wrongly accept) a value the extractor can genuinely
+    produce.
     """
     absent = b"import hashlib\nhashlib.md5()\n"
     false = b"import hashlib\nhashlib.md5(usedforsecurity=False)\n"
@@ -324,16 +324,15 @@ def test_deeply_nested_parens_hit_the_syntax_guard_not_the_stack_limit():
 
 
 def test_deeply_nested_non_paren_expressions_exhaust_the_parsing_stack():
-    """#109's real-world reproduction: CPython's PEG parser signals its own stack
-    exhaustion for deep *non-paren* expression nesting as `MemoryError` ("Parser
-    stack overflowed - Python source too complex to parse"), not `RecursionError` --
-    measured across the whole py311-py314 support matrix. Before this fix, nothing in
-    this layer caught it: it propagated out of `scan_python_source` (whose own
-    docstring promises "Never raises"), past `scan_python_files`, and cost every
-    other source file in the wheel its evidence too, not just this one -- the
-    "one bad file never costs more than itself" invariant broken outright for a
-    23 KiB file. A natural reproduction, not a monkeypatch, since this is the shape
-    that actually happens.
+    """The real-world reproduction: CPython's PEG parser signals its own stack
+    exhaustion for deep *non-paren* expression nesting as `MemoryError` ("Parser stack
+    overflowed - Python source too complex to parse"), not `RecursionError` -- measured
+    across the whole py311-py314 support matrix. Left uncaught at this layer, it would
+    propagate out of `scan_python_source` (whose own docstring promises "Never raises"),
+    past `scan_python_files`, and cost every other source file in the wheel its evidence
+    too, not just this one -- the "one bad file never costs more than itself" invariant
+    broken outright for a 23 KiB file. A natural reproduction, not a monkeypatch, since
+    this is the shape that actually happens.
     """
     src = b"x = " + b"not " * 6000 + b"1\n"
     sites, scan_errors = scan_python_source(src, "deep.py", PATTERNS)
@@ -346,13 +345,12 @@ def test_deeply_nested_non_paren_expressions_exhaust_the_parsing_stack():
 
 
 def test_a_recursion_error_from_ast_parse_gets_its_own_kind(monkeypatch):
-    """#109: unlike the `SyntaxError` case above -- a real, permanent defect in the
-    wheel's own bytes -- a `RecursionError` or `MemoryError` here depends on the
-    interpreter's stack depth at scan time, not the source. It must not share
-    `python_syntax_error`'s kind, since that kind stays outside
-    `errors.SCAN_ABORTED_KINDS` precisely because most of its occurrences ARE
-    permanent and must not be re-scanned forever; sharing the kind would mean this
-    genuinely transient cause can never safely leave the cache.
+    """Unlike the `SyntaxError` case above -- a real, permanent defect in the wheel's
+    own bytes -- a `RecursionError` or `MemoryError` here depends on the interpreter's
+    stack depth at scan time, not the source. It must not share `python_syntax_error`'s
+    kind, since that kind stays outside `errors.SCAN_ABORTED_KINDS` precisely because
+    most of its occurrences ARE permanent and must not be re-scanned forever; sharing
+    the kind would mean this genuinely transient cause can never safely leave the cache.
 
     `RecursionError` specifically is monkeypatched rather than triggered naturally:
     the test above already gives the real, naturally-occurring `MemoryError` shape a

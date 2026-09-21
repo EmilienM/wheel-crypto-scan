@@ -1,8 +1,8 @@
 """PE reading: the header chain, the import directory and the export directory.
 
-`.pyd` and `.dll` members used to be read for printable strings alone, which left a
-Windows wheel with no `needed`, no `soname` and no imported-versus-defined split: the
-three things the rest of the tool reasons about. The import directory is the `DT_NEEDED`
+Reading `.pyd` and `.dll` members for printable strings alone would leave a Windows
+wheel with no `needed`, no `soname` and no imported-versus-defined split: the three
+things the rest of the tool reasons about. The import directory is the `DT_NEEDED`
 equivalent and the reason this reader exists, because it is what says a `.pyd` depends
 on `libcrypto-3-x64.dll` rather than carrying OpenSSL inside itself. The import lookup
 table and the export directory draw the same line `binfmt.elf` draws from `.dynsym`.
@@ -24,8 +24,8 @@ them was crypto".
 So the flag clears only when the whole chain held: the section table was there, the
 import directory was present and walked to its terminator with every DLL name and every
 named entry resolved, at least one DLL was named, and nothing came in by ordinal alone.
-An object with no import directory at all stays partial, because it named no dependency,
-which is exactly what its record said before this reader existed.
+An object with no import directory at all stays partial, because it named no dependency
+-- an absence this reader cannot tell apart from one no directory was ever read to find.
 
 An absent export directory is read differently, as a complete reading of an empty one:
 an object the loader can resolve nothing against genuinely exports nothing. Read in
@@ -424,17 +424,18 @@ def read_pe(
     # symbols are unknown, and a record that dropped them would be indistinguishable
     # from one for an object that genuinely has none.
     #
-    # Each cause names itself. This predicate used to be a seven-clause conjunction
-    # collapsing into one boolean, and four of these causes record no `ScanError`, so
-    # the record said `partial_analysis: true, errors: []` and nothing said which.
-    # An ordinal-only import is the routine case, not the exotic one: `WS2_32` is
-    # normally bound by ordinal, so that is what a typical Windows record looks like,
-    # and it read exactly like an object we could parse nothing of.
-    # Each cause names itself, and none of them is an `elif`: an import directory that
-    # was there and could not be walked is a different fact from one that was never
-    # there, and reporting only the first would be the conflation this array exists to
-    # remove, one level down. `imports` comes back with `complete=False` and no DLLs
-    # when the directory lies past the buffer, which is exactly that case.
+    # Each cause names itself, rather than collapsing into one boolean: four of these
+    # causes record no `ScanError`, so a single boolean would leave the record saying
+    # `partial_analysis: true, errors: []` with nothing saying which. An ordinal-only
+    # import is the routine case, not the exotic one: `WS2_32` is normally bound by
+    # ordinal, so that is what a typical Windows record looks like, and under one
+    # boolean it would read exactly like an object we could parse nothing of.
+    #
+    # None of the causes is an `elif`, either: an import directory that was there and
+    # could not be walked is a different fact from one that was never there, and
+    # reporting only the first would be the conflation this array exists to remove,
+    # one level down. `imports` comes back with `complete=False` and no DLLs when the
+    # directory lies past the buffer, which is exactly that case.
     reasons: set[str] = set(unread_reasons)
     if not headers.sections_complete:
         reasons.add(evidence.PARTIAL_PE_SECTION_TABLE_TRUNCATED)
@@ -444,8 +445,9 @@ def read_pe(
         reasons.add(evidence.PARTIAL_PE_IMPORT_INCOMPLETE)
     if imports is not None and imports.unnamed:
         reasons.add(evidence.PARTIAL_PE_ORDINAL_IMPORT)
-    # `exports is None` with a directory address means the read raised. That used to
-    # leave the object looking fully read, with the error beside it saying otherwise.
+    # `exports is None` with a directory address means the read raised; without this
+    # check the object would look fully read, with only the error beside it saying
+    # otherwise.
     if export_rva and (exports is None or not exports.complete):
         reasons.add(evidence.PARTIAL_PE_EXPORT_INCOMPLETE)
     if exports is not None and exports.unnamed:

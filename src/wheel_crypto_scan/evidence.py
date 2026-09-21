@@ -53,12 +53,11 @@ USED_FOR_SECURITY_VALUES = frozenset(
 
 # Why one object was not read in full. `BinaryEvidence.partial_analysis` is a single
 # boolean with a score of causes behind it, and six of them record no `ScanError` at
-# all,
-# so a record could read `partial_analysis: true, errors: []` with no way to tell which
-# applied. Two of those six are the common case rather than an exotic one: a stripped
-# Mach-O, which is every release macOS wheel, and an ordinal-only PE import, because
-# `WS2_32` is normally bound by ordinal. Both read identically to "we could parse
-# nothing at all".
+# all, so a record could read `partial_analysis: true, errors: []` with no way to tell
+# which applied. Two of those six are the common case rather than an exotic one: a
+# stripped Mach-O, which is every release macOS wheel, and an ordinal-only PE import,
+# because `WS2_32` is normally bound by ordinal. Both read identically to "we could
+# parse nothing at all".
 #
 # These are facts about what a reader did, not policy, so they live here beside the
 # field rather than in `ruleset.toml`, the way `FORMAT_*` and `STAGE_*` do. They are
@@ -97,14 +96,13 @@ PARTIAL_ELF_SECTION_TYPE_AMBIGUOUS = "elf_section_type_ambiguous"
 # use, so anything derived from the section list may be missing rather than absent:
 # `needed`, `soname`, `rpath`, `runpath`, the symbol counts and the strings alike.
 PARTIAL_ELF_SECTIONS_UNREAD = "elf_sections_unread"
-# A section's bytes could not be read, so the strings pass ran over less than the
-# object holds. On its own this used to be silent, which made a wheel whose only
-# evidence was a `.rodata` banner able to come back with no findings at all. An
-# ordinary `.rodata`/`.comment` over this reader's own budget (#95) does not reach
-# this cause: its in-budget prefix is kept and the object reads `strings_bytes_unread`
-# instead, not this token -- reserved for a section whose bytes really could not be
-# produced at all: a compressed or `SHT_NOBITS` section refused outright, or a genuine
-# read failure.
+# A section's bytes could not be read, so the strings pass ran over less than the object
+# holds -- a wheel whose only evidence is a `.rodata` banner in an unread section comes
+# back with no findings at all, and this token is what records why. An ordinary
+# `.rodata`/`.comment` over this reader's own budget does not reach this cause: its
+# in-budget prefix is kept and the object reads `strings_bytes_unread` instead, not this
+# token -- reserved for a section whose bytes really could not be produced at all: a
+# compressed or `SHT_NOBITS` section refused outright, or a genuine read failure.
 PARTIAL_ELF_SECTION_DATA_UNREAD = "elf_section_data_unread"
 # `.dynamic` would not resolve, or a section named `.dynamic` exists whose declared
 # `sh_type` is not `SHT_DYNAMIC` and so cannot be trusted as one, so `needed`, `soname`,
@@ -113,17 +111,19 @@ PARTIAL_ELF_SECTION_DATA_UNREAD = "elf_section_data_unread"
 PARTIAL_ELF_DYNAMIC_UNREAD = "elf_dynamic_unread"
 # `.dynsym` would not read, named strings `.dynstr` does not hold, declared fewer
 # entries than `.dynstr` holds names for, a section named `.dynsym` exists whose
-# declared `sh_type` is not `SHT_DYNSYM` and so cannot be trusted as one, or (#95)
-# `.dynsym` or `.dynstr` declares more bytes than this reader's own budget is willing
-# to read -- the honest table may be entirely present in the object, and this does not
-# mean it lied, only that the reader stopped short of it -- so the imported-versus-
-# defined split is missing or partial.
+# declared `sh_type` is not `SHT_DYNSYM` and so cannot be trusted as one, or `.dynsym`
+# or `.dynstr` declares more bytes than this reader's own budget is willing to read --
+# the honest table may be entirely present in the object, and this does not mean it
+# lied, only that the reader stopped short of it -- so the imported-versus-defined
+# split is missing or partial.
 PARTIAL_ELF_DYNSYM_UNREAD = "elf_dynsym_unread"
 # `.symtab` would not read, or a section named `.symtab` exists whose declared
 # `sh_type` is not `SHT_SYMTAB` and so cannot be trusted as one, so `stripped` and
 # `symbol_counts.symtab` describe a table we failed on rather than one the object does
-# not have. Also costs the imported/defined split, but only for an object with no
-# `.dynsym` at all: `.symtab` is matched for crypto symbols exactly then (#117).
+# not have. Also costs the imported/defined split: for an object with no `.dynsym` at
+# all, `.symtab` is the only symbol table and the whole split is unavailable; for an
+# object that has one, `.dynsym` still answers imports and what is lost is the local
+# definitions `.symtab` alone carries.
 PARTIAL_ELF_SYMTAB_UNREAD = "elf_symtab_unread"
 # `.go.buildinfo` would not read, so Go toolchain provenance is missing.
 PARTIAL_ELF_GO_BUILDINFO_UNREAD = "elf_go_buildinfo_unread"
@@ -154,22 +154,22 @@ PARTIAL_MACHO_LOAD_COMMAND_STRING_UNREAD = "macho_load_command_string_unread"
 # starts. Different from `macho_load_command_string_unread`, which loses one command's
 # name while the walk continues past it: here every command after the bad one is
 # unaccounted for, not absent, which can be many commands' worth of dependencies
-# rather than one. #84. Records an error, for the same reason.
+# rather than one. Records an error, for the same reason.
 PARTIAL_MACHO_LOAD_COMMAND_WALK_TRUNCATED = "macho_load_command_walk_truncated"
 # More than one `LC_ID_DYLIB` or more than one `LC_SYMTAB` command in one object, so
 # which candidate is real cannot be told from the load-command walk alone: there is no
-# name to disambiguate by, the way `elf_section_type_ambiguous` cannot tell two same-type
-# sections apart either. None of the candidates is trusted: two `LC_ID_DYLIB` commands
-# leave `soname` unresolved rather than whichever one was walked last, and two
+# name to disambiguate by, the way `elf_section_type_ambiguous` cannot tell two
+# same-type sections apart either. None of the candidates is trusted: two `LC_ID_DYLIB`
+# commands leave `soname` unresolved rather than whichever one was walked last, and two
 # `LC_SYMTAB` commands leave the symbol table unread rather than whichever offsets were
 # walked last. `soname` and the symbol split read as though the slice itself never
-# declared one, the same "read as absent, not as the decoy" rule #56 drew for ELF --
-# though a fat binary can still backfill `soname` from a later, unambiguous slice, so a
-# nulled value here is not always the record's final answer. One token
-# covers both fields, the way `elf_section_type_ambiguous` covers `SHT_DYNAMIC`,
+# declared one, the same "read as absent, not as the decoy" rule ELF's type-based
+# section lookup draws -- though a fat binary can still backfill `soname` from a later,
+# unambiguous slice, so a nulled value here is not always the record's final answer. One
+# token covers both fields, the way `elf_section_type_ambiguous` covers `SHT_DYNAMIC`,
 # `SHT_DYNSYM` and `SHT_SYMTAB` alike: the failure is the same shape -- more than one
 # candidate of a kind this reader looks for -- whichever field it lands on. Records an
-# error, the same way `macho_load_command_walk_truncated` does. #85.
+# error, the same way `macho_load_command_walk_truncated` does.
 PARTIAL_MACHO_LOAD_COMMAND_AMBIGUOUS = "macho_load_command_ambiguous"
 # The PE header chain would not parse.
 PARTIAL_PE_HEADER_UNREAD = "pe_header_unread"
@@ -217,7 +217,7 @@ PARTIAL_STRINGS_BYTES_UNREAD = "strings_bytes_unread"
 # record built when the table could not be walked at all -- before even one member was
 # found -- the same "no structure to split, strings only" shape
 # `PARTIAL_NO_STRUCTURAL_READER` gives a format with no reader, not a claim about any
-# one member. See #99.
+# one member.
 PARTIAL_AR_MEMBER_TABLE_UNREAD = "ar_member_table_unread"
 
 PARTIAL_REASONS: frozenset[str] = frozenset(
@@ -367,11 +367,11 @@ class BinaryEvidence:
     vendored_path: bool = False
     # True for an object `binfmt.ar` read out of a `.a`/`.lib` static archive rather
     # than a real member of the wheel's own zip. Internal only -- `record.py` never
-    # serialises it -- because a relocatable object inside an archive was never a
+    # serialises it -- because a relocatable object inside an archive is never a
     # `needed` entry any real loader could resolve, and `linkage.member_stem_counts`
     # excludes it for exactly that reason: a same-named SONAME on an archive member,
     # attacker-controlled the same way any other bytes in the wheel are, must not be
-    # able to make a genuinely system-linked dependency read as bundled. See #99.
+    # able to make a genuinely system-linked dependency read as bundled.
     from_archive: bool = False
     machine: str | None = None
     bits: int | None = None
@@ -420,20 +420,20 @@ class BinaryEvidence:
         one is indistinguishable from reading nothing. `binfmt.elf` reports `.dynsym`
         in `dynsym_count`; Mach-O's `LC_SYMTAB` and PE's named entries land in
         `symtab_count`, and neither format ever sets `dynsym_count`. Keying on that
-        field alone made the symbols invisible to this property for both formats.
+        field alone would make the symbols invisible to this property for both formats.
 
-        `needed` is tested first and rescued most real objects: every loadable dylib
-        links `libSystem` and every `.pyd` imports its `pythonXY.dll`, so they were
-        never opaque. What was left wrongly opaque is the object that declares no
+        `needed` is tested first and answers for most real objects: every loadable
+        dylib links `libSystem` and every `.pyd` imports its `pythonXY.dll`, so they
+        are never opaque. The symbol count matters for the object that declares no
         dependency at all -- a Mach-O `MH_OBJECT`, a statically linked extension, a
-        resource-only DLL -- which reported having told us nothing while carrying the
-        symbols it told us.
+        resource-only DLL -- which would otherwise report having told us nothing while
+        carrying the symbols it told us.
 
         Reading less than usual is still caught, by a different route: any failed read
         sets `partial_analysis`, which fires a rule whose verdict is `OPAQUE` whatever
-        this property says. That backstop is why widening this is safe.
+        this property says. That backstop is why counting symbols here is safe.
 
-        Testing both counts for every format would fix those two by changing a third:
+        Testing both counts for every format would settle those two by changing a third:
         an ELF with a `.symtab` and no `.dynsym`, which is the ordinary shape of a
         static executable, would stop being opaque. Whether *that* object has told us
         anything is a separate question, and not one this property should answer by
@@ -519,7 +519,7 @@ class ArtifactInventory:
     # The full, untruncated `(path, format)` set: `record.py` caps this the same
     # finding-aware way it caps `binaries[]`, which needs the findings this dataclass
     # is built without. See "`binaries[]` keeps what a finding points at, before
-    # filling the rest" in DECISIONS.md.
+    # filling the rest" in DESIGN.md.
     extensions: tuple[tuple[str, str], ...] = ()
     bundled_libs: tuple[str, ...] = ()
     sboms: tuple[str, ...] = ()

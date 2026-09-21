@@ -255,12 +255,12 @@ def _match_no_source(rule, match, ruleset, evidence, linkage, index) -> Iterator
 def _match_binaries_truncated(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     """Fires when the record's `binaries[]` lists fewer objects than were evaluated.
 
-    `evidence.binaries` is the full, untruncated set by the time a rule sees it (#55):
-    every object it holds was already read and already fed to linkage and every other
-    matcher here. What this rule reports is narrower than that -- only that the
-    *serialised* list a human reads back out of the JSON is not the complete set, so
-    `len(evidence.binaries)` in the location names the true count `binaries[]` itself
-    cannot show.
+    `evidence.binaries` is the full, untruncated set by the time a rule sees it (see
+    `DESIGN.md`, "A cap bounds the record, not the evaluation"): every object it holds
+    was already read and already fed to linkage and every other matcher here. What this
+    rule reports is narrower than that -- only that the *serialised* list a human reads
+    back out of the JSON is not the complete set, so `len(evidence.binaries)` in the
+    location names the true count `binaries[]` itself cannot show.
     """
     if not evidence.artifacts.binaries_truncated:
         return
@@ -379,10 +379,10 @@ def _match_dt_needed(rule, match, ruleset, evidence, linkage, index) -> Iterator
     content-hash rename, `BIN_NEEDED_SYSTEM_OPENSSL` (`mangled = false`) additionally
     requires the per-entry posture `_binary_posture` computes to actually be system,
     because delocate's convention resolves a plain name entirely inside the wheel
-    without renaming it (#57). `resolved` is the other side of that same posture:
+    without renaming it. `resolved` is the other side of that same posture:
     `BIN_NEEDED_VENDORED_CRYPTO` fires when a `needed` entry is not literally mangled
     but still resolves to an object the wheel ships, so that route to `bundled` is
-    never silent (also #57).
+    never silent.
     """
     wanted = match.get("library")
     want_mangled = match.get("mangled")

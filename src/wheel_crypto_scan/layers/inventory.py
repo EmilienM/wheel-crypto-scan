@@ -52,7 +52,7 @@ def build_inventory(
         # The full, untruncated set, sorted by path: `record.py`'s `build_record` caps
         # this the same finding-aware way it caps `binaries[]`, which needs `findings`
         # this layer does not have yet. Capping here first would cap it blind, the
-        # same mistake #55 fixed for `Evidence.binaries` itself.
+        # same reason `Evidence.binaries` itself is never truncated before evaluation.
         extensions=tuple(sorted((binary.path, binary.format) for binary in binaries)),
         bundled_libs=tuple(sorted(b.path for b in binaries if b.vendored_path)),
         sboms=sbom_paths,
