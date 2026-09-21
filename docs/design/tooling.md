@@ -168,6 +168,35 @@ from `ruleset_loader`; everything that imports only object-model names imports t
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-loader-lives-in-ruleset_loaderpy-a-sibling-module-not-a-package)
 
+## `binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions
+
+**Accepted.** Each of `binfmt/elf.py` and `binfmt/macho.py` carries its own module-local
+`# pylint: disable=too-many-lines`, and the project-wide `max-module-lines` in `pyproject.toml`
+stays at pylint's own default. `macho.py`'s docstring names every way `partial_analysis` can
+survive; `elf.py` documents every way an attacker-controlled label can win a lookup and every
+cross-check that closes one.
+
+**Why not split.** Measured, about half of each module is docstring and comment — the code
+alone is under 600 lines in each. The excess is the documentation this project's "every policy
+entry carries a why" rule asks for, not unchecked growth, so splitting either module would move
+prose between files rather than reduce what either one is responsible for. Contrast this with
+the loader entry above, where four responsibilities shared one file and the split was right.
+
+**Why not a global bump.** Raising the project-wide limit instead would silently give every
+*other* module the same headroom, whether or not it has earned it. `binfmt/pe.py`, and every
+other module, stays under the limit without a disable.
+
+**What holds it.** `tests/test_design_notes.py` fails if a module carries the disable without
+being listed, if a listed module drops the disable, if the doc's list and the test's set name
+different modules in either direction, if `pyproject.toml` sets `max-module-lines` in any
+`[tool.pylint.*]` table, or if `too-many-lines`/`C0302` is added to any table's `disable` list.
+
+**Revisit if** a third module needs the exemption, at which point the trade a global bump makes
+is worth re-measuring, or a listed module's code alone, excluding docstrings and comments, nears
+the limit, at which point it is a split rather than an exemption.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions)
+
 ## `binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader
 
 **Accepted.**

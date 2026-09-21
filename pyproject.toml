@@ -66,8 +66,9 @@ max-line-length = 100
 # module; binfmt/macho.py and binfmt/elf.py each carry a module-local
 # `# pylint: disable=too-many-lines` because their growth is deliberate
 # (documentation-heavy docstrings, per AGENTS.md's "every policy entry carries a
-# why"). See DESIGN.md, "`binfmt/macho.py` carries a module-local line-count
-# exemption".
+# why"). See DESIGN.md, "`binfmt/elf.py` and `binfmt/macho.py` carry module-local
+# line-count exemptions". tests/test_design_notes.py holds the list of exempt
+# modules.
 
 [tool.pylint."messages control"]
 # Each of these is a deliberate design choice rather than an oversight. The reasons

@@ -1,7 +1,10 @@
 # Mach-O
 
 Five entries about `binfmt/macho.py`, the largest reader in the tree. Four of them are about
-the load-command walk, and each one covers a shape the one before it leaves open.
+the load-command walk, and each one covers a shape the one before it leaves open. One more
+decision about this module — its module-local line-count exemption — is about tooling policy
+rather than the reader, and lives under
+[Scanning, caching and layout](tooling.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions).
 
 ## A universal binary is one record, and its slices are merged
 
@@ -268,22 +271,6 @@ declared", so a universal2 object whose slices honestly declare different instal
 first with `partial_analysis: false` and nothing to say they disagreed. Reproduced directly. It
 is the same merge rule the first entry on this page documents, reached here by a concrete
 counterexample.
-
-### `binfmt/macho.py` carries a module-local line-count exemption
-
-`binfmt/macho.py`'s own docstring growth — a documentation-heavy docstring that the "every
-policy entry carries a why" rule asks for, not unchecked growth — pushes the module over
-pylint's line limit. Raising the project-wide limit instead would silently give every *other*
-module the same extra headroom whether or not it has earned it.
-
-A module-local disable in the file itself, with the justification comment beside it, keeps
-the project-wide limit at pylint's own default; `binfmt/pe.py` is under the limit without one.
-Keeping the default costs nothing and stops the next module's growth from riding through
-unpoliced by accident.
-
-**Revisit if** a module other than `binfmt/macho.py` needs the same exemption. That condition is
-met: `binfmt/elf.py` carries the same disable on the same grounds, and the choice between a
-project-wide policy (or a documented list of exempted modules) and per-module disables is open.
 
 ### The error message names which command was ambiguous; the token does not
 

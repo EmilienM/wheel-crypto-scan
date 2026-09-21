@@ -74,8 +74,8 @@ out `OPAQUE` rather than `NO_CRYPTO_DETECTED`.
 # shape this reader flags adds a line without shrinking any of the others.
 # Disabled here rather than raising `max-module-lines` project-wide, which would
 # quietly give every OTHER module the same headroom this one earns by being
-# documentation-heavy. See DESIGN.md, "`binfmt/macho.py` carries a module-local
-# line-count exemption".
+# documentation-heavy. See DESIGN.md, "`binfmt/elf.py` and `binfmt/macho.py` carry
+# module-local line-count exemptions".
 # pylint: disable=too-many-lines
 
 from __future__ import annotations
