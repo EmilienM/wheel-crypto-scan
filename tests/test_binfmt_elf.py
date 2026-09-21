@@ -15,6 +15,7 @@ import os
 import struct
 import zipfile
 import zlib
+from pathlib import Path
 
 import pytest
 from elftools.elf.elffile import ELFFile
@@ -414,12 +415,65 @@ def test_vendored_flag_is_passed_through_unchanged() -> None:
 
 # --- real system binary ------------------------------------------------------
 
+# Where distributions install OpenSSL 3's libcrypto: Fedora/RHEL, then Debian/Ubuntu
+# multiarch for x86_64 and aarch64, then the unmerged-/usr spellings of each.
+_HOST_LIBCRYPTO_CANDIDATES = (
+    "/usr/lib64/libcrypto.so.3",
+    "/usr/lib/x86_64-linux-gnu/libcrypto.so.3",
+    "/usr/lib/aarch64-linux-gnu/libcrypto.so.3",
+    "/lib64/libcrypto.so.3",
+    "/lib/x86_64-linux-gnu/libcrypto.so.3",
+    "/lib/aarch64-linux-gnu/libcrypto.so.3",
+)
+
+
+def _host_libcrypto(candidates: tuple[str, ...] = _HOST_LIBCRYPTO_CANDIDATES) -> str:
+    """The first candidate that exists. Without one, skip -- or fail when
+    WCS_REQUIRE_HOSTBIN is set, which CI does so that a runner image that moves or
+    drops the library turns these checks red instead of silently off."""
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    message = "no system libcrypto.so.3 at " + ", ".join(candidates)
+    if os.environ.get("WCS_REQUIRE_HOSTBIN"):
+        pytest.fail(message + " and WCS_REQUIRE_HOSTBIN is set")
+    pytest.skip(message)
+
+
+def test_host_libcrypto_takes_the_first_candidate_that_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Require a hit rather than allow a miss to skip: a probe that silently returns the
+    # wrong candidate (or misses every one) must fail this test, not report it SKIPPED.
+    monkeypatch.setenv("WCS_REQUIRE_HOSTBIN", "1")
+    missing = tmp_path / "missing.so.3"
+    found = tmp_path / "found.so.3"
+    also_present = tmp_path / "also-present.so.3"
+    found.write_bytes(b"")
+    also_present.write_bytes(b"")
+    candidates = (str(missing), str(found), str(also_present))
+    assert _host_libcrypto(candidates) == str(found)
+
+
+def test_host_libcrypto_skips_or_fails_on_the_require_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidates = (str(tmp_path / "missing.so.3"),)
+    monkeypatch.delenv("WCS_REQUIRE_HOSTBIN", raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        _host_libcrypto(candidates)
+    monkeypatch.setenv("WCS_REQUIRE_HOSTBIN", "1")
+    # Accept skip.Exception here too, only to fail the assertion below on it: a probe
+    # that silently falls back to skip instead of failing must turn this test red, not
+    # let it disappear as a second SKIPPED result.
+    with pytest.raises((pytest.fail.Exception, pytest.skip.Exception)) as excinfo:
+        _host_libcrypto(candidates)
+    assert excinfo.type is pytest.fail.Exception
+
 
 @pytest.mark.hostbin
 def test_hostbin_libcrypto_soname_and_evp_digestinit_ex_defined() -> None:
-    path = "/usr/lib64/libcrypto.so.3"
-    if not os.path.exists(path):
-        pytest.skip("no system libcrypto.so.3 on this host")
+    path = _host_libcrypto()
     with open(path, "rb") as handle:
         data = handle.read()
     # The real library carries far more than max_symbols_per_binary matching symbols;
@@ -442,9 +496,7 @@ def test_hostbin_libcrypto_carries_its_build_string_beside_its_banner() -> None:
     `openssl_banner`: `OpenSSL_version()` returns both from the same switch. This
     pins the claim `linkage._banner_is_header_text`'s gate rests on against a real
     library, not only hand-built evidence."""
-    path = "/usr/lib64/libcrypto.so.3"
-    if not os.path.exists(path):
-        pytest.skip("no system libcrypto.so.3 on this host")
+    path = _host_libcrypto()
     with open(path, "rb") as handle:
         data = handle.read()
     ev, errors = read_elf(io.BytesIO(data), path, PATTERNS, vendored=False)

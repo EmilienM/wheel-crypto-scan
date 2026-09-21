@@ -45,8 +45,9 @@ def _corpus() -> tuple[Path, list[Path]]:
     """The corpus directory and its wheels, or a skip when there is nothing to scan.
 
     Called first in every test below rather than through a fixture, matching
-    `test_hostbin_libcrypto_soname_and_evp_digestinit_ex_defined`'s own
-    `if not os.path.exists(path): pytest.skip(...)` shape for the other opt-in marker.
+    `test_binfmt_elf.py`'s own `_host_libcrypto` shape (without its CI-only require
+    switch): skip when nothing is there to read, for the other marker that needs
+    something on disk this repository does not ship.
 
     Wheels are found through `discover`, the same call `main`'s own scan takes --
     a corpus with wheels only in subdirectories is real (`discover` walks recursively),
