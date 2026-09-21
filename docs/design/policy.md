@@ -86,15 +86,21 @@ a branch of the same pattern — Python's `re` refuses two groups sharing a name
 alternation — and it must contain `.rs` past the crate directory (no terminator
 required, since a Rust panic location is not NUL-terminated), which keeps a vendored C
 or Go tree from being misread as a Rust crate in the common case, without a
-word-boundary guarantee. Every repetition in it is bounded (crate name at 64
-characters, path segments at 255, nesting at 16 levels): an unbounded version of the
-same pattern measures about 40 seconds at 20,000 repetitions of a near-miss input,
-against well under a second bounded. The name class also excludes `.`, which no
-crates.io crate name can contain: that is what makes `vendor/gimli-0.32.3/` split
-uniquely into name `gimli` and version `0.32.3` rather than one long name, regardless of
-whether the name group is lazy or greedy. Allowing `.` lets the name group and the
-version group's leading digits split a run of digits and dots several ways, which costs
-3.7 seconds per MiB against 0.4 without it.
+word-boundary guarantee. Every repetition in both patterns is bounded (crate name at 64
+characters, crates.io's own limit; path segments at 255; nesting at 16 levels for the
+vendor pattern): an unbounded version of the vendor pattern measures about 40 seconds at
+20,000 repetitions of a near-miss input, against well under a second bounded, and the
+registry pattern is bounded the same way for the same reason. Both patterns' name
+classes also exclude `.`, which no crates.io crate name can contain: that is what makes
+`vendor/gimli-0.32.3/` split uniquely into name `gimli` and version `0.32.3` rather than
+one long name, regardless of whether the name group is lazy or greedy, and it is why the
+registry pattern reads a numeric semver prerelease like `foo-1.0.0-1.2.3` as name `foo`
+rather than name `foo-1.0.0`. Allowing `.` lets the name group and the version group's
+leading digits split a run of digits and dots several ways, which costs 3.7 seconds per
+MiB against 0.4 without it for the vendor pattern, and 0.10-0.15 against 0.01-0.03 for
+the registry pattern. Every negated character class in both patterns also excludes `\n`,
+the run separator printable runs are joined with, so a match can never bridge two
+strings that never sat next to each other in the object.
 
 `RustCrate.version` is `str | None`: a layout that names no version records `null`,
 never an invented one. That makes `rust_crates[].version` nullable in the record, which

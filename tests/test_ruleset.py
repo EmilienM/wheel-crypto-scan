@@ -141,7 +141,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "31"
+    assert ruleset.version == "32"
     assert len(ruleset.rules) > 20
 
 

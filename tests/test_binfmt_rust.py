@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from wheel_crypto_scan.binfmt.rust import find_rust_crates
+from wheel_crypto_scan.binfmt.strings import RUN_SEPARATOR, extract_printable
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 _CONV = load_ruleset().conventions
@@ -168,3 +169,71 @@ def test_no_match_yields_empty_tuple_not_an_exception() -> None:
     )
     assert crates == ()
     assert truncated is False
+
+
+def test_a_registry_path_spliced_from_two_runs_is_not_a_crate() -> None:
+    """The `src/<index>/` segment must not bridge `RUN_SEPARATOR`: a name from one
+    printable run and a version from an unrelated one must never combine into a crate.
+    Built through `extract_printable` so the separator is the real one `scan_strings`
+    produces, not a hand-typed `\\n`. Both path separators, since a Windows-built
+    object spells the same path with backslashes."""
+    cases = [
+        b"/x/cargo/registry/src/index\x00docs/openssl-0.10.1/README\x00",
+        b"\x00see cargo\\registry\\src\\abcd\x00\x00etc\\ring-0.17.8\\README\x00",
+    ]
+    for raw in cases:
+        text = extract_printable(raw, 4, 1 << 20).text
+        crates, _ = find_rust_crates(
+            text, _PATTERNS, max_crates=128, claimed=frozenset({"openssl", "ring"})
+        )
+        assert crates == (), text
+
+
+def test_no_cargo_convention_reads_a_crate_across_the_run_separator() -> None:
+    """Every negated character class in both cargo patterns must exclude
+    `RUN_SEPARATOR`, over every shipped layout, not just the reproduction above: for
+    every split point in a known-good one-run path, splicing `RUN_SEPARATOR` in must
+    never produce a crate that the two halves alone do not already produce between
+    them."""
+    paths = [
+        "/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ring-0.17.8/src/lib.rs",
+        "/usr/share/cargo/registry/openssl-0.10.66/src/lib.rs",
+        "/b/vendor/gimli-0.32.3/src/read/line.rs",
+    ]
+    for path in paths:
+        for i in range(1, len(path) - 1):
+            spliced = path[:i] + RUN_SEPARATOR + path[i:]
+            got, _ = find_rust_crates(spliced, _PATTERNS, max_crates=128, claimed=frozenset())
+            head, _ = find_rust_crates(path[:i], _PATTERNS, max_crates=128, claimed=frozenset())
+            tail, _ = find_rust_crates(path[i:], _PATTERNS, max_crates=128, claimed=frozenset())
+            expected = tuple(sorted(set(head) | set(tail), key=lambda c: (c.name, c.version or "")))
+            assert got == expected, (path, i)
+
+
+def test_a_numeric_semver_prerelease_splits_at_the_first_version() -> None:
+    """Excluding `.` from the name class is what makes this split unique: with `.`
+    excluded, a greedy name and a lazy name agree on `foo` / `1.0.0-1.2.3`, so this
+    test alone does not pin laziness. It fails only when `.` is allowed back into the
+    name class and the name stays greedy at the same time; either change alone leaves
+    it green, and `.` allowed alone is already caught by
+    `test_a_directory_name_with_a_dot_before_the_version_is_not_a_crate`."""
+    text = "cargo/registry/src/index.crates.io-x/foo-1.0.0-1.2.3/src/lib.rs"
+    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [("foo", "1.0.0-1.2.3")]
+
+
+def test_a_directory_name_with_a_dot_before_the_version_is_not_a_crate() -> None:
+    """Cargo refuses `.` in a package name, so the name class excludes it: allowing
+    `.` would let the name and version groups split a digit-and-dot run several ways,
+    which costs several times as much per MiB of near-misses."""
+    text = "cargo/registry/src/index.crates.io-x/a.b-1.0.0/src/lib.rs"
+    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    assert crates == ()
+
+
+def test_a_64_character_crate_name_crates_ios_maximum_still_reads_in_full() -> None:
+    """The name bound is crates.io's own limit, not an arbitrary tightening of it."""
+    name = "a" * 64
+    text = f"cargo/registry/src/index.crates.io-x/{name}-1.0.0/src/lib.rs"
+    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [(name, "1.0.0")]
