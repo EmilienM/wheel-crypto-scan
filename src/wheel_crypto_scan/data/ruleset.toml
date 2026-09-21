@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "21"
+ruleset_version = "22"
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +109,15 @@ windows_library_suffixes = [".dll", ".pyd"]
 windows_version_suffix_regex = '^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<decoration>[A-Za-z0-9_]+))?$'
 
 # Go toolchain string groups, named here rather than in the Go reader, so renaming a
-# group in this file cannot silently flip a verdict-relevant field in the record.
+# group in this file cannot silently flip a verdict-relevant field in the record. Every
+# Go group belongs here, not just the ones a rule reads: `binaries[].go.markers` is the
+# structured summary a consumer reads instead of the findings, and a group the reader
+# does not know about makes that summary contradict the verdict built from the same
+# evidence -- a FIPS build reporting markers ["go_stock_crypto"] while its verdict says
+# BIN_GO_FIPS140.
 go_boring_group = "go_boring"
 go_stock_group = "go_stock_crypto"
+go_fips140_group = "go_fips140"
 
 # Rust objects embed the source path of every crate they were built from. Both
 # separators, because the path is spelled the way the machine that built the wheel
@@ -602,6 +608,11 @@ why = "BLAKE2 and BLAKE3 markers in read-only data, for the common case where th
 name = "go_boring"
 substrings = ["crypto/internal/boring", "GOEXPERIMENT=boringcrypto", "boringcrypto"]
 why = "A Go binary built with the BoringCrypto backend rather than stock Go crypto."
+
+[[string_group]]
+name = "go_fips140"
+substrings = ["GOFIPS140=", "fips140=on"]
+why = "Build settings a Go binary records in .go.buildinfo when it was built against Go's own FIPS 140-3 module: GOFIPS140 names the module version, and DefaultGODEBUG=fips140=on says the build defaults to enforcing it. Measured on go1.27.1/linux-amd64: a GOFIPS140=v1.0.0 build carries both and a stock build carried neither, while crypto/internal/fips140 package paths appear in both (381 in the stock binary, 334 in the FIPS one) and so cannot tell them apart. GOFIPS140=off records no build setting at all, so an opted-out build reads as the stock build it is. fips140=on is matched without its key on purpose: DefaultGODEBUG is a comma-joined list and fips140 need not be first, so DefaultGODEBUG=fips140=on would stop matching a build that sets any other godebug default beside it. The values GOFIPS140 accepts are not enumerated for the reason openssl_banner does enumerate: latest, inprocess and certified all resolve to different recorded strings, so a list of them is a list that goes stale silently."
 
 [[string_group]]
 name = "go_stock_crypto"
@@ -1612,6 +1623,20 @@ kind = "binary_string"
 group = "go_boring"
 
 [[rule]]
+id = "BIN_GO_FIPS140"
+layer = "binary"
+category = "go-crypto"
+severity = "medium"
+confidence = "medium"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Go binary built against the Go FIPS 140-3 module"
+why = "Since Go 1.24 the standard library routes its crypto through crypto/internal/fips140, and a build with GOFIPS140 set compiles the validated module in and defaults GODEBUG to fips140=on. That is a condition rather than an answer: the module is in force only if the deployment does not turn GODEBUG back off, and which validated version was compiled in is a property of the toolchain this wheel does not state. Matched on the build settings rather than on the package paths, which a stock build carries too."
+[rule.match]
+kind = "binary_string"
+group = "go_fips140"
+
+[[rule]]
 id = "BIN_GO_STOCK_CRYPTO"
 layer = "binary"
 category = "go-crypto"
@@ -1620,8 +1645,8 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Go binary using stock Go crypto"
-why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto is detected, because a BoringCrypto build still contains the stock package paths."
-suppressed_by = ["BIN_GO_BORING_CRYPTO"]
+why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto or the Go FIPS 140-3 module is detected, because both builds still contain the stock package paths: measured on go1.27.1, a GOFIPS140 build carries crypto/sha256. and crypto/aes. exactly as often as a stock one, so without the suppression a binary whose crypto goes through the validated module read as non-approved. Suppression is per wheel rather than per object, so a wheel shipping one FIPS-built and one stock Go binary reports only the condition; that is the same trade BoringCrypto has always carried here."
+suppressed_by = ["BIN_GO_BORING_CRYPTO", "BIN_GO_FIPS140"]
 [rule.match]
 kind = "binary_string"
 group = "go_stock_crypto"

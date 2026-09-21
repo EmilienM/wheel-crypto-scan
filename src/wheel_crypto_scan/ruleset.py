@@ -216,6 +216,7 @@ class Conventions:
     # to prevent, wearing a dataclass default as a disguise.
     go_boring_group: str
     go_stock_group: str
+    go_fips140_group: str
     library_suffixes: tuple[str, ...] = (".so", ".dylib", ".dll", ".pyd")
     windows_library_suffixes: tuple[str, ...] = (".dll", ".pyd")
 
@@ -403,6 +404,7 @@ class BinaryPatterns:
     cargo_path_regex: re.Pattern[str]
     go_boring_group: str
     go_stock_group: str
+    go_fips140_group: str
     limits: Limits
     # Crate names the ruleset has an entry for. The extractor stays free of policy --
     # it does not know what they mean -- but a cap that did not know which crates are
@@ -536,6 +538,7 @@ class Ruleset:
                 cargo_path_regex=self.conventions.cargo_path_regex,
                 go_boring_group=self.conventions.go_boring_group,
                 go_stock_group=self.conventions.go_stock_group,
+                go_fips140_group=self.conventions.go_fips140_group,
                 limits=self.limits,
                 _exact_index=MappingProxyType(
                     {name: tuple(sorted(groups)) for name, groups in exact_index.items()}

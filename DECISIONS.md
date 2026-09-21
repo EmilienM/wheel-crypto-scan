@@ -4843,3 +4843,97 @@ narrow ones, and the crate names no pattern can close at all. A capability earns
 when the enumeration cannot express the match, not when the list is long.
 
 Tracked in [#123](https://github.com/EmilienM/wheel-crypto-scan/issues/123).
+
+## A Go FIPS build is told from a stock one by its build settings, not its package paths
+
+**Accepted.**
+
+`go_stock_crypto` matches `crypto/sha256.`, `crypto/aes.`, `crypto/rsa.` and
+`crypto/ecdsa.`, and `BIN_GO_STOCK_CRYPTO` turns that into `NON_APPROVED_CRYPTO`. Since
+Go 1.24 the standard library implements those packages on top of
+`crypto/internal/fips140`, so a binary built against the validated module still carries
+every one of those paths and read as non-approved with nothing to suppress it. That is a
+wrong verdict rather than a missing one, which is the worse direction: the wheel that did
+the right thing is the one that gets flagged.
+
+**Measured rather than reasoned, on go1.27.1**, building one program two ways:
+
+| | stock | `GOFIPS140=v1.0.0` |
+|---|---|---|
+| `crypto/sha256.` occurrences | 9 | 9 |
+| `crypto/aes.` occurrences | 6 | 6 |
+| `crypto/internal/fips140` occurrences | 381 | 334 |
+| `GOFIPS140=` in `.go.buildinfo` | absent | present |
+| `fips140=on` in `.go.buildinfo` | absent | present |
+
+The package paths cannot tell them apart, and the count going *down* in the FIPS build
+rules out any threshold on them too. What separates the two is what `go version -m`
+prints: `build GOFIPS140=v1.0.0-c2097c7c` and `build DefaultGODEBUG=fips140=on`, both of
+which the toolchain writes into the `.go.buildinfo` section, which is `SHF_ALLOC` and so
+already reaches the strings pass.
+
+**Why the verdict needed no reader change.** The issue was filed expecting one: parse
+the modinfo blob, add a field to `GoBuildInfo`, bump `ANALYZER_VERSION`. Measuring first
+made that unnecessary for the verdict. `.go.buildinfo` is `SHT_PROGBITS`, `SHF_ALLOC` and
+not executable, which is exactly what `_collect_string_bytes` concatenates, so the
+settings are printable strings the ELF reader already had, and a `[[string_group]]` plus
+a rule reach them. That claim is ELF's; Mach-O and PE reach strings through a bounded
+prefix of the object instead, and every measurement here is one program, go1.27.1,
+linux/amd64. The module version is not lost by staying out of the reader either: the
+strings pass records a hit's whole enclosing run, so the record carries
+`{"group": "go_fips140", "value": "GOFIPS140=v1.0.0-c2097c7c"}` verbatim. What a typed
+field would add is typing, not information.
+
+**The record did need one, for a different reason.** A rule on a Go string group that the
+reader does not know about makes one record say two things: `binaries[].go.markers` read
+`["go_stock_crypto"]` on a build whose verdict was `BIN_GO_FIPS140`, from the identical
+strings, because `markers` is built from the group names `[conventions]` lists and the
+new group was not among them. That is the shape "`partial_analysis` and `partial_reasons`
+never disagree" exists to refuse, in a place nothing was checking. `[conventions]` now
+names every Go group rather than only the ones a typed field is derived from, and
+`ANALYZER_VERSION` moves because an unchanged wheel's `markers` changes.
+
+**What the substrings are, and are not.** The two are matched independently on purpose: a
+build can name a module version while a `//go:debug` directive turns enforcement off, and
+a build can enforce the in-tree module without `GOFIPS140` naming a version. A test pins
+each alone, because a fixture carrying both passes with either half deleted. `fips140=on`
+is matched without its key because `DefaultGODEBUG` is a comma-joined list and `fips140`
+need not be first; a fourth test case carries it between two other godebug defaults, so
+tightening it to `DefaultGODEBUG=fips140=on` fails rather than silently stops matching.
+The values `GOFIPS140` accepts are deliberately not enumerated: measured, `latest`
+records `GOFIPS140=latest`, `inprocess` records `v1.26.0` and `certified` records
+`v1.0.0-c2097c7c`, so a list of accepted values is a list that goes stale silently, which
+is the `openssl_banner` lesson pointed the other way. `GOFIPS140=off` records no build
+setting at all, so a build that opted out reads as the stock build it is.
+
+**What it costs.** `CONDITIONAL`, never anything passing. The module being compiled in
+does not mean it is in force: `GODEBUG=fips140` can be set back to off at run time, and
+which validated version the toolchain carried is not something the wheel states.
+
+The suppression is per wheel rather than per object, inherited from the BoringCrypto rule
+it sits beside, and this is a worse trade there than here: a wheel carrying one
+BoringCrypto and one stock Go object is exotic, while a wheel shipping a self-built CLI
+beside a vendored prebuilt one is not. Suppression drops the whole finding, so a wheel
+with both reports `CONDITIONAL` and `NON_APPROVED_CRYPTO` is gone from `classes`
+entirely, not demoted. What survives is per object and has to be read there: the stock
+object's `matched_strings` carry `go_stock_crypto` alone, and the surviving finding's
+`locations` name only the FIPS objects. A string match is also not proof a setting was
+recorded -- a binary that merely mentions `GOFIPS140=` in help text matches, and
+suppresses a real stock finding on another object the same way. That is the concrete
+cost, not an abstract one, and it is accepted because the alternative list of accepted
+values goes stale in silence.
+
+One property falls the safe way and is worth stating: `_collect_string_bytes` walks
+sections in header order until the byte budget is spent, and `.go.buildinfo` sits after
+`.rodata`. In an object large enough to exhaust the budget the condemning evidence is
+read and the suppressing evidence is not, so such a build reads `NON_APPROVED_CRYPTO`
+rather than `CONDITIONAL`. Over-flagging, which is the direction this tool errs in.
+
+**Revisit if** a consumer needs the module version as a typed field rather than as a
+recorded string, or when a third Go backend rule arrives: `suppressed_by` is an unordered
+OR with no per-entry justification, and at two entries the rule's `why` already carries
+two different arguments (BoringCrypto *replaces* the stock implementations; the FIPS
+module sits *underneath* them). At four the honest expression is specificity within the
+`go-crypto` category, not a longer list.
+
+Tracked in [#126](https://github.com/EmilienM/wheel-crypto-scan/issues/126).

@@ -65,5 +65,28 @@ refused at load time.
 count of cases. A capability earns itself when the enumeration cannot express the match,
 not when the list is long.
 
+## A Go FIPS build is told from a stock one by its build settings
+
+**Accepted.**
+
+Since Go 1.24 the standard library implements its crypto on top of
+`crypto/internal/fips140`, so a binary built against the validated module carries the
+stock package paths exactly as a stock build does and read as `NON_APPROVED_CRYPTO` with
+nothing to suppress it. Built one program two ways on go1.27.1: `crypto/sha256.` appears
+9 times in both, `crypto/aes.` 6 times in both, and `crypto/internal/fips140` more often
+in the *stock* binary (381) than in the FIPS one (334). What separates them is
+`GOFIPS140=` and `fips140=on`, which the toolchain writes into `.go.buildinfo` — an
+allocated section the strings pass already reads, so this needed no reader change and no
+`ANALYZER_VERSION` bump.
+
+The verdict is `CONDITIONAL`: the module being compiled in does not mean it is in force,
+since `GODEBUG=fips140` can be turned back off at run time.
+
+The record needed a change even though the verdict did not. `binaries[].go.markers` is
+built from the Go group names `[conventions]` lists, so a rule on a group missing from
+that list made one record say two things — `markers: ["go_stock_crypto"]` beside a
+verdict of `BIN_GO_FIPS140`, from the same strings. `[conventions]` now names every Go
+group, and `ANALYZER_VERSION` moves with it.
+
 Full argument, with the measurements and what the sweep deliberately left open:
 [`DECISIONS.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md).

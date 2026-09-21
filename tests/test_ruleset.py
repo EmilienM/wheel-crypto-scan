@@ -50,6 +50,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
             "windows_library_suffixes": [".dll", ".pyd"],
             "go_boring_group": "go_boring",
             "go_stock_group": "go_stock_crypto",
+            "go_fips140_group": "go_fips140",
         },
         "crypto_distribution": [
             {"name": "PyNaCl", "rule": "DIST_NON_APPROVED_CRYPTO", "why": "libsodium primitives"}
@@ -72,6 +73,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
             {"name": "openssl_banner", "substrings": ["OpenSSL 3."], "why": "banner"},
             {"name": "go_boring", "substrings": ["crypto/internal/boring"], "why": "boring"},
             {"name": "go_stock_crypto", "substrings": ["crypto/sha256."], "why": "stock"},
+            {"name": "go_fips140", "substrings": ["GOFIPS140="], "why": "fips module"},
         ],
         "rust_crate": [
             {"name": "ring", "verdict": "NON_APPROVED_CRYPTO", "severity": "high", "why": "own"}
@@ -102,7 +104,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "21"
+    assert ruleset.version == "22"
     assert len(ruleset.rules) > 20
 
 

@@ -59,6 +59,7 @@ Three habits in that file are worth knowing before you read it:
 |---|---|
 | [`openssl_banner` names every major digit, not the majors that shipped](policy.md#openssl_banner-names-every-major-digit-not-the-majors-that-shipped) | Accepted |
 | [The sweep that followed, and the two kinds of list it separated](policy.md#the-sweep-that-followed-and-the-two-kinds-of-list-it-separated) | Accepted |
+| [A Go FIPS build is told from a stock one by its build settings](policy.md#a-go-fips-build-is-told-from-a-stock-one-by-its-build-settings) | Accepted |
 
 ## [Caps, budgets and record size](limits.md)
 

@@ -94,7 +94,12 @@ def build_go_info(
     go_version = parse_go_buildinfo(buildinfo) if buildinfo is not None else None
     # The group names come from the ruleset, so renaming a group there cannot silently
     # flip `boring_crypto` while the matching rule still fires.
-    wanted = {patterns.go_boring_group, patterns.go_stock_group}
+    # Every Go group the ruleset names, not only the ones a typed field is derived
+    # from: `markers` is the structured summary a consumer reads instead of the
+    # findings, and a group missing from it made that summary contradict the verdict
+    # built from the same strings -- a build against the Go FIPS 140-3 module
+    # reporting `["go_stock_crypto"]` while its verdict said otherwise (#126).
+    wanted = {patterns.go_boring_group, patterns.go_stock_group, patterns.go_fips140_group}
     marker_groups = {group.name: group for group in patterns.string_groups if group.name in wanted}
     markers = tuple(
         sorted(name for name, group in marker_groups.items() if group.pattern.search(text))
