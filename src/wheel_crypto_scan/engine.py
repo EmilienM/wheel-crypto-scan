@@ -21,6 +21,7 @@ from .findings import Finding, Location
 from .linkage import (
     LINKAGE_BUNDLED,
     LINKAGE_SYSTEM,
+    declared_by_sbom,
     is_cargo_purl,
     member_stem_counts,
     needed_posture,
@@ -549,6 +550,15 @@ def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
     objects whose own posture justified it rather than at the wheel as a whole.
     Postures are computed only when one of these keys is present, so every other
     `linkage` rule pays nothing for them.
+
+    `sbom_declared` is a boolean gate, combinable with either object-value key: `true`
+    fires only when the wheel's own SBOM names the library or a crate that binds it
+    (`linkage.declared_by_sbom`), `false` only when it does not. `declared_by_sbom`
+    excludes one shape of name from that check: a crate also carried, in its own cargo
+    paths, by an object whose own posture is `system`, which restates what that object
+    already said rather than naming a second, unaccounted-for copy. It is the
+    wheel-level counterpart to `object_values`/`exclude_object_values`, computed only
+    when the key is present so every other `linkage` rule pays nothing for it either.
     """
     values = frozenset(match.get("values", ())) or frozenset({match["value"]})
     inherit = "table" in match
@@ -560,10 +570,13 @@ def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
 
     object_values = match.get("object_values")
     exclude_object_values = match.get("exclude_object_values")
+    sbom_declared = match.get("sbom_declared")
 
     for name in names:
         value = linkage.get(name)
         if value not in values:
+            continue
+        if sbom_declared is not None and declared_by_sbom(ruleset, evidence, name) != sbom_declared:
             continue
         library = ruleset.libraries.get(name)
         severity = library.severity if inherit and library else None

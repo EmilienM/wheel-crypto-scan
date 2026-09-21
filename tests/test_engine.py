@@ -1006,22 +1006,156 @@ def test_system_only_still_fires_beside_an_object_with_no_openssl_evidence(rules
     assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" not in findings
 
 
-def test_an_sbom_naming_openssl_sys_does_not_reach_object_postures(ruleset) -> None:
-    """A known residual: `object_postures` reads only per-object binary evidence, so
-    an SBOM component naming a crypto crate cannot make an object read `unknown`
-    beside a system sibling. See `DESIGN.md`, "An object that read `unknown` withholds
-    `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`".
+@pytest.mark.parametrize("crate", ["openssl-src", "openssl-sys", "openssl"])
+def test_an_sbom_naming_an_openssl_crate_withholds_the_system_only_rule(ruleset, crate) -> None:
+    """The wheel-level SBOM signal withholds `DERIVED_SYSTEM_OPENSSL_ONLY` the same way
+    a per-object `unknown` posture does: the wheel's own SBOM names OpenSSL or a crate
+    that binds it, so not every piece of OpenSSL evidence points at the system library,
+    even though `openssl_linkage` itself still reads `system` (`declared` never outvotes
+    a definite posture). `DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM` carries the `OPAQUE`
+    verdict that keeps the wheel from reading `NO_CRYPTO_DETECTED`.
+    """
+    component = SbomComponent(
+        name=crate,
+        version="1.0.0",
+        purl=f"pkg:cargo/{crate}@1.0.0",
+        source="demo-1.0.dist-info/sboms/a.cdx.json",
+    )
+    evidence = wheel(binaries=(_SYSTEM_SIBLING,), metadata=metadata(sbom_components=(component,)))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == "system"
+    findings = run(ruleset, evidence)
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in ids(findings)
+    assert one(findings, "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM").verdict == "OPAQUE"
+    assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" not in ids(findings)
+
+
+@pytest.mark.parametrize("crate", ["openssl-sys", "openssl"])
+def test_an_sbom_component_the_system_object_itself_carries_still_fires_the_system_only_rule(
+    ruleset, crate
+) -> None:
+    """The normal shape of a system-linked Rust build: one object declares both a
+    `needed` entry on the system library and, in its own cargo paths, the very crate
+    the wheel's SBOM also names. That object already answered `system` on its own
+    evidence, so the SBOM component restates what it said rather than naming a second,
+    unaccounted-for copy, and must not cost `DERIVED_SYSTEM_OPENSSL_ONLY`.
+    """
+    rust_object = binary(
+        "demo/_rust.abi3.so",
+        needed=("libc.so.6", "libssl.so.3"),
+        rust_crates=(RustCrate(crate, "0.9.117"),),
+    )
+    component = SbomComponent(
+        name=crate,
+        version="0.9.117",
+        purl=f"pkg:cargo/{crate}@0.9.117",
+        source="demo-1.0.dist-info/sboms/a.cdx.json",
+    )
+    evidence = wheel(binaries=(rust_object,), metadata=metadata(sbom_components=(component,)))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == "system"
+    findings = ids(run(ruleset, evidence))
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in findings
+    assert "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM" not in findings
+
+
+def test_an_sbom_component_only_a_non_system_object_carries_still_withholds_the_rule(
+    ruleset,
+) -> None:
+    """The exemption above reads the crate-carrying object's own posture, not merely
+    whether some object carries the crate at all: beside `_SYSTEM_SIBLING` (a plain
+    system-linked object with no cargo paths of its own), `_CRATE_UNKNOWN` carries
+    `openssl-sys` but its own posture is `unknown`, not `system`, so an SBOM naming
+    that same crate still withholds `DERIVED_SYSTEM_OPENSSL_ONLY` -- the SBOM component
+    is not confirmed as belonging to the object that answered `system`.
     """
     component = SbomComponent(
         name="openssl-sys",
         version="0.9.117",
         purl="pkg:cargo/openssl-sys@0.9.117",
-        source="demo-1.0.dist-info/sboms/a.json",
+        source="demo-1.0.dist-info/sboms/a.cdx.json",
+    )
+    evidence = wheel(
+        binaries=(_SYSTEM_SIBLING, _CRATE_UNKNOWN), metadata=metadata(sbom_components=(component,))
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == "system"
+    findings = ids(run(ruleset, evidence))
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in findings
+    assert "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM" in findings
+
+
+def test_an_sbom_naming_an_openssl_crate_beside_system_keeps_a_conditional_headline(
+    ruleset,
+) -> None:
+    """The same evidence run through `classify`: `SBOM_CRYPTO_COMPONENT` carries
+    `CONDITIONAL` for a crate this specific (`openssl-src` is the vendored build, still
+    `CONDITIONAL`), which outranks `OPAQUE` in `[verdict] precedence`, so the headline
+    stays `CONDITIONAL` and the wheel never reads `NO_CRYPTO_DETECTED`.
+    """
+    component = SbomComponent(
+        name="openssl-src",
+        version="300.3.1+3.3.1",
+        purl="pkg:cargo/openssl-src@300.3.1+3.3.1",
+        source="demo-1.0.dist-info/sboms/a.cdx.json",
+    )
+    evidence = wheel(binaries=(_SYSTEM_SIBLING,), metadata=metadata(sbom_components=(component,)))
+    findings = run(ruleset, evidence)
+    verdict = classify(ruleset, findings, resolve_linkage(ruleset, evidence))
+    assert verdict.headline == "CONDITIONAL"
+    assert "OPAQUE" in verdict.classes
+    assert "NO_CRYPTO_DETECTED" not in verdict.classes
+
+
+@pytest.mark.parametrize(
+    ("name", "purl"),
+    [
+        ("cryptography", "pkg:generic/cryptography@42.0.5"),
+        ("ring", "pkg:cargo/ring@0.17.8"),
+        ("libsodium", "pkg:generic/libsodium@1.0.19"),
+    ],
+)
+def test_an_unrelated_sbom_component_does_not_withhold_the_system_only_rule(
+    ruleset, name, purl
+) -> None:
+    """The gate is library-specific (`declared_by_sbom`), not "any SBOM component
+    present": a distribution name (`cryptography`), an unrelated crate (`ring`) or a
+    different library (`libsodium`) must leave `DERIVED_SYSTEM_OPENSSL_ONLY` firing and
+    the new rule silent.
+    """
+    component = SbomComponent(
+        name=name, version="1.0", purl=purl, source="demo-1.0.dist-info/sboms/a.cdx.json"
     )
     evidence = wheel(binaries=(_SYSTEM_SIBLING,), metadata=metadata(sbom_components=(component,)))
     findings = ids(run(ruleset, evidence))
     assert "DERIVED_SYSTEM_OPENSSL_ONLY" in findings
-    assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" not in findings
+    assert "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM" not in findings
+
+
+@pytest.mark.parametrize("sbom_names_openssl", [True, False])
+@pytest.mark.parametrize("crate_unknown_sibling", [True, False])
+def test_the_system_only_rule_and_its_two_complements_are_a_partition(
+    ruleset, sbom_names_openssl, crate_unknown_sibling
+) -> None:
+    """Cross the wheel-level SBOM signal with the per-object `unknown` signal, always
+    beside a system-linked sibling: `DERIVED_SYSTEM_OPENSSL_ONLY` fires exactly when
+    neither complementary rule does, whatever combination of the two signals is present.
+    """
+    binaries = (_SYSTEM_SIBLING, _CRATE_UNKNOWN) if crate_unknown_sibling else (_SYSTEM_SIBLING,)
+    metadata_evidence = None
+    if sbom_names_openssl:
+        component = SbomComponent(
+            name="openssl-sys",
+            version="0.9.117",
+            purl="pkg:cargo/openssl-sys@0.9.117",
+            source="demo-1.0.dist-info/sboms/a.cdx.json",
+        )
+        metadata_evidence = metadata(sbom_components=(component,))
+    evidence = wheel(binaries=binaries, metadata=metadata_evidence)
+    findings = ids(run(ruleset, evidence))
+    system_only = "DERIVED_SYSTEM_OPENSSL_ONLY" in findings
+    unresolved = "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" in findings
+    declared = "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM" in findings
+    assert system_only == (not unresolved and not declared)
+    assert unresolved == crate_unknown_sibling
+    assert declared == sbom_names_openssl
 
 
 def test_an_sbom_naming_an_openssl_crate_is_unresolved_linkage_beside_its_component_finding(

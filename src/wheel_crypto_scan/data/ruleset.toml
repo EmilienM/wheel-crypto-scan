@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "38"
+ruleset_version = "39"
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +440,14 @@ copy_string_group = "openssl_build_info"
 # must also be a [[rust_crate]] entry, which is what keeps it past the crate cap.
 # The same names, or the library's own name "openssl" itself, in a shipped PEP 770
 # SBOM give the same `unknown` when no object in the wheel answers definitely.
+# The same SBOM naming also withholds DERIVED_SYSTEM_OPENSSL_ONLY beside a
+# system-linked object, unless that very object is the one whose own cargo paths
+# carry the named crate: a system-linked object that names its own openssl-sys is
+# the ordinary shape of a system-linked Rust build, not a second, unaccounted-for
+# copy, so it does not cost the "every piece of evidence points at the system
+# library" claim. openssl-src never shows up this way (it is a build-script-only
+# dependency, never a compiled object's own crate, per its own `why` below), so it
+# is never exempted by this.
 crates = ["openssl", "openssl-sys", "openssl-src"]
 # Always reported, even when nothing matched: component teams filter on this field.
 always_report = true
@@ -1120,6 +1128,14 @@ why = "Any of these names appearing in a ctypes load means crypto is being reach
 #   py_constant        a named constant such as ssl.CERT_NONE
 #   py_ctypes_load     ctypes.CDLL / cdll.LoadLibrary naming a library
 #
+# A `linkage` match also takes `sbom_declared` (bool), the wheel-level counterpart to
+# `object_values`/`exclude_object_values`: `true` fires only when the wheel's own SBOM
+# names the library or a crate that binds it, `false` only when it does not -- except a
+# crate name already carried, in its own cargo paths, by an object whose own posture is
+# `system`, which does not count: that object already answered `system` on its own
+# evidence, so the SBOM restates it rather than naming a second, unaccounted-for copy.
+# It combines with either object-value key.
+#
 # `suppressed_by` drops this rule's finding on an object where one of the named
 # rules also fired, so a more specific finding replaces a broader one. It is per
 # object (location path), never per wheel: what a rule locates on follows its matcher
@@ -1532,12 +1548,13 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "All OpenSSL use resolves to the system library"
-why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings. It is withheld when some object in the wheel uses OpenSSL without saying which copy (its own posture is unknown: imported symbols with no declared dependency, a Rust crate that binds it and nothing else, or a vendor-shaped dependency the wheel could not confirm), because then not every piece of evidence points at the system library, even though the linkage field, where unknown never outvotes a definite posture, still reads system."
+why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings. It is withheld in two cases: when some object in the wheel uses OpenSSL without saying which copy (its own posture is unknown: imported symbols with no declared dependency, a Rust crate that binds it and nothing else, or a vendor-shaped dependency the wheel could not confirm), or when the wheel's own SBOM names OpenSSL or a crate that binds it and no system-linked object's own cargo paths already carry that same crate. Either way not every piece of evidence points at the system library, even though the linkage field, where unknown never outvotes a definite posture, still reads system. A system-linked object naming its own openssl-sys is the ordinary shape of a system-linked Rust build, not a second, unaccounted-for copy, so an SBOM component that only restates it does not withhold this finding."
 [rule.match]
 kind = "linkage"
 name = "openssl"
 value = "system"
 exclude_object_values = ["unknown"]
+sbom_declared = false
 
 [[rule]]
 id = "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM"
@@ -1554,6 +1571,22 @@ kind = "linkage"
 name = "openssl"
 value = "system"
 object_values = ["unknown"]
+
+[[rule]]
+id = "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM"
+layer = "derived"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "The wheel's SBOM names OpenSSL or a crate that binds it, beside a system-linked object it does not account for"
+why = "The field resolved to system from an object's own evidence, but the wheel's own SBOM names OpenSSL or a crate that binds it -- openssl-src is the vendored build -- and no system-linked object's own cargo paths already carry that same crate. A component names a package, not the object it was compiled into, so unless the very object that reads system is the one carrying it, the record cannot say every OpenSSL use resolves to the system library. This finding keeps that claim off the record, and SBOM_CRYPTO_COMPONENT names the component itself. openssl-src never carries this exemption: it is a build-script-only dependency that never shows up in a compiled object's own cargo paths, so it always costs the claim."
+[rule.match]
+kind = "linkage"
+name = "openssl"
+value = "system"
+sbom_declared = true
 
 [[rule]]
 id = "BIN_LINKED_CRYPTO_LIBRARY"

@@ -38,7 +38,9 @@ CLASS_HELP: dict[str, str] = {
 LINKAGE_HELP: dict[str, str] = {
     "system": (
         "Resolves libcrypto/libssl from the host, so it inherits the host's FIPS "
-        "provider and crypto policy."
+        "provider and crypto policy. Can still carry an OPAQUE finding beside this if "
+        "an object uses OpenSSL, or the wheel's own SBOM names it, without saying "
+        "which copy."
     ),
     "bundled": (
         "Ships its own copy: in a vendor directory, via a hash-renamed dependency, "
