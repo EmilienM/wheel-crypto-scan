@@ -129,7 +129,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 
 ```bash
 uvx --with tox-uv tox              # py311-py314, ruff lint and format, pylint
-uvx --with tox-uv tox -e lint      # ruff check --select=E,F,W, then ruff format --check
+uvx --with tox-uv tox -e lint      # ruff check --select=E,F,W,PLC0415, then ruff format --check
 uvx --with tox-uv tox -e format    # apply formatting
 uvx --with tox-uv tox -e real      # opt-in, needs real wheels in WCS_CORPUS_DIR
 uv run wheel-crypto-scan scan /path/to/wheels -o index.jsonl --jobs 8

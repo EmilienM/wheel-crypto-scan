@@ -31,6 +31,7 @@ from helpers.binfmt import (
 from helpers.binfmt.elf import STT_FUNC
 from helpers.wheelbuilder import build_wheel
 
+from wheel_crypto_scan.record import to_json_line
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext, scan_wheel
 
@@ -1021,14 +1022,11 @@ def test_a_truncated_extension_is_recorded_not_ignored(context, tmp_path: Path) 
 
 
 def test_scanning_the_same_wheel_twice_is_byte_identical(context, bundled_wheel) -> None:
-    from wheel_crypto_scan.record import to_json_line
-
     assert to_json_line(scan(context, bundled_wheel)) == to_json_line(scan(context, bundled_wheel))
 
 
 def test_a_rebuilt_fixture_produces_the_same_record(context, tmp_path: Path) -> None:
     """The builder is deterministic, so the record must be too."""
-    from wheel_crypto_scan.record import to_json_line
 
     def build(directory: Path) -> Path:
         directory.mkdir()

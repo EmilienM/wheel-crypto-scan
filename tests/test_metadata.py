@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import zipfile
 from pathlib import Path
@@ -187,8 +188,6 @@ def test_missing_record_records_error_and_returns_rest(tmp_path: Path) -> None:
 
 
 def _cyclonedx(components: list[dict]) -> bytes:
-    import json
-
     return json.dumps(
         {"bomFormat": "CycloneDX", "specVersion": "1.5", "components": components}
     ).encode("utf-8")
