@@ -19,9 +19,10 @@ Line length is 100.
 
 ## Tests
 
-Tests marked `real` and `hostbin` are deselected by default: they need downloaded wheels or
-host system libraries. `tox -e real` runs both, with `WCS_CORPUS_DIR` pointing at a
-directory of real wheels.
+Tests marked `real` are deselected by default: they need downloaded wheels, given through
+`WCS_CORPUS_DIR`. Tests marked `hostbin` run by default: they look for `libcrypto.so.3` in
+the usual Fedora and Debian/Ubuntu library directories and skip without it, unless
+`WCS_REQUIRE_HOSTBIN` is set to any non-empty value, as CI does. `tox -e real` runs both.
 
 **Test fixtures are synthesised, including the object files.** `tests/helpers/binfmt/`
 writes ELF, Mach-O and PE byte for byte with `struct`. The suite needs no compiler, no

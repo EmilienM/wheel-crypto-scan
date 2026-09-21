@@ -142,7 +142,8 @@ uv run wheel-crypto-scan scan /path/to/wheels -o index.jsonl --jobs 8
 
 Tests marked `real` are deselected by default: they need a corpus of real wheels
 (`WCS_CORPUS_DIR`). Tests marked `hostbin` run by default and self-skip on a host without
-the system library they check. Line length is 100.
+the system library they check; CI sets `WCS_REQUIRE_HOSTBIN=1`, which turns that skip
+into a failure. Line length is 100.
 
 ## Releasing
 

@@ -53,7 +53,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "real: opt-in tests that need real wheels in WCS_CORPUS_DIR (deselected by default)",
-    "hostbin: opt-in tests that read real system binaries such as /usr/lib64/libcrypto.so.3",
+    "hostbin: tests that read real system binaries such as libcrypto.so.3; skip when absent unless WCS_REQUIRE_HOSTBIN is set",
 ]
 
 [tool.pylint.main]
