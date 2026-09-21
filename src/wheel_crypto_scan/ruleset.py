@@ -296,6 +296,19 @@ class Rule:
     There is deliberately no singular `match`: with two tables any such shortcut names
     whichever was written first and quietly lies about the rest. The engine dispatches
     per table and hands the matcher the one it was dispatched for.
+
+    `suppressed_by` is per object: a hit of this rule is dropped only where a hit of a
+    named rule fired on the same location path, never wheel-wide. A suppressor whose
+    hits are located on a different path never suppresses. What a rule locates on
+    follows its matcher kind, not its `layer`: most binary-layer `linkage` rules locate
+    on the wheel path, not on the object they describe, so a same-layer relation naming
+    one of them against a per-object binary rule never suppresses either. A `linkage`
+    match with `object_values` set is the exception -- it locates per object instead,
+    the same path a per-object binary rule shares. The loader accepts a relation
+    between rules that can never share a path without complaint; it fires, it just
+    never suppresses. It is also non-cascading -- a suppressor that is itself
+    suppressed still suppresses -- so the loader refuses a `suppressed_by` cycle rather
+    than silently dropping every member of one.
     """
 
     id: str
@@ -372,6 +385,11 @@ class RustCrateEntry:
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
+    # Resolved finding keys, (owning rule id, crate name), that suppress this crate's
+    # finding on an object where one of them also fired. Filled by the loader, which
+    # resolves each named crate to its owning rule through that crate's own routing or
+    # the table's default.
+    suppressed_by: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

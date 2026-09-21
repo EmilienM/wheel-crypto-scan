@@ -240,6 +240,7 @@ def _parse_rule(data: Mapping[str, Any], precedence: frozenset[str]) -> Rule:
     if verdict is not None:
         _check(verdict, precedence, "verdict class", where)
     matches = _parse_matches(_require(data, "match", where), where)
+    _check_string_sequence(data.get("suppressed_by", []), "suppressed_by", where)
     return Rule(
         id=str(rule_id),
         layer=_check(_require(data, "layer", where), LAYERS, "layer", where),
@@ -276,6 +277,69 @@ def _validate_rule_references(
             raise RulesetError(f"{where}: suppressed_by names itself")
     for match in rule.matches:
         _validate_match_references(match, ruleset_data, where)
+
+
+def _check_suppression_acyclic(
+    rules: Iterable[Rule],
+    crates: Mapping[str, RustCrateEntry],
+    crate_owner: Mapping[str, str | None],
+) -> None:
+    """Refuse a `suppressed_by` cycle across rules and `[[rust_crate]]` entries.
+
+    Suppression does not cascade: every hit that fired is read before anything is
+    dropped, so a suppressor that is itself suppressed still suppresses. A cycle whose
+    members all fire would therefore drop every one of them rather than keeping the
+    more specific finding, which loses evidence, so it is refused here rather than
+    left to a rule author to notice.
+
+    Nodes are `("rule", id)` and `("crate", name)`; an edge `u -> v` means "u is
+    suppressed by v". DFS runs in sorted node and neighbour order so the error is the
+    same every time a cyclic ruleset is loaded.
+    """
+    by_id = {rule.id: rule for rule in rules}
+    edges: dict[tuple[str, str], list[tuple[str, str]]] = {}
+
+    def add_edge(u: tuple[str, str], v: tuple[str, str]) -> None:
+        edges.setdefault(u, []).append(v)
+
+    for rule_id, rule in by_id.items():
+        for other in rule.suppressed_by:
+            add_edge(("rule", rule_id), ("rule", other))
+    for name, crate in crates.items():
+        owner = crate_owner[name]
+        if owner is None:
+            continue
+        if crate.suppressed_by:
+            add_edge(("rule", owner), ("crate", name))
+        for other_rule in by_id[owner].suppressed_by:
+            add_edge(("crate", name), ("rule", other_rule))
+        for _, other_crate in crate.suppressed_by:
+            add_edge(("crate", name), ("crate", other_crate))
+
+    white, grey, black = 0, 1, 2
+    color: dict[tuple[str, str], int] = {}
+    all_nodes = sorted({*edges} | {v for neighbours in edges.values() for v in neighbours})
+
+    def visit(node: tuple[str, str], path: list[tuple[str, str]]) -> None:
+        state = color.get(node, white)
+        if state == black:
+            return
+        if state == grey:
+            cycle = path[path.index(node) :] + [node]
+            raise RulesetError(
+                "suppressed_by forms a cycle: "
+                + " -> ".join(f"{kind} {value!r}" for kind, value in cycle)
+            )
+        color[node] = grey
+        path.append(node)
+        for neighbour in sorted(edges.get(node, ())):
+            visit(neighbour, path)
+        path.pop()
+        color[node] = black
+
+    for node in all_nodes:
+        if color.get(node, white) == white:
+            visit(node, [])
 
 
 def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
@@ -437,6 +501,17 @@ def _entry_rule(
     return str(rule_id)
 
 
+def _refuse_suppressed_by(entry: Mapping[str, Any], where: str) -> None:
+    """`suppressed_by` is only read on `[[rust_crate]]` entries.
+
+    Every other entry table's finding routes through a rule, whose own `suppressed_by`
+    already covers it, so an entry-level `suppressed_by` elsewhere would be silently
+    ignored -- the same typo trap the loader exists to catch. Refuse it loudly instead.
+    """
+    if "suppressed_by" in entry:
+        raise RulesetError(f"{where}: suppressed_by is only supported on [[rust_crate]]")
+
+
 def _entry_overrides(
     entry: Mapping[str, Any], precedence: frozenset[str], where: str
 ) -> dict[str, Any]:
@@ -509,6 +584,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     for entry in data["crypto_distribution"]:
         name = canonicalize_name(str(_require(entry, "name", "[[crypto_distribution]]")))
         where = f"crypto_distribution {name!r}"
+        _refuse_suppressed_by(entry, where)
         # Unlike the other entry tables, a distribution always names its own rule.
         rule_id = _entry_rule(entry, "crypto_distribution", by_id, where)
         if rule_id is None:
@@ -521,6 +597,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     for entry in data["crypto_library"]:
         name = str(_require(entry, "name", "[[crypto_library]]"))
         where = f"crypto_library {name!r}"
+        _refuse_suppressed_by(entry, where)
         symbol_group = entry.get("symbol_group")
         if symbol_group is not None and symbol_group not in {
             group["name"] for group in data["symbol_group"]
@@ -556,20 +633,50 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             **_entry_overrides(entry, classes, where),
         )
 
+    # Resolved ahead of the loop below so a `suppressed_by` can name a crate that is
+    # declared later in the file, and so an entry's own `rule` need not be reparsed to
+    # answer "who owns this crate's finding".
+    default_crate_rule = next(iter(defaults.get("rust_crate", ())), None)
+    crate_names = {str(_require(entry, "name", "[[rust_crate]]")) for entry in data["rust_crate"]}
+    crate_owner: dict[str, str | None] = {
+        str(_require(entry, "name", "[[rust_crate]]")): entry.get("rule") or default_crate_rule
+        for entry in data["rust_crate"]
+    }
+
     crates: dict[str, RustCrateEntry] = {}
     for entry in data["rust_crate"]:
         name = str(_require(entry, "name", "[[rust_crate]]"))
         where = f"rust_crate {name!r}"
+        _check_string_sequence(entry.get("suppressed_by", []), "suppressed_by", where)
+        suppressor_names = [str(other) for other in entry.get("suppressed_by", ())]
+        if suppressor_names and crate_owner[name] is None:
+            raise RulesetError(
+                f"{where}: suppressed_by is set but no rule owns this crate by routing "
+                "or default, so its own finding has no single rule to drop either"
+            )
+        for other in suppressor_names:
+            if other not in crate_names:
+                raise RulesetError(f"{where}: suppressed_by names unknown crate {other!r}")
+            if other == name:
+                raise RulesetError(f"{where}: suppressed_by names itself")
+            if crate_owner[other] is None:
+                raise RulesetError(
+                    f"{where}: suppressed_by names crate {other!r}, which no rule owns "
+                    "by routing or default, so its finding has no single rule"
+                )
         crates[name] = RustCrateEntry(
             name=name,
             rule=_entry_rule(entry, "rust_crate", by_id, where),
+            suppressed_by=tuple((crate_owner[other], other) for other in suppressor_names),
             **_entry_overrides(entry, classes, where),
         )
+    _check_suppression_acyclic(rules, crates, crate_owner)
 
     modules: dict[str, PythonModule] = {}
     for entry in data["python_module"]:
         name = str(_require(entry, "name", "[[python_module]]"))
         where = f"python_module {name!r}"
+        _refuse_suppressed_by(entry, where)
         modules[name] = PythonModule(
             name=name,
             rule=_entry_rule(entry, "python_module", by_id, where),

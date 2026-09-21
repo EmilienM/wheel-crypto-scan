@@ -49,6 +49,10 @@ class Hit:
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
+    # Entry-level suppressor keys, (rule id, subject), copied from the matcher's table
+    # entry. Checked beside the rule's own `suppressed_by` in `_apply_suppression`, for
+    # a relation between two subjects of the same rule.
+    suppressed_by: tuple[tuple[str, str], ...] = ()
 
 
 def apply_rules(
@@ -56,27 +60,30 @@ def apply_rules(
 ) -> tuple[Finding, ...]:
     """Match every rule against the evidence and return findings, sorted and capped."""
     index = _SonameIndex(ruleset)
-    grouped: dict[tuple[str, str | None], list[Hit]] = {}
-    rules: dict[tuple[str, str | None], Rule] = {}
-
+    collected: list[tuple[Rule, Hit]] = []
     for rule in ruleset.rules:
-        # A rule's match tables are alternatives, and hits key on (rule id, subject):
-        # one finding per subject, not one per matcher. Two tables that spot the same
-        # subject make one finding; two that spot different subjects still make two.
         for match in rule.matches:
             matcher = _MATCHERS.get(match["kind"])
             if matcher is None:
                 continue
             for hit in matcher(rule, match, ruleset, evidence, linkage, index):
-                key = (rule.id, hit.subject)
-                grouped.setdefault(key, []).append(hit)
-                rules[key] = rule
+                collected.append((rule, hit))
+
+    grouped: dict[tuple[str, str | None], list[Hit]] = {}
+    rules: dict[tuple[str, str | None], Rule] = {}
+    for rule, hit in _apply_suppression(collected):
+        # A rule's match tables are alternatives, and hits key on (rule id, subject):
+        # one finding per subject, not one per matcher. Two tables that spot the same
+        # subject make one finding; two that spot different subjects still make two.
+        key = (rule.id, hit.subject)
+        grouped.setdefault(key, []).append(hit)
+        rules[key] = rule
 
     findings = [
         _build_finding(rules[key], hits, ruleset.limits)
         for key, hits in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1] or ""))
     ]
-    return _apply_suppression(findings, ruleset)
+    return tuple(sorted(findings, key=Finding.sort_key))
 
 
 def _build_finding(rule: Rule, hits: Sequence[Hit], limits: Limits) -> Finding:
@@ -102,15 +109,22 @@ def _build_finding(rule: Rule, hits: Sequence[Hit], limits: Limits) -> Finding:
     )
 
 
-def _apply_suppression(findings: Sequence[Finding], ruleset: Ruleset) -> tuple[Finding, ...]:
-    """Drop a broad finding when a more specific one already fired."""
-    present = {finding.rule_id for finding in findings}
-    kept = [
-        finding
-        for finding in findings
-        if not (set(ruleset.rule(finding.rule_id).suppressed_by) & present)
+def _apply_suppression(hits: Sequence[tuple[Rule, Hit]]) -> list[tuple[Rule, Hit]]:
+    """Drop a hit when a more specific one fired on the same object.
+
+    Per object: a suppressor counts only where it fired on the same location path,
+    so a FIPS-built binary does not hide a stock one beside it. Non-cascading: what
+    fired is read before anything is dropped, so a suppressor that is itself
+    suppressed still suppresses; the loader refuses cycles for that reason.
+    """
+    by_rule = {(rule.id, hit.location.path) for rule, hit in hits}
+    by_subject = {(rule.id, hit.subject, hit.location.path) for rule, hit in hits}
+    return [
+        (rule, hit)
+        for rule, hit in hits
+        if not any((other, hit.location.path) in by_rule for other in rule.suppressed_by)
+        and not any((r, s, hit.location.path) in by_subject for r, s in hit.suppressed_by)
     ]
-    return tuple(sorted(kept, key=Finding.sort_key))
 
 
 class _SonameIndex:
@@ -473,6 +487,7 @@ def _match_rust_crate(rule, match, ruleset, evidence, linkage, index) -> Iterato
                 severity=entry.severity,
                 verdict=entry.verdict,
                 needs_human_review=entry.needs_human_review,
+                suppressed_by=entry.suppressed_by,
             )
 
 
