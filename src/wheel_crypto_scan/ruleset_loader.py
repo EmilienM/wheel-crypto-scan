@@ -45,6 +45,7 @@ from .ruleset import (
     StringGroup,
     SymbolGroup,
 )
+from .verdict import NO_CRYPTO_DETECTED
 
 # What each top-level table, and each entry within it, is allowed to carry. A key
 # outside these sets loads clean and does nothing -- the typo trap `_refuse_unknown_keys`
@@ -359,7 +360,7 @@ def _parse_rule(data: Mapping[str, Any], precedence: frozenset[str]) -> Rule:
     _refuse_unknown_keys(data, _RULE_KEYS, where)
     verdict = data.get("verdict")
     if verdict is not None:
-        _check(verdict, precedence, "verdict class", where)
+        _check_verdict(verdict, precedence, where)
     matches = _parse_matches(_require(data, "match", where), where)
     _check_string_sequence(data.get("suppressed_by", []), "suppressed_by", where)
     return Rule(
@@ -699,12 +700,26 @@ def _refuse_suppressed_by(entry: Mapping[str, Any], where: str) -> None:
         raise RulesetError(f"{where}: suppressed_by is only supported on [[rust_crate]]")
 
 
+def _check_verdict(verdict: Any, precedence: frozenset[str], where: str) -> None:
+    """`NO_CRYPTO_DETECTED` is the class `classify()` assigns when no finding
+    contributes one, not a class a finding can contribute: a rule or entry naming it
+    would make a contributing finding produce the class that means "nothing
+    contributed", including dropping `needs_human_review` for a finding that does not
+    itself ask for review."""
+    if verdict == NO_CRYPTO_DETECTED:
+        raise RulesetError(
+            f"{where}: verdict {NO_CRYPTO_DETECTED!r} is the class a wheel gets when no "
+            "finding assigns one; no rule or entry may assign it"
+        )
+    _check(verdict, precedence, "verdict class", where)
+
+
 def _entry_overrides(
     entry: Mapping[str, Any], precedence: frozenset[str], where: str
 ) -> dict[str, Any]:
     verdict = entry.get("verdict")
     if verdict is not None:
-        _check(verdict, precedence, "verdict class", where)
+        _check_verdict(verdict, precedence, where)
     severity = entry.get("severity")
     if severity is not None:
         _check(severity, SEVERITIES, "severity", where)
@@ -725,9 +740,19 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     version = _require(data, "ruleset_version", source)
     verdict_table = _require(data, "verdict", source)
     _refuse_unknown_keys(verdict_table, _VERDICT_KEYS, "[verdict]")
-    precedence = tuple(_require(verdict_table, "precedence", source))
-    if not precedence:
-        raise RulesetError(f"{source}: [verdict] precedence is empty")
+    raw_precedence = _require(verdict_table, "precedence", source)
+    _check_string_sequence(raw_precedence, "[verdict] precedence", source, allow_empty=False)
+    precedence = tuple(raw_precedence)
+    seen: set[str] = set()
+    for name in precedence:
+        if name in seen:
+            raise RulesetError(f"{source}: [verdict] precedence names {name!r} more than once")
+        seen.add(name)
+    if precedence[-1] != NO_CRYPTO_DETECTED:
+        raise RulesetError(
+            f"{source}: [verdict] precedence must end with {NO_CRYPTO_DETECTED!r}, the "
+            "class a wheel gets when no finding assigns one"
+        )
     classes = frozenset(precedence)
 
     for table in ENTRY_TABLES:

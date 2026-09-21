@@ -147,12 +147,13 @@ def _html_sort_key(record: dict[str, Any]) -> tuple[str, str]:
 def _all_classes(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> list[str]:
     """The class filter and legend read this list straight off the payload, so it
     must cover every class a record can actually carry, not only the ones named in
-    the ruleset's own precedence: a custom ruleset can drop a class -- most notably
-    `NO_CRYPTO_DETECTED`, whose fallback is hardcoded in `verdict.py` rather than
-    required in `[verdict] precedence` -- from that list while `classify()` still
-    emits it. Computing the union here, rather than in the page's own JavaScript,
-    keeps the page a plain renderer of what it is handed and lets a Python test
-    check the payload directly."""
+    the given ruleset's own precedence: the loader requires a ruleset's `[verdict]
+    precedence` to name every class `classify()` can emit, including the
+    `NO_CRYPTO_DETECTED` fallback, but `render_html` takes any `Ruleset`, including
+    one built without the loader, so the union still protects a record whose class
+    that ruleset's precedence leaves out. Computing it here, rather than in the
+    page's own JavaScript, keeps the page a plain renderer of what it is handed and
+    lets a Python test check the payload directly."""
     seen: dict[str, None] = dict.fromkeys(ruleset.precedence)
     for record in records:
         cls = record.get("verdict", {}).get("class")

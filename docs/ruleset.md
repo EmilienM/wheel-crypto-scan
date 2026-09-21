@@ -35,6 +35,11 @@ several classes at once; the record reports every class that fired in `verdict.c
 and the first one in this list as the single `verdict.class`. Reorder the list to change
 which concern wins.
 
+`NO_CRYPTO_DETECTED` must be the last entry. It is the class a wheel gets when no
+finding assigns one, so it can never outrank a class that evidence did assign, and no
+`[[rule]]` or table entry may name it as a `verdict`. The loader refuses a ruleset that
+breaks either requirement, and one that names a class twice in `precedence`.
+
 A static or bundled OpenSSL's own entry points for Blowfish, MD4/MD5/SHA-1/RIPEMD-160
 and (a bundled copy only when it still carries a `.symtab`) the Curve25519 family are
 compiled in by OpenSSL itself, so such a wheel's headline lands under

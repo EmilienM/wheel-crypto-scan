@@ -15,6 +15,9 @@ from dataclasses import dataclass, field
 from .findings import Finding
 from .ruleset import Ruleset
 
+# The loader requires this class to close a ruleset's `[verdict] precedence`, and
+# refuses it as the `verdict` of any rule or table entry: it is the class a wheel gets
+# when no finding assigns one, not a class a finding can assign.
 NO_CRYPTO_DETECTED = "NO_CRYPTO_DETECTED"
 
 

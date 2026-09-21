@@ -550,6 +550,73 @@ def test_unknown_verdict_class_is_rejected() -> None:
         parse_ruleset(data)
 
 
+def test_precedence_without_the_fallback_class_is_rejected() -> None:
+    data = minimal()
+    data["verdict"]["precedence"] = ["NON_APPROVED_CRYPTO"]
+    with pytest.raises(RulesetError, match="must end with 'NO_CRYPTO_DETECTED'"):
+        parse_ruleset(data)
+
+
+def test_the_fallback_class_must_close_the_precedence() -> None:
+    data = minimal()
+    data["verdict"]["precedence"] = ["NO_CRYPTO_DETECTED", "NON_APPROVED_CRYPTO"]
+    with pytest.raises(RulesetError, match="must end with 'NO_CRYPTO_DETECTED'"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize(
+    "precedence",
+    [
+        ["NON_APPROVED_CRYPTO", "NON_APPROVED_CRYPTO", "NO_CRYPTO_DETECTED"],
+        ["NO_CRYPTO_DETECTED", "NON_APPROVED_CRYPTO", "NO_CRYPTO_DETECTED"],
+    ],
+)
+def test_a_class_named_twice_in_precedence_is_rejected(precedence: list[str]) -> None:
+    data = minimal()
+    data["verdict"]["precedence"] = precedence
+    with pytest.raises(RulesetError, match="more than once"):
+        parse_ruleset(data)
+
+
+def test_a_non_string_precedence_class_is_rejected() -> None:
+    data = minimal()
+    data["verdict"]["precedence"] = [1, "NON_APPROVED_CRYPTO", "NO_CRYPTO_DETECTED"]
+    with pytest.raises(RulesetError, match="precedence must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_an_unhashable_precedence_class_is_rejected() -> None:
+    data = minimal()
+    data["verdict"]["precedence"] = [["NON_APPROVED_CRYPTO"], "NO_CRYPTO_DETECTED"]
+    with pytest.raises(RulesetError, match="precedence must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_a_bare_string_precedence_is_rejected() -> None:
+    data = minimal()
+    data["verdict"]["precedence"] = "NO_CRYPTO_DETECTED"
+    with pytest.raises(RulesetError, match="precedence must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_an_empty_precedence_is_rejected() -> None:
+    data = minimal()
+    data["verdict"]["precedence"] = []
+    with pytest.raises(RulesetError, match="precedence must not be an empty list"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize(
+    "table,index",
+    [("rule", 0), ("crypto_library", 0), ("rust_crate", 0)],
+)
+def test_no_rule_or_entry_may_assign_the_fallback_class(table: str, index: int) -> None:
+    data = minimal()
+    data[table][index]["verdict"] = "NO_CRYPTO_DETECTED"
+    with pytest.raises(RulesetError, match="no rule or entry may assign it"):
+        parse_ruleset(data)
+
+
 def test_table_entry_naming_a_missing_rule_is_rejected() -> None:
     data = minimal()
     data["crypto_distribution"][0]["rule"] = "DIST_TYPO"

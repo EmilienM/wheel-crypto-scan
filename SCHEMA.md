@@ -252,7 +252,7 @@ Other libraries appear as `<name>_linkage` when they have evidence.
 | `NO_CRYPTO_DETECTED` | Nothing found. **Absence of evidence, not evidence of absence.** |
 
 Listed in precedence order, which lives in the ruleset's `[verdict] precedence` and can be
-reordered there.
+reordered there, except `NO_CRYPTO_DETECTED`, which the loader holds last.
 
 ## `errors`
 
