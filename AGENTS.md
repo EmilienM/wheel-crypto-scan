@@ -103,7 +103,8 @@ These are design decisions, not accidents. Do not change one without saying so e
   A Python loop over a 2 MiB string table takes 19 seconds across one object; the same
   check as one compiled regex takes 1.2. `tests/test_hardening.py` is where that is held.
 - **Keep `record.py` and `data/schema.json` in step,** and update `SCHEMA.md` with them. A
-  test fails on drift.
+  test fails on drift, and so does `docs/output-schema.md`, the site's copy of its tables
+  and prose.
 - **Dependencies are `pyelftools` and `packaging`.** Ask before adding a third.
 - **Imports go at the top of the file,** in `src/` and `tests/` alike: no import inside a
   function, a test or a branch. Pylint's `import-outside-toplevel` holds `src/` to it

@@ -48,7 +48,10 @@ served and your change silently does not apply to anything already scanned. Noth
 you forget.
 
 Keep `record.py` and `data/schema.json` in step, and update `SCHEMA.md` with them. A test
-fails on drift.
+fails on drift. `docs/output-schema.md` is the site's copy of `SCHEMA.md`: edit `SCHEMA.md`
+first, then copy the changed table rows and prose over (` -- ` or an em dash, either reads
+the same; cross-references as links). Tests compare every table row and every non-table
+paragraph between the two.
 
 ## Writing it down
 

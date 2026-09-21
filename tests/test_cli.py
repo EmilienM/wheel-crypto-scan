@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
+import re
 import threading
 import warnings
 import zipfile
@@ -932,6 +934,182 @@ def test_docs_output_schema_page_lists_every_partial_reason() -> None:
     text = page.read_text(encoding="utf-8")
     missing = sorted(token for token in PARTIAL_REASONS if f"`{token}`" not in text)
     assert not missing, f"docs/output-schema.md is missing partial_reasons tokens: {missing}"
+
+
+def _normalize_dash_and_links(text: str) -> str:
+    """The ways the docs page renders SCHEMA.md's text differently, normalised away:
+    ` -- ` is an em dash there; a cross-reference is a Markdown link there where
+    SCHEMA.md instead spells out `DESIGN.md` followed by the heading in quotes, so
+    once the link is stripped, that lead-in is stripped down to the same quoted
+    text the link carries as its own text, which lets a schema paragraph and its page
+    counterpart compare as the same words instead of needing a pass-through
+    exception. The link text may itself hold one level of brackets, as `binaries[]`
+    does in one link, so the pattern accepts a single nested `[...]` pair inside the
+    link text instead of stopping at its first `]` -- which would leave the markup
+    unstripped -- or matching past it to an unrelated later link -- which would
+    swallow the real text in between as if it were the link's."""
+    text = text.replace(" -- ", " — ")
+    text = re.sub(r"\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\([^)]+\)", r"\1", text)
+    return re.sub(r'DESIGN\.md, "([^"]+)"', r"\1", text)
+
+
+def _schema_table_rows(path: Path) -> list[str]:
+    """Every Markdown table row in `path`, minus separator rows, with
+    `_normalize_dash_and_links` applied."""
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("|") or re.fullmatch(r"\|[-| :]+\|", line):
+            continue
+        rows.append(_normalize_dash_and_links(line))
+    return rows
+
+
+def test_docs_output_schema_page_tables_match_schema_md() -> None:
+    """docs/output-schema.md is the published copy of SCHEMA.md's tables, so every row
+    on the page must match SCHEMA.md once its dash and link rendering are normalised
+    away. SCHEMA.md is the contract: edit it first, then copy the changed rows."""
+    root = Path(__file__).parent.parent
+    schema = _schema_table_rows(root / "SCHEMA.md")
+    page = _schema_table_rows(root / "docs" / "output-schema.md")
+
+    assert any(row.startswith("| `elf_symtab_unread` |") for row in schema)
+
+    if page != schema:
+        # Positional, not a set difference: a set difference goes empty when two rows
+        # are swapped or one is duplicated, since the same rows are present on both
+        # sides, and the message would then name nothing to fix.
+        changed = sorted(
+            {
+                s.split("|")[1].strip()
+                for s, p in itertools.zip_longest(schema, page, fillvalue="| <missing> |")
+                if s != p
+            }
+        )
+        pytest.fail(f"docs/output-schema.md rows differ from SCHEMA.md: {changed}")
+
+
+def _schema_prose_paragraphs(path: Path) -> list[str]:
+    """Every non-table, non-heading paragraph in `path` as a single normalised line:
+    blank-line-separated text, with table rows, headings and fenced code blocks left
+    out, and `_normalize_dash_and_links` applied."""
+    paragraphs = []
+    current: list[str] = []
+    in_code = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code or stripped.startswith("|") or stripped.startswith("#"):
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            continue
+        if not stripped:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            continue
+        current.append(stripped)
+    if current:
+        paragraphs.append(" ".join(current))
+    return [_normalize_dash_and_links(paragraph) for paragraph in paragraphs]
+
+
+# Paragraphs the page states differently from SCHEMA.md on purpose, once the em-dash,
+# link and DESIGN.md-aside normalisation above is applied. Each pair says these are
+# the same design fact told twice: the page reworks the wording, or adds to it, but
+# never drops the fact. Keyed by the SCHEMA.md wording, valued by the page's, so that
+# if one side of a pair is deleted while the other survives, that is a real change to
+# the contract and the check below still catches it.
+_PROSE_ADAPTED_PAIRS: dict[str, str] = {
+    # The page opens with an admonition instead of a bold lead-in sentence; the
+    # second sentence, the only fact worth checking, is still its own paragraph.
+    "**Nothing in this document asserts FIPS compatibility.** The verdict taxonomy "
+    "has no passing class and will not acquire one. The tool reports evidence; a "
+    "human decides.": (
+        "The verdict taxonomy has no passing class and will not acquire one. The "
+        "tool reports evidence; a human decides."
+    ),
+    # The page adds a pointer to the "Vocabularies" reference page, which is where it
+    # sends a reader instead of the fenced "Triage recipes" section it drops.
+    "A wheel that could not be read is `OPAQUE`, never `NO_CRYPTO_DETECTED`. Every "
+    "error kind the scanner can record has a rule that turns it into a finding, "
+    "and a test enforces that.": (
+        "A wheel that could not be read is `OPAQUE`, never `NO_CRYPTO_DETECTED`. Every "
+        "error kind the scanner can record has a rule that turns it into a finding, "
+        "and a test enforces that. The full list of kinds is in Vocabularies."
+    ),
+    # The page names the cross-reference through the link text itself, which reads as
+    # the sentence's subject, rather than through the bare "DESIGN.md" SCHEMA.md uses.
+    "For a universal Mach-O that is one entry for the member rather than one per "
+    "architecture, because the slices are merged. `matched_symbols` can therefore "
+    "carry one name as both `imported` and `defined`, which no single slice can "
+    "be, when the architectures disagree; `machine`, `bits` and `endian` describe "
+    "the first slice alone. `DESIGN.md` records why they are merged anyway.": (
+        "For a universal Mach-O that is one entry for the member rather than one per "
+        "architecture, because the slices are merged. `matched_symbols` can therefore "
+        "carry one name as both `imported` and `defined`, which no single slice can "
+        "be, when the architectures disagree; `machine`, `bits` and `endian` describe "
+        "the first slice alone. A universal binary is one record, and its slices are "
+        "merged records why they are merged anyway."
+    ),
+}
+
+# "Each reason:" leads into the `partial_reasons` table; the page turns it into a
+# `### partial_reasons` heading instead, which the paragraph extraction above excludes
+# along with every other heading, so there is no page-side paragraph to pair it with.
+_PROSE_SCHEMA_ONLY = frozenset({"Each reason:"})
+_PROSE_PAGE_ONLY = frozenset({'!!! warning "Nothing on this page asserts FIPS compatibility"'})
+
+
+def test_docs_output_schema_page_prose_matches_schema_md() -> None:
+    """The output contract is not only the tables: several paragraphs of prose in
+    SCHEMA.md -- what `binaries_truncated`, `symlinks_truncated`/`skipped_truncated`,
+    `py_files_unparsed` and the universal Mach-O merge mean -- are copied onto the
+    docs page too, and drift there just as silently as a table row would. Every
+    paragraph must match once dash and link rendering are normalised away, except the
+    page's deliberate adaptations: an admonition and a heading with no page-side
+    paragraph to compare against, and the pairs in `_PROSE_ADAPTED_PAIRS`, where
+    either side vanishing while the other stays is still a failure."""
+    root = Path(__file__).parent.parent
+    schema = _schema_prose_paragraphs(root / "SCHEMA.md")
+    page = _schema_prose_paragraphs(root / "docs" / "output-schema.md")
+
+    assert any("py_files_unparsed" in paragraph for paragraph in schema)
+
+    vanished = sorted(
+        f"schema={schema_text in schema} page={page_text in page}: {schema_text!r}"
+        for schema_text, page_text in _PROSE_ADAPTED_PAIRS.items()
+        if (schema_text in schema) != (page_text in page)
+    )
+    paired_schema_text = set(_PROSE_ADAPTED_PAIRS)
+    paired_page_text = set(_PROSE_ADAPTED_PAIRS.values())
+    schema_only = sorted((set(schema) - set(page)) - _PROSE_SCHEMA_ONLY - paired_schema_text)
+    page_only = sorted((set(page) - set(schema)) - _PROSE_PAGE_ONLY - paired_page_text)
+    # The two exemptions are one-sided by definition, but each still names a real
+    # paragraph. Without this, deleting one from its file would leave it out of both
+    # `schema`/`page` and the `- _PROSE_*_ONLY` subtraction, so the test would stay
+    # green while the fact it names -- the FIPS admonition title on the page, the
+    # `partial_reasons` lead-in in SCHEMA.md -- silently disappeared.
+    missing_exempt = sorted(
+        f"schema-only exemption not found in SCHEMA.md: {text!r}"
+        for text in _PROSE_SCHEMA_ONLY
+        if text not in schema
+    ) + sorted(
+        f"page-only exemption not found on the page: {text!r}"
+        for text in _PROSE_PAGE_ONLY
+        if text not in page
+    )
+    if schema_only or page_only or vanished or missing_exempt:
+        pytest.fail(
+            "docs/output-schema.md prose differs from SCHEMA.md.\n"
+            f"only in SCHEMA.md: {schema_only}\n"
+            f"only on the page: {page_only}\n"
+            f"one side of an adapted pair vanished: {vanished}\n"
+            f"a one-sided exemption's own paragraph is missing: {missing_exempt}"
+        )
 
 
 def test_the_schema_has_no_passing_class(capsys: pytest.CaptureFixture[str]) -> None:
