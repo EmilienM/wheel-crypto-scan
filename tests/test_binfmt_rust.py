@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
+
 from wheel_crypto_scan.binfmt.rust import find_rust_crates
 from wheel_crypto_scan.binfmt.strings import RUN_SEPARATOR, extract_printable
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 _CONV = load_ruleset().conventions
-_PATTERNS = (_CONV.cargo_path_regex, _CONV.cargo_vendor_path_regex)
+_PATTERNS = {"registry": _CONV.cargo_path_regex, "vendor": _CONV.cargo_vendor_path_regex}
 
 
 def test_finds_a_crate_from_a_cargo_registry_path() -> None:
     text = "/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ring-0.17.8/src/lib.rs"
-    crates, truncated = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, truncated = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert truncated is False
     assert len(crates) == 1
     assert crates[0].name == "ring"
@@ -24,7 +26,7 @@ def test_finds_a_crate_from_a_distro_registry_path_with_no_index_segment() -> No
     with no `src/<index>/` segment, so the `src/<index>/` segment in
     `cargo_path_regex` must be optional."""
     text = "/usr/share/cargo/registry/openssl-0.10.81/src/ssl/mod.rs"
-    crates, truncated = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, truncated = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert truncated is False
     assert [(c.name, c.version) for c in crates] == [("openssl", "0.10.81")]
 
@@ -33,27 +35,27 @@ def test_finds_a_versionless_crate_from_a_cargo_vendor_path() -> None:
     """`cargo vendor` without `--versioned-dirs`, which is what fromager configures,
     writes `vendor/<name>/...` with no version anywhere in the path."""
     text = "/build/cryptography-44.0.0/vendor/openssl-sys/src/lib.rs"
-    crates, truncated = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, truncated = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert truncated is False
     assert [(c.name, c.version) for c in crates] == [("openssl-sys", None)]
 
 
 def test_finds_a_versionless_crate_from_a_backslash_vendor_path() -> None:
     text = r"C:\b\vendor\ring\src\lib.rs"
-    crates, truncated = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, truncated = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert truncated is False
     assert [(c.name, c.version) for c in crates] == [("ring", None)]
 
 
 def test_vendor_path_missing_the_pattern_falls_back_to_no_source_layouts() -> None:
-    """A patterns tuple without `cargo_vendor_path_regex` cannot match a vendor-only
-    path -- a property of `find_rust_crates` itself, not a guard on which patterns
-    `binfmt.strings` wires in; that guard is `test_acceptance.py`'s end-to-end
-    cargo-vendor-layout case."""
+    """`vendor=None` cannot match a vendor-only path -- a property of
+    `find_rust_crates` itself, not a guard on which patterns `binfmt.strings` wires
+    in; that guard is `test_acceptance.py`'s end-to-end cargo-vendor-layout case."""
     crates, _ = find_rust_crates(
         r"C:\b\vendor\ring\src\lib.rs",
-        (_CONV.cargo_path_regex,),
         max_crates=128,
+        registry=_CONV.cargo_path_regex,
+        vendor=None,
         claimed=frozenset(),
     )
     assert crates == ()
@@ -65,13 +67,13 @@ def test_a_versioned_vendor_directory_is_read_as_name_and_version_not_one_name()
     `gimli-0.32.3` with no version. That needs the name class to exclude `.`, so the
     version's leading `-` is necessarily the last `-` before the first `.`."""
     text = "/b/rustc-1.97.1-src/vendor/gimli-0.32.3/src/read/line.rs"
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert [(c.name, c.version) for c in crates] == [("gimli", "0.32.3")]
 
 
 def test_a_hyphenated_crate_name_with_no_version_is_not_mistaken_for_one() -> None:
     text = "vendor/sha-1/src/lib.rs"
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert [(c.name, c.version) for c in crates] == [("sha-1", None)]
 
 
@@ -92,7 +94,7 @@ def test_a_vendored_non_rust_tree_is_not_read_as_a_rust_crate() -> None:
     ]
     for text in texts:
         crates, _ = find_rust_crates(
-            text, _PATTERNS, max_crates=128, claimed=frozenset({"openssl"})
+            text, max_crates=128, **_PATTERNS, claimed=frozenset({"openssl"})
         )
         assert crates == (), text
 
@@ -101,8 +103,60 @@ def test_a_vendor_path_with_no_nul_terminator_still_matches() -> None:
     """Rust does not NUL-terminate a panic location the way a C string literal would,
     so the file-extension anchor must not require anything after `.rs`."""
     text = "vendor/openssl/src/ssl/mod.rsassertion failed"
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert [(c.name, c.version) for c in crates] == [("openssl", None)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/r/cargo/registry/src/idx/bar-1.0.0/vendor/ring/src/x.rs",
+        "/r/cargo/registry/src/idx/bar-1.0.0/vendor/zz/src/x.rs",
+        "/r/cargo/registry/src/idx/bar-1.0.0/third_party/vendor/ring/src/x.rs",
+        r"C:\r\cargo\registry\src\idx\bar-1.0.0\vendor\ring\src\x.rs",
+        "/usr/share/cargo/registry/bar-1.0.0/vendor/ring/src/x.rs",
+    ],
+)
+def test_a_vendor_tree_inside_a_registry_crate_is_part_of_that_crate(text: str) -> None:
+    """A `vendor/` tree inside a registry crate's own directory is that crate's
+    vendored source, not a crate of its own: the nested `vendor/ring/...` or
+    `vendor/zz/...` match is dropped and only the registry crate is read."""
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset({"ring"}))
+    assert [(c.name, c.version) for c in crates] == [("bar", "1.0.0")]
+
+
+def test_a_vendor_tree_nests_in_the_nearest_preceding_registry_crate_only() -> None:
+    """With two registry matches ahead of a `vendor/` match, the nesting check must
+    measure the gap from the nearer one's end, not the first one found: `a`'s
+    directory does not contain `bar`'s nested `vendor/ring/...`, only `bar`'s does."""
+    text = "\n".join(
+        [
+            "cargo/registry/src/i/a-1.0.0/src/lib.rs",
+            "cargo/registry/src/i/bar-1.0.0/vendor/ring/src/x.rs",
+        ]
+    )
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset({"ring"}))
+    assert [(c.name, c.version) for c in crates] == [("a", "1.0.0"), ("bar", "1.0.0")]
+
+
+def test_a_vendor_path_after_a_registry_crates_own_source_file_is_still_read() -> None:
+    """rustc packs `&'static str` panic locations for unrelated crates back to back in
+    read-only data, so a registry crate's directory ends at its first `.rs` file, not
+    at the end of the printable run: a `vendor/` path that starts after that point is
+    a separate path and is kept."""
+    text = "/r/cargo/registry/src/idx/bar-1.0.0/src/lib.rs/w/vendor/ring/src/x.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [("bar", "1.0.0"), ("ring", None)]
+
+
+def test_a_vendor_path_in_the_next_run_is_not_nested_in_a_registry_crate() -> None:
+    """A `vendor/` match in a printable run that follows a registry crate's own run,
+    joined by `RUN_SEPARATOR` plus a directory separator, is never read as nested in
+    it: the gap between the two contains the run separator, which the nesting check
+    excludes from a directory component."""
+    text = "/r/cargo/registry/src/idx/bar-1.0.0/\n/vendor/ring/src/x.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [("bar", "1.0.0"), ("ring", None)]
 
 
 def test_a_registry_and_a_vendor_hit_for_the_same_crate_sort_deterministically() -> None:
@@ -115,14 +169,14 @@ def test_a_registry_and_a_vendor_hit_for_the_same_crate_sort_deterministically()
             "vendor/ring/src/lib.rs",
         ]
     )
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert [(c.name, c.version) for c in crates] == [("ring", None), ("ring", "0.17.8")]
 
 
 def test_deduplicates_repeated_paths_for_the_same_crate() -> None:
     path = "/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ring-0.17.8/src/aead.rs"
     text = "\n".join([path, path.replace("aead", "hkdf")])
-    crates, truncated = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, truncated = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert crates == (crates[0],)
 
 
@@ -133,7 +187,7 @@ def test_sorts_multiple_distinct_crates_by_name_then_version() -> None:
             "cargo/registry/src/index.crates.io-x/aws-lc-sys-0.19.0/src/lib.rs",
         ]
     )
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert [c.name for c in crates] == ["aws-lc-sys", "zeroize"]
 
 
@@ -142,7 +196,7 @@ def test_caps_after_sorting_and_flags_truncation() -> None:
     text = "\n".join(
         f"cargo/registry/src/index.crates.io-x/crate{i}-0.1.{i}/src/lib.rs" for i in range(5)
     )
-    crates, truncated = find_rust_crates(text, _PATTERNS, max_crates=2, claimed=frozenset())
+    crates, truncated = find_rust_crates(text, max_crates=2, **_PATTERNS, claimed=frozenset())
     assert truncated is True
     assert [c.name for c in crates] == ["crate0", "crate1"]
 
@@ -157,7 +211,9 @@ def test_a_claimed_crate_outranks_the_alphabet() -> None:
         [f"cargo/registry/src/index.crates.io-x/aaa{i:03d}-0.1.0/src/lib.rs" for i in range(10)]
         + ["cargo/registry/src/index.crates.io-x/ring-0.17.8/src/lib.rs"]
     )
-    crates, truncated = find_rust_crates(text, _PATTERNS, max_crates=3, claimed=frozenset({"ring"}))
+    crates, truncated = find_rust_crates(
+        text, max_crates=3, **_PATTERNS, claimed=frozenset({"ring"})
+    )
     assert truncated is True
     assert "ring" in {crate.name for crate in crates}
     assert len(crates) == 3
@@ -165,7 +221,7 @@ def test_a_claimed_crate_outranks_the_alphabet() -> None:
 
 def test_no_match_yields_empty_tuple_not_an_exception() -> None:
     crates, truncated = find_rust_crates(
-        "nothing interesting here", _PATTERNS, max_crates=128, claimed=frozenset()
+        "nothing interesting here", max_crates=128, **_PATTERNS, claimed=frozenset()
     )
     assert crates == ()
     assert truncated is False
@@ -184,7 +240,7 @@ def test_a_registry_path_spliced_from_two_runs_is_not_a_crate() -> None:
     for raw in cases:
         text = extract_printable(raw, 4, 1 << 20).text
         crates, _ = find_rust_crates(
-            text, _PATTERNS, max_crates=128, claimed=frozenset({"openssl", "ring"})
+            text, max_crates=128, **_PATTERNS, claimed=frozenset({"openssl", "ring"})
         )
         assert crates == (), text
 
@@ -203,9 +259,9 @@ def test_no_cargo_convention_reads_a_crate_across_the_run_separator() -> None:
     for path in paths:
         for i in range(1, len(path) - 1):
             spliced = path[:i] + RUN_SEPARATOR + path[i:]
-            got, _ = find_rust_crates(spliced, _PATTERNS, max_crates=128, claimed=frozenset())
-            head, _ = find_rust_crates(path[:i], _PATTERNS, max_crates=128, claimed=frozenset())
-            tail, _ = find_rust_crates(path[i:], _PATTERNS, max_crates=128, claimed=frozenset())
+            got, _ = find_rust_crates(spliced, max_crates=128, **_PATTERNS, claimed=frozenset())
+            head, _ = find_rust_crates(path[:i], max_crates=128, **_PATTERNS, claimed=frozenset())
+            tail, _ = find_rust_crates(path[i:], max_crates=128, **_PATTERNS, claimed=frozenset())
             expected = tuple(sorted(set(head) | set(tail), key=lambda c: (c.name, c.version or "")))
             assert got == expected, (path, i)
 
@@ -218,7 +274,7 @@ def test_a_numeric_semver_prerelease_splits_at_the_first_version() -> None:
     it green, and `.` allowed alone is already caught by
     `test_a_directory_name_with_a_dot_before_the_version_is_not_a_crate`."""
     text = "cargo/registry/src/index.crates.io-x/foo-1.0.0-1.2.3/src/lib.rs"
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert [(c.name, c.version) for c in crates] == [("foo", "1.0.0-1.2.3")]
 
 
@@ -227,7 +283,7 @@ def test_a_directory_name_with_a_dot_before_the_version_is_not_a_crate() -> None
     `.` would let the name and version groups split a digit-and-dot run several ways,
     which costs several times as much per MiB of near-misses."""
     text = "cargo/registry/src/index.crates.io-x/a.b-1.0.0/src/lib.rs"
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert crates == ()
 
 
@@ -235,5 +291,5 @@ def test_a_64_character_crate_name_crates_ios_maximum_still_reads_in_full() -> N
     """The name bound is crates.io's own limit, not an arbitrary tightening of it."""
     name = "a" * 64
     text = f"cargo/registry/src/index.crates.io-x/{name}-1.0.0/src/lib.rs"
-    crates, _ = find_rust_crates(text, _PATTERNS, max_crates=128, claimed=frozenset())
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
     assert [(c.name, c.version) for c in crates] == [(name, "1.0.0")]

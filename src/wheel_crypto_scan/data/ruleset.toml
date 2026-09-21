@@ -172,7 +172,10 @@ cargo_path_regex = '''cargo[/\\]registry[/\\](?:src[/\\][^/\\\x00"'\n]{1,255}[/\
 # multi-megabyte string table stays linear instead of quadratic, and every negated class
 # excludes `\n`, the run separator `binfmt.strings.RUN_SEPARATOR` joins printable runs
 # with, so a match can never bridge two runs that never sat next to each other in the
-# object.
+# object. A `vendor/` tree inside a registry crate's own directory
+# (`.../bar-1.0.0/vendor/ring/src/x.rs`) is that crate's vendored source, not a crate
+# of its own; `binfmt.rust` reads `bar` there and drops the nested `ring` match rather
+# than reporting it as a second, unversioned crate.
 cargo_vendor_path_regex = '''(?<![A-Za-z0-9_.-])vendor[/\\](?P<name>[A-Za-z0-9_][A-Za-z0-9_-]{0,63}?)(?:-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]{0,63}))?[/\\](?:[^/\\\x00"'\n]{1,255}[/\\]){0,16}?[^/\\\x00"'\n]{0,255}?\.rs'''
 
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
