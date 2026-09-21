@@ -105,7 +105,14 @@ most often `table`, naming one of the match tables above. The kinds in the shipp
 are `dist_name`, `requires_dist`, `wheel_generator`, `record_mismatch`, `sbom_component`,
 `dynamic_symbol`, `binary_string`, `dt_needed`, `bundled_library`, `rust_crate`,
 `linkage`, `opaque_binary`, `partial_binary`, `binaries_truncated`, `no_source`,
-`scan_error`, `py_import`, `py_call`, `py_attr`, `py_constant` and `py_ctypes_load`.
+`scan_error`, `py_import`, `py_call`, `py_attr`, `py_constant` and `py_ctypes_load`. Each
+kind takes only the keys `ruleset.MATCH_KEYS` lists for it (which always includes `kind`
+itself); any other key on that match table refuses the whole file at load time. The same
+holds for `[[rule]]`, every entry table above, `[verdict]`, `[limits]`, `[conventions]`
+and `[linkage_policy]`, and the top level of the file: a key none of these read is refused
+rather than silently doing nothing. `sbom_component` takes the plural `tables`; the
+singular `table` other kinds use to name a default's table is refused on this kind, since
+`_match_sbom_component` never reads it either.
 
 Three of those read the Python-side vocabularies rather than a table:
 
@@ -182,9 +189,9 @@ one), and a `suppressed_by` cycle across rules and crates are all refused at loa
 `--ruleset PATH` on `scan` and `rules` reads an alternative file. It goes through the same
 loader and the same validation, including the coherence check between a verdict-less
 `partial_binary` rule and `[linkage_policy] exclude_reasons`, the printable-ASCII check
-on every `[[string_group]]` substring, and the shape checks on `py_call`/`py_attr`/
-`py_constant`'s `targets`/`attributes`/`constants`/`values`/`usedforsecurity` fields
-described above -- all load errors rather than a test precisely so that `--ruleset`
-users are inside the guard too. A `[rule.match]` missing its kind's required field, or
-carrying one of the wrong shape, refuses the *whole* file at load time rather than
-silently dropping just that one rule.
+on every `[[string_group]]` substring, an unknown key on any table, and the shape checks
+on `py_call`/`py_attr`/`py_constant`'s `targets`/`attributes`/`constants`/`values`/
+`usedforsecurity` fields described above -- all load errors rather than a test precisely
+so that `--ruleset` users are inside the guard too. A `[rule.match]` missing its kind's
+required field, or carrying one of the wrong shape, refuses the *whole* file at load time
+rather than silently dropping just that one rule.

@@ -8,6 +8,7 @@ from `ruleset`; see `DESIGN.md` for why the loader lives in its own module.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import tomllib
 from collections.abc import Iterable, Mapping
@@ -28,6 +29,7 @@ from .ruleset import (
     GENERIC_MATCH_SEQUENCE_KEYS,
     LAYERS,
     LINKAGE_VALUES,
+    MATCH_KEYS,
     MATCHER_KINDS,
     ROUTED_KINDS,
     SEVERITIES,
@@ -44,6 +46,71 @@ from .ruleset import (
     SymbolGroup,
 )
 
+# What each top-level table, and each entry within it, is allowed to carry. A key
+# outside these sets loads clean and does nothing -- the typo trap `_refuse_unknown_keys`
+# exists to close, table by table, the same way `MATCH_KEYS` closes it for
+# `[rule.match]`.
+_TOP_LEVEL_KEYS = frozenset(
+    {"ruleset_version", "verdict", "limits", "conventions", "linkage_policy", "rule", *ENTRY_TABLES}
+)
+_VERDICT_KEYS = frozenset({"precedence"})
+_CONVENTIONS_KEYS = frozenset(
+    {
+        "vendor_dir_globs",
+        "mangled_soname_regex",
+        "windows_version_suffix_regex",
+        "cargo_path_regex",
+        "cargo_vendor_path_regex",
+        "weak_hash_algorithms",
+        "library_suffixes",
+        "windows_library_suffixes",
+        "go_boring_group",
+        "go_stock_group",
+        "go_fips140_group",
+    }
+)
+_LIMITS_KEYS = frozenset(f.name for f in dataclasses.fields(Limits))
+_RULE_KEYS = frozenset(
+    {
+        "id",
+        "layer",
+        "category",
+        "severity",
+        "confidence",
+        "needs_human_review",
+        "title",
+        "why",
+        "match",
+        "verdict",
+        "suppressed_by",
+    }
+)
+
+# What `_entry_overrides` and `_entry_rule` read off every entry table. `name` and
+# `rule` are read separately (`_entry_name`/`_entry_rule`), but belong in the same
+# allowed set: they are ordinary entry-level keys, just not read through
+# `_entry_overrides`.
+_OVERRIDES = frozenset({"name", "rule", "why", "severity", "verdict", "needs_human_review"})
+_ENTRY_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "crypto_distribution": _OVERRIDES,
+        "crypto_library": _OVERRIDES
+        | {
+            "sonames",
+            "symbol_group",
+            "string_group",
+            "copy_string_group",
+            "crates",
+            "always_report",
+        },
+        "rust_crate": _OVERRIDES | {"suppressed_by"},
+        "python_module": _OVERRIDES,
+        "symbol_group": frozenset({"name", "prefixes", "exact", "why"}),
+        "string_group": frozenset({"name", "substrings", "why"}),
+        "ctypes_library": frozenset({"substrings", "why"}),
+    }
+)
+
 
 def _require(mapping: Mapping[str, Any], key: str, where: str) -> Any:
     try:
@@ -53,9 +120,51 @@ def _require(mapping: Mapping[str, Any], key: str, where: str) -> Any:
 
 
 def _check(value: Any, allowed: Iterable[str], label: str, where: str) -> str:
-    if value not in allowed:
+    # `allowed` is a set or frozenset, so an unhashable value -- a list or table a
+    # malformed ruleset put where a token belongs -- would crash the membership test
+    # itself with a bare TypeError before this function got the chance to refuse it.
+    # The type check must run first for the same reason `_check_string` exists at all.
+    if not isinstance(value, str) or value not in allowed:
         raise RulesetError(f"{where}: unknown {label} {value!r}")
     return str(value)
+
+
+def _check_string(value: Any, label: str, where: str) -> str:
+    """Refuse a reference field before it is tested for set membership.
+
+    A name, a library or a group reference is read straight into a `not in <set>` or
+    `<set>` lookup a few lines below every call site; a list or table there crashes with
+    a bare `TypeError` instead of the `RulesetError` a malformed ruleset should raise.
+    Call this first wherever such a lookup follows.
+    """
+    if not isinstance(value, str):
+        raise RulesetError(f"{where}: {label} must be a string")
+    return value
+
+
+def _refuse_unknown_keys(data: Mapping[str, Any], allowed: Iterable[str], where: str) -> None:
+    unknown_keys = sorted(set(data) - set(allowed))
+    if unknown_keys:
+        raise RulesetError(f"{where}: unknown keys {unknown_keys}")
+
+
+def _entry_name(entry: Any, table: str) -> str:
+    """The `name` of one `[[table]]` entry, refusing the entry's own shape first.
+
+    Every cross-reference set (`_entry_names` below) is built by calling this on each
+    entry, so a nameless or misshapen entry is refused as a `RulesetError` wherever it
+    is first read, whatever order the passes over the file run in -- rather than a raw
+    `entry["name"]` reaching a `KeyError`, or a non-string `name` reaching whichever
+    `not in <set>` test runs next.
+    """
+    where = f"[[{table}]]"
+    if not isinstance(entry, Mapping):
+        raise RulesetError(f"{where}: entries must be tables")
+    return _check_string(_require(entry, "name", where), "name", where)
+
+
+def _entry_names(data: Mapping[str, Any], table: str) -> set[str]:
+    return {_entry_name(entry, table) for entry in data[table]}
 
 
 def _check_used_for_security(value: Any, where: str) -> None:
@@ -103,6 +212,7 @@ def _check_string_sequence(value: Any, label: str, where: str, *, allow_empty: b
 
 def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
     where = "[conventions]"
+    _refuse_unknown_keys(data, _CONVENTIONS_KEYS, where)
     try:
         mangled = re.compile(str(_require(data, "mangled_soname_regex", where)))
         windows = re.compile(str(_require(data, "windows_version_suffix_regex", where)))
@@ -219,18 +329,16 @@ def _parse_linkage_policy(data: Mapping[str, Any] | None, rules: Iterable[Rule])
     whose two lists contradict each other is refused at load time rather than
     resolving the contradiction silently in favour of whichever consumer runs first.
 
-    Keys and tokens are both checked, for the reason a rule's `reasons` are checked in
-    `_validate_match_references`: `excluded_reasons` would otherwise load clean and
-    exempt nothing, and the symptom -- a wheel reading `unknown` instead of `none` for
-    a cause that should be exempt -- looks like the feature working.
+    Keys and tokens are both checked, the same way every other table in this file is:
+    `excluded_reasons` would otherwise load clean and exempt nothing, and the symptom --
+    a wheel reading `unknown` instead of `none` for a cause that should be exempt --
+    looks like the feature working.
     """
     routine = routine_reasons(rules)
     where = "[linkage_policy]"
     if data is None:
         return LinkagePolicy(exclude_reasons=routine)
-    unknown_keys = sorted(set(data) - {"why", "exclude_reasons"})
-    if unknown_keys:
-        raise RulesetError(f"{where}: unknown keys {unknown_keys}")
+    _refuse_unknown_keys(data, {"why", "exclude_reasons"}, where)
     _require(data, "why", where)
     reasons = frozenset(data.get("exclude_reasons", ()))
     for reason in sorted(reasons):
@@ -248,6 +356,7 @@ def _parse_linkage_policy(data: Mapping[str, Any] | None, rules: Iterable[Rule])
 def _parse_rule(data: Mapping[str, Any], precedence: frozenset[str]) -> Rule:
     rule_id = _require(data, "id", "[[rule]]")
     where = f"rule {rule_id!r}"
+    _refuse_unknown_keys(data, _RULE_KEYS, where)
     verdict = data.get("verdict")
     if verdict is not None:
         _check(verdict, precedence, "verdict class", where)
@@ -274,7 +383,9 @@ def _parse_matches(match: Any, where: str) -> tuple[Mapping[str, Any], ...]:
     if not tables:
         raise RulesetError(f"{where}: match is empty")
     for table in tables:
-        _check(_require(table, "kind", f"{where} match"), MATCHER_KINDS, "matcher kind", where)
+        match_where = f"{where} match"
+        kind = _check(_require(table, "kind", match_where), MATCHER_KINDS, "matcher kind", where)
+        _refuse_unknown_keys(table, MATCH_KEYS[kind], match_where)
     return tuple(MappingProxyType(dict(table)) for table in tables)
 
 
@@ -366,7 +477,7 @@ def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
     """
     where = "[conventions]"
     conventions = _require(ruleset_data, "conventions", where)
-    known = {entry["name"] for entry in ruleset_data["string_group"]}
+    known = _entry_names(ruleset_data, "string_group")
     for key in ("go_boring_group", "go_stock_group", "go_fips140_group"):
         name = str(_require(conventions, key, where))
         if name not in known:
@@ -378,10 +489,11 @@ def _validate_sbom_component_coverage(rules: Iterable[Rule], source: str) -> Non
     rule reports on the same two tables it reads names from, `crypto_library` and
     `rust_crate` -- so the field and the finding never disagree about the same string.
     Checked once over the whole ruleset, as the union of every `sbom_component` rule's
-    own `match["tables"]` (never the singular `table` key, which `_match_sbom_component`
-    itself never reads either): covering the two tables across two separate rules, one
-    for `crypto_library` and one for `rust_crate`, is exactly as sound as one rule doing
-    both, and a rule-by-rule version of this check would refuse that split for no reason.
+    own `match["tables"]` (never the singular `table` key, which `MATCH_KEYS` refuses on
+    this kind outright, since `_match_sbom_component` never reads it): covering the two
+    tables across two separate rules, one for `crypto_library` and one for `rust_crate`,
+    is exactly as sound as one rule doing both, and a rule-by-rule version of this check
+    would refuse that split for no reason.
     It would also miss the case that actually breaks the agreement: no `sbom_component`
     rule at all, or every one of them narrowed to `crypto_distribution` alone. Without
     one, `linkage.resolve_linkage` still moves `<name>_linkage` to `unknown` on an SBOM
@@ -438,22 +550,27 @@ def _validate_match_references(
 
     if kind == "dynamic_symbol":
         _check(match.get("binding"), BINDINGS, "symbol binding", where)
-        known = {entry["name"] for entry in ruleset_data["symbol_group"]}
-        for name in _group_names(match):
+        known = _entry_names(ruleset_data, "symbol_group")
+        for name in _group_names(match, where):
             if name not in known:
                 raise RulesetError(f"{where}: unknown symbol group {name!r}")
     elif kind == "binary_string":
-        known = {entry["name"] for entry in ruleset_data["string_group"]}
-        for name in _group_names(match):
+        known = _entry_names(ruleset_data, "string_group")
+        for name in _group_names(match, where):
             if name not in known:
                 raise RulesetError(f"{where}: unknown string group {name!r}")
     elif kind == "scan_error":
-        for error_kind in _require(match, "error_kinds", where):
+        error_kinds = _require(match, "error_kinds", where)
+        _check_string_sequence(error_kinds, "error_kinds", where)
+        for error_kind in error_kinds:
             if error_kind not in ERROR_KINDS:
                 raise RulesetError(f"{where}: unknown error kind {error_kind!r}")
     elif kind == "partial_binary":
         for key in ("reasons", "exclude_reasons"):
-            for reason in match.get(key, ()):
+            if key not in match:
+                continue
+            _check_string_sequence(match[key], key, where)
+            for reason in match[key]:
                 if reason not in PARTIAL_REASONS:
                     raise RulesetError(f"{where}: unknown partial reason {reason!r}")
         if match.get("reasons") and match.get("exclude_reasons"):
@@ -510,29 +627,36 @@ def _validate_match_references(
         )
 
     # `Ruleset.compile_patterns` reads `GENERIC_MATCH_SEQUENCE_KEYS` off every match
-    # table regardless of kind, so a bool or other non-list shape here crashes it even
-    # on a kind that never reads the field itself, such as a `dist_name` match
-    # carrying a stray `targets` key. This re-checks the same key a kind-specific arm
-    # above may have already required and shape-checked with its own message (`py_call`
-    # re-checks `targets`, for instance) -- harmless, and what keeps every OTHER kind
-    # covered too, on the same shared list `compile_patterns` itself reads.
+    # table regardless of kind, so a bool or other non-list shape here would crash it.
+    # `MATCH_KEYS` allows each of these three keys on exactly one kind (`targets` on
+    # `py_call`, `attributes` on `py_attr`, `constants` on `py_constant`), and that
+    # kind's arm above already requires and shape-checks its own key before this loop
+    # runs, so today the loop only re-confirms a shape already checked. It is the
+    # backstop that keeps a kind from reaching `compile_patterns` with an unchecked
+    # shape if `MATCH_KEYS` ever grows to allow one of these keys on a kind whose arm
+    # does not check it.
     for key in GENERIC_MATCH_SEQUENCE_KEYS:
         if key in match:
             _check_string_sequence(match[key], key, where)
 
-    libraries = {entry["name"] for entry in ruleset_data["crypto_library"]}
+    libraries = _entry_names(ruleset_data, "crypto_library")
     for key in ("library", "name"):
         if kind in {"bundled_library", "dt_needed", "linkage"} and key in match:
-            if match[key] not in libraries:
-                raise RulesetError(f"{where}: unknown library {match[key]!r}")
-    for name in match.get("exclude_libraries", ()):
-        if name not in libraries:
-            raise RulesetError(f"{where}: unknown library {name!r}")
+            value = _check_string(match[key], key, where)
+            if value not in libraries:
+                raise RulesetError(f"{where}: unknown library {value!r}")
+    if "exclude_libraries" in match:
+        _check_string_sequence(match["exclude_libraries"], "exclude_libraries", where)
+        for name in match["exclude_libraries"]:
+            if name not in libraries:
+                raise RulesetError(f"{where}: unknown library {name!r}")
 
 
-def _group_names(match: Mapping[str, Any]) -> list[str]:
+def _group_names(match: Mapping[str, Any], where: str) -> list[str]:
+    _check_string_sequence(match.get("groups", []), "groups", where)
     names = list(match.get("groups", ()))
     if "group" in match:
+        _check_string(match["group"], "group", where)
         names.insert(0, match["group"])
     return names
 
@@ -599,7 +723,9 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     silently skipped: a ruleset that cannot be fully understood is not used at all.
     """
     version = _require(data, "ruleset_version", source)
-    precedence = tuple(_require(_require(data, "verdict", source), "precedence", source))
+    verdict_table = _require(data, "verdict", source)
+    _refuse_unknown_keys(verdict_table, _VERDICT_KEYS, "[verdict]")
+    precedence = tuple(_require(verdict_table, "precedence", source))
     if not precedence:
         raise RulesetError(f"{source}: [verdict] precedence is empty")
     classes = frozenset(precedence)
@@ -607,6 +733,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     for table in ENTRY_TABLES:
         if table not in data:
             raise RulesetError(f"{source}: missing required table [[{table}]]")
+    _refuse_unknown_keys(data, _TOP_LEVEL_KEYS, source)
 
     rules = tuple(_parse_rule(entry, classes) for entry in _require(data, "rule", source))
     rule_ids = {rule.id for rule in rules}
@@ -646,9 +773,10 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     distributions: dict[str, Distribution] = {}
     for entry in data["crypto_distribution"]:
-        name = canonicalize_name(str(_require(entry, "name", "[[crypto_distribution]]")))
+        name = canonicalize_name(_entry_name(entry, "crypto_distribution"))
         where = f"crypto_distribution {name!r}"
         _refuse_suppressed_by(entry, where)
+        _refuse_unknown_keys(entry, _ENTRY_KEYS["crypto_distribution"], where)
         # Unlike the other entry tables, a distribution always names its own rule.
         rule_id = _entry_rule(entry, "crypto_distribution", by_id, where)
         if rule_id is None:
@@ -657,24 +785,30 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             name=name, rule=rule_id, **_entry_overrides(entry, classes, where)
         )
 
+    symbol_group_names = _entry_names(data, "symbol_group")
+    string_group_names = _entry_names(data, "string_group")
+    rust_crate_names = _entry_names(data, "rust_crate")
+
     libraries: dict[str, CryptoLibrary] = {}
     for entry in data["crypto_library"]:
-        name = str(_require(entry, "name", "[[crypto_library]]"))
+        name = _entry_name(entry, "crypto_library")
         where = f"crypto_library {name!r}"
         _refuse_suppressed_by(entry, where)
+        _refuse_unknown_keys(entry, _ENTRY_KEYS["crypto_library"], where)
         symbol_group = entry.get("symbol_group")
-        if symbol_group is not None and symbol_group not in {
-            group["name"] for group in data["symbol_group"]
-        }:
-            raise RulesetError(f"{where}: unknown symbol group {symbol_group!r}")
+        if symbol_group is not None:
+            symbol_group = _check_string(symbol_group, "symbol_group", where)
+            if symbol_group not in symbol_group_names:
+                raise RulesetError(f"{where}: unknown symbol group {symbol_group!r}")
         string_group = entry.get("string_group")
-        if string_group is not None and string_group not in {
-            group["name"] for group in data["string_group"]
-        }:
-            raise RulesetError(f"{where}: unknown string group {string_group!r}")
+        if string_group is not None:
+            string_group = _check_string(string_group, "string_group", where)
+            if string_group not in string_group_names:
+                raise RulesetError(f"{where}: unknown string group {string_group!r}")
         copy_string_group = entry.get("copy_string_group")
         if copy_string_group is not None:
-            if copy_string_group not in {group["name"] for group in data["string_group"]}:
+            copy_string_group = _check_string(copy_string_group, "copy_string_group", where)
+            if copy_string_group not in string_group_names:
                 raise RulesetError(f"{where}: unknown string group {copy_string_group!r}")
             if string_group is None:
                 raise RulesetError(f"{where}: copy_string_group needs a string_group")
@@ -683,7 +817,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         _check_string_sequence(entry.get("crates", []), "crates", where)
         library_crates = tuple(str(crate) for crate in entry.get("crates", ()))
         for crate in library_crates:
-            if crate not in {rust_crate["name"] for rust_crate in data["rust_crate"]}:
+            if crate not in rust_crate_names:
                 raise RulesetError(f"{where}: crate {crate!r} is not a [[rust_crate]] entry")
         libraries[name] = CryptoLibrary(
             name=name,
@@ -701,16 +835,17 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     # declared later in the file, and so an entry's own `rule` need not be reparsed to
     # answer "who owns this crate's finding".
     default_crate_rule = next(iter(defaults.get("rust_crate", ())), None)
-    crate_names = {str(_require(entry, "name", "[[rust_crate]]")) for entry in data["rust_crate"]}
+    crate_names = _entry_names(data, "rust_crate")
     crate_owner: dict[str, str | None] = {
-        str(_require(entry, "name", "[[rust_crate]]")): entry.get("rule") or default_crate_rule
+        _entry_name(entry, "rust_crate"): entry.get("rule") or default_crate_rule
         for entry in data["rust_crate"]
     }
 
     crates: dict[str, RustCrateEntry] = {}
     for entry in data["rust_crate"]:
-        name = str(_require(entry, "name", "[[rust_crate]]"))
+        name = _entry_name(entry, "rust_crate")
         where = f"rust_crate {name!r}"
+        _refuse_unknown_keys(entry, _ENTRY_KEYS["rust_crate"], where)
         _check_string_sequence(entry.get("suppressed_by", []), "suppressed_by", where)
         suppressor_names = [str(other) for other in entry.get("suppressed_by", ())]
         if suppressor_names and crate_owner[name] is None:
@@ -738,9 +873,10 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     modules: dict[str, PythonModule] = {}
     for entry in data["python_module"]:
-        name = str(_require(entry, "name", "[[python_module]]"))
+        name = _entry_name(entry, "python_module")
         where = f"python_module {name!r}"
         _refuse_suppressed_by(entry, where)
+        _refuse_unknown_keys(entry, _ENTRY_KEYS["python_module"], where)
         modules[name] = PythonModule(
             name=name,
             rule=_entry_rule(entry, "python_module", by_id, where),
@@ -749,8 +885,9 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     symbol_groups: dict[str, SymbolGroup] = {}
     for entry in data["symbol_group"]:
-        name = str(_require(entry, "name", "[[symbol_group]]"))
+        name = _entry_name(entry, "symbol_group")
         where = f"symbol_group {name!r}"
+        _refuse_unknown_keys(entry, _ENTRY_KEYS["symbol_group"], where)
         prefixes = tuple(sorted(_require(entry, "prefixes", where)))
         exact = frozenset(_require(entry, "exact", where))
         if not prefixes and not exact:
@@ -759,8 +896,9 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     string_groups: dict[str, StringGroup] = {}
     for entry in data["string_group"]:
-        name = str(_require(entry, "name", "[[string_group]]"))
+        name = _entry_name(entry, "string_group")
         where = f"string_group {name!r}"
+        _refuse_unknown_keys(entry, _ENTRY_KEYS["string_group"], where)
         substrings = tuple(sorted(_require(entry, "substrings", where)))
         if not substrings:
             raise RulesetError(f"{where}: has no substrings")
@@ -784,10 +922,14 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     ctypes_substrings: set[str] = set()
     for entry in data["ctypes_library"]:
-        _require(entry, "why", "[[ctypes_library]]")
-        ctypes_substrings.update(_require(entry, "substrings", "[[ctypes_library]]"))
+        where = "[[ctypes_library]]"
+        _refuse_unknown_keys(entry, _ENTRY_KEYS["ctypes_library"], where)
+        _require(entry, "why", where)
+        ctypes_substrings.update(_require(entry, "substrings", where))
 
-    limits = Limits(**dict(data.get("limits", {})))
+    limits_data = dict(data.get("limits", {}))
+    _refuse_unknown_keys(limits_data, _LIMITS_KEYS, "[limits]")
+    limits = Limits(**limits_data)
     _check_limits_leave_room_for_every_key(limits, symbol_groups, string_groups, crates)
     return Ruleset(
         version=str(version),

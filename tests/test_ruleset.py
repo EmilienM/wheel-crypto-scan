@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import ast
+import copy
+import inspect
 import re
+import tomllib
 from dataclasses import fields
+from importlib.resources import files
 from typing import Any
 
 import pytest
 
-from wheel_crypto_scan import engine
+from wheel_crypto_scan import engine, ruleset_loader
 from wheel_crypto_scan.errors import RulesetError
 from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, PySite
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset import (
     DEFAULTABLE_TABLES,
     ENTRY_TABLES,
+    MATCH_KEYS,
     MATCHER_KINDS,
     ROUTED_KINDS,
     SymbolGroup,
@@ -271,14 +277,178 @@ def test_an_unknown_linkage_exemption_is_rejected() -> None:
 
 
 def test_an_unknown_key_in_the_linkage_policy_is_rejected() -> None:
-    """`excluded_reasons` parses, exempts nothing, and looks exactly like it worked.
-
-    `[conventions]` gets away without this because every key it has is required, so a
-    typo drops a required one and errors. This table's only key is optional.
-    """
+    """`excluded_reasons` parses, exempts nothing, and looks exactly like it worked."""
     data = minimal(linkage_policy={"why": "w", "excluded_reasons": ["pe_ordinal_import"]})
     with pytest.raises(RulesetError, match="unknown keys"):
         parse_ruleset(data)
+
+
+# --- unknown keys are refused on every table, not just [linkage_policy] -------------
+
+
+def _shipped_data() -> dict[str, Any]:
+    resource = files("wheel_crypto_scan").joinpath("data/ruleset.toml")
+    return tomllib.loads(resource.read_text(encoding="utf-8"))
+
+
+def _mutate_shipped_rule_match(rule_id: str, old_key: str, new_key: str) -> dict[str, Any]:
+    """The shipped ruleset, with one named rule's match key renamed."""
+    data = copy.deepcopy(_shipped_data())
+    for rule in data["rule"]:
+        if rule["id"] == rule_id:
+            rule["match"][new_key] = rule["match"].pop(old_key)
+            return data
+    raise AssertionError(f"no shipped rule {rule_id!r}")
+
+
+@pytest.mark.parametrize(
+    ("case", "mutate", "key"),
+    [
+        (
+            "supressed_by on a rule",
+            lambda: {**minimal(), "rule": [{**minimal()["rule"][0], "supressed_by": []}]},
+            "supressed_by",
+        ),
+        (
+            "exclude_object_valu on a shipped rule's match",
+            lambda: _mutate_shipped_rule_match(
+                "DERIVED_SYSTEM_OPENSSL_ONLY", "exclude_object_values", "exclude_object_valu"
+            ),
+            "exclude_object_valu",
+        ),
+        (
+            "verdit on a crypto_library entry",
+            lambda: minimal(crypto_library=[{**minimal()["crypto_library"][0], "verdit": "x"}]),
+            "verdit",
+        ),
+        (
+            "severty on a rust_crate entry",
+            lambda: minimal(rust_crate=[{**minimal()["rust_crate"][0], "severty": "high"}]),
+            "severty",
+        ),
+        (
+            "extra key on python_module",
+            lambda: minimal(python_module=[{**minimal()["python_module"][0], "bogus": True}]),
+            "bogus",
+        ),
+        (
+            "extra key on crypto_distribution",
+            lambda: minimal(
+                crypto_distribution=[{**minimal()["crypto_distribution"][0], "bogus": True}]
+            ),
+            "bogus",
+        ),
+        (
+            "suppressed_by on a string_group",
+            lambda: minimal(
+                string_group=[{**minimal()["string_group"][0], "suppressed_by": []}]
+                + minimal()["string_group"][1:]
+            ),
+            "suppressed_by",
+        ),
+        (
+            "extra key on symbol_group",
+            lambda: minimal(symbol_group=[{**minimal()["symbol_group"][0], "bogus": True}]),
+            "bogus",
+        ),
+        (
+            "extra key on ctypes_library",
+            lambda: minimal(ctypes_library=[{**minimal()["ctypes_library"][0], "bogus": True}]),
+            "bogus",
+        ),
+        (
+            "extra key in [conventions]",
+            lambda: minimal(conventions={**minimal()["conventions"], "bogus": True}),
+            "bogus",
+        ),
+        (
+            "extra key in [verdict]",
+            lambda: minimal(verdict={**minimal()["verdict"], "bogus": True}),
+            "bogus",
+        ),
+        (
+            "extra key in [limits], not a TypeError",
+            lambda: minimal(limits={**minimal()["limits"], "bogus": True}),
+            "bogus",
+        ),
+        (
+            "a top-level linkage_polcy table",
+            lambda: {**minimal(), "linkage_polcy": {"why": "w"}},
+            "linkage_polcy",
+        ),
+        (
+            "name on a bundled_library match (the engine reads library)",
+            lambda: minimal(
+                rule=[
+                    {
+                        **minimal()["rule"][0],
+                        "match": {"kind": "bundled_library", "name": "openssl"},
+                    }
+                ]
+            ),
+            "name",
+        ),
+        (
+            "library on a linkage match (the engine reads name)",
+            lambda: minimal(
+                rule=[
+                    {
+                        **minimal()["rule"][0],
+                        "match": {
+                            "kind": "linkage",
+                            "library": "openssl",
+                            "value": "system",
+                        },
+                    }
+                ]
+            ),
+            "library",
+        ),
+        (
+            "a misspelt copy_strng_group on a crypto_library",
+            lambda: minimal(
+                crypto_library=[
+                    {
+                        **minimal()["crypto_library"][0],
+                        "string_group": "openssl_banner",
+                        "copy_strng_group": "openssl_banner",
+                    }
+                ]
+            ),
+            "copy_strng_group",
+        ),
+    ],
+    ids=[
+        "supressed_by-on-a-rule",
+        "exclude_object_valu-on-a-shipped-match",
+        "verdit-on-a-crypto_library-entry",
+        "severty-on-a-rust_crate-entry",
+        "extra-key-on-python_module",
+        "extra-key-on-crypto_distribution",
+        "suppressed_by-on-a-string_group",
+        "extra-key-on-symbol_group",
+        "extra-key-on-ctypes_library",
+        "extra-key-in-conventions",
+        "extra-key-in-verdict",
+        "extra-key-in-limits",
+        "top-level-linkage_polcy",
+        "name-on-a-bundled_library-match",
+        "library-on-a-linkage-match",
+        "copy_strng_group-on-a-crypto_library",
+    ],
+)
+def test_an_unknown_key_is_refused_wherever_it_is_written(case: str, mutate: Any, key: str) -> None:
+    """A typo'd or misplaced key loads clean and does nothing, everywhere the loader
+    reads a table, not only `[linkage_policy]`.
+
+    Breaks to prove it: comment out the `_refuse_unknown_keys` call the case's table
+    goes through and this case turns green to red. For `[limits]` specifically,
+    removing that call gives a bare `TypeError`, which `pytest.raises(RulesetError)`
+    does not catch.
+    """
+    del case  # only steers the parametrize id
+    with pytest.raises(RulesetError, match=rf"unknown keys \[.*'{re.escape(key)}'.*\]"):
+        parse_ruleset(mutate())
 
 
 def test_a_linkage_policy_without_a_why_is_rejected() -> None:
@@ -401,13 +571,64 @@ def test_a_crate_entry_naming_a_missing_rule_is_rejected() -> None:
         parse_ruleset(data)
 
 
-def test_a_crate_entry_with_no_name_is_rejected() -> None:
-    """The `suppressed_by` pre-pass reads every entry's name before the per-entry
-    `_require` in the main loop runs, so it must raise the same RulesetError itself
-    rather than a bare KeyError."""
+def _fully_referenced_library_ruleset() -> dict[str, Any]:
+    """`minimal()` with its one library pointed at every cross-reference an entry can
+    carry, so a nameless entry appended to any of these tables is reached by every pass
+    that reads a name off it, not only the entry table's own loop."""
     data = minimal()
-    data["rust_crate"].append({"verdict": "NON_APPROVED_CRYPTO", "why": "no name"})
+    data["crypto_library"][0] = {
+        **data["crypto_library"][0],
+        "symbol_group": "openssl",
+        "string_group": "openssl_banner",
+        "crates": ["ring"],
+    }
+    return data
+
+
+_NAMELESS_ENTRIES: dict[str, dict[str, Any]] = {
+    "crypto_distribution": {"rule": "DIST_NON_APPROVED_CRYPTO", "why": "no name"},
+    "crypto_library": {"why": "no name"},
+    "symbol_group": {"prefixes": ["X_"], "exact": [], "why": "no name"},
+    "string_group": {"why": "no name"},
+    "rust_crate": {"why": "no name"},
+    "python_module": {"why": "no name"},
+}
+
+
+@pytest.mark.parametrize("table", sorted(_NAMELESS_ENTRIES))
+def test_an_entry_with_no_name_is_rejected(table: str) -> None:
+    """Whichever pass reads an entry's name first -- a cross-reference set built ahead
+    of an entry table's own loop, or the loop itself -- must raise the same
+    `RulesetError`, never a bare `KeyError`.
+
+    Breaks to prove it: revert `_entry_names` to `{e["name"] for e in data[table]}`.
+    The `rust_crate`, `crypto_library` and `string_group` cases then raise `KeyError`.
+    """
+    data = _fully_referenced_library_ruleset()
+    data[table].append(_NAMELESS_ENTRIES[table])
     with pytest.raises(RulesetError, match="missing required field 'name'"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize("table", sorted(_NAMELESS_ENTRIES))
+def test_an_entry_whose_name_is_not_a_string_is_rejected(table: str) -> None:
+    """A `name` of the wrong shape reaches the same `not in <set>` membership tests a
+    missing one does, so it must be refused before them too, not crash with a bare
+    `TypeError`.
+
+    Breaks to prove it: drop the `_check_string` call from `_entry_name`. The library
+    and crate cases then raise `TypeError`; the distribution case loads clean.
+    """
+    data = _fully_referenced_library_ruleset()
+    data[table][0]["name"] = ["x"]
+    with pytest.raises(RulesetError, match="name must be a string"):
+        parse_ruleset(data)
+
+
+def test_an_entry_that_is_not_a_table_is_rejected() -> None:
+    data = minimal()
+    data["rust_crate"].append("ring")
+    with pytest.raises(RulesetError, match="entries must be tables"):
         parse_ruleset(data)
 
 
@@ -642,6 +863,32 @@ def test_a_library_naming_a_bare_crate_string_is_rejected() -> None:
         parse_ruleset(data)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("symbol_group", ["openssl"]),
+        ("string_group", ["openssl_banner"]),
+        ("copy_string_group", ["go_boring"]),
+    ],
+)
+def test_a_library_group_field_that_is_not_a_string_is_rejected(
+    field: str, value: list[str]
+) -> None:
+    """Each of these three fields is read straight into a `not in <set>` membership
+    test a few lines below, which crashes with a bare `TypeError` on a list or table
+    rather than the `RulesetError` a malformed ruleset should raise.
+
+    Breaks to prove it: remove the `_check_string` call the field goes through; each
+    case then raises `TypeError`.
+    """
+    data = minimal()
+    data["crypto_library"][0][field] = value
+    if field == "copy_string_group":
+        data["crypto_library"][0]["string_group"] = "openssl_banner"
+    with pytest.raises(RulesetError, match=f"{field} must be a string"):
+        parse_ruleset(data)
+
+
 def test_rule_naming_a_missing_table_is_rejected() -> None:
     data = minimal()
     data["rule"][0]["match"]["table"] = "crypto_distributions"
@@ -661,6 +908,137 @@ def test_rule_naming_a_missing_library_is_rejected() -> None:
     data["rule"][0]["match"] = {"kind": "bundled_library", "library": "opensssl"}
     with pytest.raises(RulesetError, match="unknown library"):
         parse_ruleset(data)
+
+
+@pytest.mark.parametrize(
+    ("bad_match", "message", "fix"),
+    [
+        (
+            {"kind": "dynamic_symbol", "group": ["openssl"], "binding": "any"},
+            "group must be a string",
+            {"group": "openssl"},
+        ),
+        (
+            {"kind": "dynamic_symbol", "groups": [["openssl"]], "binding": "any"},
+            "groups must be a list of strings",
+            {"groups": ["openssl"]},
+        ),
+        (
+            {"kind": "binary_string", "group": ["openssl_banner"]},
+            "group must be a string",
+            {"group": "openssl_banner"},
+        ),
+        (
+            {"kind": "dynamic_symbol", "group": "openssl", "binding": ["any"]},
+            "unknown symbol binding",
+            {"binding": "any"},
+        ),
+        (
+            {"kind": ["dist_name"], "table": "crypto_distribution"},
+            "unknown matcher kind",
+            None,
+        ),
+        (
+            {"kind": "dt_needed", "library": ["openssl"]},
+            "must be a string",
+            {"library": "openssl"},
+        ),
+        (
+            {"kind": "bundled_library", "exclude_libraries": [["openssl"]]},
+            "exclude_libraries must be a list of strings",
+            {"exclude_libraries": ["openssl"]},
+        ),
+        (
+            {"kind": "scan_error", "error_kinds": [["x"]]},
+            "error_kinds must be a list of strings",
+            {"error_kinds": ["bad_zip"]},
+        ),
+        (
+            {"kind": "partial_binary", "reasons": [["x"]]},
+            "reasons must be a list of strings",
+            {"reasons": ["pe_ordinal_import"]},
+        ),
+    ],
+)
+def test_a_rule_reference_field_of_the_wrong_shape_is_rejected(
+    bad_match: dict[str, Any], message: str, fix: dict[str, Any] | None
+) -> None:
+    """A reference field is read straight into a `not in <set>` membership test, or
+    iterated, a few lines below where it is required or defaulted -- a list or table
+    there crashes with a bare `TypeError` instead of the `RulesetError` a malformed
+    ruleset should raise.
+
+    Every case but the malformed `kind` itself also checks that swapping the one bad
+    field for a good one of the same shape loads clean, so the fix narrows to that one
+    field rather than accidentally also covering up a missing one.
+
+    Breaks to prove it: revert `_check` to the bare `not in` test -- the `binding` and
+    `kind` cases then raise `TypeError`. Revert the reference-field checks in
+    `_validate_match_references` -- the `group`, `library`, `error_kinds` and `reasons`
+    cases then raise `TypeError`.
+    """
+
+    def _with_match(match: dict[str, Any]) -> dict[str, Any]:
+        data = minimal()
+        data["rule"].append(
+            {
+                "id": "MATCH_SHAPE_TEST",
+                "layer": "binary",
+                "category": "crypto-implementation",
+                "severity": "info",
+                "confidence": "high",
+                "needs_human_review": False,
+                "title": "t",
+                "why": "w",
+                "match": match,
+            }
+        )
+        return data
+
+    with pytest.raises(RulesetError, match=message):
+        parse_ruleset(_with_match(bad_match))
+    if fix is not None:
+        parse_ruleset(_with_match({**bad_match, **fix}))
+
+
+def test_a_verdict_or_severity_that_is_not_a_string_is_rejected() -> None:
+    """A verdict or severity of the wrong shape reaches the same `not in <set>` test a
+    typo does, so both must raise the same `RulesetError` rather than a `TypeError`.
+
+    Breaks to prove it: revert `_check` to the bare `not in` test; each case then
+    raises `TypeError`.
+    """
+    rule_verdict = minimal()
+    rule_verdict["rule"][0]["verdict"] = ["x"]
+    with pytest.raises(RulesetError, match="unknown verdict class"):
+        parse_ruleset(rule_verdict)
+
+    rule_severity = minimal()
+    rule_severity["rule"][0]["severity"] = ["x"]
+    with pytest.raises(RulesetError, match="unknown severity"):
+        parse_ruleset(rule_severity)
+
+    crate_verdict = minimal()
+    crate_verdict["rust_crate"][0]["verdict"] = ["x"]
+    with pytest.raises(RulesetError, match="unknown verdict class"):
+        parse_ruleset(crate_verdict)
+
+
+def test_the_shipped_ruleset_with_a_malformed_entry_is_refused() -> None:
+    """The two shapes reproduced against a ruleset whose libraries really do list
+    crates -- unlike `minimal()`, so this also exercises the crate cross-reference
+    path a wrapped-list `string_group` reaches through `crypto_library`."""
+    wrapped_string_group = copy.deepcopy(_shipped_data())
+    for library in wrapped_string_group["crypto_library"]:
+        if library["name"] == "openssl":
+            library["string_group"] = [library["string_group"]]
+    with pytest.raises(RulesetError, match="string_group must be a string"):
+        parse_ruleset(wrapped_string_group)
+
+    nameless_crate = copy.deepcopy(_shipped_data())
+    nameless_crate["rust_crate"].append({"why": "x"})
+    with pytest.raises(RulesetError, match="missing required field 'name'"):
+        parse_ruleset(nameless_crate)
 
 
 def _sbom_component_rule(tables: list[str], rule_id: str = "SBOM_TEST_RULE") -> dict[str, Any]:
@@ -714,14 +1092,13 @@ def test_no_sbom_component_rule_at_all_is_rejected() -> None:
 
 def test_an_sbom_component_rule_cannot_use_the_singular_table_key_to_satisfy_this() -> None:
     """`engine._match_sbom_component` only ever reads `match["tables"]`; the singular
-    `table` key it never looks at must not be able to fill a gap in the coverage, or
-    this check would accept a ruleset that still cannot report through the table it
-    claims to satisfy the requirement with."""
+    `table` key is refused on this kind outright, so it can never fill a gap in the
+    coverage a ruleset claims to satisfy through it."""
     data = _without_sbom_component_rules(minimal())
     rule = _sbom_component_rule(["rust_crate"])
     rule["match"]["table"] = "crypto_library"
     data["rule"].append(rule)
-    with pytest.raises(RulesetError, match="sbom_component rules must together cover tables"):
+    with pytest.raises(RulesetError, match=r"unknown keys \['table'\]"):
         parse_ruleset(data)
 
 
@@ -1247,6 +1624,243 @@ def test_every_matcher_kind_has_a_dispatch_function() -> None:
     assert set(MATCHER_KINDS) == set(engine._MATCHERS)
 
 
+def test_match_keys_covers_every_matcher_kind() -> None:
+    """`MATCHER_KINDS` is derived from `MATCH_KEYS`, so this is the same drift guard as
+    the one above, pinned against the dict the derivation actually reads."""
+    # pylint: disable=protected-access
+    assert set(MATCH_KEYS) == set(engine._MATCHERS)
+
+
+def test_entry_key_sets_cover_every_entry_table() -> None:
+    """A new `[[table]]` with no allowed-key set of its own gives every one of its
+    entries a `KeyError` the first time the loader looks one up, rather than a
+    `RulesetError`."""
+    # pylint: disable=protected-access
+    assert set(ruleset_loader._ENTRY_KEYS) == set(ENTRY_TABLES)
+
+
+# --- match key drift: every key a matcher reads is one MATCH_KEYS allows, both ways --
+
+_ENGINE_SOURCE = ast.parse(inspect.getsource(engine))
+_ENGINE_FUNCTIONS: dict[str, ast.FunctionDef] = {
+    node.name: node for node in ast.walk(_ENGINE_SOURCE) if isinstance(node, ast.FunctionDef)
+}
+
+_LOADER_CHECKED_KEYS = frozenset({"kind", "table", "default"})
+
+
+def _reads_of_match(
+    fn: ast.FunctionDef,
+    funcs: dict[str, ast.FunctionDef],
+    param: str = "match",
+    _visited: frozenset[str] = frozenset(),
+) -> tuple[set[str], list[str]]:
+    """Every key one matcher function reads off its match table, bound in `fn` under
+    the name `param`, and every read of `param` this collector could not classify.
+
+    Recognises `param["k"]`, `param.get("k", ...)`, `"k" in param`/`"k" not in param`, a
+    call to another module-level function passing `param` positionally (recursing into
+    it under whatever name the callee's parameter at that position has, which is how
+    `_groups(match)` contributes `group`/`groups`), and a call to
+    `ruleset.default_rule_for_table(...)`, which reads `default` and `table` off the
+    match table `parse_ruleset` built without this function seeing either name directly.
+
+    Every other `ast.Name(id=param)` load inside `fn` is reported back as unrecognised,
+    so a form this collector cannot see -- `param[key]` with a variable key, or
+    `dict(param)` -- fails the test that calls this rather than silently reading as
+    "nothing".
+    """
+    keys: set[str] = set()
+    unrecognised: list[str] = []
+    consumed: set[int] = set()
+    match_loads: list[ast.Name] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+            if node.id == param and isinstance(node.ctx, ast.Load):
+                match_loads.append(node)
+            self.generic_visit(node)
+
+        def visit_Subscript(self, node: ast.Subscript) -> None:  # noqa: N802
+            if isinstance(node.value, ast.Name) and node.value.id == param:
+                consumed.add(id(node.value))
+                key = node.slice
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    keys.add(key.value)
+                else:
+                    unrecognised.append(f"{fn.name}: {param}[...] with a non-literal key")
+            self.generic_visit(node)
+
+        def visit_Compare(self, node: ast.Compare) -> None:  # noqa: N802
+            for op, comparator in zip(node.ops, node.comparators, strict=True):
+                if (
+                    isinstance(op, (ast.In, ast.NotIn))
+                    and isinstance(comparator, ast.Name)
+                    and comparator.id == param
+                ):
+                    consumed.add(id(comparator))
+                    left = node.left
+                    if isinstance(left, ast.Constant) and isinstance(left.value, str):
+                        keys.add(left.value)
+                    else:
+                        unrecognised.append(f"{fn.name}: 'x' in {param} with a non-literal key")
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "get"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == param
+            ):
+                consumed.add(id(func.value))
+                if node.args and isinstance(node.args[0], ast.Constant):
+                    if isinstance(node.args[0].value, str):
+                        keys.add(node.args[0].value)
+                    else:
+                        unrecognised.append(f"{fn.name}: {param}.get(...) with a non-string key")
+                else:
+                    unrecognised.append(f"{fn.name}: {param}.get(...) with a non-literal key")
+            elif isinstance(func, ast.Attribute) and func.attr == "default_rule_for_table":
+                keys.update({"default", "table"})
+            elif isinstance(func, ast.Name) and func.id in funcs and func.id not in _visited:
+                callee = funcs[func.id]
+                callee_params = [a.arg for a in callee.args.args]
+                for position, arg in enumerate(node.args):
+                    if not (isinstance(arg, ast.Name) and arg.id == param):
+                        continue
+                    consumed.add(id(arg))
+                    if position >= len(callee_params):
+                        unrecognised.append(
+                            f"{fn.name}: {param} passed to {func.id} at a position it "
+                            "declares no parameter for"
+                        )
+                        continue
+                    sub_keys, sub_unrecognised = _reads_of_match(
+                        callee, funcs, callee_params[position], _visited | {func.id}
+                    )
+                    keys.update(sub_keys)
+                    unrecognised.extend(sub_unrecognised)
+            self.generic_visit(node)
+
+    _Visitor().visit(fn)
+    for node in match_loads:
+        if id(node) not in consumed:
+            unrecognised.append(f"{fn.name}: unrecognised read of {param}")
+    return keys, unrecognised
+
+
+def _reads(kind: str) -> set[str]:
+    fn = engine._MATCHERS[kind]  # pylint: disable=protected-access
+    ast_fn = _ENGINE_FUNCTIONS[fn.__name__]
+    # The dispatcher (`engine.apply_rules`) passes the match table positionally --
+    # `matcher(rule, match, ...)` -- so nothing requires a matcher's own second
+    # parameter to be named `match`. Reading it off `ast_fn` itself, rather than
+    # assuming the literal name `_reads_of_match`'s default is built for, is what makes
+    # a matcher that names it something else still have its reads collected.
+    param = ast_fn.args.args[1].arg
+    keys, unrecognised = _reads_of_match(ast_fn, _ENGINE_FUNCTIONS, param)
+    assert not unrecognised, unrecognised
+    return keys
+
+
+def _funcs(source: str) -> dict[str, ast.FunctionDef]:
+    tree = ast.parse(source)
+    return {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+
+
+def test_a_helper_whose_parameter_is_not_named_match_still_contributes_its_reads() -> None:
+    """A module-level helper called with the match table positionally is followed by
+    parameter position, not by the literal name `match`: a helper that names its own
+    parameter something else still has its reads attributed to the caller.
+
+    Breaks to prove it: recurse with the literal string `"match"` in place of
+    `callee_params[position]`. The helper's parameter here is named `table`, so its
+    body's `table.get(...)` is never recognised as a read of anything, `renamed`
+    disappears from the collected keys, and this assertion fails.
+    """
+    funcs = _funcs(
+        "def _match_thing(rule, match, ruleset, evidence, linkage, index):\n"
+        "    return _helper(match)\n"
+        "def _helper(table):\n"
+        "    return table.get('renamed')\n"
+    )
+    keys, unrecognised = _reads_of_match(funcs["_match_thing"], funcs)
+    assert not unrecognised
+    assert keys == {"renamed"}
+
+
+def test_a_positional_argument_past_the_callees_parameters_is_unrecognised() -> None:
+    """The match table passed to a helper beyond the positional parameters that
+    helper declares cannot be attributed to any name in the callee, so it is reported
+    as unrecognised rather than silently dropped."""
+    funcs = _funcs(
+        "def _match_thing(rule, match, ruleset, evidence, linkage, index):\n"
+        "    return _helper(1, match)\n"
+        "def _helper(only):\n"
+        "    return only\n"
+    )
+    keys, unrecognised = _reads_of_match(funcs["_match_thing"], funcs)
+    assert not keys
+    assert unrecognised
+
+
+def test_every_key_a_matcher_reads_is_an_allowed_key() -> None:
+    """Every key an `engine` matcher reads off `match`, for every kind, is one
+    `MATCH_KEYS` allows for that kind. Also checks the collector itself is not vacuous:
+    dropping `any_entry` from `MATCH_KEYS["requires_dist"]`, or adding a read
+    `_match_py_constant` never had, fails this the same way a real drift would.
+    """
+    for kind in MATCH_KEYS:
+        assert _reads(kind) <= MATCH_KEYS[kind], kind
+    assert "any_entry" in _reads("requires_dist")
+    assert {"group", "groups"} <= _reads("binary_string")
+    assert {"default", "table"} <= _reads("rust_crate")
+
+
+def test_every_allowed_match_key_is_read_or_loader_checked() -> None:
+    """A key `MATCH_KEYS` allows for a kind but no matcher ever reads is a hole: it
+    loads clean and does nothing, the same failure mode an unknown key is refused for.
+    `kind`, `table` and `default` are the loader-checked exceptions: `table`/`default`
+    are validated against `ENTRY_TABLES` and the default-routing checks in
+    `parse_ruleset`, and `kind` selects the matcher itself.
+    """
+    for kind, allowed in MATCH_KEYS.items():
+        assert allowed - _reads(kind) <= _LOADER_CHECKED_KEYS, kind
+
+
+def test_reads_follows_a_matchers_own_parameter_name_not_the_literal_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`engine.apply_rules` calls every matcher positionally
+    (`matcher(rule, match, ...)`), so nothing requires a matcher's own second parameter
+    to be named `match`. `_reads` has to follow that parameter by position, the same way
+    the dispatcher does, or a matcher that names it something else reads clean of every
+    key it actually reads.
+
+    Breaks to prove it: hardcode `param="match"` in `_reads` in place of the matcher's
+    own declared parameter name. `_match_fake` never binds anything named `match`, so
+    `_reads_of_match` finds no read of it, `_reads` comes back empty, and the assertion
+    that `strict` was collected fails.
+    """
+    source = (
+        "def _match_fake(rule, spec, ruleset, evidence, linkage, index):\n"
+        "    if spec.get('strict'):\n"
+        "        return\n"
+    )
+    fake_fn = _funcs(source)["_match_fake"]
+
+    def _match_fake() -> None:  # pragma: no cover - never called, only introspected
+        raise NotImplementedError
+
+    # pylint: disable=protected-access
+    monkeypatch.setitem(engine._MATCHERS, "_test_fake_kind", _match_fake)
+    monkeypatch.setitem(_ENGINE_FUNCTIONS, "_match_fake", fake_fn)
+
+    assert _reads("_test_fake_kind") == {"strict"}
+
+
 # --- py_call match fields ------------------------------------------------------------
 
 
@@ -1507,17 +2121,20 @@ def test_a_boolean_constants_is_rejected_rather_than_crashing_at_scan_time() -> 
 
 
 @pytest.mark.parametrize("key", ["targets", "attributes", "constants"])
-def test_generic_match_sequence_keys_are_shape_checked_on_any_kind(key: str) -> None:
+def test_generic_match_sequence_keys_are_refused_on_a_kind_that_never_reads_them(
+    key: str,
+) -> None:
     """`Ruleset.compile_patterns` reads `GENERIC_MATCH_SEQUENCE_KEYS` off every match
-    table regardless of kind, so a stray boolean in any of the three crashes it even
-    for a kind, such as `dist_name`, that never reads the field itself. Parametrized
-    over all three keys rather than just `targets`, so deleting the loop for any one
-    of them fails here instead of only being covered for the key one test happened to
-    pick.
+    table regardless of kind, so a stray boolean in any of the three would crash it even
+    for a kind, such as `dist_name`, that never reads the field itself. `MATCH_KEYS`
+    refuses the key outright on such a kind at load time, before it can reach that
+    point. Parametrized over all three keys rather than just `targets`, so dropping any
+    one of them from `MATCH_KEYS`'s refusal fails here instead of only being covered for
+    the key one test happened to pick.
     """
     data = minimal()
     data["rule"][0]["match"] = {"kind": "dist_name", "table": "crypto_distribution", key: True}
-    with pytest.raises(RulesetError, match=f"{key} must be a list of strings"):
+    with pytest.raises(RulesetError, match=rf"unknown keys \['{key}'\]"):
         parse_ruleset(data)
 
 

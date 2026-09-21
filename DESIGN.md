@@ -3798,12 +3798,33 @@ rule that should match. A test in `tests/test_python_ast.py` pins that the four 
 it can produce are exactly `USED_FOR_SECURITY_VALUES`, no more and no fewer --
 mutation-confirmed to fail when one return value is changed without updating the set.
 
-**What was rejected.** A per-kind allowed-key set on `[rule.match]` tables -- refusing
-any key a kind doesn't recognise, the way `_parse_linkage_policy` refuses an unknown key
-on `[linkage_policy]` -- would close the stray-key crash and a typo'd field name in one
-mechanism, rather than the field-by-field shape checks this entry describes. Not
-attempted: it is a larger constraint on what every match table is allowed to carry,
-worth its own entry.
+## Every table the loader reads is closed over its keys
+
+**Accepted.** `ruleset.MATCH_KEYS` lists,
+per matcher kind, the keys that kind's `[rule.match]` table may carry -- `kind` itself,
+plus `table`/`default` where the loader and `Ruleset.default_rule_for_table` read them.
+`ruleset_loader._refuse_unknown_keys` is the one mechanism, called against `MATCH_KEYS`
+for a match table and against its own allowed-key constant for every other table this
+file reads: `[[rule]]`, every entry table, `[verdict]`, `[limits]`, `[conventions]`,
+`[linkage_policy]` and the top level. A typo'd or misplaced key -- `supressed_by` on a
+rule, `verdit` on a library entry, `exclude_object_valu` on a `linkage` match -- loads
+clean and does nothing without this; refusing it at load time is what keeps the ruleset
+the ground truth for what a rule can express, rather than a superset of it a reader has
+to notice went unread. Two calls follow from the field-by-field shape checks above
+rather than from the key check itself: `default` is accepted wherever `table` is, so the
+specific "never falls back" and "cannot be the default" messages `parse_ruleset` already
+raises stay reachable, and `sbom_component` refuses the singular `table` rather than
+honouring it, since `_match_sbom_component` only ever reads the plural `tables` --
+letting the singular key through would give the coverage check two spellings of the same
+requirement to union.
+
+An AST test in `tests/test_ruleset.py` walks `engine.py`'s matcher functions and pins
+`MATCH_KEYS` against what they actually read, both ways: a key a matcher reads that its
+kind's entry does not list, and a key an entry lists that no matcher ever reads for that
+kind (`table`/`default`, validated by the loader rather than the matcher itself, are the
+exception). Adding a key one matcher reads without updating `MATCH_KEYS` fails the first
+direction; allowing a key nothing reads fails the second -- a hole the key check exists
+to close reopening itself through the one table meant to prevent it.
 
 ## `binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader
 
