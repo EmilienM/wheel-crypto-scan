@@ -4937,3 +4937,105 @@ module sits *underneath* them). At four the honest expression is specificity wit
 `go-crypto` category, not a longer list.
 
 Tracked in [#126](https://github.com/EmilienM/wheel-crypto-scan/issues/126).
+
+## `.symtab` local definitions are read when `.dynsym` is present, and only definitions
+
+**Accepted. Narrows the gate #117 put up.**
+
+#117 matched `.symtab` for crypto symbols only when `.dynsym` was genuinely absent, and
+said why: every shared object carries a live `.dynsym`, so gating on its absence left
+the existing corpus unaffected *by construction* rather than by a corpus check the
+reader could not run. That argument was never that `.symtab` is untrustworthy; it was
+that the change was scoped to zero. It was the right scope for what #117 fixed, and it
+left the case this tool exists for unread.
+
+`cryptography` 50.0.1's `cryptography/hazmat/bindings/_rust.abi3.so` carries **776 local
+`EVP_*` definitions in `.symtab` and none in `.dynsym`**, whose only exports are the
+module's own `PyInit` symbols. The OpenSSL it statically links is there, in a table this
+reader already parses for `stripped` and `symbol_counts.symtab`, and nothing looked. A
+definition nobody else can satisfy is what a static copy *is*.
+
+**Only definitions cross the narrowed gate.** A dynamically linked object must declare
+every import in `.dynsym` to link at all, so `.symtab` can say nothing new about
+imports; taking them would record the same dependency twice under a second provenance,
+and would let an undefined entry planted in a debug table read as a dependency the
+object does not have. `STT_FILE` and `STT_SECTION` entries are skipped, as #117 skips
+them.
+
+**One cross-check runs, and one does not, and telling them apart cost a review.** The
+understated-rows check asks whether a table under-declared itself, which is only a
+question worth asking of the object's *sole* table; with `.dynsym` present and already
+cross-checked, a `.symtab` trimmed by a partial strip is ordinary rather than a lie, and
+running it would mark a large share of honest release wheels `partial_analysis` for
+carrying debug information in the state every linker leaves it in. The `unresolved`
+count is a different question -- was a name this reader was *pointed at* readable -- and
+an honest table never produces one, so it runs in both modes. The first draft dropped
+both under one sentence and only one of them had earned it.
+
+**A prefilter was tried, measured, and rejected for what it cost.** Walking every row of
+every dynamically linked object's `.symtab` is work the gate used to avoid, so the first
+draft ran `symbol_locator` -- the same compiled C-side scan `binfmt.symtab` mirrors
+`symbol_groups_for` with -- over `.strtab` and skipped the walk when nothing could
+match. Measured on a 26.7 MiB object with half a million symbols: 0.32s with the
+prefilter against 0.55s without, and 0.50s against 0.43s on `cryptography` either way.
+Then: shrink `.strtab`'s `sh_size` so its rows point past it, and the prefilter reads
+the truncated table as holding nothing, skips the walk, and the object comes out
+`NO_CRYPTO_DETECTED` with `partial_analysis: false` -- the exact attack
+`holds_a_name_not_read`'s own docstring names, reproduced. A fifth of a second is not
+worth a silent clean, so every row is visited and `tests/test_hardening.py` holds both
+halves: the shrunken `.strtab` must read `OPAQUE`, and half a million rows must still
+walk in reasonable time.
+
+**Measured over 18 native wheels off PyPI.** Every record differs, because
+`ANALYZER_VERSION` is in all of them; five verdict blocks differ; one headline class
+moves. `awscrt`, `curl_cffi` and `hf-xet` go `openssl_linkage: none` to `static`,
+picking up `BIN_STATIC_OPENSSL` for the AWS-LC each one compiles in -- the change's
+whole purpose. `confluent-kafka` is the single class move, `CONDITIONAL` to
+`NON_APPROVED_CRYPTO`. `cryptography`, `pycryptodome` and `PyNaCl` gain symbols without
+changing class, and five wheels' `matched_symbols` start reporting `truncated`. That
+rate is a property of the population rather than of the change: the gain lands only on
+wheels that ship an **unstripped `.symtab`**, and over a corpus of fully stripped
+manylinux wheels it would be zero.
+
+Two claims here are worth separating. That no finding and no `(group, binding)` kind is
+lost anywhere is not really a measurement: the new block only adds to a set, and
+`SymbolMatch.cap_key()` is `(group, binding)`, so `caps.cap` keeps one of each by
+construction. What genuinely needed measuring is the new way to be marked partial, and
+18 wheels is thin evidence for it, so it is also
+`tests/test_real_corpus.py::test_no_wheel_is_opaque_only_because_symtab_was_read`, which
+re-runs over whatever corpus a `WCS_CORPUS_DIR` holds rather than living in this
+paragraph.
+
+**What it costs.** Three things.
+
+The hazard #117's gate closed is now open: a crafted object can plant crypto names in a
+table trusted less than `.dynsym`, since `_symtab_strtab` has no `DT_STRTAB`-equivalent
+authority to corroborate `sh_link`. The consequence is a false *definition*, which reads
+as a static copy that is not there. That direction over-flags, and this tool has no
+passing class to be tricked into, which is also why imports stay out.
+
+`.symtab` is now read on every dynamically linked object, so a table or string table
+over the byte budget records `elf_symtab_unread` where nothing was recorded before, and
+that cause is not in `[linkage_policy] exclude_reasons`, so it costs the linkage answer.
+That is the honest reading: the answer was previously given without looking at a table
+that could contradict it. No wheel in the corpus is partial for this reason alone, which
+is what the real-corpus check above pins.
+
+The third is a policy consequence this reader change surfaces rather than creates. A
+statically linked OpenSSL defines every legacy primitive OpenSSL ships, so `BF_*`,
+`MD4_*`, `X25519_*` and the rest now match where a version script used to hide them, and
+rules that carry `NON_APPROVED_CRYPTO` outrank `BIN_STATIC_OPENSSL`'s `CONDITIONAL` in
+`[verdict] precedence`. `confluent-kafka` is the first instance and will not be the
+last: the headline class for static-OpenSSL wheels drifts toward `NON_APPROVED_CRYPTO`,
+which is true but less actionable than "carries its own OpenSSL". Nothing is lost from
+the record -- `verdict.classes` lists both -- and the fix, if one is wanted, is in the
+ruleset rather than here: see
+[#135](https://github.com/EmilienM/wheel-crypto-scan/issues/135).
+
+**Revisit if** a consumer needs to tell a `.dynsym` export from a `.symtab` local
+definition. Both record `binding: defined`, which is the honest answer to "does this
+object carry it" and loses the distinction between a definition the object publishes and
+one it keeps to itself. Adding a third binding value is not a `schema_version` bump, but
+it is a contract decision nobody has asked for yet.
+
+Tracked in [#127](https://github.com/EmilienM/wheel-crypto-scan/issues/127).

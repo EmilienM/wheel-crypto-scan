@@ -112,6 +112,34 @@ def test_a_warm_cache_run_matches_a_cold_one(tmp_path: Path) -> None:
 
 
 @pytest.mark.real
+def test_no_wheel_is_opaque_only_because_symtab_was_read(tmp_path: Path) -> None:
+    """#127 made `.symtab` load-bearing on the dynamically linked path, where it was
+    previously read for `stripped` and the count alone. That means a new way to be
+    marked partial: an object whose `.symtab` or `.strtab` is over the byte budget, or
+    whose rows name strings `.strtab` does not hold, now says so where before it said
+    nothing. The DECISIONS entry claims that costs no real wheel its answer, which was
+    measured over 18 wheels by hand and is exactly the kind of claim this file exists
+    to restate as a re-runnable check.
+
+    Corpus-independent, unlike the before/after diff it comes from: an object that is
+    partial *only* for this reason, with every other cause absent, is the regression.
+    An object partial for `elf_symtab_unread` alongside another cause was already
+    partial before.
+    """
+    corpus, _wheels = _corpus()
+    out = tmp_path / "out.jsonl"
+    main(["scan", str(corpus), "-o", str(out), "--no-cache", "-q"])
+
+    offenders = [
+        (record["wheel"]["filename"], binary["path"])
+        for record in _read_records(out)
+        for binary in record["binaries"]
+        if binary["partial_reasons"] == ["elf_symtab_unread"]
+    ]
+    assert offenders == [], f"objects partial only for reading .symtab: {offenders[:5]}"
+
+
+@pytest.mark.real
 def test_corpus_summary(tmp_path: Path) -> None:
     """Mostly prints: corpus contents vary. Prints counts a future issue can start from."""
     corpus, _wheels = _corpus()

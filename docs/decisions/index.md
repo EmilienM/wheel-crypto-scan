@@ -75,6 +75,7 @@ Three habits in that file are worth knowing before you read it:
 
 | Entry | Disposition |
 |---|---|
+| [`.symtab` local definitions are read when `.dynsym` is present](elf.md#symtab-local-definitions-are-read-when-dynsym-is-present) | Accepted. Narrows #117 |
 | [Sections are found by type, not by a name nobody checks](elf.md#sections-are-found-by-type-not-by-a-name-nobody-checks) | Accepted, after five rounds of review |
 | [A compressed section is checked before it is inflated](elf.md#a-compressed-section-is-checked-before-it-is-inflated) | Accepted, then widened |
 
