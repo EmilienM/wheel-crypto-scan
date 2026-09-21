@@ -3,8 +3,9 @@
 AGENTS.md's "Write down the current design, not its history" is a rule about prose, and
 prose fails nothing when it breaks it. These tests hold the parts of it a machine can
 check: no issue or PR citation and no review framing in code, tests, the ruleset or the
-docs, every `DESIGN.md` heading that something quotes or links to still exists, and no
-Markdown heading wraps onto a second source line.
+docs, every `DESIGN.md` heading that something quotes or links to still exists, no
+Markdown heading wraps onto a second source line, and the design index lists every
+entry of every `docs/design/` page, in page order.
 """
 
 from __future__ import annotations
@@ -220,3 +221,80 @@ def test_the_heading_check_tells_a_wrapped_heading_from_a_fenced_comment(
     text: str, wrapped: list[int]
 ) -> None:
     assert _wrapped_headings(text) == wrapped
+
+
+DESIGN_PAGES = ROOT / "docs" / "design"
+
+
+def _mkdocs_slug(title: str) -> str:
+    """The anchor MkDocs' `toc` extension gives a heading: code-span backticks and other
+    punctuation dropped, lowercased, and each run of spaces or hyphens made one `-`."""
+    text = re.sub(r"[^\w\s-]", "", title).strip().lower()
+    return re.sub(r"[-\s]+", "-", text)
+
+
+def _page_entries() -> dict[str, list[str]]:
+    """Each subsystem page's `## ` headings, as anchors, in page order. Fenced blocks are
+    skipped, so a `## ` line inside an example is not taken for an entry."""
+    entries = {}
+    for page in sorted(DESIGN_PAGES.glob("*.md")):
+        if page.name == "index.md":
+            continue
+        anchors, fenced = [], False
+        for line in page.read_text(encoding="utf-8").splitlines():
+            if line.startswith("```"):
+                fenced = not fenced
+            elif not fenced and line.startswith("## "):
+                anchors.append(_mkdocs_slug(line[3:]))
+        entries[page.name] = anchors
+    return entries
+
+
+def _index_entries() -> dict[str, list[str]]:
+    """The design index's rows, by the page each section heading links to, in row order.
+    A row linking into a page other than its section's is recorded under that page, so
+    it shows up as a mismatch rather than being dropped."""
+    entries: dict[str, list[str]] = {}
+    for line in (DESIGN_PAGES / "index.md").read_text(encoding="utf-8").splitlines():
+        section = re.match(r"^## \[[^\n]*\]\(([\w-]+\.md)\)$", line)
+        if section:
+            entries.setdefault(section.group(1), [])
+            continue
+        for page, anchor in re.findall(r"\]\(([\w-]+\.md)#([\w-]+)\)", line):
+            entries.setdefault(page, []).append(anchor)
+    return entries
+
+
+def test_the_design_index_lists_every_entry_in_page_order() -> None:
+    """`docs/design/index.md` is the table of contents for the design pages. An entry
+    added to a page without a row is invisible to anyone reading the index, and nothing
+    else fails: `mkdocs build --strict` checks that an anchor exists, not that every
+    heading has a link."""
+    pages = _page_entries()
+    assert pages and all(pages.values()), "no design page headings found"
+    assert _index_entries() == pages
+
+
+def _index_row_sections() -> list[tuple[str, str | None]]:
+    """Each index row's (linked page, enclosing section's page), in row order. A row can
+    link to the right page while sitting under the wrong section heading; the page-keyed
+    dict in `_index_entries` groups by link target and cannot see that."""
+    pairs: list[tuple[str, str | None]] = []
+    section: str | None = None
+    for line in (DESIGN_PAGES / "index.md").read_text(encoding="utf-8").splitlines():
+        heading = re.match(r"^## \[[^\n]*\]\(([\w-]+\.md)\)$", line)
+        if heading:
+            section = heading.group(1)
+            continue
+        for page, _anchor in re.findall(r"\]\(([\w-]+\.md)#([\w-]+)\)", line):
+            pairs.append((page, section))
+    return pairs
+
+
+def test_every_design_index_row_sits_under_its_own_section() -> None:
+    """A row misfiled under the wrong section heading still links to the page its entry
+    belongs to, so `test_the_design_index_lists_every_entry_in_page_order`'s page-keyed
+    comparison cannot catch it; this pins each row to the section it is listed under."""
+    pairs = _index_row_sections()
+    assert pairs, "no design index rows found; the pattern has gone stale"
+    assert [(page, section) for page, section in pairs if page != section] == []
