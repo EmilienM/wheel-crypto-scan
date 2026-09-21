@@ -5411,11 +5411,12 @@ page must not invent one by way of colour: the two classes that mean "nothing wa
 decided" -- `NO_CRYPTO_DETECTED` and `OPAQUE` -- share one neutral CSS token, and every
 other class is a warning or a danger token. A wheel not flagged for review reads "not
 flagged", never a plain "no" or a checkmark. The class filter is seeded from the union of
-the ruleset's precedence and every class actually present in the records, not from
-precedence alone: `NO_CRYPTO_DETECTED`'s fallback is hardcoded in `verdict.py` rather
-than required in a ruleset's `[verdict] precedence`, so a custom ruleset that omits it
-would otherwise hide every clean wheel from the table with no control able to bring it
-back.
+the given ruleset's precedence and every class actually present in the records, not from
+precedence alone: the loader requires `NO_CRYPTO_DETECTED` to close a ruleset's
+`[verdict] precedence`, so a ruleset it loaded already names every class `classify()`
+can emit, but `render_html` takes any `Ruleset`, including one built without the loader,
+so the union keeps a record whose class that `Ruleset`'s own precedence leaves out
+showing rather than hidden from a filter no control can reach.
 
 The class and linkage help text shown in the page -- `CLASS_HELP` and `LINKAGE_HELP` in
 `report.py` -- are plain constants rather than a ruleset addition, so no HTML-only text

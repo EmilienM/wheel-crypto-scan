@@ -513,12 +513,13 @@ def test_html_drilldown_is_not_keyed_by_filename() -> None:
 
 def test_html_classes_payload_covers_classes_outside_precedence() -> None:
     """The class filter and legend read `classes` straight off the embedded
-    payload, with no union of their own left to get wrong: a ruleset's own
-    `[verdict] precedence` need not list every class `classify()` can emit
-    (`NO_CRYPTO_DETECTED`'s fallback is hardcoded in `verdict.py` rather than
-    required there), so `render_html` folds in any class a record actually
-    carries that precedence left out. `test_browser_class_filter_covers_a_class_outside_precedence`
-    below checks the same case end to end, in a real browser."""
+    payload, with no union of their own left to get wrong: the loader requires a
+    ruleset's `[verdict] precedence` to list every class `classify()` can emit, but
+    `render_html` takes any `Ruleset`, including one built without the loader, so
+    `render_html` folds in any class a record actually carries that a given
+    ruleset's own precedence leaves out.
+    `test_browser_class_filter_covers_a_class_outside_precedence` below checks the
+    same case end to end, in a real browser."""
     ruleset = load_ruleset(None)
     narrowed = dataclasses.replace(
         ruleset,
@@ -609,11 +610,11 @@ def test_browser_drilldown_uses_position_not_filename(tmp_path: Path) -> None:
 
 
 def test_browser_class_filter_covers_a_class_outside_precedence(tmp_path: Path) -> None:
-    """A wheel whose class a custom ruleset's own `[verdict] precedence` leaves out
+    """A wheel whose class a given `Ruleset`'s own `[verdict] precedence` leaves out
     still shows in the table: the class filter's default state, and the legend,
-    both cover it. `NO_CRYPTO_DETECTED`'s fallback is hardcoded in `verdict.py`
-    rather than required in precedence, so this is the case a ruleset can actually
-    produce, not a hypothetical one."""
+    both cover it. `render_html` takes any `Ruleset`, including one built without
+    the loader that requires precedence to name every class `classify()` can emit,
+    so this is a case `render_html` must still cover."""
     ruleset = load_ruleset(None)
     narrowed = dataclasses.replace(
         ruleset,
