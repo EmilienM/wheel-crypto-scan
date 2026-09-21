@@ -205,8 +205,6 @@ th, td {
 
 thead th {
   background: var(--bg-alt);
-  position: sticky;
-  top: 0;
   white-space: nowrap;
 }
 
@@ -224,6 +222,13 @@ th button.sort-btn:hover { text-decoration: underline; }
 
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--row-hover); }
+
+/* A free-text cell -- a location, an error path or message -- breaks inside a token
+   when no normal break point fits, so an unbreakable wheel filename or object path
+   narrows its column instead of widening the table past the detail panel. The floor
+   keeps a narrow screen from squeezing it to a few characters a line: past that, the
+   table scrolls in its own box. */
+td.wrap { word-break: break-word; min-width: 16em; }
 
 .badge {
   display: inline-block;
@@ -302,10 +307,16 @@ tbody tr:hover { background: var(--row-hover); }
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  max-width: 960px;
+  max-width: 1280px;
   width: 100%;
   padding: 16px;
+  /* A wheel filename, an object path or a matched string can be one token wider
+     than the panel: it breaks inside the token rather than running past the
+     panel's edge. This does not narrow a table column; `td.wrap` does that. */
+  overflow-wrap: break-word;
 }
+
+#detail-title { min-width: 0; }
 
 #detail-head {
   display: flex;
@@ -1122,6 +1133,7 @@ pre {
       appendCell(tr, finding.verdict);
       appendCell(tr, finding.occurrences);
       var locCell = document.createElement("td");
+      locCell.className = "wrap";
       (finding.locations || []).forEach(function (loc) {
         var div = document.createElement("div");
         div.textContent = loc.path + (loc.line ? ":" + loc.line : "") + (loc.evidence ? " (" + loc.evidence + ")" : "");
@@ -1132,7 +1144,17 @@ pre {
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-    panel.appendChild(table);
+    appendScrollingTable(panel, table);
+  }
+
+  // A detail table sits in its own scroll box, as the wheel table does: a cell that
+  // cannot wrap scrolls the table inside the panel instead of drawing it past the
+  // panel's edge, over the page behind.
+  function appendScrollingTable(panel, table) {
+    var scroll = document.createElement("div");
+    scroll.className = "table-scroll";
+    scroll.appendChild(table);
+    panel.appendChild(scroll);
   }
 
   function appendCell(tr, value) {
@@ -1359,12 +1381,12 @@ pre {
       var tr = document.createElement("tr");
       appendCell(tr, error.stage);
       appendCell(tr, error.kind);
-      appendCell(tr, error.path);
-      appendCell(tr, error.message);
+      appendCell(tr, error.path).className = "wrap";
+      appendCell(tr, error.message).className = "wrap";
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-    panel.appendChild(table);
+    appendScrollingTable(panel, table);
   }
 
   function renderRawTab(record, panel) {
