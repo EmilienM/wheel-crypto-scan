@@ -2645,8 +2645,10 @@ the `SHT_NOBITS` arm.
 **An ordinary section is checked too.** A guard that refuses only when `section.compressed
 or section["sh_type"] == "SHT_NOBITS"` lets an ordinary, uncompressed, file-backed
 section (or `.dynsym`/`.dynstr` from a real symbol table, read through the identical
-call) reach `.data()` at whatever size `sh_size` names, with only the *accumulated*
-buffer cut afterwards. `section.data_size` means the same thing here as for the
+call) reach `.data()` at whatever size `sh_size` names, with nothing left to cut it
+back down afterwards: `_collect_string_bytes` has no post-read cut of its own, only
+the per-section budget it passes into `_bounded_section_data` before each read.
+`section.data_size` means the same thing here as for the
 compressed and `SHT_NOBITS` cases: `sh_size` itself -- genuinely file-backed for an
 ordinary section, but that is exactly the exposure: reading it costs whatever `sh_size`
 names before this reader's own budget gets a say. So the check is unconditional:
@@ -2808,16 +2810,14 @@ comfortably inside the budget, still parses even though the section as a whole d
 read in full. `.dynsym`/`.dynstr` do not pass `keep_prefix` and refuse outright (see
 "What was rejected" below).
 
-**The post-read truncation branch is unreachable.** `_collect_string_bytes`'s
-`if len(data) > remaining: buf.extend(data[:remaining]); truncated = True` never fires:
-`_bounded_section_data` guarantees `len(data) <= max_bytes` whenever it does not refuse
--- for a compressed section (pyelftools raises `ELFCompressionError` rather than return a
-mismatched length, caught one level up as `unread`), for `SHT_NOBITS` (`data_size` bytes
-of zero, always), and for an ordinary one (`stream.read(n)` never returns more than
-`n`). A section whose own declared size is refused `continue`s before reaching this
-check; one that is not refused cannot produce more bytes than the budget it was measured
-against. Left in place rather than deleted: it is confirmed dead by this reasoning, not
-by omission, and removing it is a separate, purely-internal cleanup.
+**The budget is decided before the read, once.** `_collect_string_bytes` has no
+post-read cut: `_bounded_section_data` guarantees `len(data) <= max_bytes` whenever it
+does not refuse -- for a compressed section (pyelftools raises `ELFCompressionError`
+rather than return a mismatched length, caught one level up as `unread`), for
+`SHT_NOBITS` (`data_size` bytes of zero, always, and skipped earlier anyway), and for an
+ordinary one (`stream.read(n)` never returns more than `n`). A section whose own
+declared size is refused `continue`s before `buf.extend(data)` is ever reached; one that
+is not refused cannot produce more bytes than the budget it was measured against.
 
 **What was rejected.** Decompressing with a caller-supplied `max_length`, keeping
 whatever prefix fits, the same shape `_collect_string_bytes` gives an honest oversized
@@ -3099,8 +3099,9 @@ on top of the streaming decision.
 Both `binfmt.macho` and `binfmt.elf` hold to it. For `binfmt.elf`, the claim that
 matters is not that "the ELF strings pass is bounded by `max_strings_bytes`" in
 aggregate -- true of the *accumulated* buffer `_collect_string_bytes` builds across
-sections regardless -- but that any *single* section's read is bounded before it
-happens. `_bounded_section_data` refuses before `.data()` runs for a `compressed` or
+sections only because `_bounded_section_data` bounds every section that feeds it --
+but that any *single* section's read is bounded before it happens.
+`_bounded_section_data` refuses before `.data()` runs for a `compressed` or
 `SHT_NOBITS` section, and bounds a plain file-backed section too: an oversized `.rodata`
 or `.comment` keeps its in-budget prefix (`strings_bytes_unread`, no error), while an
 oversized `.dynsym`/`.dynstr` is refused outright (`elf_dynsym_unread`), because a

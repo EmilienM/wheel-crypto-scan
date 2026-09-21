@@ -309,9 +309,10 @@ def _bounded_section_data(
     that prefix still flagged unread. `.rodata`, `.comment` and `.go.buildinfo` pass
     `True`: an honestly oversized section's first `max_bytes` are real, readable
     evidence -- an OpenSSL banner at offset 0 of an otherwise-oversized `.rodata`, say
-    -- which `_collect_string_bytes` keeps rather than refusing the section outright,
-    bounded at the single-section read rather than only at the accumulated buffer
-    afterwards. `.dynsym`/`.dynstr`, via `_symbol_bytes`, do not pass it and keep the
+    -- which `_collect_string_bytes` keeps rather than refusing the section outright.
+    The bound is enforced here, at the single-section read, because `_collect_string_bytes`
+    has no cut of its own afterward: a section this call does not bound reaches
+    `buf.extend` in full. `.dynsym`/`.dynstr`, via `_symbol_bytes`, do not pass it and keep the
     default: a byte-bounded prefix of a symbol table is not a set of complete rows, and
     an entry near the cut is as likely to point past a truncated string table as into
     it, so there is nothing here safe to keep without a further, row-aware cap this
@@ -1214,12 +1215,12 @@ def _collect_string_bytes(
                 # unreadable.
                 #
                 # `truncated` says what was actually dropped, not what the section
-                # declared (the same contract this function's own docstring states for
-                # the `len(data) > remaining` branch below) -- a malformed `sh_size`
-                # far past the object's real end can make `keep_prefix`'s bounded read
-                # come back shorter than `remaining` with nothing left unread, and
-                # `data_size > remaining` alone cannot tell that apart from a read that
-                # genuinely filled the budget with more bytes still beyond it.
+                # declared (the same contract this function's own docstring states) --
+                # a malformed `sh_size` far past the object's real end can make
+                # `keep_prefix`'s bounded read come back shorter than `remaining` with
+                # nothing left unread, and `data_size > remaining` alone cannot tell
+                # that apart from a read that genuinely filled the budget with more
+                # bytes still beyond it.
                 buf.extend(data)
                 truncated = len(data) >= remaining
                 continue
@@ -1238,9 +1239,7 @@ def _collect_string_bytes(
             # yields no bytes at all. Deliberately not `len(data) < sh_size`, because a
             # compressed section legitimately decompresses to a different length.
             unread = True
-        if len(data) > remaining:
-            buf.extend(data[:remaining])
-            truncated = True
-            break
+        # `_bounded_section_data` never returns more than `remaining` bytes unrefused,
+        # so the budget is decided there alone.
         buf.extend(data)
     return bytes(buf), truncated, unread
