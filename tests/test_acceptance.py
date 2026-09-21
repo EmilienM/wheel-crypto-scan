@@ -177,6 +177,66 @@ def test_a_statically_linked_wheel_is_not_mistaken_for_system_linked(context, st
     assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in record["verdict"]["rule_ids"]
 
 
+def test_a_system_linked_build_carrying_its_header_banner_is_system(
+    context, tmp_path: Path
+) -> None:
+    """The Fedora shape: a system dependency, imported symbols, and a header's own
+    version banner beside them, with none of the build strings a compiled-in copy
+    keeps beside its banner. The banner is header text, not a copy, so the wheel
+    reads `system` -- the banner is still reported as evidence, just not as a
+    competing posture."""
+    wheel_path = build_wheel(
+        tmp_path / f"fakecrypto-50.0.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="50.0.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libssl.so.3", "libcrypto.so.3", "libc.so.6"),
+                dynsyms=(DynSym(EVP, defined=False), DynSym("SSL_CTX_new", defined=False)),
+                rodata=OPENSSL_BANNER,
+            ),
+        },
+    )
+    record = scan(context, wheel_path)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in record["verdict"]["rule_ids"]
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" not in record["verdict"]["rule_ids"]
+    assert any(f["rule_id"] == "BIN_OPENSSL_BANNER" for f in record["findings"])
+
+
+def test_a_system_dependency_beside_a_compiled_in_copy_stays_mixed(context, tmp_path: Path) -> None:
+    """Same shape, but the banner is accompanied by the build string a real
+    compiled-in copy keeps beside it -- the merged-universal-binary or
+    static-libcrypto-beside-dynamic-libssl shape the gate exists to keep reading
+    `mixed`. This pins that the ELF strings pass really reads the marker end to end,
+    not only that `linkage.py`'s own logic can be made to say so with hand-built
+    evidence."""
+    wheel_path = build_wheel(
+        tmp_path / f"fakecrypto-50.0.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="50.0.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _openssl\n",
+            "fakecrypto/_openssl.abi3.so": extension(
+                needed=("libssl.so.3", "libcrypto.so.3", "libc.so.6"),
+                dynsyms=(DynSym(EVP, defined=False), DynSym("SSL_CTX_new", defined=False)),
+                rodata=OPENSSL_BANNER + b'OPENSSLDIR: "/usr/lib/ssl"\x00',
+            ),
+        },
+    )
+    record = scan(context, wheel_path)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "mixed"
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" in record["verdict"]["rule_ids"]
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in record["verdict"]["rule_ids"]
+    binary_record = next(
+        b for b in record["binaries"] if b["path"] == "fakecrypto/_openssl.abi3.so"
+    )
+    assert any(s["group"] == "openssl_build_info" for s in binary_record["matched_strings"])
+
+
 # --------------------------------------------------------------------------
 # delocate: bundled without a rename (#57)
 #

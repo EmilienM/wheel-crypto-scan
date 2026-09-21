@@ -94,7 +94,8 @@ and subject rather than per occurrence.
 
 `linkage.py` resolves a posture per crypto library. `_binary_posture` reads one object's
 own evidence — its `vendored_path`, each `needed` entry, the defined-versus-imported symbol
-split, the version banners, and the Rust crates that bind the library — and returns
+split, the version banners, the build strings that tell a compiled-in banner from a
+header's, and the Rust crates that bind the library — and returns
 `system`, `bundled`, `static`, `unknown` or `mixed`. `_aggregate` combines the objects'
 answers into the wheel's. Two or more definite postures disagreeing, whether within one
 object or across two, is `mixed`. The whole subsystem's reasoning is in

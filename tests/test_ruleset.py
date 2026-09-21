@@ -104,7 +104,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "23"
+    assert ruleset.version == "24"
     assert len(ruleset.rules) > 20
 
 
@@ -375,6 +375,40 @@ def test_a_library_naming_a_crate_the_crate_table_lacks_is_rejected() -> None:
     data["crypto_library"][0]["crates"] = ["opensll-sys"]
     with pytest.raises(RulesetError, match="not a \\[\\[rust_crate\\]\\] entry"):
         parse_ruleset(data)
+
+
+def test_a_library_naming_an_unknown_copy_string_group_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["string_group"] = "openssl_banner"
+    data["crypto_library"][0]["copy_string_group"] = "opensll_build_info"
+    with pytest.raises(RulesetError, match="unknown string group"):
+        parse_ruleset(data)
+
+
+def test_a_copy_string_group_equal_to_the_banner_group_is_rejected() -> None:
+    """The same group could never mark a copy: the banner would be its own marker
+    and the gate could never open, silently."""
+    data = minimal()
+    data["crypto_library"][0]["string_group"] = "openssl_banner"
+    data["crypto_library"][0]["copy_string_group"] = "openssl_banner"
+    with pytest.raises(RulesetError, match="must differ"):
+        parse_ruleset(data)
+
+
+def test_a_copy_string_group_without_a_string_group_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["copy_string_group"] = "openssl_banner"
+    with pytest.raises(RulesetError, match="needs a string_group"):
+        parse_ruleset(data)
+
+
+def test_openssl_names_a_copy_string_group() -> None:
+    """The shipped ruleset's `openssl` entry has a way to tell a header banner from
+    a real compiled-in copy, and that group is one the ruleset actually compiles."""
+    ruleset = load_ruleset()
+    group = ruleset.libraries["openssl"].copy_string_group
+    assert group is not None
+    assert group in ruleset.string_groups
 
 
 def test_a_library_naming_a_bare_crate_string_is_rejected() -> None:

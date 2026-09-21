@@ -1845,7 +1845,9 @@ disagreement between two different objects, extended to mean "both postures foun
 the evidence contributing to one object's own posture" as well as "two objects disagreed
 about the same library." `mixed` was chosen: both facts are independently true and
 independently reportable (a real `DT_NEEDED` entry names the system library, and a real
-symbol or banner shows the object also carries its own copy), and `static`-wins would
+symbol, or a banner that is not header text (see
+[the entry on header banners](#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy)),
+shows the object also carries its own copy), and `static`-wins would
 suppress the `needed` evidence from `verdict.conditions.openssl_linkage` itself, not just
 from the findings list -- the one field most consumers filter on would then say `static`
 about an object that also, genuinely, links the system library. `mixed` costs no schema
@@ -5073,14 +5075,14 @@ cryptography 50.0.1 off PyPI, cp311-abi3: manylinux_2_34_x86_64, macosx_11_0_arm
 cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
   needed: libcrypto.so.3, libssl.so.3              OpenSSL symbols: imported only
   SBOM names openssl-sys 0.9.117; no crate from its cargo paths (#137)
-  banner "OpenSSL 3.5.7 9 Jun 2026", which is header text (#136)
-  -> mixed
+  banner "OpenSSL 3.5.7 9 Jun 2026", which is header text
+  -> system
 ```
 
 Same crate, two postures. So the crate check sits below every other one, and
 `_aggregate` treats its `unknown` like any other: it never outvotes a definite posture
-elsewhere in the wheel. The Fedora row's `mixed` and its missing crate are their own
-gaps, tracked in [#136](https://github.com/EmilienM/wheel-crypto-scan/issues/136) and [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137).
+elsewhere in the wheel. The Fedora row's missing crate is its own gap, tracked in
+[#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137).
 
 **What moved.** None of the four records above: every object already answered from its
 own evidence, and the records are byte-identical apart from the `tool` block. What moves
@@ -5135,3 +5137,123 @@ after:  openssl_linkage: unknown, verdict.rule_ids: [..., "BIN_OPENSSL_LINKAGE_U
 Revisit if a real wheel turns up whose only OpenSSL evidence is an SBOM component.
 
 Tracked in [#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128).
+
+## A version banner beside imports from the system library is header text, not a copy
+
+**Fixed.**
+
+`_binary_posture` counted any `openssl_banner` match as `static` unconditionally. A
+`needed` entry resolving to the system library and a banner in the same object were
+therefore both true whenever a build compiled against OpenSSL's own headers, which put
+the banner in read-only data whether or not the object links its own copy. The record
+read `mixed` and paired `BIN_OPENSSL_LINKAGE_UNKNOWN` ("could not be resolved") with
+evidence that, in fact, resolved cleanly to the host library.
+
+```text
+cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
+  needed: libcrypto.so.3, libssl.so.3              OpenSSL symbols: imported only
+  banner "OpenSSL 3.5.7 9 Jun 2026", no OPENSSLDIR: string beside it
+-> before: openssl_linkage: mixed, verdict.rule_ids: [..., "BIN_OPENSSL_LINKAGE_UNKNOWN", ...]
+-> after:  openssl_linkage: system, verdict.rule_ids: [..., "DERIVED_SYSTEM_OPENSSL_ONLY", ...]
+           (no "BIN_OPENSSL_LINKAGE_UNKNOWN"; "BIN_OPENSSL_BANNER" still fires -- the
+           banner is still reported, just no longer read as a competing posture)
+```
+
+**The fix.** A `string_group` match no longer counts toward `static` when all four hold
+on the one object it was found on:
+
+- a `needed` entry resolved `system` in the loop -- a confirmed host dependency, not a
+  guess;
+- the object imports at least one symbol from the library's `symbol_group`, so it calls
+  the host copy rather than only declaring a dependency on one;
+- the object is not `partial_analysis`, for any cause -- deliberately its own, stricter
+  split rather than a reuse of `[linkage_policy] exclude_reasons`, since a partial read
+  can hide the very string the fourth gate looks for;
+- the library names a `copy_string_group`, strings only a compiled-in copy carries, and
+  the object matches none of them.
+
+A defined symbol still makes `static` regardless of all four: `static = defined or
+banner`, so a real definition never needed a fourth gate. A library naming no
+`copy_string_group` has no way to tell a header banner from a copy, and keeps counting
+every banner match exactly as before.
+
+For OpenSSL, `copy_string_group` names a new `openssl_build_info` string group matching
+`OPENSSLDIR: `. `OpenSSL_version()` returns the version banner and this string from the
+same switch, so a compiled-in copy that keeps its banner keeps this string beside it,
+and a header only ever supplies the banner macro. Measured on a Fedora 44 host:
+`cryptography`'s own `.abi3.so`, built as a distro RPM, declares `NEEDED libssl.so.3` and
+`libcrypto.so.3`, imports 331 OpenSSL-prefixed symbols and defines none, has no `.symtab`,
+and carries the banner `OpenSSL 3.5.7 9 Jun 2026` with no `OPENSSLDIR: ` string anywhere
+in it. A statically linked PyPI build of the same project carries no OpenSSL `NEEDED`
+entry, no OpenSSL dynamic symbols, and both the banner and `OPENSSLDIR: "/outfiles/
+openssl-3.5.8/openssl/ssl"` beside it. The real `/usr/lib64/libcrypto.so.3` on the same
+host carries its own banner and `OPENSSLDIR: "/etc/pki/tls"`. Every ELF under `/usr/lib64`
+and the Python site and `lib-dynload` directories declaring an OpenSSL `NEEDED` entry --
+107 objects, 15 of them matching `openssl_banner` -- imports OpenSSL symbols, defines
+none, and carries no `OPENSSLDIR: ` string. LibreSSL, BoringSSL and AWS-LC define an
+`OPENSSLDIR: ` string in their own `OpenSSL_version()` too, from reading their source
+rather than from this measurement.
+
+**Why a marker and not the imports alone.** The shape the issue itself proposed --
+`needed` resolving `system`, imported symbols, no defined symbol, and a banner -- is not
+enough by itself. Two genuinely mixed shapes satisfy it and still carry a real copy: a
+merged universal binary whose one slice imports from the host library and whose other
+slice carries a hidden, stripped static copy; and a static `libcrypto` linked beside a
+dynamic system `libssl`. Both shapes carry a real copy, and that copy's build strings
+ride beside its banner only when something in the object actually calls
+`OpenSSL_version()` -- the one function, defined in `crypto/cversion.c`, that returns
+both the banner and the `OPENSSLDIR: ` string. `cryptography` guarantees that call by
+exposing `openssl_version_text`, which is why both shapes keep reading `mixed` here. A
+generic consumer that never calls `OpenSSL_version()` itself gives the linker no reason
+to pull `cversion.o` out of a static `libcrypto.a`, so the copy carries neither string;
+if that consumer's own header then supplies a banner, the marker has nothing to find and
+the object reads `system`, not `mixed`. See "What it costs" below for that shape.
+
+**What was rejected.**
+
+- *The issue's discriminator alone, with no marker.* Covered above: it moves the two
+  genuinely mixed shapes into `system`, the direction this tool's invariants exist to
+  refuse.
+- *Comparing the banner's version against the host's.* The scan host is not the target
+  the wheel will run on, and the tool makes no network call to look one up.
+- *Dropping a banner outright whenever a system dependency is present, with no import or
+  marker check.* Discards the banner as evidence even when it is the only sign of a
+  genuine hidden copy; the four gates exist so the banner is dropped only when nothing
+  else says it might be a copy.
+
+**What it costs, and what is left unmeasured.**
+
+- `BIN_OPENSSL_BANNER` still fires beside `DERIVED_SYSTEM_OPENSSL_ONLY` for this shape;
+  its `why` now says so.
+- This moves the field in the favourable direction -- from `mixed`/`OPAQUE` to
+  `system`/`CONDITIONAL` -- which is exactly why it needed four independent gates rather
+  than one.
+- The two mixed shapes under "Why a marker" are argued from the copy's measured
+  strings, not measured as composites: no merged universal binary and no static
+  `libcrypto` beside a dynamic system `libssl` was actually built and scanned to
+  confirm it reads `mixed` here. The argument rests on `OpenSSL_version()` being
+  reachable, which holds for a real copy in general but is only guaranteed, not
+  measured, for these two shapes specifically.
+- A real copy whose banner survives a strip or a build without its `OPENSSLDIR: ` string
+  reads `system` under this fix, and this is not only an unmeasured edge case: a
+  stripped, hidden static `libcrypto` beside a dynamic system `libssl`, whose consumer
+  never calls `OpenSSL_version()` and so never links in `crypto/cversion.c` -- the one
+  object that carries both the banner and the OPENSSLDIR string -- keeps neither, and if
+  the consumer's own header supplies a banner the object reads `system`. This is a
+  residual of the fix, not something it was supposed to catch: the same object without a
+  header banner already read `system` on `main`, before this change; the marker only
+  turned it up here because the banner happened to be present too. Every real copy
+  checked for this fix kept both strings together, because `OpenSSL_version()` returns
+  them from the same call -- but only when something calls it, which `cryptography`
+  guarantees by exposing `openssl_version_text` and a generic consumer does not.
+- Windows OpenSSL 3.5 builds that read their install directory from the registry rather
+  than compiling it in, and LibreSSL, BoringSSL and AWS-LC generally, are not measured
+  here; the `why` on the new string group says so and cites source rather than a host
+  measurement for the latter three.
+- An object that is `partial_analysis` for any cause keeps `mixed`, whatever the cause.
+- A library other than OpenSSL names no `copy_string_group` and keeps today's behaviour
+  exactly: every banner it finds still counts as a copy.
+
+Revisit if a real copy is found whose banner survives without its build strings, or if a
+second library gains a `copy_string_group` and needs its own measurement the way OpenSSL's
+does here.

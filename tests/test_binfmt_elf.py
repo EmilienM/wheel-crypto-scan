@@ -433,6 +433,24 @@ def test_hostbin_libcrypto_soname_and_evp_digestinit_ex_defined() -> None:
     assert digest[0].binding == evidence.BINDING_DEFINED
 
 
+@pytest.mark.hostbin
+def test_hostbin_libcrypto_carries_its_build_string_beside_its_banner() -> None:
+    """A real compiled-in copy of OpenSSL keeps `openssl_build_info` beside its own
+    `openssl_banner`: `OpenSSL_version()` returns both from the same switch. This
+    pins the claim `linkage._banner_is_header_text`'s gate rests on against a real
+    library, not only hand-built evidence."""
+    path = "/usr/lib64/libcrypto.so.3"
+    if not os.path.exists(path):
+        pytest.skip("no system libcrypto.so.3 on this host")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    ev, errors = read_elf(io.BytesIO(data), path, PATTERNS, vendored=False)
+    assert errors == ()
+    groups = {match.group for match in ev.matched_strings}
+    assert "openssl_banner" in groups
+    assert "openssl_build_info" in groups
+
+
 # --- reading symbol tables without seeking per symbol ------------------------
 
 
