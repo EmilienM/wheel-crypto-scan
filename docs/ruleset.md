@@ -100,12 +100,19 @@ are `dist_name`, `requires_dist`, `wheel_generator`, `record_mismatch`, `sbom_co
 `linkage`, `opaque_binary`, `partial_binary`, `binaries_truncated`, `no_source`,
 `scan_error`, `py_import`, `py_call`, `py_attr`, `py_constant` and `py_ctypes_load`.
 
-Two of those read the Python-side vocabularies rather than a table:
+Three of those read the Python-side vocabularies rather than a table:
 
 - `kind = "scan_error"` matches on the `ScanError` kinds.
 - `kind = "partial_binary"` matches on `partial_reasons`, taking `reasons` and
   `exclude_reasons`, so the ruleset decides which causes are worth a verdict rather than
   the engine treating them alike.
+- `kind = "linkage"` matches on the wheel's resolved posture for a library, taking
+  `value`/`values`. It also takes the alternatives `object_values` (fire, once per
+  object, when that object's own posture -- the same per-object answer the field was
+  aggregated from -- is one of these) and `exclude_object_values` (fire only when no
+  object's own posture is one of these). All four are validated against the closed set
+  of linkage postures at load time, and `object_values`/`exclude_object_values` are
+  refused empty.
 
 Three more read Python source evidence, and each has a required field naming what it
 matches on, refused if missing or empty: `kind = "py_call"` takes `targets` (dotted

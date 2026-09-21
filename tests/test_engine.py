@@ -12,6 +12,7 @@ from importlib.resources import files
 import pytest
 
 from wheel_crypto_scan.engine import apply_rules
+from wheel_crypto_scan.errors import MEMBER_READ_ERROR
 from wheel_crypto_scan.evidence import (
     BINDING_DEFINED,
     BINDING_IMPORTED,
@@ -33,6 +34,7 @@ from wheel_crypto_scan.evidence import (
 )
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset
+from wheel_crypto_scan.verdict import classify
 
 
 @pytest.fixture(scope="module")
@@ -481,6 +483,110 @@ def test_system_and_static_evidence_in_one_object_never_reads_as_system_only(rul
     assert "BIN_NEEDED_SYSTEM_OPENSSL" in findings
     assert "BIN_OPENSSL_SYMBOLS_DEFINED" in findings
     assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in findings
+
+
+# --- an object that read `unknown` withholds DERIVED_SYSTEM_OPENSSL_ONLY ----
+
+
+_SYSTEM_SIBLING = binary("demo/_ssl.so", needed=("libc.so.6", "libssl.so.3"))
+
+_CRATE_UNKNOWN = binary(
+    "demo/_rust.abi3.so",
+    needed=("libc.so.6",),
+    dynsym_count=1,
+    rust_crates=(RustCrate("openssl-sys", "0.9.117"),),
+)
+_IMPORT_UNKNOWN = binary(
+    "demo/_ext.so",
+    needed=("libc.so.6",),
+    matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+)
+# A vendor-shaped RUNPATH the wheel cannot confirm, because the wheel was
+# incompletely read (a binary-stage error on a different member) -- this object's
+# own posture is `unknown`.
+_UNCERTAIN_UNKNOWN = binary(
+    "demo/_x.so", needed=("libcrypto.so.3",), runpath=("$ORIGIN/../demo.libs",)
+)
+_UNCERTAIN_ERROR = ScanError(stage=STAGE_BINARY, kind=MEMBER_READ_ERROR, message="truncated")
+
+
+@pytest.mark.parametrize(
+    ("unknown_object", "errors"),
+    [
+        pytest.param(_CRATE_UNKNOWN, (), id="crate"),
+        pytest.param(_IMPORT_UNKNOWN, (), id="import"),
+        pytest.param(_UNCERTAIN_UNKNOWN, (_UNCERTAIN_ERROR,), id="uncertain"),
+    ],
+)
+def test_an_object_that_read_unknown_withholds_the_system_only_rule(
+    ruleset, unknown_object, errors
+) -> None:
+    """Verified on main: `unknown_object`'s own posture is `unknown` in every shape,
+    yet the wheel's `openssl_linkage` field still reads `system` -- `unknown` never
+    outvotes a definite posture. `DERIVED_SYSTEM_OPENSSL_ONLY`'s `why` would then be
+    false ("every piece of OpenSSL evidence ... points at the system library"), so it
+    is withheld, and `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` names the object
+    instead.
+    """
+    evidence = wheel(binaries=(_SYSTEM_SIBLING, unknown_object), errors=errors)
+    assert resolve_linkage(ruleset, evidence)["openssl"] == "system"
+    findings = run(ruleset, evidence)
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in ids(findings)
+    finding = one(findings, "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM")
+    assert tuple(location.path for location in finding.locations) == (unknown_object.path,)
+
+
+def test_withholding_the_system_only_rule_never_leaves_the_wheel_without_a_class(
+    ruleset,
+) -> None:
+    """The critical case: for the import and uncertain shapes,
+    `DERIVED_SYSTEM_OPENSSL_ONLY` was the only verdict-bearing finding at all. Simply
+    declining to fire it would read `NO_CRYPTO_DETECTED` on a wheel that plainly uses
+    OpenSSL -- exactly the direction `[linkage_policy]` exists to refuse -- so the
+    complementary rule must carry the verdict instead.
+    """
+    evidence = wheel(binaries=(_SYSTEM_SIBLING, _IMPORT_UNKNOWN))
+    findings = run(ruleset, evidence)
+    verdict = classify(ruleset, findings, resolve_linkage(ruleset, evidence))
+    assert verdict.headline == "OPAQUE"
+    assert "NO_CRYPTO_DETECTED" not in verdict.classes
+    assert verdict.needs_human_review is True
+
+
+def test_an_unreadable_sibling_does_not_withhold_the_system_only_rule(ruleset) -> None:
+    """Pins that `_aggregate`'s unreadable-object decision stays: `unanswered` must
+    never leak into `object_postures` as a per-object `unknown`.
+    """
+    opaque_object = binary("demo/_blob.so")
+    evidence = wheel(binaries=(_SYSTEM_SIBLING, opaque_object))
+    findings = ids(run(ruleset, evidence))
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in findings
+    assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" not in findings
+
+
+def test_system_only_still_fires_beside_an_object_with_no_openssl_evidence(ruleset) -> None:
+    unrelated_object = binary("demo/_other.so", needed=("libc.so.6",), dynsym_count=1)
+    evidence = wheel(binaries=(_SYSTEM_SIBLING, unrelated_object))
+    findings = ids(run(ruleset, evidence))
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in findings
+    assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" not in findings
+
+
+def test_an_sbom_naming_openssl_sys_does_not_reach_object_postures(ruleset) -> None:
+    """A known residual: `object_postures` reads only per-object binary evidence, so
+    an SBOM component naming a crypto crate cannot make an object read `unknown`
+    beside a system sibling. See the decisions entry by title.
+    """
+    component = SbomComponent(
+        name="openssl-sys",
+        version="0.9.117",
+        purl="pkg:cargo/openssl-sys@0.9.117",
+        source="demo-1.0.dist-info/sboms/a.json",
+    )
+    evidence = wheel(binaries=(_SYSTEM_SIBLING,), metadata=metadata(sbom_components=(component,)))
+    findings = ids(run(ruleset, evidence))
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" in findings
+    assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" not in findings
 
 
 # --- python layer -----------------------------------------------------------

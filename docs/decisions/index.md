@@ -54,6 +54,7 @@ Three habits in that file are worth knowing before you read it:
 | [A `needed` match and a definition inside one object are both true, so the object is `mixed`](linkage.md#a-needed-match-and-a-definition-inside-one-object-are-both-true-so-the-object-is-mixed) | Fixed, and extended twice |
 | [An OpenSSL crate with no other evidence reads `unknown`, not `none`](linkage.md#an-openssl-crate-with-no-other-evidence-reads-unknown-not-none) | Fixed |
 | [A version banner beside imports from the system library is header text, not a copy](linkage.md#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy) | Fixed |
+| [An object that read `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`](linkage.md#an-object-that-read-unknown-withholds-derived_system_openssl_only-the-field-stays-system) | Fixed |
 
 ## [Policy data: what the ruleset enumerates](policy.md)
 

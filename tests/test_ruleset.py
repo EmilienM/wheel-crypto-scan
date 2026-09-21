@@ -104,7 +104,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "24"
+    assert ruleset.version == "25"
     assert len(ruleset.rules) > 20
 
 
@@ -177,6 +177,7 @@ def test_rules_can_be_selected_by_matcher_kind() -> None:
     assert {rule.id for rule, _ in selected} == {
         "BIN_STATIC_OPENSSL",
         "DERIVED_SYSTEM_OPENSSL_ONLY",
+        "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM",
         "BIN_LINKED_CRYPTO_LIBRARY",
         "BIN_OPENSSL_LINKAGE_UNKNOWN",
     }
@@ -814,6 +815,57 @@ def test_a_partial_binary_rule_may_name_neither_key() -> None:
     assert [dict(m) for m in ruleset.rule("BIN_PARTIAL_TEST").matches] == [
         {"kind": "partial_binary"}
     ]
+
+
+# --- linkage object_values / exclude_object_values ---------------------------------
+
+
+def _with_linkage_rule(**match) -> dict:
+    """`minimal()` plus one `linkage` rule naming `openssl`."""
+    data = minimal()
+    data["rule"].append(
+        {
+            "id": "LINKAGE_OBJECT_VALUES_TEST",
+            "layer": "derived",
+            "category": "opacity",
+            "severity": "low",
+            "confidence": "high",
+            "needs_human_review": True,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "linkage", "name": "openssl", "value": "system", **match},
+        }
+    )
+    return data
+
+
+def test_an_unknown_object_value_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="linkage value"):
+        parse_ruleset(_with_linkage_rule(object_values=["unknwon"]))
+
+
+def test_an_unknown_excluded_object_value_is_rejected() -> None:
+    with pytest.raises(RulesetError, match="linkage value"):
+        parse_ruleset(_with_linkage_rule(exclude_object_values=["unknwon"]))
+
+
+def test_naming_both_object_value_keys_is_rejected() -> None:
+    """They are alternatives: together they would read as a contradiction."""
+    with pytest.raises(RulesetError, match="alternatives"):
+        parse_ruleset(_with_linkage_rule(object_values=["unknown"], exclude_object_values=["none"]))
+
+
+def test_an_empty_exclude_object_values_is_rejected() -> None:
+    """An empty exclude list would silently mean `always`, the same typo-shaped
+    failure mode `usedforsecurity` and `reasons`/`exclude_reasons` are refused for."""
+    with pytest.raises(RulesetError, match="exclude_object_values"):
+        parse_ruleset(_with_linkage_rule(exclude_object_values=[]))
+
+
+def test_an_empty_object_values_is_rejected() -> None:
+    """An empty list would silently mean `never`."""
+    with pytest.raises(RulesetError, match="object_values"):
+        parse_ruleset(_with_linkage_rule(object_values=[]))
 
 
 # --- matcher kind drift -------------------------------------------------------------

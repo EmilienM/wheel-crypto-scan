@@ -5116,12 +5116,10 @@ after:  openssl_linkage: unknown, verdict.rule_ids: [..., "BIN_OPENSSL_LINKAGE_U
   and `OPAQUE` in `classes`. Its headline stays `CONDITIONAL`, which outranks `OPAQUE`,
   and the crate finding already asked for a human.
 - A crate-only object beside a sibling that answers takes the sibling's posture,
-  including `system` with `DERIVED_SYSTEM_OPENSSL_ONLY`, whose `why` says every piece of
-  OpenSSL evidence points at the system library. That is a residual in the favourable
-  direction, since the crate-only object is more likely static than system, and it
-  predates this change: `none` beside `system` aggregates the same way, and so does an
-  imported-symbol object. Closing it needs per-object postures to reach the engine, so
-  the derived rule can decline to fire beside an object that read `unknown`.
+  including `system`. The field is unaffected, but the rules no longer read it alone:
+  `DERIVED_SYSTEM_OPENSSL_ONLY` is withheld beside the crate-only object, and
+  `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` names it instead (see "An object that read
+  `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`").
 - An SBOM component naming `openssl-sys` does not move the field: a wheel whose SBOM
   names the crate over a binary with no OpenSSL evidence still reads `none`, beside
   `SBOM_CRYPTO_COMPONENT`. `resolve_linkage` has one wheel-level signal,
@@ -5257,3 +5255,69 @@ the object reads `system`, not `mixed`. See "What it costs" below for that shape
 Revisit if a real copy is found whose banner survives without its build strings, or if a
 second library gains a `copy_string_group` and needs its own measurement the way OpenSSL's
 does here.
+
+## An object that read `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`
+
+**Fixed.**
+
+`DERIVED_SYSTEM_OPENSSL_ONLY` fires whenever `openssl_linkage` resolves to `system`, and
+its `why` says every piece of OpenSSL evidence in the wheel points at the system library.
+`_aggregate` never lets a per-object `unknown` outvote a definite posture, so a wheel with
+one object reading `system` and another reading `unknown` -- positive, library-specific
+evidence that OpenSSL is used, just not which copy -- still resolves to `system`, and the
+rule fired on it anyway. Reproduced on evidence built by hand, in the three shapes an
+object can read `unknown` from: a listed Rust crate with nothing else, imported OpenSSL
+symbols with no declared dependency, and a vendor-shaped `needed` entry an incompletely
+read wheel could not confirm.
+
+```text
+crate     + system sibling -> openssl_linkage: system, rule_ids include DERIVED_SYSTEM_OPENSSL_ONLY
+import    + system sibling -> openssl_linkage: system, rule_ids include DERIVED_SYSTEM_OPENSSL_ONLY
+uncertain + system sibling -> openssl_linkage: system, rule_ids include DERIVED_SYSTEM_OPENSSL_ONLY
+```
+
+In the import and uncertain shapes, `DERIVED_SYSTEM_OPENSSL_ONLY` was the *only*
+verdict-bearing finding on the wheel at all: `BIN_NEEDED_SYSTEM_OPENSSL` and
+`BIN_OPENSSL_SYMBOLS_IMPORTED` carry none.
+
+**The fix.** `linkage.object_postures` exposes the per-object tuple `_aggregate` reduces,
+shared with the engine so a rule and the field can never disagree about what one object
+said. `engine._match_linkage` gains two alternative match keys: `exclude_object_values`
+(skip the whole match when any object's own posture is one of these) and `object_values`
+(fire once per object whose own posture is one of these, located at that object rather
+than the wheel). `DERIVED_SYSTEM_OPENSSL_ONLY` takes `exclude_object_values = ["unknown"]`,
+and a new rule, `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM`, takes `object_values =
+["unknown"]` on the same `value = "system"` match and carries `OPAQUE`. The two rules are
+complementary by construction: exactly one fires whenever `openssl_linkage` is `system`.
+The complementary rule is not optional -- withholding `DERIVED_SYSTEM_OPENSSL_ONLY` alone,
+on the import and uncertain shapes above, would leave the wheel with no verdict-bearing
+finding at all and a headline of `NO_CRYPTO_DETECTED`, which is exactly the "unreadable or
+undeterminable must never read as nothing found" invariant in the wrong direction on a
+wheel that plainly uses OpenSSL.
+
+**What was rejected, and why.**
+
+- *Move `openssl_linkage` itself to `unknown` beside a per-object `unknown`.* Moves the
+  field most consumers filter on, needs a real-wheel measurement this fix did not take,
+  and contradicts `_aggregate`'s documented rule that a non-definite posture never
+  outvotes a definite one already present.
+- *Leave `DERIVED_SYSTEM_OPENSSL_ONLY` firing.* Its own `why` becomes false on the record:
+  not every piece of OpenSSL evidence points at the system library when another object
+  says OpenSSL is used and does not say where from.
+- *Cover only the crate shape, since that is where the residual was first named.* The
+  import shape declares no dependency either, and reading its `unknown` differently from
+  the crate's would need a split the vocabulary does not carry and nothing else needs.
+
+**What it costs.** A wheel whose only other OpenSSL evidence is `unknown` beside a system
+sibling moves from `CONDITIONAL` to `OPAQUE` headline (the import and uncertain shapes) or
+keeps its `CONDITIONAL` headline from `BIN_RUST_CRYPTO_CRATE` and gains `OPAQUE` (the
+crate shape); `openssl_linkage` itself never moves. An unreadable (opaque) sibling still
+leaves `DERIVED_SYSTEM_OPENSSL_ONLY` firing, by design: `object_postures` never reports
+`unknown` for an object that could not be read at all, only for one that was read and
+said so, the same way `_aggregate`'s own `unanswered` signal stays separate from it.
+
+**A known residual.** `object_postures` reads only per-object binary evidence. An SBOM
+component naming `openssl-sys` beside a system object does not make that object's own
+posture read `unknown`: `DERIVED_SYSTEM_OPENSSL_ONLY` still fires, and
+`DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` stays silent, exactly as if the SBOM component
+were not there.

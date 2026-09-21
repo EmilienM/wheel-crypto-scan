@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "24"
+ruleset_version = "25"
 
 
 # ---------------------------------------------------------------------------
@@ -1431,11 +1431,28 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "All OpenSSL use resolves to the system library"
-why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings."
+why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings. It is withheld when some object in the wheel uses OpenSSL without saying which copy (its own posture is unknown: imported symbols with no declared dependency, a Rust crate that binds it and nothing else, or a vendor-shaped dependency the wheel could not confirm), because then not every piece of evidence points at the system library, even though the linkage field, where unknown never outvotes a definite posture, still reads system."
 [rule.match]
 kind = "linkage"
 name = "openssl"
 value = "system"
+exclude_object_values = ["unknown"]
+
+[[rule]]
+id = "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM"
+layer = "derived"
+category = "opacity"
+severity = "medium"
+confidence = "high"
+verdict = "OPAQUE"
+needs_human_review = true
+title = "An object uses OpenSSL without saying which copy, beside a system-linked one"
+why = "The wheel's OpenSSL linkage resolved to system from another object, but this object uses OpenSSL -- imported symbols with no declared dependency, a Rust crate that binds it and nothing else, or a vendor-shaped dependency the wheel could not confirm -- and says nothing about which copy. The linkage field still reads system, because unknown never outvotes a definite posture, so this finding is what keeps the record from stating that all OpenSSL use resolves to the system library, and what gives the wheel a class when DERIVED_SYSTEM_OPENSSL_ONLY is withheld. A crate-only object is more likely a static copy than a system one, since a dynamically linked openssl-sys leaves a dependency and imports."
+[rule.match]
+kind = "linkage"
+name = "openssl"
+value = "system"
+object_values = ["unknown"]
 
 [[rule]]
 id = "BIN_LINKED_CRYPTO_LIBRARY"

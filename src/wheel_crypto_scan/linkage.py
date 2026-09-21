@@ -214,6 +214,40 @@ def needed_posture(
     return LINKAGE_SYSTEM
 
 
+def _object_postures(
+    binaries: tuple[BinaryEvidence, ...],
+    library: CryptoLibrary,
+    conventions: Conventions,
+    counts: Mapping[str, int],
+    incomplete: bool,
+) -> tuple[str, ...]:
+    """`_binary_posture` for each binary, in `evidence.binaries` order."""
+    return tuple(
+        _binary_posture(binary, library, conventions, counts, incomplete) for binary in binaries
+    )
+
+
+def object_postures(ruleset: Ruleset, evidence: Evidence, name: str) -> tuple[str, ...]:
+    """The per-object postures `resolve_linkage` aggregates for library `name`.
+
+    Shared with `engine._match_linkage`, the same way `needed_posture` is shared with
+    `engine._match_dt_needed`, so a rule reading an object's own posture and the field
+    aggregated from it can never disagree about what that object said.
+
+    This never carries `_left_unanswered`'s wheel-wide, library-agnostic signal: an
+    object that could not be read at all contributes nothing here, only to
+    `resolve_linkage`'s aggregate through `_aggregate`'s `unanswered` argument. A rule
+    that reads this tuple therefore only ever sees `LINKAGE_UNKNOWN` from an object
+    that was read and said the library is used without saying which copy, never from
+    one that was not read at all.
+    """
+    counts = member_stem_counts(ruleset.conventions, evidence)
+    incomplete = wheel_incompletely_read(evidence)
+    return _object_postures(
+        evidence.binaries, ruleset.libraries[name], ruleset.conventions, counts, incomplete
+    )
+
+
 def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
     """Map each crypto library with evidence in this wheel to its linkage posture."""
     unanswered = _left_unanswered(ruleset, evidence)
@@ -222,10 +256,9 @@ def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
     result: dict[str, str] = {}
     for name in sorted(ruleset.libraries):
         library = ruleset.libraries[name]
-        postures = {
-            _binary_posture(binary, library, ruleset.conventions, counts, incomplete)
-            for binary in evidence.binaries
-        }
+        postures = set(
+            _object_postures(evidence.binaries, library, ruleset.conventions, counts, incomplete)
+        )
         value = _aggregate(postures, unanswered and library.always_report)
         if value != LINKAGE_NONE or library.always_report:
             result[name] = value
@@ -241,6 +274,11 @@ def _aggregate(postures: set[str], unanswered: bool) -> str:
     on `always_report`, so an object we could not read makes the answer `unknown` for
     the libraries reported whatever the evidence -- where a false `none` is what does
     the damage -- and does not list every library in the ruleset as unknown.
+
+    A per-object `unknown` this function drops beside a definite posture (the
+    `len(definite) == 1` branch below) is still visible to rules through
+    `object_postures`, which is how `DERIVED_SYSTEM_OPENSSL_ONLY` declines to fire
+    beside an object that read `unknown`.
 
     `mixed` can now arrive already resolved for a single object -- #60: a `needed`
     entry matched the system library and the object also defines or banners its own
