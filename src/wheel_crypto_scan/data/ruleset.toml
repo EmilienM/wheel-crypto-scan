@@ -106,15 +106,19 @@ windows_library_suffixes = [".dll", ".pyd"]
 # Applied only to names that carried a Windows suffix, because a
 # Unix libfoo-2.so really is called libfoo-2, and applied after the content hash is
 # stripped, so a vendored libcrypto-3-x64-<hash>.dll is still recognised as vendored.
-windows_version_suffix_regex = '^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<arch>[A-Za-z0-9_]+))?$'
+windows_version_suffix_regex = '^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<decoration>[A-Za-z0-9_]+))?$'
 
 # Go toolchain string groups, named here rather than in the Go reader, so renaming a
 # group in this file cannot silently flip a verdict-relevant field in the record.
 go_boring_group = "go_boring"
 go_stock_group = "go_stock_crypto"
 
-# Rust objects embed the source path of every crate they were built from.
-cargo_path_regex = '''cargo/registry/src/[^/\x00"']+/(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)/'''
+# Rust objects embed the source path of every crate they were built from. Both
+# separators, because the path is spelled the way the machine that built the wheel
+# spells one: cryptography 50.0.1's win_amd64 .pyd carries 153 `cargo\registry` paths
+# and no `cargo/registry` path, so a forward-slash-only pattern read every Rust wheel
+# built on Windows as carrying no crates at all.
+cargo_path_regex = '''cargo[/\\]registry[/\\]src[/\\][^/\\\x00"']+[/\\](?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*)-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*)[/\\]'''
 
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
 # usedforsecurity=False.
@@ -667,7 +671,7 @@ name = "openssl-src"
 verdict = "CONDITIONAL"
 severity = "high"
 needs_human_review = true
-why = "The crate openssl-sys pulls in for its `vendored` feature: it builds OpenSSL from source and links it into the extension. This is the Rust side of the statically linked copy BIN_STATIC_OPENSSL catches from the binary, and it names the posture directly rather than inferring it, so it holds when the banner is stripped and the symbols are hidden."
+why = "The crate openssl-sys pulls in for its `vendored` feature, which builds OpenSSL from source. Listed as reach rather than as an observation: its Rust code runs in a build script and is not linked into the artifact, so it leaves no panic location, and neither cryptography 50.0.1 wheel measured (manylinux or win_amd64) carries the path. Read it as a hint to a human, not as a posture: a crate name cannot move openssl_linkage, which is resolved from libraries, symbols and strings alone, so a wheel whose only OpenSSL evidence is this name still reports linkage none. Its absence says nothing either, so it is not the fallback for a stripped banner."
 
 [[rust_crate]]
 name = "openssl-sys"
@@ -692,6 +696,24 @@ name = "sha-1"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 why = "The same crate as sha1 under the name it published before 0.10. A cargo path spells whichever name that build depended on, so both have to be listed or the older pin reads as carrying nothing."
+
+[[rust_crate]]
+name = "md5"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "Pure-Rust MD5, a different crate from RustCrypto's md-5 below and as widely used. A broken hash implemented in the extension, where FIPS mode cannot deny it."
+
+[[rust_crate]]
+name = "sha1_smol"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+why = "The dependency-free SHA-1 crate, which took this name when RustCrypto claimed sha1. Same broken hash, different name, so both have to be listed."
+
+[[rust_crate]]
+name = "sha3"
+verdict = "CONDITIONAL"
+severity = "medium"
+why = "Pure-Rust SHA-3 and SHAKE. The algorithms are approved; this implementation is not a validated module and does not read the system provider, so the condition is which build it is trusted under."
 
 [[rust_crate]]
 name = "md-5"

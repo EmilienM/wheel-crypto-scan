@@ -39,7 +39,7 @@ never closes -- is still read, under a synthetic path that says so, with an erro
 naming the offset. Dropping it instead, which an earlier version of this module did,
 loses the object's evidence to what is only a labelling failure: "unreadable means
 `OPAQUE`, never `NO_CRYPTO_DETECTED`" applies to a name exactly as much as to a
-structure. See #99's adversarial review.
+structure. See #99.
 
 This module needed no change to close #117, for an ELF member: a `.o`'s own symbol
 table is `.symtab`, not `.dynsym`, and `binfmt.elf` now matches crypto symbol groups
@@ -89,8 +89,7 @@ _END_MAGIC = b"\x60\x0a"
 # content is `ar`'s own bookkeeping, not something `read_binary` has any use for,
 # and misreading one as an unrecognised object used to cost the *whole archive* a
 # spurious `partial_analysis`/`BIN_PARTIAL_FORMAT` verdict hit for every ordinary
-# macOS or `.lib` import archive, not just a crafted one. See #99's adversarial
-# review.
+# macOS or `.lib` import archive, not just a crafted one. See #99.
 _PSEUDO_MEMBERS = frozenset(
     {b"/", b"//", b"/SYM64/", b"/SYM64", b"__.SYMDEF", b"__.SYMDEF SORTED", b"__.SYMDEF_64"}
 )

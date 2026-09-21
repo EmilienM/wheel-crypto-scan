@@ -53,6 +53,13 @@ Three habits in that file are worth knowing before you read it:
 | [A `needed` entry is bundled by what it resolves to, not by whether its name was renamed](linkage.md#a-needed-entry-is-bundled-by-what-it-resolves-to-not-by-whether-its-name-was-renamed) | Accepted, then corrected twice |
 | [A `needed` match and a definition inside one object are both true, so the object is `mixed`](linkage.md#a-needed-match-and-a-definition-inside-one-object-are-both-true-so-the-object-is-mixed) | Fixed, and extended twice |
 
+## [Policy data: what the ruleset enumerates](policy.md)
+
+| Entry | Disposition |
+|---|---|
+| [`openssl_banner` names every major digit, not the majors that shipped](policy.md#openssl_banner-names-every-major-digit-not-the-majors-that-shipped) | Accepted |
+| [The sweep that followed, and the two kinds of list it separated](policy.md#the-sweep-that-followed-and-the-two-kinds-of-list-it-separated) | Accepted |
+
 ## [Caps, budgets and record size](limits.md)
 
 | Entry | Disposition |

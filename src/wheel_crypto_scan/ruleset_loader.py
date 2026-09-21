@@ -101,17 +101,7 @@ def _check_string_sequence(value: Any, label: str, where: str, *, allow_empty: b
             raise RulesetError(f"{where}: {label} must be a list of strings")
 
 
-def _parse_conventions(data: Mapping[str, Any], string_group_names: Iterable[str]) -> Conventions:
-    """Build `Conventions`, including the two group names the Go reader is driven by.
-
-    `string_group_names` is required rather than optional because the names are the
-    whole point of naming them here: `binfmt.golang` reads `go_boring_group` and
-    `go_stock_group` out of the ruleset so that renaming a group cannot silently flip
-    `GoBuildInfo.boring_crypto`, which the ruleset says in [conventions]. Unvalidated,
-    the indirection delivered the opposite -- a name no group has loaded clean and
-    left the field permanently false, while every other group reference in the file
-    was checked. So the caller has to have parsed `[[string_group]]` first.
-    """
+def _parse_conventions(data: Mapping[str, Any]) -> Conventions:
     where = "[conventions]"
     try:
         mangled = re.compile(str(_require(data, "mangled_soname_regex", where)))
@@ -129,11 +119,6 @@ def _parse_conventions(data: Mapping[str, Any], string_group_names: Iterable[str
     unknown = sorted(set(windows_suffixes) - set(suffixes))
     if unknown:
         raise RulesetError(f"{where}: windows_library_suffixes {unknown} are not library_suffixes")
-    known_groups = set(string_group_names)
-    for key in ("go_boring_group", "go_stock_group"):
-        name = str(_require(data, key, where))
-        if name not in known_groups:
-            raise RulesetError(f"{where}: {key} names unknown string group {name!r}")
     return Conventions(
         vendor_dir_globs=tuple(_require(data, "vendor_dir_globs", where)),
         mangled_soname_regex=mangled,
@@ -290,6 +275,25 @@ def _validate_rule_references(
             raise RulesetError(f"{where}: suppressed_by names itself")
     for match in rule.matches:
         _validate_match_references(match, ruleset_data, where)
+
+
+def _validate_conventions_references(ruleset_data: Mapping[str, Any]) -> None:
+    """The two string groups `[conventions]` names for the Go reader must exist.
+
+    Here rather than in `_parse_conventions` so that one mechanism checks every group
+    reference in the file, against the raw tables, in one pass and with one spelling of
+    the failure. `[conventions]` says naming these groups in the ruleset means renaming
+    a group cannot silently flip a verdict-relevant field, and `binfmt.golang` reads
+    them for exactly that reason; unchecked, a name no group had loaded clean and left
+    `GoBuildInfo.boring_crypto` false for every Go binary in the run.
+    """
+    where = "[conventions]"
+    conventions = _require(ruleset_data, "conventions", where)
+    known = {entry["name"] for entry in ruleset_data["string_group"]}
+    for key in ("go_boring_group", "go_stock_group"):
+        name = str(_require(conventions, key, where))
+        if name not in known:
+            raise RulesetError(f"{where}: {key} names unknown string group {name!r}")
 
 
 def _validate_match_references(
@@ -469,6 +473,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     for rule in rules:
         _validate_rule_references(rule, data, rule_ids)
+    _validate_conventions_references(data)
 
     defaults: dict[str, set[str]] = {}
     for rule in rules:
@@ -593,7 +598,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         version=str(version),
         precedence=precedence,
         limits=limits,
-        conventions=_parse_conventions(_require(data, "conventions", source), string_groups),
+        conventions=_parse_conventions(_require(data, "conventions", source)),
         linkage_policy=_parse_linkage_policy(data.get("linkage_policy"), rules),
         rules=rules,
         distributions=MappingProxyType(distributions),

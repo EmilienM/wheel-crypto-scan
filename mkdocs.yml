@@ -79,6 +79,7 @@ nav:
       - Determinism and the Python layer: decisions/interpreter.md
       - Evidence, opacity and verdicts: decisions/opacity.md
       - OpenSSL linkage: decisions/linkage.md
+      - Policy data: decisions/policy.md
       - Caps, budgets and record size: decisions/limits.md
       - ELF: decisions/elf.md
       - Mach-O: decisions/macho.md

@@ -387,7 +387,42 @@ def test_a_vendored_openssl_crate_path_is_not_reported_as_clean(context, tmp_pat
         },
     )
     record = scan_wheel(wheel, context)
-    crates = [crate["name"] for binary in record["binaries"] for crate in binary["rust_crates"]]
-    assert "openssl-src" in crates
+    # Not `"openssl-src" in crates`: the extractor records every cargo path it finds
+    # whether or not the ruleset knows the name, so that assertion passes with the
+    # entry deleted. What this test is about is the finding the entry produces.
+    finding = next(
+        f
+        for f in record["findings"]
+        if f["rule_id"] == "BIN_RUST_CRYPTO_CRATE" and f["subject"] == "openssl-src"
+    )
+    assert finding["verdict"] == "CONDITIONAL"
     assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
-    assert "BIN_RUST_CRYPTO_CRATE" in record["verdict"]["rule_ids"]
+
+
+@pytest.mark.parametrize("sep", ["/", "\\"])
+def test_cargo_paths_are_read_whichever_separator_built_the_wheel(
+    context, tmp_path: Path, sep: str
+) -> None:
+    """A wheel built on Windows spells its cargo paths with backslashes.
+
+    `cargo_path_regex` spelled only the forward slash, so every Rust wheel built on
+    Windows read as carrying no crates at all: cryptography 50.0.1's win_amd64 `.pyd`
+    holds 153 `cargo\\registry` paths and not one `cargo/registry` path, and its
+    record listed no crates. The whole [[rust_crate]] table was dead on that platform,
+    which is more evidence than any single entry in it is worth (#123).
+    """
+    path = sep.join(("/root/.cargo", "registry", "src", "index.crates.io-1", "ring-0.17.8", ""))
+    wheel = build_wheel(
+        tmp_path / f"winrust-1.0-{WINDOWS}.whl",
+        name="winrust",
+        version="1.0",
+        tags=(WINDOWS,),
+        files={
+            "winrust/_rust.pyd": ElfBuilder(
+                needed=("libc.so.6",), rodata=b"\x00" + path.encode() + b"src/lib.rs\x00"
+            ).build()
+        },
+    )
+    record = scan_wheel(wheel, context)
+    crates = [crate["name"] for binary in record["binaries"] for crate in binary["rust_crates"]]
+    assert crates == ["ring"]

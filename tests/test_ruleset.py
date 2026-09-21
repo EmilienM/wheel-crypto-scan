@@ -38,8 +38,11 @@ def minimal(**overrides: Any) -> dict[str, Any]:
         "conventions": {
             "vendor_dir_globs": ["*.libs", ".dylibs"],
             "mangled_soname_regex": r"^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$",
+            # Kept identical to the shipped ruleset on purpose: the soname table below
+            # is the unit test for this reduction, and a helper that drifts from what
+            # ships turns that whole table into a test of a pattern nobody uses.
             "windows_version_suffix_regex": (
-                r"^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<arch>x64|x86|arm64|arm64ec))?$"
+                r"^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)(-(?P<decoration>[A-Za-z0-9_]+))?$"
             ),
             "cargo_path_regex": r"cargo/registry/src/[^/]+/(?P<name>[a-z-]+)-(?P<version>[0-9.]+)/",
             "weak_hash_algorithms": ["md5", "sha1"],
@@ -109,37 +112,60 @@ def test_shipped_ruleset_knows_the_bundled_openssl_rule() -> None:
     assert [match["kind"] for match in rule.matches] == ["bundled_library"]
 
 
-@pytest.mark.parametrize(
-    ("group_name", "product"),
-    [("openssl_banner", "OpenSSL"), ("nss", "NSS")],
-)
-def test_a_version_anchored_group_matches_every_major(group_name: str, product: str) -> None:
+def test_every_version_anchored_group_names_every_major() -> None:
     """A major a group does not name is evidence that reads as absent.
 
-    Written against the property rather than against the group's own substrings: a
-    test that reads the list back and matches each entry against itself passes
-    whatever the list says, which is how `openssl_banner` came to stop at major 3
-    while cryptography's own PyPI wheels already compiled 4 in (#123). The negative
-    case is the string that rules out the cheaper fix -- the product name and a space,
-    with no digit, also claims prose that a wheel linking the system library carries.
+    The groups are derived rather than listed: naming them here would be the same
+    enumeration this test exists to police, and a third version-anchored group added
+    later would be policed by nobody. A group qualifies when a substring ends in a
+    single digit and a dot, which is what `openssl_banner` and `nss` are built from.
+
+    `openssl_banner` stopped at major 3 while cryptography's own PyPI wheels already
+    compiled 4 in (#123), and nothing failed. The negative case pins the cheaper fix
+    out: the product name and a space, with no digit, also claims prose such as
+    OpenSSL's own "OpenSSL 3's legacy provider failed to load", which a wheel linking
+    the system library carries too.
     """
-    pattern = load_ruleset().compile_patterns().binary.string_group(group_name).pattern
-    for major in range(10):
-        assert pattern.search(f"{product} {major}.0.14 4 Jun 2024"), major
-    assert pattern.search(f"{product} 3's legacy provider failed to load") is None
+    ruleset = load_ruleset()
+    anchored = re.compile(r"^(?P<product>.+ )[0-9]\.$")
+    products: dict[str, set[str]] = {}
+    for name, group in ruleset.string_groups.items():
+        for substring in group.substrings:
+            match = anchored.match(substring)
+            if match is not None:
+                products.setdefault(name, set()).add(match.group("product"))
+    assert products, "no version-anchored group found; has the spelling changed?"
+
+    patterns = ruleset.compile_patterns().binary
+    for name, found in sorted(products.items()):
+        pattern = patterns.string_group(name).pattern
+        for product in sorted(found):
+            for major in range(10):
+                assert pattern.search(f"{product}{major}.0.14 4 Jun 2024"), (name, major)
+            assert pattern.search(f"{product}3's legacy provider failed to load") is None
 
 
-@pytest.mark.parametrize("key", ["go_boring_group", "go_stock_group"])
-def test_a_go_group_naming_nothing_is_refused(key: str) -> None:
-    """[conventions] says renaming a group cannot silently flip a verdict-relevant
-    field, and until this check it could: `binfmt.golang` reads these two names to
-    decide `GoBuildInfo.boring_crypto`, an unknown name matched no group, and the
-    field stayed false for every Go binary in the run. Every other group reference in
-    the ruleset was already refused at load time; these two were the exception."""
-    data = minimal()
-    data["conventions"][key] = "typo_not_a_group"
-    with pytest.raises(RulesetError, match=f"{key} names unknown string group"):
-        parse_ruleset(data)
+@pytest.mark.parametrize(
+    ("crate", "verdict"),
+    [
+        ("openssl-src", "CONDITIONAL"),
+        ("openssl-sys", "CONDITIONAL"),
+        ("boring", "NON_APPROVED_CRYPTO"),
+        ("boring-sys", "NON_APPROVED_CRYPTO"),
+        ("sha-1", "NON_APPROVED_CRYPTO"),
+        ("sha1_smol", "NON_APPROVED_CRYPTO"),
+        ("md5", "NON_APPROVED_CRYPTO"),
+        ("sha3", "CONDITIONAL"),
+    ],
+)
+def test_the_shipped_crate_table_decides_what_it_says_it_decides(crate: str, verdict: str) -> None:
+    """These entries were added as reach, and reach nothing holds can be flipped or
+    deleted without a test moving (#123). An entry's verdict is the whole of what it
+    decides, so that is what is pinned: `openssl-src` says a vendored OpenSSL build is
+    a condition to confirm, not a non-approved primitive, and the two spellings of
+    SHA-1 and of MD5 have to agree with each other or a build pinned to the older name
+    reads differently from the same code under the newer one."""
+    assert load_ruleset().rust_crates[crate].verdict == verdict
 
 
 def test_rules_can_be_selected_by_matcher_kind() -> None:
@@ -503,6 +529,9 @@ def test_soname_normalisation(soname: str, base: str, mangled: bool) -> None:
         ("libcrypto-3.dll", "libcrypto", False),
         ("libssl-1_1-x64.dll", "libssl", False),
         ("libssl-3-arm64.dll", "libssl", False),
+        # The decoration is a token, not four enumerated architectures (#123): a vendor
+        # spelling nobody listed used to leave the name resolving to no library at all.
+        ("libcrypto-3-aarch64.dll", "libcrypto", False),
         ("libgnutls-30.dll", "libgnutls", False),
         ("libgcrypt-20.dll", "libgcrypt", False),
         # The hash goes first, so a vendored copy is still recognisably vendored.
@@ -641,8 +670,12 @@ def test_string_group_refuses_a_substring_outside_printable_ascii() -> None:
     -- and letting one through would let a single hit's enclosing-run search swallow
     the run after it. Refused at load time, the same way an empty substring list is.
     """
+    data = minimal()
+    # Appended rather than swapped in: a ruleset missing the groups [conventions] names
+    # is refused for that instead, and this test is about the substring.
+    data["string_group"].append({"name": "g", "substrings": ["a\nb"], "why": "bad"})
     with pytest.raises(RulesetError, match="printable ASCII"):
-        parse_ruleset(minimal(string_group=[{"name": "g", "substrings": ["a\nb"], "why": "bad"}]))
+        parse_ruleset(data)
 
 
 def test_cargo_path_regex_extracts_crate_and_version() -> None:
