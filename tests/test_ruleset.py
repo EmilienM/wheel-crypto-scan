@@ -104,7 +104,7 @@ def minimal(**overrides: Any) -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "22"
+    assert ruleset.version == "23"
     assert len(ruleset.rules) > 20
 
 
@@ -366,6 +366,22 @@ def test_a_crate_entry_naming_a_missing_rule_is_rejected() -> None:
     data = minimal()
     data["rust_crate"][0]["rule"] = "BIN_TYPO"
     with pytest.raises(RulesetError, match="unknown rule"):
+        parse_ruleset(data)
+
+
+def test_a_library_naming_a_crate_the_crate_table_lacks_is_rejected() -> None:
+    """A misspelt crate would never match and never move the posture, and fail nothing."""
+    data = minimal()
+    data["crypto_library"][0]["crates"] = ["opensll-sys"]
+    with pytest.raises(RulesetError, match="not a \\[\\[rust_crate\\]\\] entry"):
+        parse_ruleset(data)
+
+
+def test_a_library_naming_a_bare_crate_string_is_rejected() -> None:
+    """Not read as a list of one-letter crates."""
+    data = minimal()
+    data["crypto_library"][0]["crates"] = "ring"
+    with pytest.raises(RulesetError, match="crates must be a list of strings"):
         parse_ruleset(data)
 
 

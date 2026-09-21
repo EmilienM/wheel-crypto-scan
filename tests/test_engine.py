@@ -348,6 +348,29 @@ def test_a_rust_crate_carries_its_own_verdict(ruleset) -> None:
     assert verdicts == {"ring": "NON_APPROVED_CRYPTO", "blake3": "CONTEXT_DEPENDENT"}
 
 
+def test_an_openssl_crate_alone_is_unresolved_linkage_beside_its_crate_finding(ruleset) -> None:
+    """The record for the object `test_linkage` pins as `unknown`: the crate finding, and
+    the rule saying OpenSSL is used and its provider could not be resolved."""
+    evidence = wheel(
+        binaries=(
+            binary(
+                "demo/_rust.abi3.so",
+                needed=("libc.so.6",),
+                dynsym_count=1,
+                rust_crates=(RustCrate("openssl-sys", "0.9.117"),),
+            ),
+        )
+    )
+    findings = run(ruleset, evidence)
+    crate = one(findings, "BIN_RUST_CRYPTO_CRATE")
+    assert (crate.subject, crate.subject_kind, crate.verdict) == (
+        "openssl-sys",
+        "crate",
+        "CONDITIONAL",
+    )
+    assert one(findings, "BIN_OPENSSL_LINKAGE_UNKNOWN").verdict == "OPAQUE"
+
+
 def test_a_binary_that_yielded_nothing_is_opaque(ruleset) -> None:
     assert "BIN_OPAQUE" in ids(run(ruleset, wheel(binaries=(binary("demo/_ext.so"),))))
 

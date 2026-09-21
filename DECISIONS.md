@@ -4804,15 +4804,11 @@ rather than stale by neglect, and adding to it buys reach rather than closing a 
 `openssl-src` is listed with that limit stated in its own `why`: its Rust code runs in
 a build script and is not linked into the artifact, and neither cryptography wheel
 measured carries the path, so it is reach nobody has observed rather than the fallback
-for a stripped banner. A review of the entry surfaced a second limit worth stating
-here, because it is true of the whole table and not just this row: a crate name cannot
-move `openssl_linkage`. `_binary_posture` resolves that field from `[[crypto_library]]`
-sonames, symbol groups and string groups, and no `[[rust_crate]]` reaches it, so a
-wheel whose only OpenSSL evidence is a crate name reports `CONDITIONAL` with
-`openssl_linkage: none` -- a finding a human reads, beside a field that says nothing.
-Whether the crate table should feed the posture at all is
-[#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128), not a thing to settle
-in a sweep.
+for a stripped banner. A second limit is true of the whole table and not just this
+row: a crate name never gives `openssl_linkage` a definite posture. An object whose
+only OpenSSL evidence is a crate the `openssl` library lists reads `unknown`, beside the
+crate's own `CONDITIONAL` finding ("An OpenSSL crate with no other evidence reads
+`unknown`, not `none`", [#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128)).
 
 One more was not an enumeration but a guarantee that was not there. `[conventions]`
 says naming the Go string groups in the ruleset means renaming a group cannot silently
@@ -5039,3 +5035,103 @@ one it keeps to itself. Adding a third binding value is not a `schema_version` b
 it is a contract decision nobody has asked for yet.
 
 Tracked in [#127](https://github.com/EmilienM/wheel-crypto-scan/issues/127).
+
+## An OpenSSL crate with no other evidence reads `unknown`, not `none`
+
+**Fixed.**
+
+`_binary_posture` read `openssl_linkage` off sonames, symbol groups and string groups
+alone. An object read in full whose only OpenSSL evidence was a crate name --
+`openssl-sys`, `openssl`, `openssl-src` -- read `none` beside a `CONDITIONAL` crate
+finding: "no OpenSSL evidence" on a record carrying some, in the field most consumers
+filter on, and in the direction `[linkage_policy]` exists to refuse.
+
+**The fix.** `[[crypto_library]]` gains `crates`, each validated against `[[rust_crate]]`
+at load time, and `openssl` lists all three. An object carrying a listed crate and
+nothing the checks above it read gives `unknown`. That is the answer an object read far
+enough to say so already gets for imported OpenSSL symbols with no declared dependency,
+for the same reason: something uses OpenSSL, and the object does not say which copy. The
+load-time check carries more than typo-catching: `find_rust_crates` keeps every
+`[[rust_crate]]` name ahead of its cap, so a crate listed on the library alone could be
+cut from an object with hundreds of crates and read `none` again.
+
+**Never a definite posture.** The branch fires only on an object with no OpenSSL
+`needed` entry, no OpenSSL symbol and no banner. A dynamically linked `openssl-sys`
+leaves a `needed` entry and imports, so by elimination such an object is more likely a
+static copy, but the elimination is only as good as the readers: a gap left open on
+purpose, such as an ordinal import from a DLL the ruleset does not know, removes exactly
+the evidence it rests on. Nor can the crate names settle it. `openssl-sys` links the
+host's OpenSSL or vendors its own on a build feature, and `OPENSSL_NO_VENDOR` sends even
+a `vendored` build back to the host's, so not even `openssl-src` in the build graph
+means a vendored copy. One crate, built both ways:
+
+```text
+cryptography 50.0.1 off PyPI, cp311-abi3: manylinux_2_34_x86_64, macosx_11_0_arm64, win_amd64
+  crates: openssl 0.10.81, openssl-sys 0.9.117     needed: nothing OpenSSL
+  banner "OpenSSL 4.0.2 25 Aug 2026" on all three, defined symbols on ELF and Mach-O
+  -> static
+cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
+  needed: libcrypto.so.3, libssl.so.3              OpenSSL symbols: imported only
+  SBOM names openssl-sys 0.9.117; no crate from its cargo paths (#137)
+  banner "OpenSSL 3.5.7 9 Jun 2026", which is header text (#136)
+  -> mixed
+```
+
+Same crate, two postures. So the crate check sits below every other one, and
+`_aggregate` treats its `unknown` like any other: it never outvotes a definite posture
+elsewhere in the wheel. The Fedora row's `mixed` and its missing crate are their own
+gaps, tracked in [#136](https://github.com/EmilienM/wheel-crypto-scan/issues/136) and [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137).
+
+**What moved.** None of the four records above: every object already answered from its
+own evidence, and the records are byte-identical apart from the `tool` block. What moves
+is an object that answers with nothing else. The win_amd64 `.pyd` is one banner away
+from being that object: it matches no OpenSSL symbol and carries a `pe_ordinal_import`
+cause linkage ignores, so its banner is the whole of its evidence. Scanned with
+`openssl_banner` restricted to `3.`, `1.1.` and `1.0.`:
+
+```text
+before: openssl_linkage: none,    verdict.rule_ids: [..., "BIN_RUST_CRYPTO_CRATE", ...]
+after:  openssl_linkage: unknown, verdict.rule_ids: [..., "BIN_OPENSSL_LINKAGE_UNKNOWN",
+        "BIN_RUST_CRYPTO_CRATE", ...]
+```
+
+**What was rejected, and why.**
+
+- *A posture per crate: `static` for `openssl-src`, `unknown` for the rest.* `openssl-src`
+  in the build graph does not mean a vendored copy, as above. Its Rust code also runs in
+  a build script and leaves no path in the artifact (its `why` has the measurement), so
+  a posture keyed on it would rarely have anything to fire on.
+- *Leave `none` and document the coexistence.* `none` there says "no OpenSSL evidence"
+  on a record carrying some, the direction `[linkage_policy]` exists to refuse, and
+  `unknown` already has the meaning this case needs.
+- *Widen what `unknown` means to "evidence whose posture is not decidable".* Not needed:
+  the imported-symbol case already means that. `SCHEMA.md`'s `unknown` row now says so
+  for both causes.
+
+**What it costs.**
+
+- A wheel whose only OpenSSL evidence is a listed crate gains `BIN_OPENSSL_LINKAGE_UNKNOWN`
+  and `OPAQUE` in `classes`. Its headline stays `CONDITIONAL`, which outranks `OPAQUE`,
+  and the crate finding already asked for a human.
+- A crate-only object beside a sibling that answers takes the sibling's posture,
+  including `system` with `DERIVED_SYSTEM_OPENSSL_ONLY`, whose `why` says every piece of
+  OpenSSL evidence points at the system library. That is a residual in the favourable
+  direction, since the crate-only object is more likely static than system, and it
+  predates this change: `none` beside `system` aggregates the same way, and so does an
+  imported-symbol object. Closing it needs per-object postures to reach the engine, so
+  the derived rule can decline to fire beside an object that read `unknown`.
+- An SBOM component naming `openssl-sys` does not move the field: a wheel whose SBOM
+  names the crate over a binary with no OpenSSL evidence still reads `none`, beside
+  `SBOM_CRYPTO_COMPONENT`. `resolve_linkage` has one wheel-level signal,
+  `_left_unanswered`, and it is library-agnostic on purpose; an SBOM would need a second,
+  library-specific one, and no SBOM-only wheel has been measured. It leaves the stronger
+  evidence out while the weaker moves the field, since that rule's own `why` calls a
+  shipped SBOM the highest-confidence evidence there is, and it matters most where
+  [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137) bites: a build whose cargo paths go unrecognised can still ship
+  an SBOM naming the crate, as Fedora's does.
+- A build whose cargo paths the reader does not recognise carries no crate, so this
+  never fires on it (#137).
+
+Revisit if a real wheel turns up whose only OpenSSL evidence is an SBOM component.
+
+Tracked in [#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128).

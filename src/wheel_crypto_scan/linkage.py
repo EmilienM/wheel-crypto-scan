@@ -382,6 +382,13 @@ def _binary_posture(
         # symbols at runtime is outside this wheel and outside our sight.
         return LINKAGE_UNKNOWN
 
+    if any(crate.name in library.crates for crate in binary.rust_crates):
+        # The same answer for the same reason: a crate that binds the library was
+        # compiled in, and nothing above says which copy it binds. `openssl-sys`
+        # links the host's or vendors its own depending on a build feature the
+        # object does not record, so the crate can say `unknown` and never more.
+        return LINKAGE_UNKNOWN
+
     # `is_opaque` is deliberately NOT consulted here. An opaque object (`needed` is
     # non-empty for every loadable dylib and every `.pyd`, so this only fires for one
     # that yielded nothing at all) makes the *wheel* unable to answer for the whole
@@ -431,7 +438,8 @@ def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
     This is the one place a wheel-wide, library-agnostic non-answer belongs.
     `_binary_posture` may return `LINKAGE_UNKNOWN` only from a condition that depends
     on the specific `library` being asked about (an uncertain `needed` match against
-    `library.sonames`, or an imported symbol from `library.symbol_group`) -- never
+    `library.sonames`, an imported symbol from `library.symbol_group`, or a crate
+    from `library.crates`) -- never
     from a fact about the object alone, because that answer is the same for every
     library in the ruleset and belongs here instead, gated through `resolve_linkage`
     on `library.always_report` rather than reported for all thirteen. `is_opaque` was

@@ -1,9 +1,11 @@
 # OpenSSL linkage
 
 `linkage.py` answers the question the tool exists for: does this wheel use the system
-OpenSSL, or does it carry its own? Both entries below are about `_binary_posture`, the
-function that reads one object's own evidence, and both were corrected more than once after
-adversarial review built the object the prose had not anticipated.
+OpenSSL, or does it carry its own? The first two entries below are about
+`_binary_posture`, the function that reads one object's own evidence, and both were
+corrected more than once, each time by an object the prose had not anticipated. The third
+is about the weakest evidence it reads: a Rust crate name, which can say `unknown` and
+nothing more.
 
 ## A `needed` entry is bundled by what it resolves to, not by whether its name was renamed
 
@@ -267,3 +269,56 @@ already-large precedence change further than the issue asked for.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#extended-in-88-a-bundled-needed-match-and-systemstatic-are-mixed-too) ·
 [#88](https://github.com/EmilienM/wheel-crypto-scan/issues/88)
+
+---
+
+## An OpenSSL crate with no other evidence reads `unknown`, not `none`
+
+**Fixed.**
+
+An object read in full whose only OpenSSL evidence was a crate name (`openssl-sys`,
+`openssl`, `openssl-src`) read `openssl_linkage: none` beside a `CONDITIONAL` crate
+finding: "no OpenSSL evidence" on a record carrying some.
+
+**The fix.** `[[crypto_library]]` gains `crates`, validated against `[[rust_crate]]` at
+load time. An object carrying a listed crate and nothing else `_binary_posture` reads gives
+`unknown`, the answer imported OpenSSL symbols with no declared dependency already get, for
+the same reason: something uses OpenSSL, and the object does not say which copy.
+
+**Never a definite posture.** The branch fires only on an object with no OpenSSL
+`needed` entry, symbol or banner, which is more likely a static copy, but only as far as
+the readers left nothing open. And the crate cannot settle it: `OPENSSL_NO_VENDOR` sends
+even a `vendored` `openssl-sys` build back to the host's OpenSSL. One crate, built both
+ways:
+
+```text
+cryptography 50.0.1 off PyPI (manylinux, macOS, Windows)
+  crates: openssl, openssl-sys   banner "OpenSSL 4.0.2 25 Aug 2026"          -> static
+cryptography 50.0.0, Fedora 44 RPM, repackaged as a wheel
+  needed: libcrypto.so.3, libssl.so.3   SBOM names openssl-sys             -> mixed
+```
+
+Same crate, two postures, so the crate check sits below every other one and its `unknown`
+never outvotes a definite posture elsewhere in the wheel. None of the four records moved.
+The Windows `.pyd` shows what does: its banner is its only OpenSSL evidence, and with
+`openssl_banner` restricted to `3.`, `1.1.` and `1.0.`, it reads `none` before and
+`unknown` after. The Fedora row's `mixed` and its missing crate are tracked in [#136](https://github.com/EmilienM/wheel-crypto-scan/issues/136) and
+[#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137).
+
+**What was rejected.** A posture per crate, `static` for `openssl-src`: that crate in
+the build graph does not mean a vendored copy, and it leaves no path in the artifact to
+fire on. Leaving `none` and documenting it: "no OpenSSL evidence" on a record carrying
+some, when `unknown` already means what this case needs.
+
+**What it costs.**
+
+- The headline stays `CONDITIONAL`; `OPAQUE` and `BIN_OPENSSL_LINKAGE_UNKNOWN` join it.
+- A crate-only object beside a system-linked sibling still lets the wheel read `system`
+  with `DERIVED_SYSTEM_OPENSSL_ONLY`. A residual in the favourable direction, and not a
+  new one: `none` beside `system` aggregates the same way.
+- An SBOM component naming `openssl-sys` does not move the field. The one wheel-level
+  signal linkage has is library-agnostic on purpose, and no SBOM-only wheel has been
+  measured. It matters most where [#137](https://github.com/EmilienM/wheel-crypto-scan/issues/137) bites.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DECISIONS.md#an-openssl-crate-with-no-other-evidence-reads-unknown-not-none) ·
+[#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128)

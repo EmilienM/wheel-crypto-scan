@@ -330,6 +330,14 @@ class CryptoLibrary:
     `sonames` finds a library file or a dependency on one. `symbol_group` and
     `string_group` are what let the linkage resolver recognise a copy that was compiled
     straight into an extension, where there is no file and no dependency to find.
+
+    `crates` is weaker than all three: a Rust crate that binds the library says the
+    object uses it, not which copy. It never gives a definite posture, only `unknown`
+    in place of `none`. Each name must also be a `[[rust_crate]]` entry, and the loader
+    refusing one that is not carries more than typo-catching: `find_rust_crates` pins
+    only `rust_crate_names` ahead of its cap, so a crate listed here alone could be
+    cut from a Rust object with hundreds of crates and read `none` again. A
+    `CryptoLibrary` built in code skips that check and owns the same guarantee.
     """
 
     name: str
@@ -338,6 +346,7 @@ class CryptoLibrary:
     rule: str | None = None
     symbol_group: str | None = None
     string_group: str | None = None
+    crates: tuple[str, ...] = ()
     # Report this library's linkage even when nothing matched, because consumers
     # filter on the field and a missing key is harder to handle than "none".
     always_report: bool = False

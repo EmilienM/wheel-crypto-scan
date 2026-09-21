@@ -740,6 +740,62 @@ def test_imported_symbols_without_a_bundled_copy_are_not_static(ruleset) -> None
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
 
 
+# --- a crate says the object uses OpenSSL, not which copy -------------------
+
+
+def rust_object(*crates: RustCrate, **fields) -> BinaryEvidence:
+    """An object read in full that is not opaque without its crates."""
+    fields.setdefault("needed", ("libc.so.6",))
+    return binary("pkg/_rust.abi3.so", dynsym_count=1, rust_crates=crates, **fields)
+
+
+@pytest.mark.parametrize("crate", ["openssl", "openssl-sys", "openssl-src"])
+def test_an_openssl_crate_with_no_other_openssl_evidence_is_unknown(ruleset, crate) -> None:
+    """`openssl-sys` links the host's OpenSSL or vendors its own on a build feature the
+    object does not record. `none` here would say there is no OpenSSL beside a finding
+    for the crate that binds it."""
+    evidence = wheel(rust_object(RustCrate(crate, "0.9.117")))
+    # The whole mapping, not one key: a crate moves only the library that lists it.
+    assert resolve_linkage(ruleset, evidence) == {"openssl": LINKAGE_UNKNOWN}
+
+
+def test_a_crate_that_does_not_bind_openssl_leaves_it_none(ruleset) -> None:
+    """Only the crates `[[crypto_library]] openssl` lists: `ring` is crypto of its own."""
+    evidence = wheel(rust_object(RustCrate("ring", "0.17.8")))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
+
+
+@pytest.mark.parametrize(
+    ("fields", "posture"),
+    [
+        ({"matched_strings": (OPENSSL_BANNER,)}, LINKAGE_STATIC),
+        ({"needed": ("libc.so.6", "libssl.so.3")}, LINKAGE_SYSTEM),
+    ],
+    ids=["banner", "needed"],
+)
+def test_an_openssl_crate_never_overrides_the_objects_own_evidence(
+    ruleset, fields, posture
+) -> None:
+    """cryptography off PyPI carries `openssl-sys` beside its banner; a build against the
+    host's OpenSSL carries it beside `DT_NEEDED libssl.so.3`. The crate adds nothing."""
+    evidence = wheel(rust_object(RustCrate("openssl-sys", "0.9.117"), **fields))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == posture
+
+
+def test_an_openssl_crate_alone_does_not_outvote_a_sibling_that_answers(ruleset) -> None:
+    """A crate's `unknown` aggregates like any other: never over a definite posture.
+
+    An accepted residual, in the favourable direction, rather than a virtue: the
+    crate-only object has no `needed` entry and no import, so it is more likely a static
+    copy than a system one, and the wheel still reads `system` beside it.
+    """
+    evidence = wheel(
+        rust_object(RustCrate("openssl-sys", "0.9.117")),
+        binary("pkg/_ssl.so", needed=("libc.so.6", "libssl.so.3")),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+
+
 # --- system and static within one object (#60) ------------------------------
 #
 # `_binary_posture` used to test `needed` first and return as soon as it found a
