@@ -465,6 +465,7 @@ class BinaryPatterns:
     string_groups: tuple[StringGroup, ...]
     cargo_path_regex: re.Pattern[str]
     cargo_vendor_path_regex: re.Pattern[str]
+    cargo_git_path_regex: re.Pattern[str]
     go_boring_group: str
     go_stock_group: str
     go_fips140_group: str
@@ -685,6 +686,7 @@ class Ruleset:
                 string_groups=string_groups,
                 cargo_path_regex=self.conventions.cargo_path_regex,
                 cargo_vendor_path_regex=self.conventions.cargo_vendor_path_regex,
+                cargo_git_path_regex=self.conventions.cargo_git_path_regex,
                 go_boring_group=self.conventions.go_boring_group,
                 go_stock_group=self.conventions.go_stock_group,
                 go_fips140_group=self.conventions.go_fips140_group,

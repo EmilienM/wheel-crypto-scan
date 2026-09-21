@@ -2023,6 +2023,7 @@ def test_cargo_vendor_pattern_stays_linear_over_a_long_run_of_near_misses() -> N
         max_crates=128,
         registry=None,
         vendor=conventions.cargo_vendor_path_regex,
+        git=None,
         claimed=frozenset(),
     )
     elapsed = time.monotonic() - start
@@ -2049,6 +2050,7 @@ def test_cargo_vendor_pattern_stays_linear_over_digit_and_dot_near_misses() -> N
         max_crates=128,
         registry=None,
         vendor=conventions.cargo_vendor_path_regex,
+        git=None,
         claimed=frozenset(),
     )
     elapsed = time.monotonic() - start
@@ -2084,9 +2086,93 @@ def test_cargo_registry_pattern_stays_linear_over_a_long_segment_of_name_version
         max_crates=128,
         registry=conventions.cargo_path_regex,
         vendor=None,
+        git=None,
         claimed=frozenset(),
     )
     elapsed = time.monotonic() - start
 
     assert crates == ()
     assert elapsed < 2, f"the registry pattern took {elapsed:.2f}s over name/version near-misses"
+
+
+# --- the cargo-git-checkout path pattern must stay linear, not quadratic ----
+
+
+def test_cargo_git_pattern_stays_linear_over_a_long_run_of_repo_hash_near_misses() -> None:
+    """`a-0123456789abcdef/` repeated with no `src/` in sight is the pathological
+    input for a path pattern that has to look ahead for `src/...rs`: every
+    `git/checkouts/` this run only has once, but the trailing `-<16 hex>/` after it
+    is a candidate `name` boundary at every repetition. This pins the shipped
+    pattern's speed on that shape as a regression guard; it does not by itself show
+    the nesting bounds are what keeps it linear here, since this shape never reaches
+    the intermediate-directory repetition those bounds limit.
+    """
+    conventions = load_ruleset().conventions
+    text = "/git/checkouts/" + "a-0123456789abcdef/" * 50_000
+
+    start = time.monotonic()
+    crates, _ = find_rust_crates(
+        text,
+        max_crates=128,
+        registry=None,
+        vendor=None,
+        git=conventions.cargo_git_path_regex,
+        claimed=frozenset(),
+    )
+    elapsed = time.monotonic() - start
+
+    assert crates == ()
+    assert elapsed < 2, f"the git pattern took {elapsed:.2f}s over 50,000 repo/hash near-misses"
+
+
+def test_cargo_git_pattern_stays_linear_over_member_directory_near_misses() -> None:
+    """A checkout that reaches `src/` only after a run of intermediate member
+    directories touches the `member` group's own nested-directory repetition, the
+    same shape a long vendor tree exercises against `cargo_vendor_path_regex`. This
+    pins the shipped pattern's speed on that shape; the run here is too short to
+    show the nesting bound mattering by itself, unlike the sibling test below that
+    reaches a literal `src/` repeatedly.
+    """
+    conventions = load_ruleset().conventions
+    text = ("/git/checkouts/r-0123456789abcdef/abcdef0/" + "a/" * 20 + "src/" + "b/" * 20) * 5_000
+
+    start = time.monotonic()
+    crates, _ = find_rust_crates(
+        text,
+        max_crates=128,
+        registry=None,
+        vendor=None,
+        git=conventions.cargo_git_path_regex,
+        claimed=frozenset(),
+    )
+    elapsed = time.monotonic() - start
+
+    assert crates == ()
+    assert elapsed < 2, f"the git pattern took {elapsed:.2f}s over member-directory near-misses"
+
+
+def test_cargo_git_pattern_stays_linear_over_a_run_of_literal_src_directories() -> None:
+    """`src/` itself is a candidate for the pattern's required `[/\\\\]src[/\\\\]` anchor at
+    every repetition, so a run of literal `src/` segments ahead of a non-matching tail
+    is the shape that stresses the nesting bound on both sides of that anchor together:
+    the member group's intermediate directories in front of it, and the file-path
+    segments behind it. The bounded pattern shipped keeps that linear; widening
+    `{0,16}?` on both sides to an unbounded `*?` turns this same input from milliseconds
+    into several seconds.
+    """
+    conventions = load_ruleset().conventions
+    text = ("/git/checkouts/r-0123456789abcdef/abcdef0/" + "src/" * 40 + "x" * 200) * 50
+
+    start = time.monotonic()
+    crates, _ = find_rust_crates(
+        text,
+        max_crates=128,
+        registry=None,
+        vendor=None,
+        git=conventions.cargo_git_path_regex,
+        claimed=frozenset(),
+    )
+    elapsed = time.monotonic() - start
+
+    assert crates == ()
+    assert elapsed < 2, f"the git pattern took {elapsed:.2f}s over a run of src/ directories"

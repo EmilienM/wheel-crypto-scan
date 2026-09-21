@@ -259,6 +259,7 @@ def scan_strings(raw: bytes, patterns: BinaryPatterns, max_bytes: int) -> String
         patterns.limits.max_rust_crates_per_binary,
         registry=patterns.cargo_path_regex,
         vendor=patterns.cargo_vendor_path_regex,
+        git=patterns.cargo_git_path_regex,
         claimed=patterns.rust_crate_names,
     )
     return StringsPass(

@@ -9,7 +9,11 @@ from wheel_crypto_scan.binfmt.strings import RUN_SEPARATOR, extract_printable
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 _CONV = load_ruleset().conventions
-_PATTERNS = {"registry": _CONV.cargo_path_regex, "vendor": _CONV.cargo_vendor_path_regex}
+_PATTERNS = {
+    "registry": _CONV.cargo_path_regex,
+    "vendor": _CONV.cargo_vendor_path_regex,
+    "git": _CONV.cargo_git_path_regex,
+}
 
 
 def test_finds_a_crate_from_a_cargo_registry_path() -> None:
@@ -56,6 +60,7 @@ def test_vendor_path_missing_the_pattern_falls_back_to_no_source_layouts() -> No
         max_crates=128,
         registry=_CONV.cargo_path_regex,
         vendor=None,
+        git=None,
         claimed=frozenset(),
     )
     assert crates == ()
@@ -217,6 +222,81 @@ def test_a_claimed_crate_outranks_the_alphabet() -> None:
     assert truncated is True
     assert "ring" in {crate.name for crate in crates}
     assert len(crates) == 3
+
+
+def test_finds_a_root_crate_from_a_git_checkout_path() -> None:
+    """A checkout directory with no workspace member holding `src/` names a root
+    crate (`ring`, not a library crate nested under it) after the repository, minus
+    its trailing content hash."""
+    text = "/root/.cargo/git/checkouts/ring-abcdef0123456789/1a2b3c4/src/lib.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [("ring", None)]
+
+
+def test_finds_a_workspace_member_crate_from_a_git_checkout_path() -> None:
+    """The checkout directory is named after the repository (`rust-openssl`), not the
+    crate; a workspace member's own directory, the one immediately holding `src/`
+    (`openssl-sys`), is the crate name."""
+    text = "/root/.cargo/git/checkouts/rust-openssl-1d556dee1f65bd53/eadfd90/openssl-sys/src/lib.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [("openssl-sys", None)]
+
+
+def test_a_measured_git_checkout_path_under_a_non_default_cargo_home_is_read() -> None:
+    """CARGO_HOME is whatever the build set it to -- a custom directory, or
+    `/usr/local/cargo` in the Rust Docker images -- so the pattern anchors on
+    `git/checkouts/` rather than on `cargo/git/checkouts/`. A root crate is read
+    under its repository's name, which is a known cost: `rust-base64`, not `base64`.
+    """
+    text = "/opt/cargohome/git/checkouts/rust-base64-9af66aca7bf9fca2/5b98ee1/src/engine/mod.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [("rust-base64", None)]
+
+
+def test_a_git_checkout_path_with_backslash_separators_is_read() -> None:
+    text = r"C:\cargo\git\checkouts\rustls-1234567890abcdef\eadfd90\rustls\src\lib.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert [(c.name, c.version) for c in crates] == [("rustls", None)]
+
+
+def test_a_c_tree_under_a_git_checkout_workspace_member_is_not_read_as_a_rust_crate() -> None:
+    """A `-sys` crate's vendored C sources sit under its member directory too; the
+    `.rs` anchor must keep a C file there from being misread as the member crate."""
+    text = (
+        "/root/.cargo/git/checkouts/git2-rs-abcdef0123456789/eadfd90/libgit2-sys/libgit2/src/foo.c"
+    )
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert crates == ()
+
+
+def test_a_git_checkouts_directory_with_no_content_hash_is_not_read() -> None:
+    """`git/checkouts/<name>-<hash>` is what tells this layout apart from an
+    unrelated directory that happens to be called `checkouts`; without the 16-hex
+    hash there is nothing cargo-specific to read a crate from."""
+    text = "/x/git/checkouts/ring/src/lib.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert crates == ()
+
+
+def test_a_vendor_tree_inside_a_git_checkout_member_reads_the_same_crate_both_ways() -> None:
+    """`cargo_git_path_regex`'s own `name` group already reads the directory
+    immediately above `src/`, so a `vendor/` tree nested inside a git-checkout
+    workspace member is read as the same crate by both patterns, with no need for
+    `_NESTED_GAP` precedence between them the way a registry match needs it over an
+    inner `vendor/` match: the two candidate names never disagree."""
+    text = "/root/.cargo/git/checkouts/foo-abcdef0123456789/eadfd90/member/vendor/ring/src/lib.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset({"ring"}))
+    assert [(c.name, c.version) for c in crates] == [("ring", None)]
+
+
+def test_a_git_checkout_path_does_not_bridge_two_printable_runs() -> None:
+    """Like `cargo_vendor_path_regex`, every negated class in `cargo_git_path_regex`
+    must exclude `\\n`, the run separator `binfmt.strings.RUN_SEPARATOR` joins
+    printable runs with: without it, a `.c` file ending one run and an unrelated
+    `lib.rs` opening the next combine into a false crate match."""
+    text = "git/checkouts/repo-abcdef0123456789/eadfd90/member/src/x.c\nunrelated/lib.rs"
+    crates, _ = find_rust_crates(text, max_crates=128, **_PATTERNS, claimed=frozenset())
+    assert crates == ()
 
 
 def test_no_match_yields_empty_tuple_not_an_exception() -> None:

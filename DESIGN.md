@@ -5866,13 +5866,15 @@ rather than only through their string-group evidence.
 
 **Accepted, and it changes records.**
 
-Crates are read from three cargo source layouts: the crates.io registry layout `cargo
+Crates are read from four cargo source layouts: the crates.io registry layout `cargo
 build` uses straight from a checkout, `cargo/registry/src/<index>/<name>-<version>/`;
 distro packaging, where Fedora's RPM Rust macros lay a crate out at
-`/usr/share/cargo/registry/<name>-<version>/` with no `src/<index>/` segment; and
-`cargo vendor`, what fromager configures for an offline build, which writes
-`vendor/<name>/...` with no `cargo/registry` segment and, without `--versioned-dirs`, no
-version anywhere in the path.
+`/usr/share/cargo/registry/<name>-<version>/` with no `src/<index>/` segment; `cargo
+vendor`, what fromager configures for an offline build, which writes `vendor/<name>/...`
+with no `cargo/registry` segment and, without `--versioned-dirs`, no version anywhere in
+the path; and a git dependency checkout, `$CARGO_HOME/git/checkouts/<repo>-<16 hex
+content hash>/<short rev>/...`, cargo's layout for a crate pinned by a git revision
+rather than published to a registry.
 
 **Measured on a Fedora 44 host.** A Fedora `python3-cryptography` build yields 14
 crates, nine of them from `/usr/share/cargo/registry/`, including `openssl` and
@@ -5883,17 +5885,37 @@ the same object yields none. A cdylib built exactly the way fromager configures 
 replace-with` pointing at it -- embeds paths like `vendor/base64/src/alphabet.rs`, with
 no version.
 
+**Measured for the git checkout layout, Fedora 44 host, cargo 1.98.1.** A cdylib built
+with `base64 = { git = "https://github.com/marshallpierce/rust-base64" }` and `sha2 =
+{ git = "https://github.com/RustCrypto/hashes" }` embeds paths like
+`<CARGO_HOME>/git/checkouts/rust-base64-9af66aca7bf9fca2/5b98ee1/src/engine/mod.rs`;
+`sha2`, a workspace member of the `hashes` repository, contributed no panic path in this
+build. Two facts follow from the layout rather than from the wheel-build tooling. First,
+the checkout directory is named after the repository, not the crate: `rust-base64`
+holds crate `base64`, and for a workspace repository the crate that actually built lives
+in a member directory below it (`hashes-<hash>/<rev>/sha2/src/...`, `rust-openssl-
+<hash>/<rev>/openssl-sys/src/...`). Most crypto crates taken this way are workspace
+members, so the member directory -- the one immediately holding `src/` -- is the name
+read; a root crate with no member directory of its own (`ring`) is read under its
+repository's name instead. Second, `CARGO_HOME` is arbitrary -- a custom directory in
+this measurement, `/usr/local/cargo` in the Rust Docker images -- so the pattern anchors
+on `git/checkouts/` with a boundary rather than on `cargo/git/checkouts/`; the
+16-hex-digit content hash plus the short revision that follow are distinctive enough to
+anchor on without the `cargo/` prefix.
+
 **How the layouts are matched.** `cargo_path_regex` treats the `src/<index>/` segment as
 optional, since distro packaging is the same cargo-registry layout minus that one
-segment. The vendor layout has its own convention, `cargo_vendor_path_regex`, rather
-than an alternative branch of the same pattern: Python's `re` refuses two groups sharing
-a name in one alternation, and the two layouts' rules differ enough to want two patterns
-anyway. The vendor pattern requires the path to reach a `.rs` file, because C and Go
-projects vendor trees too -- `vendor/openssl/crypto/evp/evp_enc.c`,
-`vendor/golang.org/x/crypto/...go` -- and without that anchor a vendored C OpenSSL would
-read as the Rust crate named `openssl`. The crate name excludes `.`, which no crates.io
-name can contain, so `vendor/gimli-0.32.3/` (`--versioned-dirs`, or how rustc vendors
-its own dependencies) reads as `gimli` `0.32.3` rather than as a crate literally named
+segment. The vendor and git-checkout layouts each have their own convention,
+`cargo_vendor_path_regex` and `cargo_git_path_regex`, rather than an alternative branch
+of the registry pattern: Python's `re` refuses two groups sharing a name in one
+alternation, and each layout's rules differ enough to want its own pattern anyway. The
+vendor and git-checkout patterns both require the path to reach a `.rs` file, because C
+and Go projects vendor trees too -- `vendor/openssl/crypto/evp/evp_enc.c`,
+`vendor/golang.org/x/crypto/...go`, and a `-sys` crate's own vendored C sources under its
+git-checkout member directory -- and without that anchor a vendored or checked-out C
+tree would read as a Rust crate. The crate name excludes `.`, which no crates.io name can
+contain, so `vendor/gimli-0.32.3/` (`--versioned-dirs`, or how rustc vendors its own
+dependencies) reads as `gimli` `0.32.3` rather than as a crate literally named
 `gimli-0.32.3` with no version: a version always opens with digits then `.`, and once
 `.` cannot appear in the name, the version's leading `-` is necessarily the last `-`
 before the first `.`, so the split is unique whether the name group is lazy or greedy.
@@ -5932,7 +5954,17 @@ The bounds alone are not enough against every near-miss shape: a name class that
 same run of digits and dots, at 3.7 seconds per MiB against 0.4 for the shipped pattern.
 Excluding `.`, which no crates.io crate name can contain, closes that off rather than
 trading it for a lower size bound. `test_hardening.py` holds both shapes under a time
-limit.
+limit. `cargo_git_path_regex` is bounded the same way, and over 50,000 repetitions of a
+repository/hash near-miss and 5,000 repetitions of a member-directory near-miss it runs
+in well under a second either way, bounded or not: those two shapes never reach the
+intermediate-directory repetition the `{0,16}?` bounds limit often enough to matter.
+A run of literal `src/` segments does reach it, because `src/` is itself a candidate
+for the pattern's required `src` anchor at every repetition: 50 repetitions of 40
+`src/` segments followed by 200 bytes with no `.rs` in sight runs in a couple of
+milliseconds bounded, and takes on the order of ten seconds with the `{0,16}?` bounds
+on both sides of the anchor widened to an unbounded `*?`. `test_hardening.py` holds
+all three shapes under a time limit; only the third pins the bounds themselves rather
+than the shipped pattern's speed on a shape they turn out not to matter for.
 
 An unbounded `cargo_path_regex` would have the same shape of problem in a different
 place. An unbounded registry pattern whose name allows `.` and runs as an unbounded
@@ -5993,40 +6025,69 @@ with `.` excluded, the same 5-10x the digit-and-dot shape above pays.
   never being one. Telling the two apart would also need the lookbehind to be
   variable-length, which Python's `re` does not support.
 
-**What it costs.** A build whose cargo paths use none of the three layouts, such as a
-git dependency checkout (`cargo/git/checkouts/<name>-<hash>/<rev>/`), carries no crate;
-this reads the three layouts a wheel is actually built from and does not close every
-gap. A crate that contributes no panic location or `assert!` message anywhere in the
-object is invisible whichever layout built it: this is a path-based signal, not a
-manifest. No fromager-built wheel has been measured, only a cdylib built the way
-fromager configures cargo: a real fromager build goes through maturin or
-setuptools-rust on top of that, either of which could relocate, strip or filter the
-embedded paths before they reach the wheel. A crate name past 64 characters, or a
-version string whose tail runs past 63 characters after `x.y.z`, does not read as a
-crate under either cargo convention -- the same cost the vendor pattern's bounds
-accept, paid by the registry pattern too. The vendor pattern's `.rs` anchor has no
-terminator and no word boundary either, so a vendored C or Go tree misreads as a Rust
-crate in two cases: a `.rst`/`.rsp` file (`vendor/openssl/doc/man7/ossl-guide.rst` reads
-as crate `openssl`), and a `.rs` file elsewhere in the same printable run consuming a
-real vendor path ahead of it (`vendor/openssl/crypto/rsa/x.c vendor/ring/src/a.rs` reads
-as `openssl` alone, losing `ring`). Both are unlikely in real `rodata`, since a C
-`__FILE__` string is NUL-terminated into its own run, but it is a trade-off, not a
-guarantee. The pattern also always anchors on the first `vendor/` path component it
-finds: a build tree that itself sits inside a directory named `vendor` collapses every
-crate under that outer component into one crate named after it, with no version, and
-loses the real names nested inside, claimed ones included.
+**What it costs.** This reads the four layouts a wheel is actually built from and does
+not close every gap. A crate that contributes no panic location or `assert!` message
+anywhere in the object is invisible whichever layout built it: this is a path-based
+signal, not a manifest. No fromager-built wheel has been measured, only cdylibs built
+the way fromager configures cargo for the registry and vendor layouts, and by hand for
+the git-checkout layout: a real fromager build goes through maturin or setuptools-rust
+on top of that, either of which could relocate, strip or filter the embedded paths
+before they reach the wheel. A crate name past 64 characters, or a version string whose
+tail runs past 63 characters after `x.y.z`, does not read as a crate under any cargo
+convention -- the same cost the vendor and git-checkout patterns' bounds accept, paid by
+the registry pattern too. The vendor pattern's `.rs` anchor has no terminator and no
+word boundary either, so a vendored C or Go tree misreads as a Rust crate in two cases:
+a `.rst`/`.rsp` file (`vendor/openssl/doc/man7/ossl-guide.rst` reads as crate `openssl`),
+and a `.rs` file elsewhere in the same printable run consuming a real vendor path ahead
+of it (`vendor/openssl/crypto/rsa/x.c vendor/ring/src/a.rs` reads as `openssl` alone,
+losing `ring`). Both are unlikely in real `rodata`, since a C `__FILE__` string is
+NUL-terminated into its own run, but it is a trade-off, not a guarantee; the
+git-checkout pattern shares the same no-terminator gap for the same reason. The vendor
+pattern also always anchors on the first `vendor/` path component it finds: a build tree
+that itself sits inside a directory named `vendor` collapses every crate under that
+outer component into one crate named after it, with no version, and loses the real names
+nested inside, claimed ones included.
 `/work/vendor/mypkg/vendor/{ring,openssl-sys,sha1}/src/lib.rs` reads as one crate,
 `mypkg`, dropping `ring`, `openssl-sys` and `sha1` entirely. Preferring the innermost
 `vendor/` component would need the pattern to fail past a nested one rather than
-consume through it, which it does not attempt. A `vendor/` match that follows a
-registry match in the same printable run with no `.rs` between them, such as a
+consume through it, which it does not attempt. This is specific to the whole build
+tree sitting under a directory literally named `vendor`. A `vendor/` match that follows
+a registry match in the same printable run with no `.rs` between them, such as a
 registry crate's own C source path packed against a later, unrelated vendor path with
 nothing in between, reads as nested and is dropped even though it is not; this is
 unlikely in practice, the same way the vendor pattern's own `.rs` misreads above are,
 since a C `__FILE__` string is NUL-terminated into its own run.
 
-Revisit if a fromager-built Rust wheel is measured and its vendor paths do not match
-what the hand-built cdylib above embeds.
+A `vendor/` tree nested inside a git-checkout workspace member is not run through the
+same nesting-gap precedence as the registry layout. `cargo_git_path_regex`'s own `name`
+group is anchored immediately before `/src/`, so a path like
+`.../member/vendor/ring/src/lib.rs` already reads `name` as `ring`, the same crate
+`cargo_vendor_path_regex` reads from its own `vendor/` match on the same path -- the two
+patterns agree without needing precedence between them, unlike a registry match, whose
+pattern stops at the crate's own directory and never sees a `.rs` file past it. Extending
+`_NESTED_GAP` to a git-checkout match would have to reconcile that its span already
+ends at a `.rs` file rather than at a bare directory boundary, for no case measured here
+where doing so changes which crate gets recorded; this is deliberately left undone
+rather than added by analogy, and revisited if a build is found where the two patterns'
+readings for the same git-checkout path disagree. A root crate read from a git checkout
+carries its repository's name rather than its own whenever the two differ
+(`rust-base64`, not `base64`), and a `[[rust_crate]]` entry does not claim a root crate
+whose repository is named differently; a workspace member's directory name is
+conventionally, but not necessarily, the crate it holds. The `member` group is optional
+and tried first, and its own lazy intermediate-directory repetition can walk past an
+early `src/` inside a root crate's own tree before reaching the one that actually holds
+the matched file: a root crate (no workspace member of its own) with a nested
+`src/.../src/` subtree is then read under the inner directory's name rather than the
+repository's, losing the real crate -- `ring-<hash>/<rev>/src/aead/src/x.rs` reads as
+crate `aead`, not `ring`. And because the group reads a repository name rather than a
+crates.io one, it excludes `.` the same way the crates.io name class does even though a
+repository name can contain it: a root crate checked out from a repository such as
+`foo.rs` records no crate at all, while a workspace member of the same repository is
+read normally. Both are unlikely in a crypto crate's own repository name or directory
+layout.
+
+Revisit if a fromager-built Rust wheel is measured and its vendor or git-checkout paths
+do not match what the hand-built cdylibs above embed.
 
 ## An SBOM naming an OpenSSL crate reads `unknown`, not `none`
 

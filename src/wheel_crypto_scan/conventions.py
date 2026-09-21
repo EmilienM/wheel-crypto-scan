@@ -34,6 +34,7 @@ _CONVENTIONS_KEYS = frozenset(
         "windows_version_suffix_regex",
         "cargo_path_regex",
         "cargo_vendor_path_regex",
+        "cargo_git_path_regex",
         "weak_hash_algorithms",
         "library_suffixes",
         "windows_library_suffixes",
@@ -96,6 +97,7 @@ class Conventions:
     windows_version_suffix_regex: re.Pattern[str]
     cargo_path_regex: re.Pattern[str]
     cargo_vendor_path_regex: re.Pattern[str]
+    cargo_git_path_regex: re.Pattern[str]
     weak_hash_algorithms: frozenset[str]
     # No defaults, and ahead of the defaulted fields for that reason: the loader
     # refuses a ruleset whose go_boring_group/go_stock_group name no string group, and
@@ -182,18 +184,19 @@ def parse_conventions(data: Mapping[str, Any]) -> Conventions:
         windows = re.compile(str(_require(data, "windows_version_suffix_regex", where)))
         cargo = re.compile(str(_require(data, "cargo_path_regex", where)))
         cargo_vendor = re.compile(str(_require(data, "cargo_vendor_path_regex", where)))
+        cargo_git = re.compile(str(_require(data, "cargo_git_path_regex", where)))
     except re.error as exc:
         raise RulesetError(f"{where}: invalid regular expression: {exc}") from None
     for pattern, group in ((mangled, "stem"), (windows, "stem")):
         if group not in pattern.groupindex:
             raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
-    # Both cargo conventions feed `find_rust_crates`, which reads both groups off
+    # Every cargo convention feeds `find_rust_crates`, which reads both groups off
     # whichever one matched, so each pattern must declare both here even when a layout
     # never fills `version`: a declared-but-unmatched `version` group is how a layout
-    # that names no version (`cargo vendor` without versioned directories) is told
-    # apart from a pattern that forgot the group, which `find_rust_crates` would only
-    # catch as an IndexError at scan time.
-    for pattern in (cargo, cargo_vendor):
+    # that names no version (`cargo vendor` without versioned directories, or a git
+    # dependency checkout) is told apart from a pattern that forgot the group, which
+    # `find_rust_crates` would only catch as an IndexError at scan time.
+    for pattern in (cargo, cargo_vendor, cargo_git):
         for group in ("name", "version"):
             if group not in pattern.groupindex:
                 raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
@@ -218,6 +221,7 @@ def parse_conventions(data: Mapping[str, Any]) -> Conventions:
         windows_version_suffix_regex=windows,
         cargo_path_regex=cargo,
         cargo_vendor_path_regex=cargo_vendor,
+        cargo_git_path_regex=cargo_git,
         weak_hash_algorithms=frozenset(weak_hash_algorithms),
         library_suffixes=suffixes,
         windows_library_suffixes=windows_suffixes,

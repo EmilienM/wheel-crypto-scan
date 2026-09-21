@@ -64,9 +64,9 @@ refuses limits too small to hold one of every key the ruleset itself declares. S
 How build tools lay wheels out, not policy: `vendor_dir_globs` (auditwheel's `*.libs`,
 delocate's `.dylibs`), `mangled_soname_regex` (the content hash those tools append),
 `library_suffixes` and the Windows-specific `windows_library_suffixes` /
-`windows_version_suffix_regex` pair, `cargo_path_regex` and `cargo_vendor_path_regex` for
-the cargo source paths a Rust object embeds, `go_boring_group` / `go_stock_group` naming
-the Go toolchain string groups, and `weak_hash_algorithms`.
+`windows_version_suffix_regex` pair, `cargo_path_regex`, `cargo_vendor_path_regex` and
+`cargo_git_path_regex` for the cargo source paths a Rust object embeds, `go_boring_group` /
+`go_stock_group` naming the Go toolchain string groups, and `weak_hash_algorithms`.
 
 The Windows entries matter more than they look. Windows puts a library's version, and often
 its architecture, inside the file name where Unix puts it in a `.so.N` suffix:
