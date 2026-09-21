@@ -93,7 +93,18 @@ def minimal(**overrides: Any) -> dict[str, Any]:
                 "title": "t",
                 "why": "w",
                 "match": {"kind": "dist_name", "table": "crypto_distribution"},
-            }
+            },
+            {
+                "id": "SBOM_CRYPTO_COMPONENT",
+                "layer": "metadata",
+                "category": "bundled-crypto",
+                "severity": "high",
+                "confidence": "high",
+                "needs_human_review": True,
+                "title": "t",
+                "why": "w",
+                "match": {"kind": "sbom_component", "tables": ["crypto_library", "rust_crate"]},
+            },
         ],
     }
     data.update(overrides)
@@ -124,7 +135,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "29"
+    assert ruleset.version == "30"
     assert len(ruleset.rules) > 20
 
 
@@ -649,6 +660,110 @@ def test_rule_naming_a_missing_library_is_rejected() -> None:
     data["rule"][0]["match"] = {"kind": "bundled_library", "library": "opensssl"}
     with pytest.raises(RulesetError, match="unknown library"):
         parse_ruleset(data)
+
+
+def _sbom_component_rule(tables: list[str], rule_id: str = "SBOM_TEST_RULE") -> dict[str, Any]:
+    return {
+        "id": rule_id,
+        "layer": "metadata",
+        "category": "bundled-crypto",
+        "severity": "high",
+        "confidence": "high",
+        "needs_human_review": True,
+        "title": "t",
+        "why": "w",
+        "match": {"kind": "sbom_component", "tables": tables},
+    }
+
+
+def _without_sbom_component_rules(data: dict[str, Any]) -> dict[str, Any]:
+    """`minimal()`'s own `SBOM_CRYPTO_COMPONENT` rule already covers both tables the
+    coverage check requires, so a test of that check itself has to start without it."""
+    data["rule"] = [r for r in data["rule"] if r["match"].get("kind") != "sbom_component"]
+    return data
+
+
+@pytest.mark.parametrize(
+    "tables",
+    [["crypto_distribution"], ["crypto_library"], ["rust_crate"], []],
+)
+def test_no_sbom_component_rule_together_covers_both_required_tables_is_rejected(
+    tables: list[str],
+) -> None:
+    """`linkage._declared_by_sbom` only ever compares an SBOM component name against
+    `crypto_library`/`rust_crate` entries, on the assumption that the ruleset's
+    `sbom_component` rules together report a finding on both -- so a ruleset whose
+    `sbom_component` rules never cover both tables between them would move a library's
+    linkage on a component name the record carries no finding for. Refused here rather
+    than left to a test over the shipped ruleset."""
+    data = _without_sbom_component_rules(minimal())
+    data["rule"].append(_sbom_component_rule(tables))
+    with pytest.raises(RulesetError, match="sbom_component rules must together cover tables"):
+        parse_ruleset(data)
+
+
+def test_no_sbom_component_rule_at_all_is_rejected() -> None:
+    """The case that actually breaks the field/finding agreement: with no
+    `sbom_component` rule in the ruleset at all, an SBOM-only wheel still moves
+    `<name>_linkage` to `unknown` with no finding anywhere in the record to say why."""
+    data = _without_sbom_component_rules(minimal())
+    with pytest.raises(RulesetError, match="sbom_component rules must together cover tables"):
+        parse_ruleset(data)
+
+
+def test_an_sbom_component_rule_cannot_use_the_singular_table_key_to_satisfy_this() -> None:
+    """`engine._match_sbom_component` only ever reads `match["tables"]`; the singular
+    `table` key it never looks at must not be able to fill a gap in the coverage, or
+    this check would accept a ruleset that still cannot report through the table it
+    claims to satisfy the requirement with."""
+    data = _without_sbom_component_rules(minimal())
+    rule = _sbom_component_rule(["rust_crate"])
+    rule["match"]["table"] = "crypto_library"
+    data["rule"].append(rule)
+    with pytest.raises(RulesetError, match="sbom_component rules must together cover tables"):
+        parse_ruleset(data)
+
+
+def test_an_sbom_component_rule_with_both_required_tables_is_accepted() -> None:
+    data = minimal()
+    data["rule"].append(
+        _sbom_component_rule(["crypto_library", "rust_crate", "crypto_distribution"])
+    )
+    parse_ruleset(data)
+
+
+def test_two_sbom_component_rules_can_split_the_required_tables() -> None:
+    """Covering `crypto_library` and `rust_crate` across two separate rules -- one
+    reporting each -- is exactly as sound as one rule doing both, so the coverage
+    check must accept the split rather than refuse it as missing coverage."""
+    data = _without_sbom_component_rules(minimal())
+    data["rule"].append(_sbom_component_rule(["crypto_library"], rule_id="SBOM_LIBRARY"))
+    data["rule"].append(_sbom_component_rule(["rust_crate"], rule_id="SBOM_CRATE"))
+    parse_ruleset(data)
+
+
+def test_a_suppressed_sbom_component_rule_covering_required_tables_is_rejected() -> None:
+    """A rule reporting `crypto_library`/`rust_crate` coverage that also carries
+    `suppressed_by` can still lose its finding at scan time whenever the rule named
+    there also fires, while `linkage._declared_by_sbom` moved the field regardless --
+    the same field-moves-with-no-finding hole the coverage check otherwise refuses."""
+    data = _without_sbom_component_rules(minimal())
+    rule = _sbom_component_rule(["crypto_library", "rust_crate"])
+    rule["suppressed_by"] = ["DIST_NON_APPROVED_CRYPTO"]
+    data["rule"].append(rule)
+    with pytest.raises(RulesetError, match="cannot carry suppressed_by"):
+        parse_ruleset(data)
+
+
+def test_a_suppressed_sbom_component_rule_covering_only_distribution_is_accepted() -> None:
+    """`suppressed_by` is refused only on a rule the coverage check relies on for
+    `crypto_library`/`rust_crate`; a rule that only ever reports `crypto_distribution`
+    plays no part in that agreement and is free to carry it."""
+    data = minimal()
+    rule = _sbom_component_rule(["crypto_distribution"], rule_id="SBOM_DIST_ONLY")
+    rule["suppressed_by"] = ["DIST_NON_APPROVED_CRYPTO"]
+    data["rule"].append(rule)
+    parse_ruleset(data)
 
 
 def test_unknown_scan_error_kind_is_rejected() -> None:

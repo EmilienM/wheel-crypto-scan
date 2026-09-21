@@ -836,6 +836,96 @@ def test_an_sbom_naming_openssl_sys_does_not_reach_object_postures(ruleset) -> N
     assert "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM" not in findings
 
 
+def test_an_sbom_naming_an_openssl_crate_is_unresolved_linkage_beside_its_component_finding(
+    ruleset,
+) -> None:
+    component = SbomComponent(
+        name="openssl-sys",
+        version="0.9.117",
+        purl="pkg:cargo/openssl-sys@0.9.117",
+        source="demo-1.0.dist-info/sboms/a.cdx.json",
+    )
+    evidence = wheel(
+        metadata=metadata(sbom_components=(component,)),
+        binaries=(binary("demo/_rust.abi3.so", needed=("libc.so.6",), dynsym_count=1),),
+    )
+    findings = run(ruleset, evidence)
+    assert one(findings, "SBOM_CRYPTO_COMPONENT").subject == "openssl-sys"
+    assert one(findings, "BIN_OPENSSL_LINKAGE_UNKNOWN").verdict == "OPAQUE"
+
+
+def test_linkage_moves_only_on_an_sbom_component_the_record_reports(ruleset) -> None:
+    """Agreement guard between the field and the finding: `_declared_by_sbom` must
+    never give a library `unknown` on an SBOM component name for which
+    `SBOM_CRYPTO_COMPONENT` reports no finding, and every name `_sbom_entry` matches
+    through `crypto_library`/`rust_crate` must actually move the library it names.
+    """
+    baseline = resolve_linkage(ruleset, wheel())
+    candidates: set[str] = set()
+    for library in ruleset.libraries.values():
+        candidates.add(library.name)
+        candidates.update(library.crates)
+        candidates.update(library.sonames)
+    candidates.update(ruleset.rust_crates)
+    candidates.update(ruleset.distributions)
+    # Case variants of real names, spelled differently from every candidate above:
+    # the comparison on both sides (`_declared_by_sbom` and `engine._sbom_entry`) is
+    # exact and case-sensitive, so these must move nothing and match no finding. A
+    # mutation that lower-cases either side's names before comparing turns one of
+    # these into a match on the field with no finding beside it -- the disagreement
+    # this guard exists to catch, which same-case candidates alone cannot reach.
+    candidates.update({"OpenSSL", "OPENSSL-SYS", "LIBSODIUM"})
+    for name in sorted(candidates):
+        component = SbomComponent(name=name, version=None, purl=None, source="a.cdx.json")
+        evidence = wheel(metadata=metadata(sbom_components=(component,)))
+        mapping = resolve_linkage(ruleset, evidence)
+        moved = [
+            library_name
+            for library_name, value in mapping.items()
+            if value == "unknown" and baseline.get(library_name) != "unknown"
+        ]
+        if not moved:
+            continue
+        subjects = {
+            finding.subject
+            for finding in run(ruleset, evidence)
+            if finding.rule_id == "SBOM_CRYPTO_COMPONENT"
+        }
+        assert name in subjects, f"{name} moved {moved} with no SBOM_CRYPTO_COMPONENT finding"
+
+    for library in ruleset.libraries.values():
+        # `library.name` itself is excluded from this positive check when it also
+        # names an unrelated `[[rust_crate]]` the library does not list in `crates`
+        # (argon2, blake2): there the name arm only moves the field for a component
+        # whose own `purl` does not say `pkg:cargo/...`, and the two assertions below
+        # cover that split directly instead of this generic positive check.
+        # `library.crates` is never ambiguous this way -- each entry was vetted onto
+        # that specific library's list.
+        ambiguous_own_name = (
+            library.name in ruleset.rust_crates and library.name not in library.crates
+        )
+        names = library.crates if ambiguous_own_name else (library.name, *library.crates)
+        for name in names:
+            component = SbomComponent(name=name, version=None, purl=None, source="a.cdx.json")
+            evidence = wheel(metadata=metadata(sbom_components=(component,)))
+            assert resolve_linkage(ruleset, evidence)[library.name] == "unknown"
+        if ambiguous_own_name:
+            crate_component = SbomComponent(
+                name=library.name,
+                version=None,
+                purl=f"pkg:cargo/{library.name}@0.0.0",
+                source="a.cdx.json",
+            )
+            evidence = wheel(metadata=metadata(sbom_components=(crate_component,)))
+            assert resolve_linkage(ruleset, evidence).get(library.name) != "unknown"
+
+            c_library_component = SbomComponent(
+                name=library.name, version=None, purl=None, source="a.cdx.json"
+            )
+            evidence = wheel(metadata=metadata(sbom_components=(c_library_component,)))
+            assert resolve_linkage(ruleset, evidence)[library.name] == "unknown"
+
+
 # --- python layer -----------------------------------------------------------
 
 

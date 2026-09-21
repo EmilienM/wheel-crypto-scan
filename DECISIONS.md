@@ -5116,19 +5116,10 @@ after:  openssl_linkage: unknown, verdict.rule_ids: [..., "BIN_OPENSSL_LINKAGE_U
   `DERIVED_SYSTEM_OPENSSL_ONLY` is withheld beside the crate-only object, and
   `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` names it instead (see "An object that read
   `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`").
-- An SBOM component naming `openssl-sys` does not move the field: a wheel whose SBOM
-  names the crate over a binary with no OpenSSL evidence still reads `none`, beside
-  `SBOM_CRYPTO_COMPONENT`. `resolve_linkage` has one wheel-level signal,
-  `_left_unanswered`, and it is library-agnostic on purpose; an SBOM would need a second,
-  library-specific one, and no SBOM-only wheel has been measured. It leaves the stronger
-  evidence out while the weaker moves the field, since that rule's own `why` calls a
-  shipped SBOM the highest-confidence evidence there is, and it matters most for a
-  build whose cargo paths use a layout still unrecognised: it can still ship an SBOM
-  naming the crate.
-- A build whose cargo paths use a layout still unrecognised, such as a git dependency
-  checkout, carries no crate, so this still never fires on it.
-
-Revisit if a real wheel turns up whose only OpenSSL evidence is an SBOM component.
+- An SBOM component naming `openssl-sys` moves the field the same way a crate does:
+  see "An SBOM naming an OpenSSL crate reads `unknown`, not `none`" below.
+- A build whose cargo paths the reader does not recognise carries no crate, so this
+  never fires on it (#137).
 
 Tracked in [#128](https://github.com/EmilienM/wheel-crypto-scan/issues/128).
 
@@ -5670,3 +5661,112 @@ consume through it, which it does not attempt.
 
 Revisit if a fromager-built Rust wheel is measured and its vendor paths do not match
 what the hand-built cdylib above embeds.
+
+## An SBOM naming an OpenSSL crate reads `unknown`, not `none`
+
+**Fixed.**
+
+A wheel's own PEP 770 SBOM naming `openssl-sys` could not move `openssl_linkage` at
+all, even though the cargo-path case just above reads `unknown` for the same claim:
+
+```text
+SBOM names openssl-sys 0.9.117
+demo/_rust.abi3.so    needed: libc.so.6
+-> openssl_linkage: none,    verdict.rule_ids: [..., "SBOM_CRYPTO_COMPONENT", ...]
+```
+
+after:
+
+```text
+-> openssl_linkage: unknown, verdict.rule_ids: [..., "SBOM_CRYPTO_COMPONENT",
+   "BIN_OPENSSL_LINKAGE_UNKNOWN", ...]
+```
+
+**The fix.** `resolve_linkage` gains a second wheel-level signal, `_declared_by_sbom`,
+consulted alongside `_left_unanswered` and only where that one already is: after every
+object's own evidence has been checked and none of it was definite. `_left_unanswered`
+stays library-agnostic and gated on `always_report`, because it is a fact about the
+wheel, not about any one library; `_declared_by_sbom` is about the specific library
+being asked for, so it runs for every library with a `[[crypto_library]]` entry, not
+only OpenSSL, the same way the crate branch in `_binary_posture` is not gated either.
+
+It matches an SBOM component whose name equals `library.name`, or is one of
+`library.crates` -- exactly the names `SBOM_CRYPTO_COMPONENT` also reports a finding
+for through its `crypto_library` and `rust_crate` tables, compared the same
+case-sensitive way, so the field and that finding can never disagree about the same
+string. The loader refuses a ruleset whose `sbom_component` rules, taken together, do
+not report through both tables (a rule missing one, or none at all), and refuses
+`suppressed_by` on a rule it relies on for that coverage -- a suppressed finding would
+reopen the same hole a coverage gap does -- so this agreement cannot be broken by
+editing the ruleset alone. Coverage is checked over the union of every such rule's
+`tables`, not rule by rule, so covering the two tables through two separate rules is
+accepted the same as one rule doing both. A soname is deliberately not
+compared: an SBOM component names a package, not a dependency string, and this field's
+`needed`-side matching already owns that comparison. A distribution name
+(`crypto_distribution`, e.g. `cryptography`) is also excluded: a distribution wrapping
+a library is not the wheel carrying a copy of it, and `SCHEMA.md` already says a
+distribution name never moves this field.
+
+Like a crate, an SBOM component says the wheel uses the library, not which copy: it
+never gives a definite posture, only `unknown` in place of `none`, and it never
+outvotes a `system`/`bundled`/`static` posture any object in the wheel already gave.
+
+**What was rejected.** Leaving `none` and documenting the coexistence, the same option
+the crate entry above rejected and for the same reason: `none` says "no OpenSSL
+evidence" on a record that carries some, which `[linkage_policy]` and "absence of
+evidence is not evidence of absence" both exist to refuse, and `unknown` already has
+the meaning this case needs.
+
+**What it costs.**
+
+- A wheel whose only OpenSSL evidence is a shipped SBOM component gains
+  `BIN_OPENSSL_LINKAGE_UNKNOWN` and `OPAQUE` in `classes`. Its headline stays
+  `CONDITIONAL`, since `SBOM_CRYPTO_COMPONENT` already fires and `[verdict] precedence`
+  ranks `CONDITIONAL` ahead of `OPAQUE`.
+- An SBOM naming any other listed library, `libsodium` for instance, now also adds
+  `<name>_linkage: unknown` where nothing answered for it before.
+- An SBOM that fails to parse (`SBOM_UNREADABLE`, already `OPAQUE` on its own) does not
+  move the field: `_declared_by_sbom` only ever sees components a reader actually
+  extracted, so a wheel whose only OpenSSL evidence was an unparseable SBOM still reads
+  `none` beside `OPAQUE`.
+- Name matching is exact and case-sensitive, like `SBOM_CRYPTO_COMPONENT`'s own: a
+  component spelled `OpenSSL` moves neither the field nor the finding.
+- `library.name` alone is not enough where the ruleset has both a `[[crypto_library]]`
+  and an unrelated `[[rust_crate]]` of the same name: `argon2` and `blake2` are each
+  both the C reference library (libargon2, libb2) and, separately, the pure-Rust
+  RustCrypto crate of the same name, which does not bind the C library and is not
+  listed in either library's `crates`. `openssl` collides the same way but is not a
+  false positive, because the `openssl` crate really does bind libssl/libcrypto, and
+  the ruleset's own `crates` list already names it for exactly that reason.
+  `_declared_by_sbom` resolves the `argon2`/`blake2` collision by the component's own
+  `purl` rather than by name alone: only `pkg:cargo/...`, PEP 770's spelling for a
+  crates.io crate, says the component is the pure-Rust crate, so only that purl skips
+  the name match. A component named `argon2` with a non-cargo purl (`pkg:generic/...`,
+  the shape a real libargon2 SBOM entry would carry) or no purl at all still moves the
+  field, because it still could name the C library. Two simpler alternatives were
+  rejected. Matching by name alone, whatever the purl, gives a false positive: a
+  component naming the pure-Rust crate under `pkg:cargo/argon2@...` would move the C
+  library's field when nothing about it says the C library is present. Skipping the
+  name match on every colliding name, whatever the purl, gives the opposite failure: a
+  component that really does declare libargon2 or libb2 under a non-cargo purl, or
+  none, would move nothing, while `SBOM_CRYPTO_COMPONENT` still fired on the same name
+  (it matches by name, not by purl), leaving a finding that names the C library with no
+  field reflecting it. Reading the purl, as shipped, still trusts it at face value: an
+  SBOM component that names the C library but is mislabelled with a `pkg:cargo/...`
+  purl -- wrong or adversarial metadata -- still reads as the crate and moves nothing,
+  the same class of trust every other field extracted from the SBOM already places in
+  it.
+- `ruleset_loader._validate_sbom_component_coverage` also refuses `suppressed_by` on a
+  `sbom_component` rule it relies on for `crypto_library`/`rust_crate` coverage: a
+  suppressed finding would leave the field moved with nothing in the record to explain
+  it, the same hole a coverage gap opens.
+- A known residual, shared with "An object that read `unknown` withholds
+  `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`" above: `object_postures`
+  reads only per-object binary evidence, and this signal is wheel-level, so an SBOM
+  naming an OpenSSL crate beside a system-linked object still fires
+  `DERIVED_SYSTEM_OPENSSL_ONLY` outright rather than the complementary,
+  `OPAQUE`-carrying rule.
+- No real SBOM-only wheel has been measured; the shape above is synthesised.
+
+Composes with "An OpenSSL crate with no other evidence reads unknown, not none" above:
+that entry's own residual, an SBOM naming the crate reading `none`, is what this fixes.

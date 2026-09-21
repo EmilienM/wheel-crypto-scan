@@ -216,18 +216,29 @@ The field most consumers filter on. Always present.
 | `bundled` | Ships its own copy: in a vendor directory, via a hash-renamed dependency, or via a dependency that names an unmangled but unrenamed file the wheel itself ships (delocate's convention). Cannot see the system provider. |
 | `static` | Compiled in, with no library file and no declared dependency. Same consequence as `bundled`, harder to spot. |
 | `mixed` | Both postures found across different objects in one wheel (the original, cross-object case); or, for one object's own evidence: two or more of `system`, `bundled` and `static` all true for it at once (a `needed` match to the system library alongside a definition, or a banner that is not header text (see `system`); a `needed` entry that resolves inside the wheel alongside a *different* `needed` entry that resolves to the system library, or alongside a definition/banner); or exactly one of `system`/`bundled` true alongside an unconfirmed, vendor-shaped-but-unconfirmed `needed` entry AND a definition/banner together (`uncertain` and `static` both true) — `uncertain` alone never triggers `mixed` on its own, only in combination with `static`. Includes the case a universal (fat) Mach-O object merges into one record when its slices disagree this way, which used to read `bundled` or `system` outright instead. |
-| `none` | No OpenSSL evidence in any binary object, from objects read far enough to say so. |
-| `unknown` | An object read far enough to say so uses OpenSSL without naming where it comes from (imported OpenSSL symbols and no dependency on the library, or a Rust crate that binds it and nothing else); or evidence came only from an object we could not read, some object in the wheel was not read in full and the cause could have hidden what this field is read off, or the wheel itself was not read in full (a member skipped by an archive limit, or one that failed to open) and a dependency's path looks vendored (an `@loader_path`/`@rpath`-relative path, or a vendor-shaped `RPATH`/`RUNPATH`) without a shipped object confirming it — provided that same object carries no definition or banner of its own, and no *different* `needed` entry on it already resolves to `system` or `bundled`. When it carries a definition or banner, the object's own evidence is `mixed` instead. When a different `needed` entry on it already resolves to `system` or `bundled` — but the object carries no definition/banner, and does not also have a second, different `needed` entry resolving to the other of `system`/`bundled` — the object's own evidence is that one confirmed posture instead, unaffected by the unconfirmed entry; if it has both a confirmed `system` entry and a confirmed `bundled` entry, the object's own evidence is `mixed` instead, per the `mixed` row above, regardless of the unconfirmed one. A vendor-shaped path naming nothing, in a wheel read in full, is `system`: the complete member list not containing the answer is itself the answer. `partial_reasons` names the cause when it applies; the ones that leave the answer intact are marked in the reason table above. |
+| `none` | No OpenSSL evidence in any binary object, and no shipped SBOM component naming the library or a crate that binds it, from objects read far enough to say so. |
+| `unknown` | An object read far enough to say so uses OpenSSL without naming where it comes from (imported OpenSSL symbols and no dependency on the library, or a Rust crate that binds it and nothing else), or the wheel's own SBOM names the library or such a crate and no object answers; or evidence came only from an object we could not read, some object in the wheel was not read in full and the cause could have hidden what this field is read off, or the wheel itself was not read in full (a member skipped by an archive limit, or one that failed to open) and a dependency's path looks vendored (an `@loader_path`/`@rpath`-relative path, or a vendor-shaped `RPATH`/`RUNPATH`) without a shipped object confirming it — provided that same object carries no definition or banner of its own, and no *different* `needed` entry on it already resolves to `system` or `bundled`. When it carries a definition or banner, the object's own evidence is `mixed` instead. When a different `needed` entry on it already resolves to `system` or `bundled` — but the object carries no definition/banner, and does not also have a second, different `needed` entry resolving to the other of `system`/`bundled` — the object's own evidence is that one confirmed posture instead, unaffected by the unconfirmed entry; if it has both a confirmed `system` entry and a confirmed `bundled` entry, the object's own evidence is `mixed` instead, per the `mixed` row above, regardless of the unconfirmed one. A vendor-shaped path naming nothing, in a wheel read in full, is `system`: the complete member list not containing the answer is itself the answer. `partial_reasons` names the cause when it applies; the ones that leave the answer intact are marked in the reason table above. |
 
-This field is read from the wheel's binary objects only: a shipped copy of the library
+This field is read from the wheel's binary objects: a shipped copy of the library
 itself, by file name; a `needed` entry naming the library; a symbol from its symbol
 group; its version banner (and, for OpenSSL, the build strings that tell a compiled-in
 banner from a header's); or a Rust crate the ruleset lists for it (in the shipped
 ruleset, for OpenSSL: `openssl`, `openssl-sys`, `openssl-src`). A crate says the
 object uses OpenSSL, not which copy, so it gives `unknown` on an object with nothing
-else and never outvotes a definite posture. An SBOM component or a distribution name is
-a finding and never moves this field — a wheel whose SBOM names `openssl-sys` over a
-binary carrying no OpenSSL evidence reads `none` beside `SBOM_CRYPTO_COMPONENT`.
+else and never outvotes a definite posture.
+
+There is one wheel-level input besides the objects: a PEP 770 SBOM component naming
+the library, or a crate the ruleset lists for it, gives `unknown` the same way when no
+object in the wheel answered definitely, and never outvotes a definite posture either.
+A distribution name (`crypto_distribution`, e.g. `cryptography`) is a finding at most
+and never moves this field, and neither does a soname in an SBOM component: this field
+only compares an SBOM component's name against a library's own name and its `crates`,
+the same names `SBOM_CRYPTO_COMPONENT` reports a finding for. When a library's own
+name is *also* a different `rust_crate` it does not itself list in `crates` -- shipped
+today for `argon2` and `blake2`, each both a C reference library and an unrelated
+pure-Rust crate of the same name -- the component's `purl` breaks the tie: only a
+`pkg:cargo/...` purl reads as the crate and leaves the C library's field untouched, so
+a component named `argon2`/`blake2` with any other purl, or none, still moves it.
 
 Other libraries appear as `<name>_linkage` when they have evidence.
 
