@@ -5216,6 +5216,18 @@ Every negated character class in both cargo patterns excludes `\n`, the run sepa
 one printable run and never spliced from two strings that never sat next to each other
 in the object.
 
+A `vendor/` tree inside a registry crate's own directory is that crate's own vendored
+source, not a crate of its own: `.../bar-1.0.0/vendor/ring/src/x.rs` is read as `bar`
+1.0.0, and the nested `vendor/ring/...` match is dropped rather than reported as a
+second, unversioned crate. The registry crate's directory is taken to end at the first
+`.rs` file on its path, not at the end of the printable run, because rustc packs
+`&'static str` panic locations for unrelated crates back to back in read-only data: a
+vendor match that starts in the directory components between a registry match and its
+own `.rs` is nested and dropped; one that starts after it is a separate path and is
+kept. Precedence runs one way only -- a registry match found inside an outer `vendor/`
+directory is unaffected, which is the nesting gap this section already documents for
+that layout.
+
 **`RustCrate.version` is `str | None`.** A layout that names no version gets a `null` in
 the record, never an invented one or an empty string standing in for it -- the same
 choice `SbomComponent.version` makes. Widening a required field's type is a
@@ -5288,6 +5300,12 @@ with `.` excluded, the same 5-10x the digit-and-dot shape above pays.
   own -- only all three together, an unbounded name, an unbounded version tail, and
   `.` allowed in the name class, turn it quadratic, and `test_hardening.py`'s
   linear-time test guards exactly that shape.
+- *Refuse `vendor/` after any `name-version/` component, instead of anchoring on the
+  registry match's own end.* This would misread fromager's own layout: `cargo vendor`
+  writes `/work/cryptography-44.0.0/vendor/openssl-sys/src/lib.rs`, and
+  `cryptography-44.0.0` is shaped exactly like a registry crate directory despite
+  never being one. Telling the two apart would also need the lookbehind to be
+  variable-length, which Python's `re` does not support.
 
 **What it costs.** A build whose cargo paths use none of the three layouts, such as a
 git dependency checkout (`cargo/git/checkouts/<name>-<hash>/<rev>/`), carries no crate;
@@ -5314,7 +5332,12 @@ loses the real names nested inside, claimed ones included.
 `/work/vendor/mypkg/vendor/{ring,openssl-sys,sha1}/src/lib.rs` reads as one crate,
 `mypkg`, dropping `ring`, `openssl-sys` and `sha1` entirely. Preferring the innermost
 `vendor/` component would need the pattern to fail past a nested one rather than
-consume through it, which it does not attempt.
+consume through it, which it does not attempt. A `vendor/` match that follows a
+registry match in the same printable run with no `.rs` between them, such as a
+registry crate's own C source path packed against a later, unrelated vendor path with
+nothing in between, reads as nested and is dropped even though it is not; this is
+unlikely in practice, the same way the vendor pattern's own `.rs` misreads above are,
+since a C `__FILE__` string is NUL-terminated into its own run.
 
 Revisit if a fromager-built Rust wheel is measured and its vendor paths do not match
 what the hand-built cdylib above embeds.

@@ -2001,7 +2001,11 @@ def test_cargo_vendor_pattern_stays_linear_over_a_long_run_of_near_misses() -> N
 
     start = time.monotonic()
     crates, _ = find_rust_crates(
-        text, (conventions.cargo_vendor_path_regex,), max_crates=128, claimed=frozenset()
+        text,
+        max_crates=128,
+        registry=None,
+        vendor=conventions.cargo_vendor_path_regex,
+        claimed=frozenset(),
     )
     elapsed = time.monotonic() - start
 
@@ -2023,7 +2027,11 @@ def test_cargo_vendor_pattern_stays_linear_over_digit_and_dot_near_misses() -> N
 
     start = time.monotonic()
     crates, _ = find_rust_crates(
-        text, (conventions.cargo_vendor_path_regex,), max_crates=128, claimed=frozenset()
+        text,
+        max_crates=128,
+        registry=None,
+        vendor=conventions.cargo_vendor_path_regex,
+        claimed=frozenset(),
     )
     elapsed = time.monotonic() - start
 
@@ -2054,7 +2062,11 @@ def test_cargo_registry_pattern_stays_linear_over_a_long_segment_of_name_version
 
     start = time.monotonic()
     crates, _ = find_rust_crates(
-        text, (conventions.cargo_path_regex,), max_crates=128, claimed=frozenset()
+        text,
+        max_crates=128,
+        registry=conventions.cargo_path_regex,
+        vendor=None,
+        claimed=frozenset(),
     )
     elapsed = time.monotonic() - start
 
