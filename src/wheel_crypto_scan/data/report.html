@@ -614,7 +614,7 @@ dialog#intro p { margin: 10px 0; }
     <span id="count"></span>
   </section>
 
-  <div id="class-legend" class="legend-grid class-legend" aria-label="Verdict classes in this report"></div>
+  <div id="class-legend" class="legend-grid class-legend" role="group" aria-label="Verdict classes in this report"></div>
 
   <div class="table-scroll">
     <table id="wheel-table">
@@ -724,16 +724,20 @@ dialog#intro p { margin: 10px 0; }
   // The eight fixed columns' `width` plus `reasons`' own `min` is the table's
   // default rendered width: kept at or under 1200px so a common 1280px-wide
   // browser window shows the table with no horizontal scrollbar before any user
-  // resizing.
+  // resizing. `filter: false` marks a column that already has an exact toolbar
+  // filter of its own (`class`'s chips, `review`'s checkbox, `openssl`'s linkage
+  // dropdown): `renderFilterRow` leaves its filter-row cell empty rather than
+  // offering a second, looser "contains" filter over the same field, so each
+  // field keeps exactly one hash parameter.
   var COLUMNS = [
     { key: "filename", label: "wheel", help: "The wheel's filename. The primary key for this report.", width: 220, min: 160 },
     { key: "version", label: "version", help: "The project version declared in the wheel's own metadata.", width: 70, min: 60 },
     { key: "families", label: "families", help: "crypto.families: every kind of primitive a finding in this wheel is evidence of. See the Help dialog's Reference tab for what each family means.", width: 120, min: 90 },
     { key: "libraries", label: "libraries", help: "crypto.libraries: every crypto library this wheel carries evidence for, and how it links. See the Help dialog's Reference tab for its OpenSSL linkage table.", width: 120, min: 90 },
-    { key: "openssl", label: "openssl", help: "verdict.conditions.openssl_linkage: how this wheel as a whole gets OpenSSL, including none. Hover a value for its meaning; the Help dialog's Reference tab has the full table.", width: 90, min: 70 },
+    { key: "openssl", label: "openssl", help: "verdict.conditions.openssl_linkage: how this wheel as a whole gets OpenSSL, including none. Hover a value for its meaning; the Help dialog's Reference tab has the full table.", width: 90, min: 70, filter: false },
     { key: "relations", label: "relations", help: "verdict.relations: what would have to change, for every relation a contributing finding cited. See the Help dialog's Reference tab for what each relation means.", width: 120, min: 90 },
-    { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel: the FIPS compatibility lens's own summary, not the wheel's identity. See the Help dialog's Reference tab for what each class means.", width: 200, min: 150 },
-    { key: "review", label: "review", help: "Whether a rule flagged this wheel as needing a human look.", width: 120, min: 105 },
+    { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel: the FIPS compatibility lens's own summary, not the wheel's identity. See the Help dialog's Reference tab for what each class means.", width: 200, min: 150, filter: false },
+    { key: "review", label: "review", help: "Whether a rule flagged this wheel as needing a human look.", width: 120, min: 105, filter: false },
     { key: "reasons", label: "reasons", help: "The rule ids and subjects behind the verdict, in short form. Hover a chip for its full reason. A column filter on this one matches the full reasons list, not only the chips shown.", min: 140 }
   ];
 
@@ -1420,24 +1424,29 @@ dialog#intro p { margin: 10px 0; }
   // would see a filter that looks typed but was never applied. A non-empty value
   // is stored under the column's key, and an emptied one is deleted rather than
   // stored as `""`, so `Object.keys(owner.columnFilters).length` alone says
-  // whether any column filter is active.
+  // whether any column filter is active. A column with `filter: false` (only
+  // `COLUMNS` carries one: `class`, `review` and `openssl`, each already exact-
+  // filterable from the toolbar) gets an empty `<th>` here instead of a second,
+  // looser filter over a field the toolbar already covers.
   function renderFilterRow(row, columns, owner, onChange) {
     row.textContent = "";
     columns.forEach(function (column) {
       var th = document.createElement("th");
-      var input = document.createElement("input");
-      input.type = "search";
-      input.className = "col-filter";
-      input.setAttribute("data-key", column.key);
-      input.setAttribute("aria-label", "Filter " + column.label + " column");
-      input.placeholder = "filter";
-      input.value = owner.columnFilters[column.key] || "";
-      input.addEventListener("input", function () {
-        if (input.value) owner.columnFilters[column.key] = input.value;
-        else delete owner.columnFilters[column.key];
-        onChange();
-      });
-      th.appendChild(input);
+      if (column.filter !== false) {
+        var input = document.createElement("input");
+        input.type = "search";
+        input.className = "col-filter";
+        input.setAttribute("data-key", column.key);
+        input.setAttribute("aria-label", "Filter " + column.label + " column");
+        input.placeholder = "filter";
+        input.value = owner.columnFilters[column.key] || "";
+        input.addEventListener("input", function () {
+          if (input.value) owner.columnFilters[column.key] = input.value;
+          else delete owner.columnFilters[column.key];
+          onChange();
+        });
+        th.appendChild(input);
+      }
       row.appendChild(th);
     });
   }
@@ -1491,14 +1500,15 @@ dialog#intro p { margin: 10px 0; }
     syncHash();
   });
 
-  // The class legend beside the table: always visible (not tucked behind the Help
-  // dialog), one badge per verdict class actually present in this run --
-  // DATA.classes, in precedence order, filtered to CLASS_COUNTS > 0 -- each with
-  // its own CLASS_HELP text and no wording of its own. Built once at boot: the set
-  // of classes present in the whole run never changes as the toolbar's filters are
-  // applied, so nothing here needs to be re-rendered on every `renderTable`. A run
-  // with no records leaves `present` empty, which hides the legend the same way an
-  // empty run already hides the toolbar and the table.
+  // The class legend between the toolbar and the table: always visible (not
+  // tucked behind the Help dialog), one badge per verdict class actually
+  // present in this run -- DATA.classes, in precedence order, filtered to
+  // CLASS_COUNTS > 0 -- each with its own CLASS_HELP text and no wording of its
+  // own. Built once at boot: the set of classes present in the whole run never
+  // changes as the toolbar's filters are applied, so nothing here needs to be
+  // re-rendered on every `renderTable`. A run with no records leaves `present`
+  // empty, which hides the legend the same way an empty run already hides the
+  // toolbar and the table.
   function renderClassLegend() {
     var wrap = els.classLegend;
     wrap.textContent = "";
@@ -1621,11 +1631,17 @@ dialog#intro p { margin: 10px 0; }
   // matches the record's full `verdict.reasons` list instead. Not reused from
   // `sortValue`: that returns a number for `class`/`review` and a different
   // separator for `libraries`, neither of which is text a filter should match.
+  // `libraries` joins with no separator, matching `appendLibraryChips`: each
+  // library is its own bordered chip with no comma or space text node between
+  // them, unlike `families`/`relations`, which are plain comma-joined text with
+  // no chip of their own to mark where one value ends and the next begins.
+  // Carries no `openssl`, `class` or `review` arm: those columns carry
+  // `filter: false` in `COLUMNS`, so `state.columnFilters` can never hold one of
+  // their keys and `matchesColumnFilters` never asks this function for one.
   function columnText(record, key) {
     var wheel = record.wheel || {};
     var verdict = record.verdict || {};
     var crypto = record.crypto || {};
-    var conditions = verdict.conditions || {};
     switch (key) {
       case "filename": return wheel.filename || "?";
       case "version": return wheel.version || "?";
@@ -1633,11 +1649,8 @@ dialog#intro p { margin: 10px 0; }
       case "libraries":
         return (crypto.libraries || []).map(function (library) {
           return library.name + ": " + library.linkage;
-        }).join(", ") || "-";
-      case "openssl": return conditions.openssl_linkage || "-";
+        }).join("") || "-";
       case "relations": return (verdict.relations || []).join(", ") || "-";
-      case "class": return verdict.class || "?";
-      case "review": return verdict.needs_human_review ? "needs review" : "not flagged";
       case "reasons": return (verdict.reasons || []).join(" ") || "-";
       default: return "";
     }
@@ -1650,9 +1663,10 @@ dialog#intro p { margin: 10px 0; }
   // the Rules table (`rulesState.columnFilters`, `ruleColumnText`). Assumes
   // `textFor` returns a string for every key `filters` can hold, never `undefined`
   // (`.toLowerCase` would throw): `filters` is only ever populated with a real
-  // COLUMNS/RULES_COLUMNS key, by `renderFilterRow`'s own `data-key` attributes and
-  // by `applyHashParams`'s `COLUMNS.forEach` read, so `textFor`'s own `default: ""`
-  // arm is unreachable today, not a case this function itself has to guard.
+  // COLUMNS/RULES_COLUMNS key whose column has no `filter: false`, by
+  // `renderFilterRow`'s own `data-key` attributes and by `applyHashParams`'s
+  // `COLUMNS.forEach` read, so `textFor`'s own `default: ""` arm is unreachable,
+  // not a case this function itself has to guard.
   function matchesColumnFilters(filters, textFor, item) {
     return Object.keys(filters).every(function (key) {
       return textFor(item, key).toLowerCase().indexOf(filters[key].toLowerCase()) !== -1;
@@ -1790,10 +1804,14 @@ dialog#intro p { margin: 10px 0; }
   // carrying `q=` always behaves like a plain substring search, never a stale
   // rule-click filter left over from whatever this page was doing before.
   // `state.columnFilters` is rebuilt the same way: only an `f.<key>` param whose
-  // key is a real COLUMNS key and whose value is non-empty survives, so a stale or
-  // hand-edited key (a column a prior template dropped, a typo) is dropped rather
-  // than kept as a filter nothing on screen explains -- the same shape
-  // `parseClassParam` already gives `class`.
+  // key is a real COLUMNS key with no `filter: false` and whose value is
+  // non-empty survives, so a stale or hand-edited key (a column a prior template
+  // dropped, a typo) is dropped rather than kept as a filter nothing on screen
+  // explains -- the same shape `parseClassParam` already gives `class`. A
+  // `filter: false` column (`class`, `review`, `openssl`) already has its own
+  // toolbar param (`class=`, `review=`, `linkage=`) reachable a few lines above,
+  // so an `f.class=`/`f.review=`/`f.openssl=` in a hand-edited hash is dropped
+  // here rather than accepted as a second, looser filter over the same field.
   function applyHashParams(params) {
     state.classes = new Set("class" in params ? parseClassParam(params.class) : DATA.classes);
     state.linkage = "linkage" in params ? params.linkage : "";
@@ -1802,6 +1820,7 @@ dialog#intro p { margin: 10px 0; }
     state.ruleId = null;
     state.columnFilters = {};
     COLUMNS.forEach(function (column) {
+      if (column.filter === false) return;
       var value = params["f." + column.key];
       if (value) state.columnFilters[column.key] = value;
     });
@@ -2018,15 +2037,20 @@ dialog#intro p { margin: 10px 0; }
   }
 
   // The Rules table's own per-column filter text: `ruleSortValue`'s own value for
-  // every column but `count`, falling back to "-" for a blank field the same way
-  // `appendCell` and `appendBasisChips` already render one -- `ruleSortValue`
-  // itself has no such fallback, since a sort comparison wants `""` to sort
-  // consistently rather than "-" sorting among real values. `count` is `row.count`,
-  // a number, and a wheel count of exactly `0` cannot happen (a rule with no
-  // wheels never reaches `DATA.rules`, and `RULE_WHEEL_COUNTS` only holds a rule
-  // id that fired), so `String()` never needs a fallback of its own either.
+  // every column but `count` and `basis`, falling back to "-" for a blank field
+  // the same way `appendCell` and `appendBasisChips` already render one --
+  // `ruleSortValue` itself has no such fallback, since a sort comparison wants
+  // `""` to sort consistently rather than "-" sorting among real values. `count`
+  // is `row.count`, a number, and a wheel count of exactly `0` cannot happen (a
+  // rule with no wheels never reaches `DATA.rules`, and `RULE_WHEEL_COUNTS` only
+  // holds a rule id that fired), so `String()` never needs a fallback of its own
+  // either. `basis` joins with no separator, matching `appendBasisChips`: each
+  // standard id is its own bordered chip with no comma or space text node
+  // between them, the same reason `columnText`'s own `libraries` case does not
+  // reuse `ruleSortValue`'s comma-joined form either.
   function ruleColumnText(row, key) {
     if (key === "count") return String(row.count);
+    if (key === "basis") return (row.rule.basis || []).join("") || "-";
     return ruleSortValue(row, key) || "-";
   }
 

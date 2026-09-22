@@ -6254,21 +6254,29 @@ the one that lost.
 **The `openssl` column and the class legend.** The Wheels table carries an `openssl`
 column, after `libraries`, showing `conditions.openssl_linkage` -- the wheel's overall
 OpenSSL posture, including `none` -- which the Markdown table leaves out. An
-always-visible class legend sits beside the toolbar, listing every verdict class present
-in the current run with its own `CLASS_HELP` text, so a reader does not have to open the
-Help dialog to know what a badge on screen means; both the class-strip chips and the
-table's own class badges carry that same text as a tooltip.
+always-visible class legend sits between the toolbar and the table, listing every
+verdict class present in the current run with its own `CLASS_HELP` text, so a reader
+does not have to open the Help dialog to know what a badge on screen means; both the
+class-strip chips and the table's own class badges carry that same text as a tooltip.
 
 **Filtering.** The OpenSSL linkage toolbar filter is an exact-match dropdown over
-`conditions.openssl_linkage`; its unfiltered option reads `all`, since that field is
-never itself the string `any` on a record. Both the Wheels and Rules tables also carry a
-per-column "contains" filter, one `<input type="search">` per header, matching
-case-insensitively against the text each cell already shows -- `reasons` is the one
-exception, matching the record's full `verdict.reasons` list rather than only the three
-chips a cell displays, since matching only what is visible would let a reason hidden
-behind "+N more" go unmatched. A column filter combines with every other active filter --
-class, linkage, review-only, a Rules-tab rule click -- the same way those already combine
-with each other, so a combination that leaves zero rows is a reachable state, not a bug.
+`conditions.openssl_linkage`; its unfiltered option reads `all`, which keeps it from
+reading like a linkage value the field could actually carry, or the ruleset's own
+`binding = "any"` match spec. This matches the class filter's own reset button, which
+reads `all` too. Both the Wheels and Rules tables also carry a per-column "contains" filter,
+one `<input type="search">` per column, in a second header row below the column labels,
+matching case-insensitively against the text each cell already shows -- `reasons` is the
+one exception, matching the record's full `verdict.reasons` list rather than only the
+three chips a cell displays, since matching only what is visible would let a reason
+hidden behind "+N more" go unmatched. A `COLUMNS` entry that already has an exact
+toolbar filter of its own -- `class` (the class-strip chips), `review` (the "needs
+review only" checkbox) and `openssl` (this same linkage dropdown) -- carries
+`filter: false` and gets no column filter: its cell in that second header row is left
+empty rather than offering a second, looser filter over a field the toolbar already
+covers exactly, so every field keeps exactly one hash parameter. A column filter
+combines with every other active filter -- class, linkage, review-only, a Rules-tab rule
+click -- the same way those already combine with each other, so a combination that
+leaves zero rows is a reachable state, not a bug.
 
 **Byte-stable, like the JSONL it views.** `render_html` is a pure function of the
 records, the ruleset and the shipped template: no timestamp, host path, hostname or
@@ -6304,17 +6312,18 @@ filter, present only when it differs from its default -- except `class`, which i
 and empty (`class=`) for the one reachable state whose value happens to be an empty
 string, every class chip unticked, so that state round-trips instead of reading as "no
 filter" and silently re-ticking every class on reload. `f.<column>=<text>` names one
-Wheels table column filter, one pair per active `COLUMNS` key, written in `COLUMNS` order
-so the hash is deterministic whatever order the reader typed the filters in; an `f.` key
-naming a column that does not exist (a stale link, a template that has since dropped the
-column) is dropped on read the same way a stale `class` token is. The grammar's scope is
-the Wheels view's own state; the Rules table sits outside that scope entirely, the same
-way its sort already does, so neither its sort nor its own per-column filters are part of
-the hash. A `class` token not in the report's own `DATA.classes` (a stale link, a
-hand-edited value) is dropped on read rather than kept as a filter nothing on screen
-explains. Multiple params
+Wheels table column filter, one pair per active `COLUMNS` key that carries no
+`filter: false`, written in `COLUMNS` order so the hash is deterministic whatever order
+the reader typed the filters in; an `f.` key naming a column that does not exist (a stale
+link, a template that has since dropped the column) or that has `filter: false` (`class`,
+`review`, `openssl` -- each already reachable through its own toolbar param above) is
+dropped on read the same way a stale `class` token is. The grammar's scope is the Wheels
+view's own state; the Rules table sits outside that scope entirely, the same way its sort
+already does, so neither its sort nor its own per-column filters are part of the hash. A
+`class` token not in the report's own `DATA.classes` (a stale link, a hand-edited value)
+is dropped on read rather than kept as a filter nothing on screen explains. Multiple params
 join with `&`, for example
-`#class=NON_APPROVED_CRYPTO,FIPS_BREAKING&linkage=bundled&review=1&q=somefilename&f.openssl=none`,
+`#class=NON_APPROVED_CRYPTO,FIPS_BREAKING&linkage=bundled&review=1&q=somefilename&f.families=hash`,
 and a comma inside `class` stays literal rather than percent-encoded, so the hash reads the
 same as it is written; a `.` inside an `f.<column>` key needs no encoding of its own, since
 `encodeURIComponent` already leaves it untouched. The page writes the hash with
@@ -6368,8 +6377,8 @@ binaries for evidence that came from the wheel's SBOM.
   or vendoring third-party JS into the template, a dependency this project does not carry
   anywhere else. The one feature actually wanted from it, per-column filtering, is a small
   extension of the filter/`state`/hash machinery the page already has for its toolbar
-  filters, shared across both tables through the same `renderFilterRow` helper their
-  headers already share.
+  filters, and both tables share it through one `renderFilterRow` helper, the way their
+  headers share `renderSortableHeader`.
 - *Trimming the embedded record, or a size warning past some threshold.* Every field a
   consumer might need for a real investigation is already in the JSONL; leaving any of
   it out of the page would just send the reader back to the JSONL to finish the job the

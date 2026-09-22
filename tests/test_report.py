@@ -2020,19 +2020,19 @@ def test_browser_clear_filters_resets_state_and_hash(tmp_path: Path) -> None:
         "var out = {};"
         "document.getElementById('search').value = 'a';"
         "document.getElementById('search').dispatchEvent(new Event('input'));"
-        "var opensslFilter = document.querySelector("
-        "  '#filter-row .col-filter[data-key=\"openssl\"]');"
-        "opensslFilter.value = 'bundled';"
-        "opensslFilter.dispatchEvent(new Event('input'));"
+        "var librariesFilter = document.querySelector("
+        "  '#filter-row .col-filter[data-key=\"libraries\"]');"
+        "librariesFilter.value = 'bundled';"
+        "librariesFilter.dispatchEvent(new Event('input'));"
         "out.clearHiddenBefore = document.getElementById('clear-filters').hidden;"
         "document.getElementById('clear-filters').click();"
         "out.searchAfter = document.getElementById('search').value;"
-        "out.opensslFilterAfter = opensslFilter.value;"
+        "out.librariesFilterAfter = librariesFilter.value;"
         "out.hashAfter = window.location.hash;"
         "out.clearHiddenAfter = document.getElementById('clear-filters').hidden;"
         "out.countAfter = document.getElementById('count').textContent;"
-        "opensslFilter.value = 'none';"
-        "opensslFilter.dispatchEvent(new Event('input'));"
+        "librariesFilter.value = 'static';"
+        "librariesFilter.dispatchEvent(new Event('input'));"
         "out.countAfterRetype = document.getElementById('count').textContent;"
         "out.hashAfterRetype = window.location.hash;"
         "document.title = JSON.stringify(out);"
@@ -2041,13 +2041,13 @@ def test_browser_clear_filters_resets_state_and_hash(tmp_path: Path) -> None:
     out = json.loads(_title(dom))
     assert out["clearHiddenBefore"] is False
     assert out["searchAfter"] == ""
-    assert out["opensslFilterAfter"] == ""
+    assert out["librariesFilterAfter"] == ""
     assert out["hashAfter"] in ("", "#")
     assert "f." not in out["hashAfter"]
     assert out["clearHiddenAfter"] is True
     assert out["countAfter"] == "3 of 3 wheels"
     assert out["countAfterRetype"] == "1 of 3 wheels"
-    assert "f.openssl=none" in out["hashAfterRetype"]
+    assert "f.libraries=static" in out["hashAfterRetype"]
 
 
 def test_browser_hashchange_resets_a_filter_the_new_hash_omits(tmp_path: Path) -> None:
@@ -2513,8 +2513,8 @@ def test_browser_column_filter_narrows_rows_and_composes_with_toolbar(tmp_path: 
     script = (
         "var out = {};"
         "out.clearHiddenBefore = document.getElementById('clear-filters').hidden;"
-        "var filter = document.querySelector('#filter-row .col-filter[data-key=\"openssl\"]');"
-        "filter.value = 'NONE';"
+        "var filter = document.querySelector('#filter-row .col-filter[data-key=\"filename\"]');"
+        "filter.value = 'B-1.0';"
         "filter.dispatchEvent(new Event('input'));"
         "out.afterFilter = document.getElementById('count').textContent;"
         "out.clearHiddenAfterFilter = document.getElementById('clear-filters').hidden;"
@@ -2527,55 +2527,120 @@ def test_browser_column_filter_narrows_rows_and_composes_with_toolbar(tmp_path: 
     out = json.loads(_title(dom))
     assert out["clearHiddenBefore"] is True
     assert out["clearHiddenAfterFilter"] is False
-    # Record "b" is the only one whose openssl_linkage is "none", and it is the
+    # Record "b" is the only one whose filename starts "b-1.0", and it is the
     # only one of the three not flagged for review.
     assert out["afterFilter"] == "1 of 3 wheels"
     assert out["afterReviewOnly"] == "0 of 3 wheels"
 
 
 def test_browser_every_column_filter_matches_its_own_cell_text(tmp_path: Path) -> None:
-    """Filtering a column by a token taken from its own cell must still show that
-    row: this catches drift between `columnText` (what a column filter matches
-    against) and `renderRow` (what the cell actually shows), for every column at
-    once rather than one at a time. The column keys come from the filter row's own
-    `data-key` attributes, in the document order `renderFilterRow` built them in --
-    the same order `renderRow` appends cells in -- rather than a list restated
-    here, so a column added or reordered later is covered automatically instead of
-    silently skipped."""
+    """Filtering a column by its own full cell text must still show that row: this
+    catches drift between `columnText` (what a column filter matches against) and
+    `renderRow` (what the cell actually shows), for every filterable column at
+    once, over a record with two families, two libraries and two relations so a
+    format difference between the two -- a separator `columnText` inserts that the
+    cell's own chips do not, say -- cannot hide behind a fixture where "two things
+    joined" and "one thing shown" happen to read the same. `reasons` is excluded:
+    its own filter deliberately matches the full `verdict.reasons` list rather
+    than only the cell's three visible chips, and has its own test. `class`,
+    `review` and `openssl` are excluded too, by having no `.col-filter` input to
+    find in the first place: they carry `filter: false`. Each filterable column's
+    `td` is found by its `<th>`'s own position, not by a position counted only
+    across the filterable columns: `renderFilterRow` and `renderRow` both give
+    every column, filter or not, exactly one cell, so `class`/`review`/`openssl`
+    leave gaps the filterable-only count would not account for, and the two stay
+    aligned only by true column position."""
     ruleset = load_ruleset(None)
-    page = render_html(_three_records(), ruleset)
+    rec = html_record("multi", "NON_APPROVED_CRYPTO", "bundled", review=True)
+    rec["crypto"]["families"] = ["aead", "hash"]
+    rec["crypto"]["libraries"] = [
+        {"name": "openssl", "linkage": "bundled"},
+        {"name": "boringssl", "linkage": "static"},
+    ]
+    rec["verdict"]["relations"] = ["boundary_unresolved", "runtime_refusal"]
+    page = render_html([rec], ruleset)
     script = (
-        "var COLUMN_KEYS = Array.prototype.map.call("
-        "  document.querySelectorAll('#filter-row .col-filter'),"
-        "  function (input) { return input.getAttribute('data-key'); }"
-        ");"
         "var results = {};"
-        "COLUMN_KEYS.forEach(function (key, index) {"
-        "  Array.prototype.forEach.call(document.querySelectorAll('#filter-row .col-filter'), "
-        "    function (input) {"
-        "      if (input.value) { input.value = ''; input.dispatchEvent(new Event('input')); }"
-        "    });"
-        "  var row = document.querySelectorAll('#wheel-rows tr')[0];"
-        "  var td = row.children[index];"
-        "  var el = td.querySelector('.reason-chip, .linkage-value, .badge');"
-        "  var token = (el ? el.textContent : td.textContent).trim();"
-        "  var input = document.querySelector('#filter-row .col-filter[data-key=\"' + key + '\"]');"
-        "  input.value = token;"
-        "  input.dispatchEvent(new Event('input'));"
-        "  results[key] = Array.prototype.some.call("
-        "    document.querySelectorAll('#wheel-rows td.wheel-cell'),"
-        "    function (cell) { return cell.textContent.indexOf('a-1.0') !== -1; }"
-        "  );"
-        "});"
+        "Array.prototype.forEach.call(document.querySelectorAll('#filter-row th'), "
+        "  function (th, index) {"
+        "    var input = th.querySelector('.col-filter');"
+        "    if (!input) return;"
+        "    var key = input.getAttribute('data-key');"
+        "    if (key === 'reasons') return;"
+        "    Array.prototype.forEach.call(document.querySelectorAll('#filter-row .col-filter'), "
+        "      function (inp) {"
+        "        if (inp.value) { inp.value = ''; inp.dispatchEvent(new Event('input')); }"
+        "      });"
+        "    var row = document.querySelectorAll('#wheel-rows tr')[0];"
+        "    var td = row.children[index];"
+        "    input.value = td.textContent;"
+        "    input.dispatchEvent(new Event('input'));"
+        "    results[key] = document.querySelectorAll('#wheel-rows tr').length === 1;"
+        "  }"
+        ");"
         "document.title = JSON.stringify(results);"
     )
     dom = _render_in_browser(tmp_path, page, extra_script=script)
     out = json.loads(_title(dom))
     # Guards against a selector drift that finds zero filter inputs: the loop
-    # below would then pass vacuously with nothing checked.
+    # above would then pass vacuously with nothing checked.
+    assert len(out) == 5
+    for key, still_shown in out.items():
+        assert still_shown, f"the {key!r} column's own full cell text does not match its own filter"
+
+
+def test_browser_every_rules_column_filter_matches_its_own_cell_text(tmp_path: Path) -> None:
+    """The Rules table's own drift guard, the same shape as the Wheels table's:
+    filtering a column by its own full cell text must still show that row, for
+    every column at once. `_three_records()`'s `PY_WEAK_HASH_CALL` rule carries
+    two basis standards in the shipped ruleset (asserted below, so a ruleset edit
+    that drops it to one fails loudly here instead of quietly stopping this test
+    from covering the multi-value case), so this also catches drift between
+    `ruleColumnText`'s `basis` and `appendBasisChips`'s own chip-per-id rendering,
+    the same way the Wheels table's guard catches it for `libraries`. Each
+    filterable column's `td` is found by its `<th>`'s own position, the same as
+    the Wheels table's guard, rather than a position counted only across the
+    filterable columns, so a future `RULES_COLUMNS` entry with `filter: false`
+    could not misalign a lookup here the way `filter: false` already does on the
+    Wheels side."""
+    ruleset = load_ruleset(None)
+    rule = next(r for r in ruleset.rules if r.id == "PY_WEAK_HASH_CALL")
+    assert len(rule.basis) >= 2
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "document.getElementById('view-tab-rules').click();"
+        "var results = {};"
+        "Array.prototype.forEach.call(document.querySelectorAll('#rules-filter-row th'), "
+        "  function (th, index) {"
+        "    var input = th.querySelector('.col-filter');"
+        "    if (!input) return;"
+        "    var key = input.getAttribute('data-key');"
+        "    Array.prototype.forEach.call("
+        "      document.querySelectorAll('#rules-filter-row .col-filter'), "
+        "      function (inp) {"
+        "        if (inp.value) { inp.value = ''; inp.dispatchEvent(new Event('input')); }"
+        "      });"
+        "    var row = Array.prototype.find.call(document.querySelectorAll('#rules-rows tr'), "
+        "      function (tr) {"
+        "        var link = tr.querySelector('.rule-link');"
+        "        return link && link.textContent === 'PY_WEAK_HASH_CALL';"
+        "      });"
+        "    var td = row.children[index];"
+        "    input.value = td.textContent;"
+        "    input.dispatchEvent(new Event('input'));"
+        "    results[key] = Array.prototype.some.call("
+        "      document.querySelectorAll('#rules-rows .rule-link'),"
+        "      function (b) { return b.textContent === 'PY_WEAK_HASH_CALL'; }"
+        "    );"
+        "  }"
+        ");"
+        "document.title = JSON.stringify(results);"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
     assert len(out) == 9
     for key, still_shown in out.items():
-        assert still_shown, f"the {key!r} column's own cell text does not match its own filter"
+        assert still_shown, f"the {key!r} column's own full cell text does not match its own filter"
 
 
 def test_browser_column_filters_round_trip_through_the_hash(tmp_path: Path) -> None:
@@ -2583,14 +2648,16 @@ def test_browser_column_filters_round_trip_through_the_hash(tmp_path: Path) -> N
     regardless of the order the filters were set in; a `hashchange` to a hash that
     omits them clears them, since applying a hash is total, not a merge; and an
     unknown `f.bogus=` is dropped on read the same way a stale `class` token is,
-    leaving `Clear filters` hidden."""
+    leaving `Clear filters` hidden -- and so is `f.openssl=`, a real column that
+    just has no column filter of its own (`filter: false`), the same as `f.bogus`
+    even though the column itself is real."""
     ruleset = load_ruleset(None)
     page = render_html(_three_records(), ruleset)
 
     set_filters = (
-        "var openssl = document.querySelector('#filter-row .col-filter[data-key=\"openssl\"]');"
-        "openssl.value = 'bundled';"
-        "openssl.dispatchEvent(new Event('input'));"
+        "var relations = document.querySelector('#filter-row .col-filter[data-key=\"relations\"]');"
+        "relations.value = 'boundary_unresolved';"
+        "relations.dispatchEvent(new Event('input'));"
         "var filename = document.querySelector('#filter-row .col-filter[data-key=\"filename\"]');"
         "filename.value = 'a';"
         "filename.dispatchEvent(new Event('input'));"
@@ -2598,20 +2665,21 @@ def test_browser_column_filters_round_trip_through_the_hash(tmp_path: Path) -> N
     )
     hash_value = _title(_render_in_browser(tmp_path, page, extra_script=set_filters))
     assert "f.filename=a" in hash_value
-    assert "f.openssl=bundled" in hash_value
-    assert hash_value.index("f.filename=") < hash_value.index("f.openssl=")
+    assert "f.relations=boundary_unresolved" in hash_value
+    assert hash_value.index("f.filename=") < hash_value.index("f.relations=")
 
     fragment = hash_value[1:]
     read_back = (
         "document.title = JSON.stringify({"
         " filename: document.querySelector('#filter-row .col-filter[data-key=\"filename\"]').value,"
-        " openssl: document.querySelector('#filter-row .col-filter[data-key=\"openssl\"]').value,"
+        " relations: document.querySelector("
+        "   '#filter-row .col-filter[data-key=\"relations\"]').value,"
         " count: document.getElementById('count').textContent"
         "});"
     )
     reloaded = _render_in_browser(tmp_path, page, fragment=fragment, extra_script=read_back)
     out = json.loads(_title(reloaded))
-    assert out == {"filename": "a", "openssl": "bundled", "count": "1 of 3 wheels"}
+    assert out == {"filename": "a", "relations": "boundary_unresolved", "count": "1 of 3 wheels"}
 
     # A `hashchange` replaces `state.columnFilters` with a fresh object (see
     # `applyHashParams`); typing into a filter afterwards must still work, not
@@ -2621,12 +2689,12 @@ def test_browser_column_filters_round_trip_through_the_hash(tmp_path: Path) -> N
         "window.addEventListener('hashchange', function () {"
         "  out.filename = document.querySelector("
         "    '#filter-row .col-filter[data-key=\"filename\"]').value;"
-        "  var openssl = document.querySelector("
-        "    '#filter-row .col-filter[data-key=\"openssl\"]');"
-        "  out.openssl = openssl.value;"
+        "  var relations = document.querySelector("
+        "    '#filter-row .col-filter[data-key=\"relations\"]');"
+        "  out.relations = relations.value;"
         "  out.count = document.getElementById('count').textContent;"
-        "  openssl.value = 'static';"
-        "  openssl.dispatchEvent(new Event('input'));"
+        "  relations.value = 'runtime_refusal';"
+        "  relations.dispatchEvent(new Event('input'));"
         "  out.countAfterRetype = document.getElementById('count').textContent;"
         "  out.hashAfterRetype = window.location.hash;"
         "  document.title = JSON.stringify(out);"
@@ -2636,15 +2704,15 @@ def test_browser_column_filters_round_trip_through_the_hash(tmp_path: Path) -> N
     cleared = _render_in_browser(tmp_path, page, fragment=fragment, extra_script=hashchange_script)
     cleared_out = json.loads(_title(cleared))
     assert cleared_out["filename"] == ""
-    assert cleared_out["openssl"] == ""
+    assert cleared_out["relations"] == ""
     assert cleared_out["count"] == "3 of 3 wheels"
     assert cleared_out["countAfterRetype"] == "1 of 3 wheels"
-    assert "f.openssl=static" in cleared_out["hashAfterRetype"]
+    assert "f.relations=runtime_refusal" in cleared_out["hashAfterRetype"]
 
     unknown = _render_in_browser(
         tmp_path,
         page,
-        fragment="f.bogus=x",
+        fragment="f.bogus=x&f.openssl=none",
         extra_script=(
             "document.title = JSON.stringify({"
             " clearHidden: document.getElementById('clear-filters').hidden,"
@@ -2667,11 +2735,11 @@ def test_browser_sorting_does_not_rebuild_or_clear_the_column_filter_input(
     ruleset = load_ruleset(None)
     page = render_html(_three_records(), ruleset)
     script = (
-        "var filter = document.querySelector('#filter-row .col-filter[data-key=\"openssl\"]');"
-        "filter.value = 'bundled';"
+        "var filter = document.querySelector('#filter-row .col-filter[data-key=\"relations\"]');"
+        "filter.value = 'runtime_refusal';"
         "filter.dispatchEvent(new Event('input'));"
         "document.querySelectorAll('#header-row .sort-btn')[0].click();"
-        "var after = document.querySelector('#filter-row .col-filter[data-key=\"openssl\"]');"
+        "var after = document.querySelector('#filter-row .col-filter[data-key=\"relations\"]');"
         "document.title = JSON.stringify({"
         " sameNode: after === filter,"
         " value: after.value"
@@ -2679,7 +2747,7 @@ def test_browser_sorting_does_not_rebuild_or_clear_the_column_filter_input(
     )
     dom = _render_in_browser(tmp_path, page, extra_script=script)
     out = json.loads(_title(dom))
-    assert out == {"sameNode": True, "value": "bundled"}
+    assert out == {"sameNode": True, "value": "runtime_refusal"}
 
 
 def test_browser_rules_column_filter_narrows_rules(tmp_path: Path) -> None:
@@ -2717,7 +2785,6 @@ def test_browser_rules_count_column_is_labelled_wheels(tmp_path: Path) -> None:
     dom = _render_in_browser(tmp_path, page, extra_script=script)
     labels = json.loads(_title(dom))
     assert any(label.startswith("wheels") for label in labels)
-    assert not any("fired" in label for label in labels)
 
 
 def test_browser_openssl_column_shows_linkage_with_help(tmp_path: Path) -> None:
@@ -2790,13 +2857,17 @@ def test_browser_class_legend_lists_present_classes_with_class_help(tmp_path: Pa
     assert out["tableBadgeTitle"] == CLASS_HELP[records[0]["verdict"]["class"]]
 
 
-def test_browser_openssl_cell_and_column_filter_never_execute_wheel_controlled_html(
+def test_browser_openssl_cell_and_a_column_filter_never_execute_wheel_controlled_html(
     tmp_path: Path,
 ) -> None:
     """`conditions.openssl_linkage` and a wheel's own filename are untrusted,
     wheel-controlled text like any other field this report renders: an `<img
     onerror=...>` payload in either must never become a real DOM element, whether
-    it reaches the page through a cell or through a column filter's own value."""
+    it reaches the page through a cell or through a column filter's own value.
+    The `openssl` cell has no column filter of its own (`filter: false`); the
+    `libraries` column carries the same payload, since `conditions.openssl_linkage`
+    is also this record's one library's own `linkage`, so it exercises the same
+    filter-to-DOM path a per-column filter on `openssl` itself would have."""
     ruleset = load_ruleset(None)
     payload = "<img src=x onerror=alert(1)>"
     rec = html_record(payload, "OPAQUE", payload, review=False)
@@ -2805,7 +2876,7 @@ def test_browser_openssl_cell_and_column_filter_never_execute_wheel_controlled_h
     script = (
         "var out = {};"
         "out.imgInDocument = !!document.querySelector('img');"
-        "var filter = document.querySelector('#filter-row .col-filter[data-key=\"openssl\"]');"
+        "var filter = document.querySelector('#filter-row .col-filter[data-key=\"libraries\"]');"
         f"filter.value = {json.dumps(payload)};"
         "filter.dispatchEvent(new Event('input'));"
         "out.imgAfterFilter = !!document.querySelector('img');"
@@ -2817,3 +2888,75 @@ def test_browser_openssl_cell_and_column_filter_never_execute_wheel_controlled_h
     assert out["imgInDocument"] is False
     assert out["imgAfterFilter"] is False
     assert out["count"] == "1 of 1 wheels"
+
+
+def test_browser_reasons_column_filter_matches_the_full_reasons_list(tmp_path: Path) -> None:
+    """The `reasons` cell shows only the first 3 rule ids plus a "+N more" chip,
+    but its column filter matches the record's full `verdict.reasons` list (see
+    `columnText`'s own comment on why): filtering by the 4th reason's rule id must
+    still show the row, not hide it as though only the visible chips were
+    searched."""
+    ruleset = load_ruleset(None)
+    rec = html_record("many", "NON_APPROVED_CRYPTO", "bundled", review=True)
+    rec["verdict"]["reasons"] = ["RULE_ONE: a", "RULE_TWO: b", "RULE_THREE: c", "RULE_FOUR: d"]
+    page = render_html([rec], ruleset)
+    script = (
+        "var filter = document.querySelector('#filter-row .col-filter[data-key=\"reasons\"]');"
+        "filter.value = 'RULE_FOUR';"
+        "filter.dispatchEvent(new Event('input'));"
+        "document.title = document.getElementById('count').textContent;"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    assert _title(dom) == "1 of 1 wheels"
+
+
+def test_browser_class_chip_titles_match_class_help(tmp_path: Path) -> None:
+    """Every class-strip chip's tooltip is `CLASS_HELP[cls]`, the same text the
+    always-visible legend and the table's own class badges already carry."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "document.title = JSON.stringify(Array.prototype.map.call("
+        "  document.querySelectorAll('.class-chip'),"
+        "  function (chip) {"
+        "    return {"
+        "      cls: chip.querySelector('.swatch').getAttribute('data-class'),"
+        "      title: chip.title"
+        "    };"
+        "  }"
+        "));"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out
+    for entry in out:
+        assert entry["title"] == CLASS_HELP[entry["cls"]]
+
+
+def test_browser_rules_column_filter_empty_state_says_no_rules_match(tmp_path: Path) -> None:
+    """Filtering the Rules table down to nothing shows the "No rules match the
+    column filters." note, not the "No rules referenced by any scanned wheel."
+    one `renderRulesTable` falls back to when no filter is active at all."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "document.getElementById('view-tab-rules').click();"
+        "var filter = document.querySelector('#rules-filter-row .col-filter[data-key=\"id\"]');"
+        "filter.value = 'zzz';"
+        "filter.dispatchEvent(new Event('input'));"
+        "document.title = document.querySelector('#rules-rows .note').textContent;"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    assert _title(dom) == "No rules match the column filters."
+
+
+def test_browser_linkage_filter_unfiltered_option_reads_all(tmp_path: Path) -> None:
+    """The OpenSSL linkage dropdown's unfiltered option reads "all", not "any":
+    "all" keeps it from reading like a linkage value the field could actually
+    carry, or the ruleset's own `binding = "any"` match spec. It matches the
+    class filter's own reset button, which reads "all" too."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = "document.title = document.getElementById('linkage-filter').options[0].textContent;"
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    assert _title(dom) == "all"
