@@ -13,3 +13,5 @@ site/
 .corpus/
 *.jsonl
 uv.lock
+# Local subagent-driven-development workspace: plans, briefs, ledger.
+.superpowers/
