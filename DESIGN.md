@@ -40,8 +40,10 @@ interpreters without delivering the determinism it promises.
   non-determinism for a total one.
 
 **How it is handled instead.** `README.md` and `SCHEMA.md` both say to pin the
-interpreter when records must be comparable across hosts. CI runs 3.11 through 3.14, so
-a divergence that grows beyond the Python layer shows up as a test failure.
+interpreter when records must be comparable across hosts. CI runs 3.12 and 3.14 on every
+push, and the release workflow runs the suite on 3.11 through 3.14 before it publishes, so
+a divergence that grows beyond the Python layer shows up as a test failure before it
+ships.
 
 Revisit if a version-independent parser lands in the standard library, or if a wheel in
 the real corpus is found whose headline verdict flips on interpreter version alone.

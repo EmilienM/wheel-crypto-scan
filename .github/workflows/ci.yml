@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.14"]
     env:
       WCS_REQUIRE_HOSTBIN: "1"
     steps:
@@ -121,13 +121,13 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
-      - run: uv python install 3.11 3.14
+      - run: uv python install 3.12 3.14
       - name: Build the corpus
         run: uv run --python 3.12 python tools/make_corpus.py corpus 40
-      - name: Scan under 3.11 and 3.14
+      - name: Scan under 3.12 and 3.14
         run: |
           set -euo pipefail
-          for v in 3.11 3.14; do
+          for v in 3.12 3.14; do
             uv run --python "$v" --with pyelftools --with packaging \
               python -m wheel_crypto_scan scan corpus -o "out-$v.jsonl" \
               --jobs 4 --no-cache --quiet
@@ -135,9 +135,9 @@ jobs:
       - name: Assert the bytes match
         run: |
           set -euo pipefail
-          if ! cmp out-3.11.jsonl out-3.14.jsonl; then
-            echo "::error::scan output differs between Python 3.11 and 3.14"
-            diff <(jq -S . out-3.11.jsonl) <(jq -S . out-3.14.jsonl) | head -40
+          if ! cmp out-3.12.jsonl out-3.14.jsonl; then
+            echo "::error::scan output differs between Python 3.12 and 3.14"
+            diff <(jq -S . out-3.12.jsonl) <(jq -S . out-3.14.jsonl) | head -40
             exit 1
           fi
-          echo "identical: $(wc -l < out-3.11.jsonl) records, sha256 $(sha256sum < out-3.11.jsonl)"
+          echo "identical: $(wc -l < out-3.12.jsonl) records, sha256 $(sha256sum < out-3.12.jsonl)"
