@@ -6,9 +6,14 @@ medium-confidence signal by nature: a crate that never contributed such a string
 invisible here, but a crate that shows up is unambiguous about being compiled in.
 
 The path comes from whichever layout built the object: the cargo registry (with or
-without the `src/<index>/` segment distro packaging omits), or a `cargo vendor` tree.
-A layout that names no version, such as `cargo vendor` without `--versioned-dirs`,
-yields a crate with `version=None` rather than an invented one.
+without the `src/<index>/` segment distro packaging omits), a `cargo vendor` tree, or
+a git dependency checkout (`git/checkouts/<repo>-<hash>/<rev>/...`). A layout that
+names no version, such as `cargo vendor` without `--versioned-dirs` or a git checkout
+(pinned by revision, not a version), yields a crate with `version=None` rather than an
+invented one. A git checkout also names a root crate after its repository rather than
+the crate itself, since the checkout directory is `<repo>-<hash>`, not `<crate>-
+<hash>`; a workspace member's own directory, immediately above its `src/`, is read as
+the crate name where the repository holds more than one.
 """
 
 from __future__ import annotations
@@ -31,15 +36,18 @@ def find_rust_crates(
     *,
     registry: re.Pattern[str] | None,
     vendor: re.Pattern[str] | None,
+    git: re.Pattern[str] | None,
     claimed: frozenset[str],
 ) -> tuple[tuple[RustCrate, ...], bool]:
-    """Extract every distinct (name, version) pair the registry and vendor layouts find.
+    """Extract every distinct (name, version) pair the registry, vendor and git-checkout
+    layouts find.
 
     `registry` matches the crates.io registry layout (with or without the `src/<index>/`
-    segment distro packaging omits) and `vendor` matches a `cargo vendor` tree. Either
-    may be `None`, meaning that layout is not read; the tests that cover one layout at a
-    time pass `None` for the other rather than relying on a default, which would turn
-    that layout off silently for a caller that forgot it.
+    segment distro packaging omits), `vendor` matches a `cargo vendor` tree, and `git`
+    matches a git dependency checkout (`git/checkouts/<repo>-<hash>/<rev>/...`). Any of
+    the three may be `None`, meaning that layout is not read; the tests that cover one
+    layout at a time pass `None` for the others rather than relying on a default, which
+    would turn that layout off silently for a caller that forgot it.
 
     A `vendor/` tree inside a registry crate's directory is that crate's own vendored
     source, not a crate of its own: `.../bar-1.0.0/vendor/ring/src/x.rs` is `bar`
@@ -51,11 +59,15 @@ def find_rust_crates(
     `.rs`, is nested; a `vendor/` match starting after it is a separate path and is
     kept. This only runs one way: a registry match inside an outer `vendor/` directory
     is unaffected, which is the nesting gap `DESIGN.md` already documents for that
-    layout.
+    layout. A `vendor/` tree inside a git-checkout workspace member gets no such
+    precedence: `git`'s own `name` group already reads the directory immediately above
+    `src/`, so it agrees with `vendor` on the same crate without needing one pattern to
+    defer to the other, unlike a registry match, whose own pattern stops short of the
+    `.rs` file and so cannot see a nested `vendor/` match's name by itself.
 
-    `text` must be `binfmt.strings.RUN_SEPARATOR`-joined runs, and neither `registry`
-    nor `vendor` may match across that separator: the caller (`strings.py`) relies on
-    this the same way `match_string_groups` does, to keep a hit inside one printable
+    `text` must be `binfmt.strings.RUN_SEPARATOR`-joined runs, and none of `registry`,
+    `vendor` or `git` may match across that separator: the caller (`strings.py`) relies
+    on this the same way `match_string_groups` does, to keep a hit inside one printable
     run rather than splicing two unrelated ones together. `registry` must also end its
     match at the separator that closes the crate directory, which is what lets the gap
     between a registry match and a nested `vendor/` match be read as directory
@@ -92,6 +104,12 @@ def find_rust_crates(
         RustCrate(name=match.group("name"), version=match.group("version"))
         for match in registry_matches
     }
+
+    if git:
+        crates.update(
+            RustCrate(name=match.group("name"), version=match.group("version"))
+            for match in git.finditer(text)
+        )
 
     if vendor:
         for match in vendor.finditer(text):

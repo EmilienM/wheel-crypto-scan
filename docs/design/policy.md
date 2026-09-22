@@ -73,36 +73,50 @@ not when the list is long.
 
 **Accepted, and it changes records.**
 
-Crates are read from three cargo source layouts: the crates.io registry layout `cargo
+Crates are read from four cargo source layouts: the crates.io registry layout `cargo
 build` uses straight from a checkout, `cargo/registry/src/<index>/<name>-<version>/`;
 distro packaging, where Fedora's RPM Rust macros lay a crate out at
-`/usr/share/cargo/registry/<name>-<version>/` with no `src/<index>/` segment; and
-`cargo vendor` — what fromager configures for an offline build — which writes
+`/usr/share/cargo/registry/<name>-<version>/` with no `src/<index>/` segment; `cargo
+vendor` — what fromager configures for an offline build — which writes
 `vendor/<name>/...` with no `cargo/registry` segment and, without `--versioned-dirs`, no
-version anywhere in the path. Measured on a Fedora `python3-cryptography` build: the
-object yields 14 crates, including `openssl` and `openssl-sys`.
+version anywhere in the path; and a git dependency checkout,
+`$CARGO_HOME/git/checkouts/<repo>-<16 hex hash>/<short rev>/...`, cargo's layout for a
+crate pinned by a git revision. Measured on a Fedora `python3-cryptography` build: the
+object yields 14 crates, including `openssl` and `openssl-sys`. Measured for the git
+layout (cargo 1.98.1): a cdylib built from git dependencies on `rust-base64` and
+`hashes` (the `sha2` crate's repository) embeds paths like
+`.../git/checkouts/rust-base64-9af66aca7bf9fca2/5b98ee1/src/engine/mod.rs`; `CARGO_HOME`
+is arbitrary (a custom directory here, `/usr/local/cargo` in the Rust Docker images), so
+the pattern anchors on `git/checkouts/`, not `cargo/git/checkouts/`.
 
 `cargo_path_regex` treats the `src/<index>/` segment as optional, which covers the distro
-layout. The vendor layout has its own convention, `cargo_vendor_path_regex`, rather than
-a branch of the same pattern — Python's `re` refuses two groups sharing a name in one
-alternation — and it must contain `.rs` past the crate directory (no terminator
-required, since a Rust panic location is not NUL-terminated), which keeps a vendored C
-or Go tree from being misread as a Rust crate in the common case, without a
-word-boundary guarantee. Every repetition in both patterns is bounded (crate name at 64
-characters, crates.io's own limit; path segments at 255; nesting at 16 levels for the
-vendor pattern): an unbounded version of the vendor pattern measures about 40 seconds at
-20,000 repetitions of a near-miss input, against well under a second bounded, and the
-registry pattern is bounded the same way for the same reason. Both patterns' name
-classes also exclude `.`, which no crates.io crate name can contain: that is what makes
-`vendor/gimli-0.32.3/` split uniquely into name `gimli` and version `0.32.3` rather than
-one long name, regardless of whether the name group is lazy or greedy, and it is why the
-registry pattern reads a numeric semver prerelease like `foo-1.0.0-1.2.3` as name `foo`
-rather than name `foo-1.0.0`. Allowing `.` lets the name group and the version group's
-leading digits split a run of digits and dots several ways, which costs 3.7 seconds per
-MiB against 0.4 without it for the vendor pattern, and 0.10-0.15 against 0.01-0.03 for
-the registry pattern. Every negated character class in both patterns also excludes `\n`,
-the run separator printable runs are joined with, so a match can never bridge two
-strings that never sat next to each other in the object.
+layout. The vendor and git-checkout layouts each have their own convention,
+`cargo_vendor_path_regex` and `cargo_git_path_regex`, rather than a branch of the
+registry pattern — Python's `re` refuses two groups sharing a name in one alternation —
+and both must contain `.rs` past the crate directory (no terminator required, since a
+Rust panic location is not NUL-terminated), which keeps a vendored or checked-out C or
+Go tree from being misread as a Rust crate in the common case, without a word-boundary
+guarantee. Every repetition in both is bounded (crate name at 64 characters, path
+segments at 255, nesting at 16 levels): an unbounded version of the vendor pattern
+measures about 40 seconds at 20,000 repetitions of a near-miss input, against well
+under a second bounded. A repository/hash near-miss and a member-directory near-miss
+stay under a second for the git-checkout pattern either way, bounded or not, at
+comparable sizes; a run of literal `src/` segments ahead of a non-matching tail does
+reach the bound that matters, since `src/` is itself a candidate for the pattern's
+required anchor at every repetition — bounded, that shape runs in milliseconds;
+unbounded, it takes on the order of ten seconds at 50 repetitions of 40 `src/`
+segments. The vendor pattern's name class also excludes `.`, which
+no crates.io crate name can contain: that is what makes `vendor/gimli-0.32.3/` split
+uniquely into name `gimli` and version `0.32.3` rather than one long name, regardless of
+whether the name group is lazy or greedy. Allowing `.` lets the name group and the
+version group's leading digits split a run of digits and dots several ways, which costs
+3.7 seconds per MiB against 0.4 without it. A git checkout names no version at all — a
+revision, not a version — so `cargo_git_path_regex`'s `version` group is declared but can
+never participate, the same way it is for a crate named literally without one. The
+checkout directory is named after the repository, not any one crate inside it: a
+workspace member's own directory, immediately above its `src/`, is read as the crate
+name (`rust-openssl` holds `openssl-sys`); a root crate with no member directory of its
+own (`ring`) is read under its repository's name instead.
 
 A `vendor/` tree inside a registry crate's own directory —
 `.../bar-1.0.0/vendor/ring/src/x.rs` — is that crate's own vendored source, not a
@@ -111,20 +125,28 @@ registry crate's directory is taken to end at its first `.rs` file rather than t
 of the printable run, since rustc packs panic locations for unrelated crates back to
 back in read-only data; a `vendor/` match after that point is a separate path and is
 kept. Precedence runs one way — a registry match nested inside an outer `vendor/`
-directory is unaffected.
+directory is unaffected. A `vendor/` tree inside a git-checkout workspace member is not
+given the same precedence: `cargo_git_path_regex`'s own `name` group already reads the
+directory immediately above `src/`, so it agrees with `cargo_vendor_path_regex` on the
+same crate without needing one pattern to defer to the other.
 
 `RustCrate.version` is `str | None`: a layout that names no version records `null`,
 never an invented one. That makes `rust_crates[].version` nullable in the record, which
 is why `schema_version` is 2.
 
-**What it costs.** A build whose cargo paths use none of the three layouts, such as a
-git dependency checkout, carries no crate. A crate that contributes no panic location or
-`assert!` message anywhere in the object is invisible whichever layout built it. No
-fromager-built wheel has been measured, only a cdylib built the way fromager configures
-cargo. The vendor pattern always anchors on the first `vendor/` path component: a build
-tree that itself sits inside a directory named `vendor` collapses every crate nested
-inside it into one crate named after that outer component, losing the real, possibly
-claimed, names underneath.
+**What it costs.** A crate that contributes no panic location or `assert!` message
+anywhere in the object is invisible whichever layout built it. No fromager-built wheel
+has been measured, only cdylibs built the way fromager configures cargo for the
+registry and vendor layouts, and by hand for the git-checkout layout. A root crate read
+from a git checkout carries its repository's name rather than its own whenever the two
+differ (`rust-base64`, not `base64`), and a workspace member's directory name is
+conventionally, but not necessarily, the crate it holds. The vendor pattern always
+anchors on the first `vendor/` path component: a build tree that itself sits inside a
+directory named `vendor` collapses every crate nested inside it into one crate named
+after that outer component, losing the real, possibly
+claimed, names underneath. A `vendor/` tree inside a git-checkout workspace member is
+unaffected, since `cargo_vendor_path_regex` matches on its own `vendor/` component
+regardless of what layout surrounds it.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#crates-are-read-from-every-cargo-source-layout-and-a-vendored-crate-has-no-version)
 

@@ -56,6 +56,9 @@ def minimal(**overrides: Any) -> dict[str, Any]:
             ),
             "cargo_path_regex": r"cargo/registry/src/[^/]+/(?P<name>[a-z-]+)-(?P<version>[0-9.]+)/",
             "cargo_vendor_path_regex": r"vendor/(?P<name>[a-z-]+)(?:-(?P<version>[0-9.]+))?/",
+            "cargo_git_path_regex": (
+                r"git/checkouts/(?P<name>[a-z-]+)-[0-9a-f]{16}/(?P<version>(?!))?"
+            ),
             "weak_hash_algorithms": ["md5", "sha1"],
             "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
             "windows_library_suffixes": [".dll", ".pyd"],
@@ -152,7 +155,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "40"
+    assert ruleset.version == "41"
     assert len(ruleset.rules) > 20
 
 
@@ -2205,6 +2208,20 @@ def test_cargo_vendor_path_regex_without_a_version_group_is_refused() -> None:
 def test_cargo_vendor_path_regex_without_a_name_group_is_refused() -> None:
     data = minimal()
     data["conventions"]["cargo_vendor_path_regex"] = r"vendor/(?P<version>[0-9.]+)/"
+    with pytest.raises(RulesetError, match="needs a 'name' group"):
+        parse_ruleset(data)
+
+
+def test_cargo_git_path_regex_without_a_version_group_is_refused() -> None:
+    data = minimal()
+    data["conventions"]["cargo_git_path_regex"] = r"git/checkouts/(?P<name>[a-z-]+)-[0-9a-f]{16}/"
+    with pytest.raises(RulesetError, match="needs a 'version' group"):
+        parse_ruleset(data)
+
+
+def test_cargo_git_path_regex_without_a_name_group_is_refused() -> None:
+    data = minimal()
+    data["conventions"]["cargo_git_path_regex"] = r"git/checkouts/(?P<version>(?!))?"
     with pytest.raises(RulesetError, match="needs a 'name' group"):
         parse_ruleset(data)
 

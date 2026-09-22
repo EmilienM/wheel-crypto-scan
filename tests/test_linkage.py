@@ -1222,6 +1222,9 @@ def _mixed_case_collision_ruleset():
                     r"cargo/registry/src/[^/]+/(?P<name>[a-z-]+)-(?P<version>[0-9.]+)/"
                 ),
                 "cargo_vendor_path_regex": r"vendor/(?P<name>[a-z-]+)(?:-(?P<version>[0-9.]+))?/",
+                "cargo_git_path_regex": (
+                    r"git/checkouts/(?P<name>[a-z-]+)-[0-9a-f]{16}/(?P<version>(?!))?"
+                ),
                 "weak_hash_algorithms": ["md5", "sha1"],
                 "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
                 "windows_library_suffixes": [".dll", ".pyd"],

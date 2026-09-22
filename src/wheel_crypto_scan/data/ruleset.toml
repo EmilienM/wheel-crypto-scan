@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "40"
+ruleset_version = "41"
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +177,42 @@ cargo_path_regex = '''cargo[/\\]registry[/\\](?:src[/\\][^/\\\x00"'\n]{1,255}[/\
 # of its own; `binfmt.rust` reads `bar` there and drops the nested `ring` match rather
 # than reporting it as a second, unversioned crate.
 cargo_vendor_path_regex = '''(?<![A-Za-z0-9_.-])vendor[/\\](?P<name>[A-Za-z0-9_][A-Za-z0-9_-]{0,63}?)(?:-(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]{0,63}))?[/\\](?:[^/\\\x00"'\n]{1,255}[/\\]){0,16}?[^/\\\x00"'\n]{0,255}?\.rs'''
+
+# A crate pinned by a git dependency (a fork, or a revision ahead of the last
+# release) is not in a registry or vendor tree at all: cargo checks it out under
+# `$CARGO_HOME/git/checkouts/<repo>-<16 hex content hash>/<short rev>/...`. Neither
+# cargo convention above matches that layout, so a git-pinned `ring` or `rustls`
+# records no crate without this one. CARGO_HOME is whatever the build set it to --
+# a custom directory, or `/usr/local/cargo` in the Rust Docker images -- so the
+# pattern anchors on `git[/\\]checkouts[/\\]` with a boundary rather than on
+# `cargo[/\\]git[/\\]checkouts[/\\]`. The checkout directory is named after the
+# repository, not any one crate inside it: for a workspace repo (most crypto crates
+# are workspace members: `hashes` holds `sha2`, `rust-openssl` holds `openssl-sys`,
+# `rustls` holds `rustls`, `aws-lc-rs` holds `aws-lc-sys`), the optional `member`
+# group walks past the `<repo>-<hash>/<rev>/` prefix and any intermediate
+# directories to the one immediately holding `src/`, and that directory is read as
+# the crate name. When `member` does not match -- a root crate with no workspace
+# member directory of its own, such as `ring` -- the conditional `(?(member)|...)`
+# instead requires `name` to be followed directly by `-<16 hex>/<rev>/`, which is
+# what splits a name that itself contains `-` (or ends in what looks like hex) from
+# the hash uniquely. Either way the crate is read under its repository's name, not
+# its own, when the two differ (`rust-base64`, not `base64`): a `[[rust_crate]]`
+# entry does not claim a root crate whose repository is named differently, and a
+# member directory is conventionally but not necessarily the same as the crate
+# it holds. `version` is declared but can never participate, `(?P<version>(?!))?`:
+# a git checkout names a revision, not a version, so a crate read through this
+# convention records a null version, the same as a `cargo vendor` tree without
+# `--versioned-dirs`. Like the vendor pattern, `.rs` is required past `src/` so a
+# `-sys` crate's own vendored C tree does not misread as the crate holding it
+# (`libgit2-sys/libgit2/src/foo.c` is not `libgit2`), with no terminator required
+# after it for the same reason a Rust panic location is not NUL-terminated; every
+# repetition is bounded and every negated class excludes `\n`, the run separator
+# `binfmt.strings.RUN_SEPARATOR` joins printable runs with, for the reasons given
+# above the vendor pattern. A `vendor/` tree inside a git checkout member reads
+# correctly: `cargo_vendor_path_regex` matches on its own `vendor/` component
+# regardless of what layout surrounds it. DESIGN.md, "Crates are read from every
+# cargo source layout, and a vendored crate has no version", has the measurement.
+cargo_git_path_regex = '''(?<![A-Za-z0-9_.-])git[/\\]checkouts[/\\](?P<member>[^/\\\x00"'\n]{1,255}?-[0-9a-f]{16}[/\\][0-9a-f]{7,40}[/\\](?:[^/\\\x00"'\n]{1,255}[/\\]){0,16}?)?(?P<name>[A-Za-z0-9_][A-Za-z0-9_-]{0,63}?)(?(member)|-[0-9a-f]{16}[/\\][0-9a-f]{7,40})[/\\]src[/\\](?:[^/\\\x00"'\n]{1,255}[/\\]){0,16}?[^/\\\x00"'\n]{0,255}?\.rs(?P<version>(?!))?'''
 
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
 # usedforsecurity=False.

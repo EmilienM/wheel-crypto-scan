@@ -1943,15 +1943,26 @@ def test_cargo_paths_are_read_whichever_separator_built_the_wheel(
             None,
             id="cargo-vendor-layout",
         ),
+        pytest.param(
+            b"\x00/root/.cargo/git/checkouts/rust-openssl-1d556dee1f65bd53/eadfd90/"
+            b"openssl-sys/src/lib.rs\x00",
+            None,
+            id="cargo-git-workspace-layout",
+        ),
+        pytest.param(
+            b"\x00/root/.cargo/git/checkouts/openssl-sys-1d556dee1f65bd53/eadfd90/src/lib.rs\x00",
+            None,
+            id="cargo-git-root-layout",
+        ),
     ],
 )
 def test_a_crate_from_every_recognised_cargo_layout_produces_a_finding(
     context, tmp_path: Path, rodata: bytes, expected_version: str | None
 ) -> None:
-    """Distro packaging (Fedora's RPM Rust macros) and `cargo vendor` without
-    `--versioned-dirs` -- what fromager configures -- both embed a cargo source path
-    with no `cargo/registry/src/<index>/` segment. Both must yield the crate and its
-    finding."""
+    """Distro packaging (Fedora's RPM Rust macros), `cargo vendor` without
+    `--versioned-dirs` -- what fromager configures -- and a cargo git dependency
+    checkout all embed a cargo source path with no `cargo/registry/src/<index>/`
+    segment. Every one of them must yield the crate and its finding."""
     wheel = build_wheel(
         tmp_path / f"cargolayout-1.0-{MANYLINUX}.whl",
         name="cargolayout",

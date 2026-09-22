@@ -453,7 +453,7 @@
                 },
                 "version": {
                   "type": ["string", "null"],
-                  "description": "null when the cargo layout the object was built from names no version (cargo vendor without versioned directories)."
+                  "description": "null when the cargo layout the object was built from names no version (cargo vendor without versioned directories, or a cargo git dependency checkout)."
                 }
               }
             }
