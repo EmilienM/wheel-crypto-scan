@@ -5025,12 +5025,12 @@ is one of these) and `object_values` (fire once per object whose own posture is 
 these, located at that object rather than the wheel). `DERIVED_SYSTEM_OPENSSL_ONLY` takes
 `exclude_object_values = ["unknown"]`, and `DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM`
 takes `object_values = ["unknown"]` on the same `value = "system"` match and carries
-`OPAQUE`. The two rules are complementary by construction: exactly one fires whenever
-`openssl_linkage` is `system`. The complementary rule is not optional -- withholding
-`DERIVED_SYSTEM_OPENSSL_ONLY` alone, on the import and uncertain shapes above, would
-leave the wheel with no verdict-bearing finding at all and a headline of
-`NO_CRYPTO_DETECTED`, which is exactly the "unreadable or undeterminable must never read
-as nothing found" invariant in the wrong direction on a wheel that plainly uses OpenSSL.
+`OPAQUE`. `DERIVED_SYSTEM_OPENSSL_ONLY` fires exactly when neither complement does. The
+complementary rule is not optional -- withholding `DERIVED_SYSTEM_OPENSSL_ONLY` alone, on
+the import and uncertain shapes above, would leave the wheel with no verdict-bearing
+finding at all and a headline of `NO_CRYPTO_DETECTED`, which is exactly the "unreadable
+or undeterminable must never read as nothing found" invariant in the wrong direction on a
+wheel that plainly uses OpenSSL.
 
 **What was rejected, and why.**
 
@@ -5054,11 +5054,48 @@ never reports `unknown` for an object that could not be read at all, only for on
 was read and said so, the same way `_aggregate`'s own `unanswered` signal stays separate
 from it.
 
-**A known residual.** `object_postures` reads only per-object binary evidence. An SBOM
-component naming `openssl-sys` beside a system object does not make that object's own
-posture read `unknown`: `DERIVED_SYSTEM_OPENSSL_ONLY` still fires, and
-`DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` stays silent, exactly as if the SBOM component
-were not there.
+**The wheel's own SBOM carries the same claim as a per-object `unknown` -- unless it is
+naming the very object that already reads `system`.** `object_postures` reads only
+per-object binary evidence, so a per-object `unknown` says nothing about an SBOM
+component naming `openssl-sys` beside a system object, and neither does the reverse: a
+system-linked object's own posture says nothing about a wheel-level SBOM component by
+itself. `linkage.declared_by_sbom` reads the wheel-level SBOM signal directly (the same
+`_declared_by_sbom` `resolve_linkage` folds into `_aggregate`), and a `linkage` match
+takes it as `sbom_declared`: `DERIVED_SYSTEM_OPENSSL_ONLY` adds `sbom_declared = false`
+to its match, and `DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM` takes `sbom_declared = true`
+on the same `value = "system"` match and carries `OPAQUE`, naming the SBOM component
+through `SBOM_CRYPTO_COMPONENT` rather than an object.
+
+Before either rule reads it, `declared_by_sbom` drops one shape of component name from
+consideration: one also carried, as its own crate, by an object whose own posture
+already reads `system` (`linkage._sbom_names_confirmed_by_system_objects`, over the same
+per-object cargo paths `BIN_RUST_CRYPTO_CRATE` reads). A single object
+`demo/_rust.abi3.so`, `needed = (libc.so.6, libssl.so.3)`, `rust_crates =
+(openssl-sys 0.9.117,)`, reads `system` on its own evidence alone; a wheel SBOM naming
+that same `openssl-sys` component is the ordinary shape of that build declaring its own
+dependency, not a second, unaccounted-for copy, so it does not cost
+`DERIVED_SYSTEM_OPENSSL_ONLY`'s "every piece of evidence points at the system library"
+claim, and the wheel keeps `DERIVED_SYSTEM_OPENSSL_ONLY` rather than gaining
+`DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM`. A second, unrelated object in the same wheel
+that answers `unknown` (or a component whose crate no `system`-posture object carries at
+all) still moves it, because then the SBOM component is not restating what a
+system-reading object already said. `openssl_linkage` itself never moves either way: an
+`unaccounted` SBOM component beside a system object gains `OPAQUE` in `classes` and
+loses `DERIVED_SYSTEM_OPENSSL_ONLY`'s "acceptable condition" statement, but keeps its
+`CONDITIONAL` headline through `SBOM_CRYPTO_COMPONENT`, which every such component also
+fires (`openssl`, `openssl-sys` and `openssl-src` are all `CONDITIONAL`). `openssl-src`
+is never confirmed this way and so never gains the exemption: it is a build-script-only
+dependency that never itself shows up in a compiled object's own cargo paths (its own
+`why` in `ruleset.toml` says so), so a wheel whose SBOM names it beside a system object
+always reads `DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM`, whatever else the wheel carries.
+
+*Rejected: widen the exemption to any object whose cargo paths show the same crate,
+whatever that object's own posture.* The exemption exists because the object already
+answered `system` on its own evidence, not because it happens to share a crate name with
+the SBOM component; extending it to an object reading `unknown`, `bundled`, `static` or
+`mixed` would let a component escape `DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM` beside an
+object whose own posture says nothing about which copy that component names, the exact
+claim the finding exists to keep off the record.
 
 ## A static OpenSSL's legacy primitives lead the headline; the linkage condition says why
 
@@ -5907,12 +5944,10 @@ refuse, and `unknown` already has the meaning this case needs.
   `sbom_component` rule it relies on for `crypto_library`/`rust_crate` coverage: a
   suppressed finding would leave the field moved with nothing in the record to explain
   it, the same hole a coverage gap opens.
-- A known residual, shared with "An object that read `unknown` withholds
-  `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`" above: `object_postures`
-  reads only per-object binary evidence, and this signal is wheel-level, so an SBOM
-  naming an OpenSSL crate beside a system-linked object fires
-  `DERIVED_SYSTEM_OPENSSL_ONLY` outright rather than the complementary,
-  `OPAQUE`-carrying rule.
+- Beside a system-linked object, this same signal withholds `DERIVED_SYSTEM_OPENSSL_ONLY`
+  through `sbom_declared` on its match (`linkage.declared_by_sbom`, the rule-facing view
+  of `_declared_by_sbom`): see "An object that read `unknown` withholds
+  `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`" above.
 - No real SBOM-only wheel has been measured; the shape above is synthesised.
 
 ## The HTML report embeds records and renders them in the browser

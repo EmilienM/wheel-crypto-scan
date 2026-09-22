@@ -1105,6 +1105,49 @@ def test_a_pep_770_sbom_is_read(context, tmp_path: Path) -> None:
     assert "OPAQUE" in record["verdict"]["classes"]
 
 
+def test_an_sbom_naming_a_vendored_openssl_crate_withholds_system_only(
+    context, tmp_path: Path
+) -> None:
+    """The end-to-end shape of the issue: a system-linked wheel whose own SBOM names
+    `openssl-src`, the vendored build. `openssl_linkage` stays `system`, but the SBOM
+    is exactly the "used, not which copy" claim a per-object `unknown` already
+    withholds `DERIVED_SYSTEM_OPENSSL_ONLY` for, so the record must not claim every
+    piece of OpenSSL evidence points at the system library here either.
+    """
+    sbom = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {
+                    "name": "openssl-src",
+                    "version": "300.3.1+3.3.1",
+                    "purl": "pkg:cargo/openssl-src@300.3.1+3.3.1",
+                }
+            ],
+        }
+    ).encode()
+    wheel = build_wheel(
+        tmp_path / f"fakesbomsys-1.0-{MANYLINUX}.whl",
+        name="fakesbomsys",
+        version="1.0",
+        tags=(MANYLINUX,),
+        generator="maturin (1.7.0)",
+        files={
+            "demo/_ssl.so": extension(needed=("libssl.so.3", "libc.so.6")),
+        },
+        sboms={"rust.cdx.json": sbom},
+    )
+    record = scan(context, wheel)
+    rule_ids = record["verdict"]["rule_ids"]
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "system"
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "DERIVED_SYSTEM_OPENSSL_ONLY" not in rule_ids
+    assert "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM" in rule_ids
+    assert "SBOM_CRYPTO_COMPONENT" in rule_ids
+    assert "OPAQUE" in record["verdict"]["classes"]
+
+
 # --------------------------------------------------------------------------
 # Opacity: never clean merely because we could not look
 # --------------------------------------------------------------------------

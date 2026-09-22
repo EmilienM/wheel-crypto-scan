@@ -426,6 +426,9 @@ def _validate_match_references(
             _check_string_sequence(match[key], key, where, allow_empty=False)
             for value in match[key]:
                 _check(value, LINKAGE_VALUES, "linkage value", where)
+        sbom_declared = match.get("sbom_declared")
+        if sbom_declared is not None and not isinstance(sbom_declared, bool):
+            raise RulesetError(f"{where}: sbom_declared must be a boolean")
     elif kind == "py_call":
         used_for_security = match.get("usedforsecurity")
         if used_for_security is not None:

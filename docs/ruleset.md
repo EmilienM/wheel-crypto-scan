@@ -131,7 +131,14 @@ Three of those read the Python-side vocabularies rather than a table:
   aggregated from -- is one of these) and `exclude_object_values` (fire only when no
   object's own posture is one of these). All four are validated against the closed set
   of linkage postures at load time, and `object_values`/`exclude_object_values` are
-  refused empty.
+  refused empty. A `linkage` match also takes `sbom_declared` (a boolean, validated as
+  one at load time), the wheel-level counterpart: `true` fires only when the wheel's
+  own SBOM names the library or a crate that binds it, `false` only when it does not --
+  except a crate name already carried, in its own cargo paths, by an object whose own
+  posture is `system`, which does not count as declared: that object already answered
+  `system` on its own evidence, and the SBOM restates it rather than naming a second,
+  unaccounted-for copy. It combines with either object-value key rather than being an
+  alternative to them.
 
 Three more read Python source evidence, and each has a required field naming what it
 matches on, refused if missing or empty: `kind = "py_call"` takes `targets` (dotted

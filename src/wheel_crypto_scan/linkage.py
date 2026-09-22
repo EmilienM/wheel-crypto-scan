@@ -245,6 +245,76 @@ def object_postures(ruleset: Ruleset, evidence: Evidence, name: str) -> tuple[st
     )
 
 
+def _sbom_names_confirmed_by_system_objects(
+    evidence: Evidence, postures: tuple[str, ...]
+) -> frozenset[str]:
+    """Crate names named on an object whose own posture already reads `system`.
+
+    An SBOM component naming one of these adds no ambiguity of its own: the object
+    that carries the crate already resolved, from its own `needed` entries, to the
+    system library, and the SBOM is not describing a second, unaccounted-for copy --
+    it is restating what that object already said. A crate name still counts as
+    undeclared-by-anything-system when it only appears on an object whose own posture
+    is something else (`unknown`, `bundled`, `static`, `mixed`, or no object at all):
+    the SBOM name might be describing that different object instead, and nothing
+    here rules that out. `openssl-src` -- the build-script-only crate that pulls in
+    the vendored source and never itself shows up in a compiled object's cargo paths
+    (see its own `why` in `ruleset.toml`) -- is therefore never confirmed this way in
+    practice, without this function needing to name it specially.
+    """
+    return frozenset(
+        crate.name
+        for binary, posture in zip(evidence.binaries, postures, strict=True)
+        if posture == LINKAGE_SYSTEM
+        for crate in binary.rust_crates
+    )
+
+
+def declared_by_sbom(ruleset: Ruleset, evidence: Evidence, name: str) -> bool:
+    """Does the wheel's own SBOM name library `name`, or a crate that binds it, beside
+    an object that does not already account for that same crate itself?
+
+    Mostly built the same way `resolve_linkage` builds its own `declared` argument to
+    `_aggregate`, and exposed per library rather than folded into the aggregate, but
+    with one further filter `resolve_linkage` does not need: an SBOM component naming
+    a crate that is *also* carried by an object whose own posture already reads
+    `system` (`_sbom_names_confirmed_by_system_objects`) is dropped before the name
+    check runs. That crate is the normal shape of a system-linked Rust build
+    declaring its own dependency, not a second, unaccounted-for copy, so it must not
+    read as "used, but not which copy" beside that same object.
+
+    This filter is a no-op for `resolve_linkage`'s own use of `_declared_by_sbom`
+    (which does not apply it): a crate can only be confirmed this way when some
+    object's own posture is `system`, and `_aggregate` returns the sole `_DEFINITE`
+    posture before ever consulting `declared` in exactly that case. The two calls can
+    therefore never disagree about `openssl_linkage` itself; they can only disagree
+    about this function's own answer, which is what `engine._match_linkage`'s
+    `sbom_declared` match key reads.
+
+    The dropped name is folded the same way `resolve_linkage` folds every component
+    (`sbom_library_key`/`sbom_crate_key`), so a component spelling the carried crate
+    `OpenSSL_Sys` is dropped just as `openssl-sys` is. It only ever reaches
+    `_declared_by_sbom`'s plain by-name checks (its `library_keys` and `crate_keys`
+    arguments): a library whose own name collides with a *different* `[[rust_crate]]` --
+    `openssl` included, since it lists itself in `crates` -- is matched there through
+    the component's own `purl` instead (`_declared_by_sbom`'s `purls_by_library_key`
+    argument, passed through unfiltered), so a component named `openssl` with a
+    non-cargo purl or none still counts as declared even beside a system object carrying
+    the `openssl` crate. That is not a gap: such a purl does not claim to be the crate
+    the confirmation is about, only the C library itself, which the confirmation says
+    nothing about.
+    """
+    postures = object_postures(ruleset, evidence, name)
+    confirmed = _sbom_names_confirmed_by_system_objects(evidence, postures)
+    return _declared_by_sbom(
+        ruleset.libraries[name],
+        _sbom_library_keys(evidence) - {sbom_library_key(crate) for crate in confirmed},
+        _sbom_crate_keys(evidence) - {sbom_crate_key(crate) for crate in confirmed},
+        _sbom_purls_by_library_key(evidence),
+        frozenset(sbom_crate_key(crate) for crate in ruleset.rust_crates),
+    )
+
+
 def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
     """Map each crypto library with evidence in this wheel to its linkage posture."""
     unanswered = _left_unanswered(ruleset, evidence)
@@ -306,12 +376,17 @@ def _aggregate(postures: set[str], unanswered: bool, declared: bool) -> str:
 
     Unlike a per-object `unknown`, `declared` is wheel-level and never appears in
     `object_postures`'s tuple, so it stays invisible to a rule's own
-    `exclude_object_values`/`object_values` check. A wheel whose SBOM names an OpenSSL
-    crate beside an object that reads `system` still fires `DERIVED_SYSTEM_OPENSSL_ONLY`:
-    `declared` never reaches `_aggregate` at all once a `_DEFINITE` posture exists (the
-    `len(definite) == 1` branch above returns first), so there is nothing here for that
-    rule's exclusion to see. That is a known residual, recorded in DESIGN.md, "An SBOM
-    naming an OpenSSL crate reads `unknown`, not `none`".
+    `exclude_object_values`/`object_values` check: `declared` is never read once a
+    `_DEFINITE` posture exists, because both branches that return one (`len(definite)
+    == 1` and `len(definite) > 1`, below) return before reaching the line that reads
+    it, so there is nothing here for that check to see. A rule reads the same signal a
+    different way instead, through `declared_by_sbom` (`sbom_declared` on a `linkage`
+    match), which also knows something this function does not: whether the SBOM
+    component is already carried, as its own crate, by an object whose own posture is
+    `system`. That is how `DERIVED_SYSTEM_OPENSSL_ONLY` keeps firing when the wheel's
+    own SBOM names an OpenSSL crate that a system-reading object already carries
+    itself, and declines only when the SBOM names one no system-reading object
+    accounts for, even though `openssl_linkage` itself stays `system` either way.
     """
     if LINKAGE_MIXED in postures:
         return LINKAGE_MIXED

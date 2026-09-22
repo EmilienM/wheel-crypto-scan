@@ -152,7 +152,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "38"
+    assert ruleset.version == "39"
     assert len(ruleset.rules) > 20
 
 
@@ -280,6 +280,7 @@ def test_rules_can_be_selected_by_matcher_kind() -> None:
         "BIN_STATIC_OPENSSL",
         "DERIVED_SYSTEM_OPENSSL_ONLY",
         "DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM",
+        "DERIVED_OPENSSL_DECLARED_BESIDE_SYSTEM",
         "BIN_LINKED_CRYPTO_LIBRARY",
         "BIN_OPENSSL_LINKAGE_UNKNOWN",
     }
@@ -2227,6 +2228,23 @@ def test_an_empty_object_values_is_rejected() -> None:
     """An empty list would silently mean `never`."""
     with pytest.raises(RulesetError, match="object_values"):
         parse_ruleset(_with_linkage_rule(object_values=[]))
+
+
+def test_a_non_boolean_sbom_declared_is_rejected() -> None:
+    """A bare TOML string is not the boolean the engine's `!=` comparison expects."""
+    with pytest.raises(RulesetError, match="sbom_declared"):
+        parse_ruleset(_with_linkage_rule(sbom_declared="true"))
+
+
+def test_sbom_declared_loads_beside_exclude_object_values() -> None:
+    """The wheel-level and per-object gates are not alternatives: a rule combines them,
+    the way DERIVED_SYSTEM_OPENSSL_ONLY itself does."""
+    ruleset = parse_ruleset(
+        _with_linkage_rule(sbom_declared=True, exclude_object_values=["unknown"])
+    )
+    match = ruleset.rule("LINKAGE_OBJECT_VALUES_TEST").matches[0]
+    assert match["sbom_declared"] is True
+    assert match["exclude_object_values"] == ["unknown"]
 
 
 # --- matcher kind drift -------------------------------------------------------------

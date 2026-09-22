@@ -58,6 +58,7 @@ MATCH_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "exclude_libraries",
                 "object_values",
                 "exclude_object_values",
+                "sbom_declared",
             }
             | _ENTRY_ROUTING_KEYS
         ),

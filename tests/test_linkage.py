@@ -51,6 +51,7 @@ from wheel_crypto_scan.linkage import (
     LINKAGE_STATIC,
     LINKAGE_SYSTEM,
     LINKAGE_UNKNOWN,
+    declared_by_sbom,
     object_postures,
     resolve_linkage,
 )
@@ -1075,6 +1076,140 @@ def test_the_non_collision_check_folds_the_rulesets_own_library_name_too() -> No
     collision_ruleset = _mixed_case_collision_ruleset()
     evidence = wheel(metadata=sbom("libfoo"))
     assert resolve_linkage(collision_ruleset, evidence)["LibFoo"] == LINKAGE_UNKNOWN
+
+
+# --- declared_by_sbom agrees with the field it is folded into ----------------
+
+
+def test_declared_by_sbom_agrees_with_the_field_for_every_library_and_its_crates(ruleset) -> None:
+    """`declared_by_sbom` is the rule-facing view of the same signal `resolve_linkage`
+    folds into `_aggregate` through `_declared_by_sbom`; a rule reading one and a
+    record reading the other must never disagree about what one SBOM component means.
+    Checked on a wheel with no binary objects at all, so nothing there can supply a
+    `_DEFINITE` posture to outvote it either way.
+    """
+    for library in ruleset.libraries.values():
+        for name in {library.name, *library.crates}:
+            evidence = wheel(metadata=sbom(name))
+            expected = resolve_linkage(ruleset, evidence).get(library.name) == LINKAGE_UNKNOWN
+            assert declared_by_sbom(ruleset, evidence, library.name) == expected, (
+                library.name,
+                name,
+            )
+
+
+@pytest.mark.parametrize("name", ["ring", "cryptography"])
+def test_declared_by_sbom_agrees_with_the_field_for_an_unrelated_component(ruleset, name) -> None:
+    evidence = wheel(metadata=sbom(name))
+    assert declared_by_sbom(ruleset, evidence, "openssl") is False
+    assert resolve_linkage(ruleset, evidence).get("openssl", LINKAGE_NONE) != LINKAGE_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("purl", "expected"),
+    [("pkg:cargo/argon2@0.5.0", False), ("pkg:generic/argon2@0.5.0", True)],
+)
+def test_declared_by_sbom_agrees_with_the_field_for_the_argon2_collision(
+    ruleset, purl, expected
+) -> None:
+    """The collision `declared_by_sbom` resolves through the component's own `purl`
+    rather than by name alone: only a `pkg:cargo/...` purl names the unrelated
+    pure-Rust crate, and only there must the C library's own field and this function
+    both stay untouched.
+    """
+    evidence = wheel(metadata=sbom("argon2", purl=purl))
+    assert declared_by_sbom(ruleset, evidence, "argon2") is expected
+    moved = resolve_linkage(ruleset, evidence).get("argon2") == LINKAGE_UNKNOWN
+    assert moved == expected
+
+
+def test_declared_by_sbom_is_false_when_the_system_object_itself_carries_the_crate(
+    ruleset,
+) -> None:
+    """A component naming a crate that is also the crate a `system`-posture object
+    carries in its own cargo paths is not "declared beside system" at all: that object
+    already answered `system` from its own evidence, and the SBOM restates it rather
+    than naming a second, unaccounted-for copy. `openssl_linkage` itself is unaffected
+    either way (`system`, from the object alone): `_aggregate` never reaches `declared`
+    once a `_DEFINITE` posture exists.
+    """
+    rust_object = binary(
+        "demo/_rust.abi3.so",
+        needed=("libc.so.6", "libssl.so.3"),
+        rust_crates=(RustCrate("openssl-sys", "0.9.117"),),
+    )
+    evidence = wheel(rust_object, metadata=sbom("openssl-sys"))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+    assert declared_by_sbom(ruleset, evidence, "openssl") is False
+
+
+@pytest.mark.parametrize(
+    ("carried", "spelling"),
+    [
+        ("openssl-sys", "OpenSSL_Sys"),
+        ("openssl_sys", "openssl-sys"),
+        ("OpenSSL_Sys", "OPENSSL-SYS"),
+    ],
+)
+def test_declared_by_sbom_folds_the_crate_a_system_object_carries(
+    ruleset, carried, spelling
+) -> None:
+    """The confirmation is compared through `sbom_crate_key` on both sides, the same
+    fold every other SBOM name goes through: a component spelling the carried crate
+    another way crates.io treats as the same crate is still the crate that object
+    already answered `system` for, not a second copy.
+    """
+    rust_object = binary(
+        "demo/_rust.abi3.so",
+        needed=("libc.so.6", "libssl.so.3"),
+        rust_crates=(RustCrate(carried, "0.9.117"),),
+    )
+    evidence = wheel(rust_object, metadata=sbom(spelling))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+    assert declared_by_sbom(ruleset, evidence, "openssl") is False
+
+
+@pytest.mark.parametrize(
+    "purl",
+    [None, "pkg:generic/openssl@3.3.1", "pkg:rpm/redhat/openssl@3.2.2"],
+    ids=["no-purl", "generic", "rpm"],
+)
+def test_declared_by_sbom_ignores_the_exemption_for_a_non_cargo_openssl_component(
+    ruleset, purl
+) -> None:
+    """The exemption only ever reaches the plain by-name check: `openssl` collides
+    with a `[[rust_crate]]` of its own name (it lists itself in `crates`), so a
+    component named `openssl` is matched through its own `purl` instead, read straight
+    off the unfiltered SBOM rather than the exemption's filtered name set. A component
+    under a non-cargo purl, or none, does not claim to be the crate the exemption
+    confirms -- only the C library itself -- so it still counts as declared even beside
+    a system object that carries the `openssl` crate in its own cargo paths.
+    """
+    rust_object = binary(
+        "demo/_rust.abi3.so",
+        needed=("libc.so.6", "libssl.so.3"),
+        rust_crates=(RustCrate("openssl", "0.10.66"),),
+    )
+    evidence = wheel(rust_object, metadata=sbom("openssl", purl=purl))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+    assert declared_by_sbom(ruleset, evidence, "openssl") is True
+
+
+def test_declared_by_sbom_is_true_when_only_a_non_system_object_carries_the_crate(
+    ruleset,
+) -> None:
+    """The exemption reads the crate-carrying object's own posture, not merely whether
+    some object carries the crate: a second object that carries the same crate but
+    reads `unknown` on its own (no `needed` entry naming it) does not confirm the SBOM
+    component, so it still counts as declared beside the system-linked sibling.
+    """
+    system_object = binary("demo/_ssl.so", needed=("libc.so.6", "libssl.so.3"))
+    crate_object = binary(
+        "demo/_rust.abi3.so", needed=("libc.so.6",), rust_crates=(RustCrate("openssl-sys", None),)
+    )
+    evidence = wheel(system_object, crate_object, metadata=sbom("openssl-sys"))
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_SYSTEM
+    assert declared_by_sbom(ruleset, evidence, "openssl") is True
 
 
 @pytest.mark.parametrize(
