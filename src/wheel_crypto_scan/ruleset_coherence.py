@@ -297,13 +297,16 @@ def check_relation_matches_verdict(ruleset: Ruleset, source: str) -> None:
       is refused outright. A relation names what would fix a finding against some
       verdict class; one that can never be checked against any class is not a citation
       of anything, in any ruleset, at any point in this project's data being filled in.
-    * `verdict` with no `relation` of its own is *not* refused the same way -- it is
-      every shipped entry's shape today, and the totality rule ("a verdict-bearing
-      pair carries a relation") is deliberately not yet enforced across the whole
-      ruleset (see the totality tests `tests/test_ruleset_data.py` defers). But at
-      scan time `_match_bundled_library` lets *any* `bundled_library` rule read an
-      unowned entry (`engine._owns` returns its `unowned` argument, `True`, when
-      there is no owner to compare against), each supplying its own `relation`
+    * `verdict` with no `relation` of its own is *not* refused the same way -- but no
+      shipped `[[crypto_library]]` entry takes that shape: all 13 carry both fields
+      directly, and `tests/test_ruleset_data.py`'s totality tests
+      (`test_every_effective_verdict_bearing_entry_carries_a_relation_and_basis` and
+      its neither-carries sibling) enforce the pairing over exactly this set of
+      entries. What this branch still guards is a ruleset those tests never see: a
+      `--ruleset` file loaded at scan time, where a `bundled_library` entry could set
+      `verdict` alone. At scan time `_match_bundled_library` lets *any* `bundled_library`
+      rule read an unowned entry (`engine._owns` returns its `unowned` argument, `True`,
+      when there is no owner to compare against), each supplying its own `relation`
       fallback for whichever object it matches, so the entry's `verdict` is checked
       here against every such rule's own `relation`, not skipped for lack of one
       fixed rule to ask.
