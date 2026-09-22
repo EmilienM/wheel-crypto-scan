@@ -359,11 +359,12 @@ including the measurement behind the `any` binding and why a `[[crypto_library]]
 
 A finding's `basis` is a list of `[[standard]]` ids and nothing else: `title`,
 `edition`, `status`, `successor`, `sunset` and `why` never reach a scan record.
-`wheel-crypto-scan rules --format json` and the HTML and Markdown reports read them
-back out of the loaded `Ruleset` for display, on demand, rather than the scan record
-duplicating them into every wheel that cites the standard -- a record describes one
-wheel at one point in time, and a standard's edition and status describe NIST/FIPS
-publication state on its own schedule, unrelated to when any wheel was scanned.
+`wheel-crypto-scan rules --format json` and the HTML report read them back out of the
+loaded `Ruleset` for display, on demand, rather than the scan record duplicating them
+into every wheel that cites the standard; the Markdown report has no `Ruleset` in hand
+and prints only the raw ids. A record describes one wheel at one point in time, and a
+standard's edition and status describe NIST/FIPS publication state on its own
+schedule, unrelated to when any wheel was scanned.
 
 `ruleset_coherence.check_basis_targets_a_live_standard` refuses, at load time, a
 `basis` naming a standard whose `status` is `draft`, `planned` or `withdrawn`, rather

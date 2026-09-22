@@ -6302,10 +6302,11 @@ binaries for evidence that came from the wheel's SBOM.
 A finding's `basis` is a list of `[[standard]]` ids -- `FIPS-140-3`,
 `SP-800-131A-r2` -- and nothing else. `title`, `edition`, `status`, `successor`,
 `sunset` and `why` never reach a scan record: `standards.py` parses them once, into
-the loaded `Ruleset`, and `wheel-crypto-scan rules --format json` and the HTML and
-Markdown reports read them back out of that same `Ruleset` for display, on demand,
-rather than the scan record duplicating them into every wheel that cites the
-standard.
+the loaded `Ruleset`, and `wheel-crypto-scan rules --format json` and the HTML report
+read them back out of that same `Ruleset` for display, on demand, rather than the scan
+record duplicating them into every wheel that cites the standard. The Markdown report
+prints a finding's raw `basis` ids and nothing more: it renders from records alone,
+with no `Ruleset` in hand to resolve them against.
 
 **Why the pointer, not the citation.** A scan record describes one wheel at one point
 in time; a standard's edition and status describe the state of a NIST/FIPS
@@ -6415,12 +6416,14 @@ mean reading the FIPS lens to answer a question that has nothing to do with it, 
 `crypto.families` would inherit `category`'s open-ended, per-rule-author vocabulary
 rather than a small closed one a report's grouping can rely on.
 
-**What it costs.** Every verdict-bearing rule and override-bearing entry carries two
-classification fields that can drift apart if a rule's `family` is filled in
-carelessly: nothing ties one rule's `category` to its `family`, since the two
-vocabularies are independent by design, and the loader has no way to catch a `family`
-that reads wrong for what a rule actually matches. `tests/test_ruleset_data.py` holds
-the shipped ruleset's own choices to a manual review instead of a load-time rule.
+**What it costs.** `category` and `family` are independent vocabularies that can drift
+apart if either is filled in carelessly, and most rules leave `family` unset on the
+rule itself: a finding's `family` comes from the matched `[[symbol_group]]`/
+`[[string_group]]` or table entry as often as from the rule
+(`engine._build_finding`'s `family=first.family or rule.family` reads the hit's own
+family first), and the loader has no way to catch either one that reads wrong for
+what a rule actually matches. `tests/test_ruleset_data.py` holds the shipped
+ruleset's own choices to a manual review instead of a load-time rule.
 
 ## SHA-1 is restricted, not refused
 

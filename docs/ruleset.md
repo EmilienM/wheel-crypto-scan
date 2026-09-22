@@ -106,9 +106,9 @@ the loader refuses a `successor` naming an id the table does not have, and a
 
 Only `id` ever reaches a scan record, in a finding's `basis`. `title`, `edition`,
 `status`, `successor`, `sunset` and `why` stay in the ruleset: `wheel-crypto-scan rules
---format json` and the HTML and Markdown reports read them back out of the loaded
-`Ruleset` for display, rather than the scan record duplicating them into every wheel
-that cites the standard.
+--format json` and the HTML report read them back out of the loaded `Ruleset` for
+display, rather than the scan record duplicating them into every wheel that cites the
+standard.
 
 A declared standard that no `basis` cites and that is nobody's `successor` is refused
 at load time too, the same way an unread `[[symbol_group]]` is -- dead data with
