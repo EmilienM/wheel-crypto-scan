@@ -1,11 +1,15 @@
 # wheel-crypto-scan
 
-Reports crypto-relevant **evidence** found inside Python wheels, so the teams consuming a
-package index can see per-wheel FIPS risk before they ship it.
+Reports crypto-relevant **evidence** found inside Python wheels: which primitive families
+and libraries are present, how they are linked, what the Python code does with TLS,
+hashing and randomness, and whether post-quantum algorithms show up. That is the account
+a package index's consumers get, wheel by wheel.
 
-It gathers evidence. It does not decide FIPS compatibility.
+FIPS compatibility is one lens over that account, not its whole purpose: whether a
+FIPS-enforcing host can run the wheel's crypto as shipped, so consuming teams can gauge
+FIPS risk before they ship it. It gathers evidence. It does not decide FIPS compatibility.
 
-## The question it exists for
+## The question the FIPS lens answers
 
 **Does this wheel use the system OpenSSL, or does it carry its own?** A wheel that resolves
 `libcrypto.so.3` from the host inherits the host's FIPS provider and crypto policy. A wheel
