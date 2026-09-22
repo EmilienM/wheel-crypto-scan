@@ -236,30 +236,57 @@ def _line(cells: Sequence[str], widths: Sequence[int]) -> str:
 
 
 def _wheel_section(record: dict[str, Any]) -> str:
-    """One wheel's own two sections: its crypto inventory, then its FIPS
-    compatibility lens over the same evidence."""
+    """One wheel's own detail: its crypto inventory, then its FIPS compatibility lens
+    over the same evidence, then -- only when the wheel has any -- the coverage and
+    wheel-hygiene findings that are evidence of neither: no `family` (not crypto
+    inventory) and no `relation` (not the FIPS lens either), such as `WHEEL_GENERATOR`
+    or an unreadable-object rule that assigns no verdict at all. Those two named
+    sections are never optional, so a wheel with nothing to say in either still shows
+    both, explicitly; the third is omitted entirely when there is nothing for it to
+    say, rather than an empty heading with nothing under it.
+    """
     wheel = record.get("wheel", {})
     filename = str(wheel.get("filename", "?"))
-    return "\n\n".join(
-        [f"## {filename}", _inventory_section(record), _compatibility_section(record)]
-    )
+    parts = [f"## {filename}", _inventory_section(record), _compatibility_section(record)]
+    other = _other_evidence_section(record)
+    if other is not None:
+        parts.append(other)
+    return "\n\n".join(parts)
+
+
+# Verbatim CLASS_HELP wording for OPAQUE, reused here rather than duplicated, since an
+# empty inventory on an OPAQUE wheel needs to say the same thing that class already
+# says: the tool could not read enough to have an opinion, which is not the same claim
+# as "read fully and found nothing".
+_UNREADABLE_INVENTORY_NOTE = (
+    "This wheel could not be read well enough to say what cryptography it carries -- "
+    "absence of evidence, not evidence of absence."
+)
 
 
 def _inventory_section(record: dict[str, Any]) -> str:
     """The "Cryptography in this wheel" section: libraries and their linkage first, then every
     finding grouped by the family of primitive it is evidence of. A finding with no
     `family` is not crypto evidence (an informational rule such as `WHEEL_GENERATOR`,
-    say) and does not appear here -- `crypto.families` already skips it the same way.
+    say) and does not appear here -- `crypto.families` already skips it the same way;
+    see `_other_evidence_section` for where it does appear.
+
     Empty and says so explicitly, rather than being left out, when the wheel carries
     no crypto evidence at all -- what makes acceptance criterion 1 hold for a
-    `NO_CRYPTO_DETECTED` wheel's Markdown output, not only its HTML.
+    `NO_CRYPTO_DETECTED` wheel's Markdown output, not only its HTML. An `OPAQUE` wheel
+    also reaches this branch (nothing readable carries a `family` either), and must
+    say something different here: "no families, no libraries" is true of both a wheel
+    read in full that carries no crypto and a wheel this tool could not read at all,
+    and only the first of those is the absence this sentence is allowed to claim.
     """
     crypto = record.get("crypto", {})
     families = crypto.get("families", [])
     libraries = crypto.get("libraries", [])
     parts = ["### Cryptography in this wheel"]
     if not families and not libraries:
-        parts.append("No cryptography detected.")
+        verdict_class = record.get("verdict", {}).get("class")
+        is_opaque = verdict_class == "OPAQUE"
+        parts.append(_UNREADABLE_INVENTORY_NOTE if is_opaque else "No cryptography detected.")
         return "\n\n".join(parts)
     parts.append(f"Families: {_join(families)}\n\nLibraries: {_join_libraries(libraries)}")
     findings = [finding for finding in record.get("findings", []) if finding.get("family")]
@@ -303,6 +330,28 @@ def _compatibility_section(record: dict[str, Any]) -> str:
         parts.append(f"{heading}\n\n{bullets}" if bullets else heading)
 
     return "\n\n".join(parts)
+
+
+def _other_evidence_section(record: dict[str, Any]) -> str | None:
+    """The "Other evidence" section: findings with no `family` (excluded from the crypto
+    inventory) and no `relation` (excluded from the FIPS compatibility lens) --
+    coverage and wheel-hygiene findings, verdict-bearing or not: an unreadable-object
+    rule that carries `OPAQUE` and neither vocabulary, or a purely informational rule
+    such as `WHEEL_GENERATOR` that carries no verdict at all. Without this section
+    such a finding was visible nowhere but the JSONL and the Raw JSON tab, which is
+    exactly the evidence a reader needs most when `_inventory_section` above is about
+    to say the wheel carries no cryptography -- see its own docstring. `None` when
+    there is nothing to say, so the wheel section never carries a third heading with
+    nothing under it.
+    """
+    findings = [
+        finding
+        for finding in record.get("findings", [])
+        if not finding.get("family") and not finding.get("relation")
+    ]
+    if not findings:
+        return None
+    return "\n\n".join(["### Other evidence", _findings_table(findings)])
 
 
 def _findings_table(findings: Sequence[dict[str, Any]]) -> str:

@@ -318,6 +318,65 @@ def test_markdown_gives_a_no_crypto_wheel_an_explicit_empty_inventory() -> None:
     assert "No cryptography detected." in table
 
 
+def test_markdown_empty_inventory_survives_an_informational_finding() -> None:
+    """The empty-inventory message must not depend on `findings` being empty, only on
+    `crypto.families`/`crypto.libraries` being empty: a `NO_CRYPTO_DETECTED` wheel
+    that still carries a family-less, verdict-less informational finding (the shape
+    `WHEEL_GENERATOR` takes on every real wheel) must read exactly the same as one
+    with no findings at all, not silently list that finding under a synthetic
+    grouping bucket instead of saying the inventory is empty."""
+    rec = record("a", "NO_CRYPTO_DETECTED", "none", review=False)
+    rec["findings"] = [
+        {
+            "rule_id": "WHEEL_GENERATOR",
+            "subject": "bdist_wheel",
+            "family": None,
+            "relation": None,
+            "basis": [],
+            "severity": "info",
+            "verdict": None,
+            "occurrences": 1,
+        }
+    ]
+    table = render_markdown([rec])
+    assert "No cryptography detected." in table
+
+
+def test_markdown_opaque_wheel_inventory_does_not_claim_no_cryptography() -> None:
+    """An `OPAQUE` wheel also has empty `crypto.families`/`crypto.libraries` --
+    nothing unreadable carries a `family` either -- but "no families, no libraries"
+    means something different for it than for a `NO_CRYPTO_DETECTED` wheel: the tool
+    could not read enough to have an opinion, not that it read the wheel in full and
+    found nothing. `CLASS_HELP["NO_CRYPTO_DETECTED"]`'s own text ("absence of
+    evidence, not evidence of absence") is exactly the distinction this guards."""
+    table = render_markdown([record("a", "OPAQUE", "none")])
+    assert "could not be read well enough" in table
+    assert "No cryptography detected." not in table
+
+
+def test_markdown_shows_family_and_relation_less_findings_as_other_evidence() -> None:
+    """A finding with neither `family` (excluded from the crypto inventory) nor
+    `relation` (excluded from the FIPS compatibility lens) -- coverage and
+    wheel-hygiene evidence such as `WHEEL_GENERATOR` -- is not simply dropped from
+    the wheel's own detail; it shows under a third "Other evidence" section."""
+    rec = record("a", "CONDITIONAL", "bundled")
+    rec["findings"] = [
+        {
+            "rule_id": "WHEEL_GENERATOR",
+            "subject": "bdist_wheel",
+            "family": None,
+            "relation": None,
+            "basis": [],
+            "severity": "info",
+            "verdict": None,
+            "occurrences": 1,
+        }
+    ]
+    table = render_markdown([rec])
+    assert "### Other evidence" in table
+    assert "WHEEL_GENERATOR" in table
+
+
 # --- HTML ---------------------------------------------------------------------------
 
 
@@ -743,6 +802,66 @@ def test_browser_no_crypto_wheel_gets_an_explicit_empty_inventory(tmp_path: Path
     assert "No cryptography detected in this wheel." in findings_tab
 
 
+def test_browser_opaque_wheel_inventory_does_not_claim_no_cryptography(tmp_path: Path) -> None:
+    """An `OPAQUE` wheel also has empty `crypto.families`/`crypto.libraries` --
+    nothing unreadable carries a `family` either -- but the inventory section must
+    not say "No cryptography detected" for it: that is the `NO_CRYPTO_DETECTED`
+    claim (read in full, found nothing), and `OPAQUE` means the opposite (could not
+    read enough to have an opinion)."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "OPAQUE", "none", rule_id="WHEEL_UNREADABLE")
+    rec["findings"][0]["family"] = None
+    rec["findings"][0]["relation"] = None
+    rec["findings"][0]["basis"] = []
+    rec["crypto"] = {"families": [], "libraries": []}
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
+    findings_tab = _tab(dom, "findings")
+
+    assert "could not be read well enough" in findings_tab
+    assert "No cryptography detected in this wheel." not in findings_tab
+
+
+def test_browser_detail_view_shows_other_evidence_section(tmp_path: Path) -> None:
+    """A finding with neither `family` (excluded from the crypto inventory) nor
+    `relation` (excluded from the FIPS compatibility lens) -- coverage and
+    wheel-hygiene evidence such as `WHEEL_GENERATOR` -- is not simply invisible
+    outside the Raw JSON tab; it shows under a third "Other evidence" section, after
+    the two named ones."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "CONDITIONAL", "bundled", rule_id="BIN_BUNDLED_OPENSSL")
+    rec["findings"].append(
+        {
+            "rule_id": "WHEEL_GENERATOR",
+            "subject": "bdist_wheel",
+            "subject_kind": "generator",
+            "severity": "info",
+            "category": "provenance",
+            "layer": "metadata",
+            "confidence": "high",
+            "verdict": None,
+            "relation": None,
+            "basis": [],
+            "family": None,
+            "needs_human_review": False,
+            "occurrences": 1,
+            "truncated": False,
+            "locations": [],
+        }
+    )
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
+    findings_tab = _tab(dom, "findings")
+
+    inventory_index = findings_tab.index("Cryptography in this wheel")
+    compat_index = findings_tab.index("FIPS compatibility")
+    other_index = findings_tab.index("Other evidence")
+    assert inventory_index < compat_index < other_index
+    assert "WHEEL_GENERATOR" in findings_tab
+
+
 def test_browser_drilldown_uses_position_not_filename(tmp_path: Path) -> None:
     """Two records that share a filename -- a cpu and a cuda build of the same wheel
     name, for instance -- stay independently reachable: opening the wheel at one
@@ -855,17 +974,21 @@ _UNBREAKABLE = "a" * 400
 
 def _detail_layout(tab: str) -> str:
     """JS that records, as JSON in `document.title`, the open detail panel's layout
-    on `tab`: `panel` and `box` are `[scrollWidth, clientWidth]` of the panel and of
-    the tab's table scroll box (null without a table); `wrap` is the narrowest
-    free-text cell's width and `em` its font size (both null without one)."""
+    on `tab`: `panel` is `[scrollWidth, clientWidth]` of the panel; `boxes` is that
+    same pair for **every** `.table-scroll` box on the tab, not just the first --
+    the Findings tab can hold up to three (the inventory table, the compatibility
+    table and, when present, the other-evidence table), and a regression confined to
+    one of the later ones would pass unnoticed if only the first were measured;
+    `wrap` is the narrowest free-text cell's width and `em` its font size (both null
+    without one)."""
     return (
         "var panel = document.getElementById('detail-panel');"
         f"var tabPanel = document.getElementById('tab-{tab}');"
-        "var box = tabPanel.querySelector('.table-scroll');"
+        "var boxes = Array.prototype.slice.call(tabPanel.querySelectorAll('.table-scroll'));"
         "var cells = Array.prototype.slice.call(tabPanel.querySelectorAll('td.wrap'));"
         "document.title = JSON.stringify({"
         " panel: [panel.scrollWidth, panel.clientWidth],"
-        " box: box && [box.scrollWidth, box.clientWidth],"
+        " boxes: boxes.map(function (b) { return [b.scrollWidth, b.clientWidth]; }),"
         " wrap: cells.length ? Math.min.apply(null,"
         "  cells.map(function (cell) { return cell.offsetWidth; })) : null,"
         " em: cells.length ? parseFloat(getComputedStyle(cells[0]).fontSize) : null"
@@ -895,12 +1018,16 @@ def test_browser_detail_view_never_paints_outside_the_panel(tmp_path: Path, tab:
     behind it, whatever length its text runs to. Every free-form field here carries
     an unbreakable token, including the columns of a table that do not wrap, so
     wrapping the free-text columns cannot rescue a table: only its own scroll box
-    keeps it within the panel."""
-    rec = html_record("a", "OPAQUE", "none")
+    keeps it within the panel. `FIPS_BREAKING`, not `OPAQUE`: the class carries a
+    `relation`, so the Findings tab renders its compatibility table -- with an
+    unbreakable basis chip -- alongside the inventory one, stressing both rather
+    than only the first."""
+    rec = html_record("a", "FIPS_BREAKING", "static")
     rec["wheel"]["filename"] = _UNBREAKABLE
     rec["verdict"]["reasons"] = [_UNBREAKABLE]
     rec["findings"][0]["subject"] = _UNBREAKABLE
     rec["findings"][0]["locations"][0]["path"] = _UNBREAKABLE
+    rec["findings"][0]["basis"] = [_UNBREAKABLE]
     rec["binaries"][0]["path"] = _UNBREAKABLE
     rec["binaries"][0]["matched_strings"] = [{"group": "go_fips140", "value": _UNBREAKABLE}]
     rec["artifacts"]["bundled_libs"] = [_UNBREAKABLE]
@@ -920,10 +1047,14 @@ def test_browser_detail_view_never_paints_outside_the_panel(tmp_path: Path, tab:
 
 
 def _long_free_text_record() -> dict:
-    """A record whose finding location, error path and error message are each one
-    unbreakable token: the columns a wheel filename or an object path lands in."""
-    rec = html_record("a", "OPAQUE", "none")
+    """A record whose finding location, finding basis, error path and error message
+    are each one unbreakable token: the columns a wheel filename or an object path
+    lands in. `FIPS_BREAKING`, not `OPAQUE`, so the Findings tab's compatibility
+    table -- and its basis-chip column -- is exercised here too, not only the
+    inventory table."""
+    rec = html_record("a", "FIPS_BREAKING", "static")
     rec["findings"][0]["locations"][0]["path"] = _UNBREAKABLE
+    rec["findings"][0]["basis"] = [_UNBREAKABLE]
     rec["errors"] = [
         {
             "stage": "binary",
@@ -937,13 +1068,15 @@ def _long_free_text_record() -> dict:
 
 @pytest.mark.parametrize("tab", ["findings", "errors"])
 def test_browser_detail_table_wraps_long_paths_to_fit(tmp_path: Path, tab: str) -> None:
-    """On a desktop-width window, a long location, error path or error message wraps
-    within its cell, so the table fits its box without a horizontal scrollbar."""
+    """On a desktop-width window, a long location, basis id, error path or error
+    message wraps within its cell, so every table on the tab fits its own box
+    without a horizontal scrollbar -- checked for each `.table-scroll` box present,
+    not only the first."""
     layout = _measure_detail_view(tmp_path, _long_free_text_record(), tab, window_size="1600,1000")
 
-    assert layout["box"] is not None
-    scroll_width, client_width = layout["box"]
-    assert scroll_width <= client_width
+    assert layout["boxes"], "no .table-scroll box found on this tab"
+    for scroll_width, client_width in layout["boxes"]:
+        assert scroll_width <= client_width
 
 
 @pytest.mark.parametrize("tab", ["findings", "errors"])

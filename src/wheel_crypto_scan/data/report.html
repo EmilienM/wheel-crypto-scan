@@ -1133,6 +1133,10 @@ pre {
   // standards some embedded finding actually cites.
   function appendBasisCell(tr, finding) {
     var td = document.createElement("td");
+    // A basis id is ordinarily a short, ruleset-controlled token, but this column
+    // gets the same `wrap` treatment as a location or matched-string cell rather
+    // than trusting that: nothing here should assume a future citation stays short.
+    td.className = "wrap";
     var basis = finding.basis || [];
     if (!basis.length) {
       td.textContent = "-";
@@ -1204,15 +1208,41 @@ pre {
     );
   }
 
+  function buildOtherEvidenceTable(findings) {
+    return buildTable(
+      ["rule", "subject", "severity", "verdict", "occurrences", "locations", "truncated"],
+      findings,
+      function (tr, finding) {
+        appendRuleCell(tr, finding);
+        appendCell(tr, finding.subject);
+        appendCell(tr, finding.severity);
+        appendCell(tr, finding.verdict);
+        appendCell(tr, finding.occurrences);
+        appendLocationsCell(tr, finding);
+        appendCell(tr, finding.truncated ? "yes" : "no");
+      }
+    );
+  }
+
+  // Verbatim CLASS_HELP wording for OPAQUE (see report.py's identical
+  // _UNREADABLE_INVENTORY_NOTE), reused here rather than duplicated: an empty
+  // inventory on an OPAQUE wheel needs to say the tool could not read enough to have
+  // an opinion, not that it read the wheel in full and found nothing -- those are
+  // different claims, and only the first is one "No cryptography detected" is allowed
+  // to make.
+  var UNREADABLE_INVENTORY_NOTE = "This wheel could not be read well enough to say " +
+    "what cryptography it carries -- absence of evidence, not evidence of absence.";
+
   // "Cryptography in this wheel": libraries and their linkage first, then every
   // finding grouped by the family of primitive it is evidence of -- the inventory,
   // presented before anything the FIPS compatibility lens makes of it, and shown
-  // (empty, saying so) even for a wheel with no crypto evidence at all.
+  // (empty, saying so) even for a wheel with no crypto evidence at all. A finding
+  // with no `family` is not crypto evidence (an informational rule such as
+  // WHEEL_GENERATOR, say) and does not appear here -- `crypto.families` already skips
+  // it the same way; see renderOtherEvidenceSection for where it does appear.
   function renderInventorySection(record, panel) {
     var crypto = record.crypto || {};
-    // A finding with no `family` is not crypto evidence (an informational rule such
-    // as WHEEL_GENERATOR, say) and does not appear here -- `crypto.families` already
-    // skips it the same way, which is what this section groups by.
+    var verdict = record.verdict || {};
     var findings = (record.findings || []).filter(function (finding) { return finding.family; });
     var libraries = crypto.libraries || [];
     var families = crypto.families || [];
@@ -1222,9 +1252,15 @@ pre {
     panel.appendChild(heading);
 
     if (!libraries.length && !families.length) {
+      // "No families, no libraries" is true both of a wheel read in full that
+      // carries no crypto and of a wheel this tool could not read at all -- OPAQUE
+      // reaches this branch too, since nothing unreadable carries a family either --
+      // and only the first of those is the absence this section is allowed to claim.
       var none = document.createElement("p");
       none.className = "note";
-      none.textContent = "No cryptography detected in this wheel.";
+      none.textContent = verdict.class === "OPAQUE"
+        ? UNREADABLE_INVENTORY_NOTE
+        : "No cryptography detected in this wheel.";
       panel.appendChild(none);
       return;
     }
@@ -1337,9 +1373,31 @@ pre {
     });
   }
 
+  // "Other evidence": findings with no `family` (excluded from the crypto inventory)
+  // and no `relation` (excluded from the FIPS compatibility lens) -- coverage and
+  // wheel-hygiene findings, verdict-bearing or not: an unreadable-object rule that
+  // carries OPAQUE and neither vocabulary, or a purely informational rule such as
+  // WHEEL_GENERATOR that carries no verdict at all. Without this section such a
+  // finding was visible nowhere but the Raw JSON tab, which is exactly the evidence a
+  // reader needs most when renderInventorySection above is about to say the wheel
+  // carries no cryptography. Renders nothing when there is nothing to say, so the
+  // panel never carries a third heading with no table under it.
+  function renderOtherEvidenceSection(record, panel) {
+    var findings = (record.findings || []).filter(function (finding) {
+      return !finding.family && !finding.relation;
+    });
+    if (!findings.length) return;
+
+    var heading = document.createElement("h3");
+    heading.textContent = "Other evidence";
+    panel.appendChild(heading);
+    appendScrollingTable(panel, buildOtherEvidenceTable(findings));
+  }
+
   function renderFindingsTab(record, panel) {
     renderInventorySection(record, panel);
     renderCompatibilitySection(record, panel);
+    renderOtherEvidenceSection(record, panel);
   }
 
   // A detail table sits in its own scroll box, as the wheel table does: a cell that
