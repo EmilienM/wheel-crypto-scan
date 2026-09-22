@@ -22,7 +22,11 @@ _HEADERS = ("wheel", "version", "class", "openssl", "review", "reasons")
 # renders "No description; see the output schema." in the page -- never a blank and
 # never a positive default, so an unlisted class still cannot look like a pass.
 CLASS_HELP: dict[str, str] = {
-    "NON_APPROVED_CRYPTO": "Implements or bundles a non-FIPS-approved primitive.",
+    "NON_APPROVED_CRYPTO": (
+        "Implements or bundles cryptography that no validated module provides: a "
+        "primitive no approved standard specifies, or an approved algorithm outside "
+        "any validated module."
+    ),
     "FIPS_BREAKING": "Will raise at runtime under FIPS-enforcing mode.",
     "CONDITIONAL": "Approved only under a stated condition; read conditions.",
     "CONTEXT_DEPENDENT": "Non-approved primitive that may be a non-security use.",

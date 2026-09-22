@@ -84,7 +84,7 @@ JSONL, one record per wheel.
 
 | Verdict class | Meaning |
 |---|---|
-| `NON_APPROVED_CRYPTO` | Implements or bundles a non-FIPS-approved primitive |
+| `NON_APPROVED_CRYPTO` | Implements or bundles cryptography that no validated module provides: a primitive no approved standard specifies, or an approved algorithm outside any validated module |
 | `CONDITIONAL` | Approved only under a stated condition; `verdict.conditions` says which holds |
 | `FIPS_BREAKING` | Will raise at runtime under FIPS-enforcing mode |
 | `CONTEXT_DEPENDENT` | Non-approved primitive that may be a non-security use |
