@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "41"
+ruleset_version = "42"
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +282,185 @@ exclude_reasons = [
 
 
 # ---------------------------------------------------------------------------
+# Standards. The NIST/FIPS publications every `relation`/`basis` pair below points at.
+# `status` is `current`, `revision_planned` (a review decision exists, no draft),
+# `draft` (a public draft exists), `planned` (announced, nothing published yet) or
+# `withdrawn`. `successor` names the standard that replaces this one; `sunset` is
+# informational only. A `basis` may only name a `current` or `revision_planned` row,
+# and every row here must be named by some `basis` or be another row's `successor`
+# unless its own status is `withdrawn` or `planned` -- the loader refuses a row this
+# file cites nothing and nobody links to.
+# ---------------------------------------------------------------------------
+
+[[standard]]
+id = "FIPS-140-3"
+title = "Security Requirements for Cryptographic Modules"
+edition = "2019-03"
+status = "current"
+url = "https://csrc.nist.gov/pubs/fips/140-3/final"
+why = "Sets the requirements a cryptographic module meets to be validated: a specific build, in approved mode, in a configured operating environment. Supersedes FIPS 140-2. Approved-function annexes are SP 800-140C and D Rev. 2 (2023-07)."
+
+[[standard]]
+id = "FIPS-140-2"
+title = "Security Requirements for Cryptographic Modules"
+edition = "2002-12"
+status = "withdrawn"
+successor = "FIPS-140-3"
+sunset = "2026-09-22"
+url = "https://csrc.nist.gov/pubs/fips/140-2/final"
+why = "Superseded by FIPS 140-3. Certificates issued under this edition move to CMVP's Historical list on 2026-09-22. Kept as the context a validated-module claim citing the older edition points back to."
+
+[[standard]]
+id = "FIPS-186-5"
+title = "Digital Signature Standard (DSS)"
+edition = "2023-02"
+status = "current"
+url = "https://csrc.nist.gov/pubs/fips/186-5/final"
+why = "Supersedes FIPS 186-4. Approves RSA, ECDSA, deterministic ECDSA (RFC 6979) and EdDSA (Ed25519, Ed448); no longer approves DSA for signature generation. Errata pending."
+
+[[standard]]
+id = "FIPS-180-4"
+title = "Secure Hash Standard (SHS)"
+edition = "2015-08"
+status = "revision_planned"
+successor = "FIPS-180-5"
+sunset = "2030-12-31"
+url = "https://csrc.nist.gov/pubs/fips/180-4/upd1/final"
+why = "Specifies SHA-1 and SHA-2. NIST decided in March 2023 to revise it, removing SHA-1; no draft exists, so this edition is current. SP 800-131A Rev. 2 Table 8 disallows SHA-1 for signature generation and accepts it for non-signature uses that do not need collision resistance."
+
+[[standard]]
+id = "FIPS-180-5"
+title = "Secure Hash Standard (SHS)"
+edition = "not yet published"
+status = "planned"
+url = "https://csrc.nist.gov/news/2023/decision-to-revise-fips-180-4"
+why = "The revision of FIPS 180-4 NIST announced in March 2023: removes SHA-1 and folds in SP 800-107 guidance. Announced only; no draft exists, so nothing here can be checked against its text yet."
+
+[[standard]]
+id = "FIPS-202"
+title = "SHA-3 Standard: Permutation-Based Hash and Extendable-Output Functions"
+edition = "2015-08"
+status = "revision_planned"
+url = "https://csrc.nist.gov/pubs/fips/202/final"
+why = "Specifies SHA-3 and SHAKE. NIST decided in March 2025 to update it: editorial changes plus text reflecting the withdrawal of SHA-1 and Triple DES. No draft exists, so this edition is current."
+
+[[standard]]
+id = "FIPS-197"
+title = "Advanced Encryption Standard (AES)"
+edition = "2023-05"
+status = "current"
+url = "https://csrc.nist.gov/pubs/fips/197/final"
+why = "Specifies AES. Update 1 (2023-05) made no technical change to the algorithm."
+
+[[standard]]
+id = "FIPS-198-1"
+title = "The Keyed-Hash Message Authentication Code (HMAC)"
+edition = "2008-07"
+status = "revision_planned"
+successor = "SP-800-224"
+url = "https://csrc.nist.gov/pubs/fips/198-1/final"
+why = "Specifies HMAC. NIST decided in November 2022 to convert it into SP 800-224; an initial public draft exists (2024-06-28) but is not final, and withdrawal of this edition was put to public comment in mid-2025."
+
+[[standard]]
+id = "SP-800-224"
+title = "Keyed-Hash Message Authentication Code (HMAC): Specification"
+edition = "2024-06 (initial public draft)"
+status = "draft"
+url = "https://csrc.nist.gov/pubs/sp/800/224/ipd"
+why = "The planned replacement for FIPS 198-1's HMAC specification. Initial public draft published 2024-06-28; not final, so a basis cannot yet cite it."
+
+[[standard]]
+id = "FIPS-203"
+title = "Module-Lattice-Based Key-Encapsulation Mechanism Standard"
+edition = "2024-08"
+status = "current"
+url = "https://csrc.nist.gov/pubs/fips/203/final"
+why = "Specifies ML-KEM. Errata pending. SP 800-227, final 2025-09-18, gives recommendations for using a KEM built on it."
+
+[[standard]]
+id = "FIPS-204"
+title = "Module-Lattice-Based Digital Signature Standard"
+edition = "2024-08"
+status = "current"
+url = "https://csrc.nist.gov/pubs/fips/204/final"
+why = "Specifies ML-DSA. Errata pending."
+
+[[standard]]
+id = "FIPS-205"
+title = "Stateless Hash-Based Digital Signature Standard"
+edition = "2024-08"
+status = "current"
+url = "https://csrc.nist.gov/pubs/fips/205/final"
+why = "Specifies SLH-DSA. Errata pending. SP 800-230 adds further parameter sets, draft 2026-04."
+
+[[standard]]
+id = "SP-800-131A-r2"
+title = "Transitioning the Use of Cryptographic Algorithms and Key Lengths"
+edition = "2019-03"
+status = "current"
+successor = "SP-800-131A-r3"
+url = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
+why = "Table 8 sets SHA-1 disallowed for signature generation except where NIST protocol-specific guidance allows it, legacy use for verification and acceptable for non-digital-signature applications that do not need collision resistance; SHA-2 and SHA-3 stay acceptable for every hash application. Also sets three-key TDEA disallowed for encryption after 2023-12-31, legacy use for decryption."
+
+[[standard]]
+id = "SP-800-131A-r3"
+title = "Transitioning the Use of Cryptographic Algorithms and Key Lengths"
+edition = "2024-10 (initial public draft)"
+status = "draft"
+url = "https://csrc.nist.gov/pubs/sp/800/131/a/r3/ipd"
+why = "The draft revision setting the retirement schedule for SHA-1, the 224-bit hashes, DSA signing, ECB and the 112-to-128-bit transition. Initial public draft published 2024-10-21; not final, so a basis cannot yet cite it."
+
+[[standard]]
+id = "SP-800-67-r2"
+title = "Recommendation for the Triple Data Encryption Algorithm (TDEA) Block Cipher"
+edition = "2017-11"
+status = "withdrawn"
+sunset = "2024-01-01"
+url = "https://csrc.nist.gov/pubs/sp/800/67/r2/final"
+why = "Specified Triple DES. Withdrawn 2024-01-01. Kept as the context a certificate or citation naming TDEA points back to; nothing in this ruleset targets it today."
+
+[[standard]]
+id = "SP-800-56A-r3"
+title = "Recommendation for Pair-Wise Key-Establishment Schemes Using Discrete Logarithm Cryptography"
+edition = "2018-04"
+status = "current"
+url = "https://csrc.nist.gov/pubs/sp/800/56/a/r3/final"
+why = "Sets the approved elliptic-curve key-establishment schemes. NIST decided in January 2026 to update it to approve x-coordinate-only ECC key agreement and align curves with SP 800-186; the announcement names neither X25519 nor X448, so which curves the update covers is not yet stated."
+
+[[standard]]
+id = "SP-800-186"
+title = "Recommendations for Discrete Logarithm-Based Cryptography: Elliptic Curve Domain Parameters"
+edition = "2023-02"
+status = "current"
+url = "https://csrc.nist.gov/pubs/sp/800/186/final"
+why = "Table 2 sets each curve's allowed usage: P-224 through P-521 for ECDSA and EC key establishment, Edwards25519 and Edwards448 for EdDSA, Curve25519/Curve448 and the Weierstrass forms as alternative representations for implementation flexibility rather than direct ECDSA or EdDSA use. Section 1 allows secp256k1 for blockchain-related applications and the Brainpool curves for interoperability. Errata pending."
+
+[[standard]]
+id = "SP-800-90A-r1"
+title = "Recommendation for Random Number Generation Using Deterministic Random Bit Generators"
+edition = "2015-06"
+status = "current"
+url = "https://csrc.nist.gov/pubs/sp/800/90/a/r1/final"
+why = "Specifies the approved DRBG constructions. A pre-draft call for comments on a Revision 2 opened 2025-09-04; no draft exists yet."
+
+[[standard]]
+id = "SP-800-132"
+title = "Recommendation for Password-Based Key Derivation"
+edition = "2010-12"
+status = "revision_planned"
+url = "https://csrc.nist.gov/pubs/sp/800/132/final"
+why = "Specifies PBKDF2 as the approved password-based key-derivation function. NIST decided on 2023-05-11 to revise it; no draft exists."
+
+[[standard]]
+id = "SP-800-52-r2"
+title = "Guidelines for the Selection, Configuration, and Use of Transport Layer Security (TLS) Implementations"
+edition = "2019-08"
+status = "revision_planned"
+url = "https://csrc.nist.gov/pubs/sp/800/52/r2/final"
+why = "Sets which TLS versions, cipher suites and certificate practices are approved. Under review as of 2026-05-07; no draft exists yet."
+
+
+# ---------------------------------------------------------------------------
 # Distributions. Matched on the canonical (PEP 503) project name, so "PyNaCl",
 # "pynacl" and "py_nacl" are the same entry.
 # ---------------------------------------------------------------------------
@@ -290,60 +469,80 @@ exclude_reasons = [
 name = "bcrypt"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "password_hash"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-132"]
 why = "Implements the Blowfish-based bcrypt password hash. Blowfish is not a FIPS-approved algorithm and there is no configuration that makes it one."
 
 [[crypto_distribution]]
 name = "pycryptodome"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Self-contained cryptographic library. Implements its own AES, RSA, hashes and RNG in bundled C, so it never consults the system crypto policy or FIPS provider."
 
 [[crypto_distribution]]
 name = "pycryptodomex"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Same code as pycryptodome under the Cryptodome namespace. Self-contained implementation, independent of the system FIPS provider."
 
 [[crypto_distribution]]
 name = "pycrypto"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Unmaintained predecessor of pycryptodome with known vulnerabilities. Self-contained implementation."
 
 [[crypto_distribution]]
 name = "pynacl"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "library"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-56A-r3"]
 why = "Python binding for libsodium. Ships Curve25519, Ed25519, XSalsa20-Poly1305 and Argon2, none of which come from a FIPS-validated module here."
 
 [[crypto_distribution]]
 name = "libnacl"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "library"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-56A-r3"]
 why = "ctypes binding to libsodium/NaCl. Same primitive set as pynacl, loaded at runtime."
 
 [[crypto_distribution]]
 name = "pysodium"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "library"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-56A-r3"]
 why = "Another libsodium binding. Same primitives as pynacl."
 
 [[crypto_distribution]]
 name = "rsa"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "signature"
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
 why = "Pure-Python RSA implementation. RSA itself is approved, but a pure-Python implementation is not a validated module and cannot be, so it is evidence of crypto performed outside the system provider."
 
 [[crypto_distribution]]
 name = "ecdsa"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "signature"
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
 why = "Pure-Python ECDSA implementation. Same reasoning as rsa: the algorithm may be approved, the implementation is not validated and runs outside the system provider."
 
 [[crypto_distribution]]
 name = "fastecdsa"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "signature"
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
 why = "Own C implementation of ECDSA. Does not use the system provider."
 
 [[crypto_distribution]]
@@ -351,43 +550,58 @@ name = "ed25519"
 rule = "DIST_NON_APPROVED_CRYPTO"
 needs_human_review = true
 family = "signature"
-why = "Own Ed25519 implementation. EdDSA status depends on the standard revision and on validation of the specific module, so the classification here needs a crypto engineer's confirmation."
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
+why = "Own Ed25519 implementation. FIPS 186-5 approves EdDSA (Ed25519, Ed448) since February 2023, and SP 800-186 Table 2 lists Edwards25519 for EdDSA use, so the algorithm is approved; this is a pure-Python implementation, outside any validated module."
 
 [[crypto_distribution]]
 name = "coincurve"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "signature"
-why = "Bundles libsecp256k1. The secp256k1 curve is not in the approved curve set."
+relation = "restricted"
+basis = ["SP-800-186", "FIPS-140-3"]
+why = "Bundles libsecp256k1. SP 800-186 §1 names the curve as allowed to be used for blockchain-related applications, a use restriction rather than an absence from the standard, so the use has to be confirmed."
 
 [[crypto_distribution]]
 name = "argon2-cffi"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "password_hash"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "Argon2 password hashing. Not a FIPS-approved key derivation function."
 
 [[crypto_distribution]]
 name = "argon2-cffi-bindings"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "password_hash"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "Bundles the Argon2 reference implementation used by argon2-cffi."
 
 [[crypto_distribution]]
 name = "scrypt"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "kdf"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "scrypt key derivation, implemented in the package. Not FIPS-approved."
 
 [[crypto_distribution]]
 name = "passlib"
 rule = "DIST_NON_APPROVED_CRYPTO"
-family = "password_hash"
-why = "Password hashing framework that selects schemes such as bcrypt, Argon2 and unsalted MD5 crypt. Which scheme is reachable depends on application configuration, so review what it is configured to use."
+verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
+family = "password_hash"
+relation = "use_unresolved"
+basis = ["SP-800-132"]
+why = "Password hashing framework that selects schemes such as bcrypt, Argon2 and unsalted MD5 crypt. Which scheme is reachable depends on application configuration, so review what it is configured to use."
 
 [[crypto_distribution]]
 name = "pyaes"
 rule = "DIST_NON_APPROVED_CRYPTO"
 family = "block_cipher"
+relation = "outside_module"
+basis = ["FIPS-197", "FIPS-140-3"]
 why = "Pure-Python AES. Approved algorithm, unvalidated implementation, outside the system provider."
 
 [[crypto_distribution]]
@@ -419,6 +633,8 @@ name = "paramiko"
 rule = "DIST_SYSTEM_CRYPTO_WRAPPER"
 needs_human_review = true
 family = "ssh"
+relation = "policy_bypass"
+basis = ["FIPS-140-3"]
 why = "SSH implementation that performs its own algorithm negotiation on top of cryptography. The primitives come from cryptography, the algorithm choice does not, so the negotiated set needs review."
 
 [[crypto_distribution]]
@@ -543,6 +759,8 @@ always_report = true
 verdict = "CONDITIONAL"
 severity = "high"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "OpenSSL. Linking the system copy is the good case because it can pick up the system FIPS provider. A copy shipped inside the wheel cannot, regardless of how OpenSSL itself was built."
 
 [[crypto_library]]
@@ -553,6 +771,8 @@ string_group = "libsodium"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-56A-r3"]
 why = "NaCl primitives: Curve25519, Ed25519, XSalsa20-Poly1305, BLAKE2b, Argon2. Not a FIPS-validated module and not configurable to become one."
 
 [[crypto_library]]
@@ -562,6 +782,8 @@ verdict = "CONDITIONAL"
 severity = "high"
 needs_human_review = true
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "libgcrypt has a FIPS mode, but only the system copy is built and validated for it. A bundled copy will not honour the system policy."
 
 [[crypto_library]]
@@ -570,6 +792,8 @@ sonames = ["libnettle", "libhogweed"]
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Nettle and its public-key half, hogweed. Provides a full primitive set independent of the system provider."
 
 [[crypto_library]]
@@ -578,6 +802,8 @@ sonames = ["libmbedtls", "libmbedcrypto", "libmbedx509"]
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "mbedTLS is a self-contained TLS and crypto stack. It ignores the system crypto policy entirely."
 
 [[crypto_library]]
@@ -587,6 +813,8 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "wolfSSL ships a separate FIPS-validated product. A wheel-bundled copy is almost certainly the non-FIPS build, but the specific build should be confirmed."
 
 [[crypto_library]]
@@ -596,6 +824,8 @@ verdict = "CONDITIONAL"
 severity = "medium"
 needs_human_review = true
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "GnuTLS has a FIPS mode in the system build. A bundled copy will not have it."
 
 [[crypto_library]]
@@ -605,6 +835,8 @@ verdict = "CONDITIONAL"
 severity = "medium"
 needs_human_review = true
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "NSS has its own FIPS mode and its own module database. Which mode applies depends on the NSS configuration the application uses, not on the wheel alone."
 
 [[crypto_library]]
@@ -613,6 +845,8 @@ sonames = ["libcryptopp", "libcrypto++"]
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Crypto++ is a self-contained C++ crypto library."
 
 [[crypto_library]]
@@ -621,6 +855,8 @@ sonames = ["libtomcrypt", "libtommath"]
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "LibTomCrypt is a self-contained crypto library, common in embedded code."
 
 [[crypto_library]]
@@ -629,6 +865,8 @@ sonames = ["libargon2"]
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "password_hash"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "Argon2 password hashing, the reference C implementation. Not a FIPS-approved key derivation function, and a bundled copy is not reachable by system policy."
 
 [[crypto_library]]
@@ -637,6 +875,8 @@ sonames = ["libb2"]
 verdict = "CONTEXT_DEPENDENT"
 severity = "low"
 family = "hash"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "BLAKE2 reference library. Not approved, but frequently used for checksums rather than security."
 
 [[crypto_library]]
@@ -645,7 +885,9 @@ sonames = ["libsecp256k1"]
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "signature"
-why = "The secp256k1 curve is not in the approved curve set."
+relation = "restricted"
+basis = ["SP-800-186", "FIPS-140-3"]
+why = "The secp256k1 curve. SP 800-186 §1 names it as allowed to be used for blockchain-related applications, a use restriction rather than an absence from the standard, so the use has to be confirmed."
 
 
 # ---------------------------------------------------------------------------
@@ -736,18 +978,32 @@ family = "password_hash"
 why = "Argon2 entry points, defined in or imported by the object. Argon2 is not an approved key derivation function. BIN_ARGON2 reads this group."
 
 [[symbol_group]]
-name = "weak_hash_impl"
-prefixes = ["MD4_", "MD5_", "SHA1_", "RIPEMD160_"]
-exact = ["md5_init", "md5_update", "md5_final", "sha1_init", "sha1_update", "sha1_final", "MD5Init", "MD5Update", "SHA1Init"]
+name = "unspecified_hash_impl"
+prefixes = ["MD4_", "MD5_", "RIPEMD160_"]
+exact = ["md5_init", "md5_update", "md5_final", "MD5Init", "MD5Update"]
 family = "hash"
-why = "MD4, MD5, SHA-1 and RIPEMD-160 entry points. Only meaningful when DEFINED in the wheel's own object: that means the wheel carries its own implementation of a broken hash rather than calling one it can be denied."
+why = "MD4, MD5 and RIPEMD-160 entry points. No approved standard specifies any of the three, so a definition here is never inside a module -- and only meaningful when DEFINED in the wheel's own object: that means the wheel carries its own implementation rather than calling one it can be denied."
 
 [[symbol_group]]
-name = "curve25519"
-prefixes = ["curve25519_", "x25519_", "ed25519_", "X25519_", "Ed25519_", "ED25519_", "ossl_x25519_", "ossl_ed25519_"]
+name = "sha1_impl"
+prefixes = ["SHA1_"]
+exact = ["sha1_init", "sha1_update", "sha1_final", "SHA1Init"]
+family = "hash"
+why = "SHA-1 entry points. Only meaningful when DEFINED in the wheel's own object: that means the wheel carries its own implementation rather than calling one it can be denied, the same distinction unspecified_hash_impl draws for MD4/MD5/RIPEMD-160. BIN_OWN_SHA1_IMPL reads this group."
+
+[[symbol_group]]
+name = "x25519"
+prefixes = ["curve25519_", "x25519_", "X25519_", "ossl_x25519_"]
 exact = ["X25519", "ossl_x25519"]
 family = "key_agreement"
-why = "Every spelling of an X25519/Ed25519 entry point: the generic lowercase names, OpenSSL 1.1.1's X25519/ED25519_*, OpenSSL 3's ossl_x25519*/ossl_ed25519_* provider names, and the internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers OpenSSL 1.1.1 and 3 both define on their assembly paths. OpenSSL's own names are listed on purpose, so a static OpenSSL reads the same on every architecture rather than only where the assembly helpers happen to exist, at the cost that its headline leads with NON_APPROVED_CRYPTO the same way the other legacy primitives already do. None of these OpenSSL names is exported by libcrypto, so a bundled copy matches only when it keeps a .symtab. Status otherwise depends on the standard revision and on validation of the specific implementation, so these always need review rather than an automatic answer."
+why = "Every spelling of an X25519 entry point, plus the generic Curve25519 field-arithmetic helpers under it: the lowercase curve25519_/x25519_ names, OpenSSL 1.1.1's X25519_*, OpenSSL 3's ossl_x25519_* provider names, and the internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers OpenSSL 1.1.1 and 3 both define on their assembly paths. The curve25519_ prefix is grouped here rather than with Ed25519 on purpose: alone it is generic curve arithmetic, more often under X25519 than under Ed25519, so the conservative relation -- not_specified rather than outside_module -- is the one it carries. None of these OpenSSL names is exported by libcrypto, so a bundled copy matches only when it keeps a .symtab."
+
+[[symbol_group]]
+name = "ed25519"
+prefixes = ["ed25519_", "Ed25519_", "ED25519_", "ossl_ed25519_"]
+exact = []
+family = "signature"
+why = "Every spelling of an Ed25519 entry point: the generic lowercase name, OpenSSL 1.1.1's Ed25519_*/ED25519_*, and OpenSSL 3's ossl_ed25519_* provider names. None of these OpenSSL names is exported by libcrypto, so a bundled copy matches only when it keeps a .symtab."
 
 
 # ---------------------------------------------------------------------------
@@ -853,9 +1109,15 @@ why = "Build settings a Go binary records in .go.buildinfo when it was built aga
 
 [[string_group]]
 name = "go_stock_crypto"
-substrings = ["crypto/sha256.", "crypto/aes.", "crypto/rsa.", "crypto/ecdsa."]
+substrings = ["crypto/sha256.", "crypto/aes.", "crypto/rsa.", "crypto/ecdsa.", "crypto/mlkem."]
 family = "library"
 why = "Stock Go crypto package paths. Go implements its own primitives in Go; they are not the system provider and are not validated."
+
+[[string_group]]
+name = "liboqs"
+substrings = ["liboqs", "OQS_KEM_", "OQS_SIG_"]
+family = "kem"
+why = "liboqs identifies itself in read-only data, and its own KEM and signature API prefixes survive stripping the way other bundled libraries' banners do. Covers both post-quantum families liboqs implements, so it is read by a rule of its own rather than folded into an existing one."
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +1138,8 @@ name = "ring"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "ring carries BoringSSL-derived assembly and implements its own primitives. Not a validated module, and it cannot be redirected to the system provider."
 
 [[rust_crate]]
@@ -883,6 +1147,8 @@ name = "boring-sys"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Builds BoringSSL and links it into the extension. BoringSSL is not a validated module, does not read the system crypto policy, and its FIPS branch ships separately."
 
 [[rust_crate]]
@@ -890,6 +1156,8 @@ name = "boring"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Rust API over BoringSSL, which boring-sys compiles in. Named separately because a binary can carry a panic location from either crate alone."
 
 [[rust_crate]]
@@ -898,6 +1166,8 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Statically links AWS-LC into the extension. The separately validated build ships as aws-lc-fips-sys, so this crate name indicates the non-FIPS variant unless proven otherwise."
 
 [[rust_crate]]
@@ -907,6 +1177,8 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so this finding does not by itself say which build it compiled against. Its own rule, BIN_AWS_LC_RS_CRATE, names BIN_AWS_LC_FIPS in its rule-level suppressed_by, so an object where the FIPS build is identified, whether by symbol prefix, version string or the aws-lc-fips-sys cargo path, drops this finding and the FIPS build's CONDITIONAL finding stands; no entry-level relation is needed here. An SBOM naming aws-lc-fips-sys in the same document drops this component too, through that same rule relation (crate_suppressors in ruleset.py). An SBOM naming aws-lc-rs beside a FIPS binary object, rather than beside aws-lc-fips-sys in its own SBOM document, keeps this finding: SBOM and binary evidence never suppress each other, because they never share a location path (see Suppression is keyed on rule, subject and object in DESIGN.md)."
 
 [[rust_crate]]
@@ -920,10 +1192,12 @@ why = "The FIPS build of AWS-LC. Still a bundled static library rather than the 
 
 [[rust_crate]]
 name = "rustls"
-verdict = "NON_APPROVED_CRYPTO"
+verdict = "CONDITIONAL"
 severity = "high"
 needs_human_review = true
 family = "tls"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3", "SP-800-52-r2"]
 why = "A TLS stack that does not consult the system crypto policy. Its provider crate decides the primitives; look for ring or aws-lc-rs alongside it."
 
 [[rust_crate]]
@@ -932,6 +1206,8 @@ verdict = "CONDITIONAL"
 severity = "high"
 needs_human_review = true
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "The crate openssl-sys pulls in for its `vendored` feature, which builds OpenSSL from source. Listed as reach rather than as an observation: its Rust code runs in a build script and is not linked into the artifact, so it leaves no panic location, and neither cryptography 50.0.1 wheel measured (manylinux or win_amd64) carries the path. Read it as a hint to a human, not as a posture: an object whose only OpenSSL evidence is this name makes openssl_linkage unknown, not static, unless another object in the wheel answers, because a crate name never asserts which copy was linked. Its absence says nothing either, so it is not the fallback for a stripped banner."
 
 [[rust_crate]]
@@ -939,6 +1215,8 @@ name = "openssl-sys"
 verdict = "CONDITIONAL"
 severity = "medium"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "Rust bindings to OpenSSL. The crate can link the system libcrypto or vendor its own, so read the binary linkage evidence in the same record to see which happened. With no other OpenSSL evidence in the object, it makes openssl_linkage unknown unless another object in the wheel answers."
 
 [[rust_crate]]
@@ -946,6 +1224,8 @@ name = "openssl"
 verdict = "CONDITIONAL"
 severity = "medium"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "High-level Rust OpenSSL bindings, sitting on openssl-sys. Same question: system or vendored."
 
 [[rust_crate]]
@@ -953,20 +1233,26 @@ name = "sha1"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "hash"
-why = "Pure-Rust SHA-1. A broken hash, implemented in the extension where FIPS mode cannot deny it."
+relation = "restricted"
+basis = ["FIPS-180-4", "SP-800-131A-r2", "FIPS-140-3"]
+why = "Pure-Rust SHA-1. SP 800-131A Rev. 2 Table 8 sets SHA-1 acceptable for non-digital-signature applications that do not require collision resistance, disallowed for signature generation, with retirement announced for the end of 2030. Implemented in the extension, where the host FIPS provider cannot restrict it either way."
 
 [[rust_crate]]
 name = "sha-1"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "hash"
-why = "The same crate as sha1 under the name it published before 0.10. A cargo path spells whichever name that build depended on, so both have to be listed or the older pin reads as carrying nothing."
+relation = "restricted"
+basis = ["FIPS-180-4", "SP-800-131A-r2", "FIPS-140-3"]
+why = "The same crate as sha1 under the name it published before 0.10, and the same standing: SP 800-131A Rev. 2 Table 8 sets SHA-1 acceptable for non-digital-signature applications that do not require collision resistance, disallowed for signature generation, with retirement announced for the end of 2030. A cargo path spells whichever name that build depended on, so both have to be listed or the older pin reads as carrying nothing."
 
 [[rust_crate]]
 name = "md5"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "hash"
+relation = "not_specified"
+basis = ["FIPS-180-4"]
 why = "Pure-Rust MD5, a different crate from RustCrypto's md-5 below and as widely used. A broken hash implemented in the extension, where FIPS mode cannot deny it."
 
 [[rust_crate]]
@@ -974,13 +1260,17 @@ name = "sha1_smol"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "hash"
-why = "The dependency-free SHA-1 crate, which took this name when RustCrypto claimed sha1. Same broken hash, different name, so both have to be listed."
+relation = "restricted"
+basis = ["FIPS-180-4", "SP-800-131A-r2", "FIPS-140-3"]
+why = "The dependency-free SHA-1 crate, which took this name when RustCrypto claimed sha1. Same standing as sha1: SP 800-131A Rev. 2 Table 8 sets SHA-1 acceptable for non-digital-signature applications that do not require collision resistance, disallowed for signature generation, with retirement announced for the end of 2030. Different name, so both have to be listed."
 
 [[rust_crate]]
 name = "sha3"
-verdict = "CONDITIONAL"
+verdict = "NON_APPROVED_CRYPTO"
 severity = "medium"
 family = "hash"
+relation = "outside_module"
+basis = ["FIPS-202", "FIPS-140-3"]
 why = "Pure-Rust SHA-3 and SHAKE. The algorithms are approved; this implementation is not a validated module and does not read the system provider, so the condition is which build it is trusted under."
 
 [[rust_crate]]
@@ -988,6 +1278,8 @@ name = "md-5"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "hash"
+relation = "not_specified"
+basis = ["FIPS-180-4"]
 why = "Pure-Rust MD5, compiled into the extension where a FIPS-enforcing runtime has no way to refuse it."
 
 [[rust_crate]]
@@ -996,6 +1288,8 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "medium"
 needs_human_review = true
 family = "hash"
+relation = "outside_module"
+basis = ["FIPS-180-4", "FIPS-140-3"]
 why = "Pure-Rust SHA-2. The algorithm is approved; this implementation is not a validated module and runs outside the system provider. Whether that matters depends on the use, so review it."
 
 [[rust_crate]]
@@ -1004,6 +1298,8 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "medium"
 needs_human_review = true
 family = "mac"
+relation = "outside_module"
+basis = ["FIPS-198-1", "FIPS-140-3"]
 why = "Pure-Rust HMAC. Approved construction, unvalidated implementation."
 
 [[rust_crate]]
@@ -1012,6 +1308,8 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "medium"
 needs_human_review = true
 family = "kdf"
+relation = "outside_module"
+basis = ["SP-800-132", "FIPS-140-3"]
 why = "Pure-Rust PBKDF2. Approved KDF, unvalidated implementation."
 
 [[rust_crate]]
@@ -1019,6 +1317,8 @@ name = "argon2"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "password_hash"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "Argon2 password hashing in Rust. Not an approved key derivation function."
 
 [[rust_crate]]
@@ -1026,6 +1326,8 @@ name = "bcrypt"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "password_hash"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-132"]
 why = "bcrypt password hashing in Rust, built on Blowfish. Not approved under any configuration."
 
 [[rust_crate]]
@@ -1033,6 +1335,8 @@ name = "scrypt"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "kdf"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "scrypt key derivation in Rust. Not an approved key derivation function."
 
 [[rust_crate]]
@@ -1040,7 +1344,9 @@ name = "curve25519-dalek"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "key_agreement"
-why = "Curve25519 field and group arithmetic, the building block under X25519 and Ed25519 in Rust extensions."
+relation = "not_specified"
+basis = ["SP-800-56A-r3", "SP-800-186"]
+why = "Curve25519 field and group arithmetic, the building block under X25519 and Ed25519 in Rust extensions. SP 800-186 lists Curve25519 for implementation flexibility only, not for direct ECDSA or EdDSA use, and SP 800-56A Rev. 3 does not include it. NIST decided in January 2026 to consider approving x-coordinate-only ECC key-agreement schemes; the decision names no curve, so whether X25519 is the intended beneficiary is not yet settled."
 
 [[rust_crate]]
 name = "ed25519-dalek"
@@ -1048,7 +1354,9 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
 family = "signature"
-why = "Ed25519 signatures. Status depends on the standard revision and on validation, so review rather than assume."
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
+why = "Ed25519 signatures. FIPS 186-5 approves EdDSA (Ed25519, Ed448) since February 2023, and SP 800-186 Table 2 lists Edwards25519 for EdDSA use, so the algorithm is approved; this implementation is not a validated module and runs outside the system provider."
 
 [[rust_crate]]
 name = "x25519-dalek"
@@ -1056,14 +1364,18 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
 family = "key_agreement"
-why = "X25519 key agreement. Same review note as ed25519-dalek."
+relation = "not_specified"
+basis = ["SP-800-56A-r3", "SP-800-186"]
+why = "X25519 key agreement. SP 800-186 lists Curve25519 for implementation flexibility only, not for direct ECDSA or EdDSA use, and SP 800-56A Rev. 3 does not include it. NIST decided in January 2026 to consider approving x-coordinate-only ECC key-agreement schemes; the decision names no curve, so whether X25519 is the intended beneficiary is not yet settled."
 
 [[rust_crate]]
 name = "k256"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 family = "signature"
-why = "secp256k1 elliptic curve, outside the approved curve set."
+relation = "restricted"
+basis = ["SP-800-186", "FIPS-140-3"]
+why = "secp256k1 elliptic curve. SP 800-186 §1 allows it for blockchain-related applications, a use restriction rather than an absence from the standard, so the use has to be confirmed."
 
 [[rust_crate]]
 name = "p256"
@@ -1071,14 +1383,18 @@ verdict = "NON_APPROVED_CRYPTO"
 severity = "medium"
 needs_human_review = true
 family = "signature"
+relation = "outside_module"
+basis = ["FIPS-186-5", "SP-800-186", "FIPS-140-3"]
 why = "Pure-Rust NIST P-256. Approved curve, unvalidated implementation."
 
 [[rust_crate]]
 name = "rand"
-verdict = "NON_APPROVED_CRYPTO"
+verdict = "CONTEXT_DEPENDENT"
 severity = "medium"
 needs_human_review = true
 family = "drbg"
+relation = "use_unresolved"
+basis = ["SP-800-90A-r1"]
 why = "Rust RNG framework. Whether the generator is an approved DRBG depends on which backend was selected, so review it."
 
 [[rust_crate]]
@@ -1086,6 +1402,8 @@ name = "rand_chacha"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "medium"
 family = "drbg"
+relation = "not_specified"
+basis = ["SP-800-90A-r1"]
 why = "ChaCha20-based random generator. Not one of the approved DRBG constructions, and it does not read the system DRBG."
 
 [[rust_crate]]
@@ -1093,6 +1411,8 @@ name = "blake3"
 verdict = "CONTEXT_DEPENDENT"
 severity = "low"
 family = "hash"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "BLAKE3, commonly used for content addressing and caching."
 
 [[rust_crate]]
@@ -1100,6 +1420,8 @@ name = "blake2"
 verdict = "CONTEXT_DEPENDENT"
 severity = "low"
 family = "hash"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "BLAKE2 in Rust. Not approved, but most often used for checksums and content addressing rather than security."
 
 [[rust_crate]]
@@ -1107,6 +1429,8 @@ name = "twox-hash"
 verdict = "CONTEXT_DEPENDENT"
 severity = "low"
 family = "checksum"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "xxHash in Rust. A non-cryptographic hash used for checksums and hash tables, with no security claim to evaluate."
 
 [[rust_crate]]
@@ -1114,14 +1438,114 @@ name = "ahash"
 verdict = "CONTEXT_DEPENDENT"
 severity = "low"
 family = "checksum"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "Hash-table hasher. Not a security primitive, listed so it is visible rather than surprising."
 
 [[rust_crate]]
 name = "getrandom"
-verdict = "CONTEXT_DEPENDENT"
 severity = "info"
 family = "entropy"
 why = "Reads the operating system RNG. That is the desirable behaviour, recorded for completeness."
+
+[[rust_crate]]
+name = "ml-kem"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "kem"
+relation = "outside_module"
+basis = ["FIPS-203", "FIPS-140-3"]
+why = "The RustCrypto ML-KEM implementation. ML-KEM is approved by FIPS 203; this implementation is not a validated module and runs outside the system provider."
+
+[[rust_crate]]
+name = "ml-dsa"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "signature"
+relation = "outside_module"
+basis = ["FIPS-204", "FIPS-140-3"]
+why = "The RustCrypto ML-DSA implementation. ML-DSA is approved by FIPS 204; this implementation is not a validated module and runs outside the system provider."
+
+[[rust_crate]]
+name = "slh-dsa"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "signature"
+relation = "outside_module"
+basis = ["FIPS-205", "FIPS-140-3"]
+why = "The RustCrypto SLH-DSA implementation. SLH-DSA is approved by FIPS 205; this implementation is not a validated module and runs outside the system provider."
+
+[[rust_crate]]
+name = "fips203"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "kem"
+relation = "outside_module"
+basis = ["FIPS-203", "FIPS-140-3"]
+why = "A direct ML-KEM implementation, named after its own standard. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[rust_crate]]
+name = "fips204"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "signature"
+relation = "outside_module"
+basis = ["FIPS-204", "FIPS-140-3"]
+why = "A direct ML-DSA implementation, named after its own standard. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[rust_crate]]
+name = "fips205"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "signature"
+relation = "outside_module"
+basis = ["FIPS-205", "FIPS-140-3"]
+why = "A direct SLH-DSA implementation, named after its own standard. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[rust_crate]]
+name = "pqcrypto-mlkem"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "kem"
+relation = "outside_module"
+basis = ["FIPS-203", "FIPS-140-3"]
+why = "PQClean's ML-KEM bindings. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[rust_crate]]
+name = "pqcrypto-mldsa"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "signature"
+relation = "outside_module"
+basis = ["FIPS-204", "FIPS-140-3"]
+why = "PQClean's ML-DSA bindings. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[rust_crate]]
+name = "pqcrypto-sphincsplus"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "signature"
+relation = "outside_module"
+basis = ["FIPS-205", "FIPS-140-3"]
+why = "PQClean's SPHINCS+ bindings, the algorithm FIPS 205 standardised as SLH-DSA. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[rust_crate]]
+name = "pqcrypto-kyber"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "kem"
+relation = "outside_module"
+basis = ["FIPS-203", "FIPS-140-3"]
+why = "PQClean's Kyber bindings, published under Kyber's pre-standardisation name for the algorithm FIPS 203 standardised as ML-KEM. Approved algorithm, unvalidated implementation, outside the system provider."
+
+[[rust_crate]]
+name = "pqcrypto-dilithium"
+verdict = "NON_APPROVED_CRYPTO"
+severity = "high"
+family = "signature"
+relation = "outside_module"
+basis = ["FIPS-204", "FIPS-140-3"]
+why = "PQClean's Dilithium bindings, published under Dilithium's pre-standardisation name for the algorithm FIPS 204 standardised as ML-DSA. Approved algorithm, unvalidated implementation, outside the system provider."
 
 
 # ---------------------------------------------------------------------------
@@ -1166,6 +1590,8 @@ name = "Crypto"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "pycryptodome/pycrypto namespace. Self-contained implementation outside the system provider."
 
 [[python_module]]
@@ -1173,6 +1599,8 @@ name = "Cryptodome"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "pycryptodomex namespace. Same implementation as Crypto."
 
 [[python_module]]
@@ -1180,6 +1608,8 @@ name = "nacl"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "library"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-56A-r3"]
 why = "The pynacl namespace, meaning libsodium primitives reached from Python: Curve25519, Ed25519 and XSalsa20-Poly1305."
 
 [[python_module]]
@@ -1187,6 +1617,8 @@ name = "libnacl"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "library"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-56A-r3"]
 why = "libnacl reaches libsodium through ctypes, so the library is loaded by name at runtime and appears in no dependency graph."
 
 [[python_module]]
@@ -1194,6 +1626,8 @@ name = "bcrypt"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "password_hash"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-132"]
 why = "The bcrypt package, meaning Blowfish-based password hashing that no configuration makes approved."
 
 [[python_module]]
@@ -1201,6 +1635,8 @@ name = "rsa"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "signature"
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
 why = "The pure-Python rsa package. RSA is approved as an algorithm; a pure-Python implementation is not a validated module and runs outside the system provider."
 
 [[python_module]]
@@ -1208,6 +1644,8 @@ name = "ecdsa"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "signature"
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
 why = "The pure-Python ecdsa package. Same reasoning as rsa: approved algorithm, unvalidated implementation, outside the system provider."
 
 [[python_module]]
@@ -1215,6 +1653,8 @@ name = "argon2"
 severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "password_hash"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "Argon2 password hashing from Python. Not an approved key derivation function."
 
 [[python_module]]
@@ -1222,6 +1662,8 @@ name = "cryptography"
 severity = "medium"
 verdict = "CONDITIONAL"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "Depends on how the installed cryptography was built. Scan that wheel too; this import only says the dependency exists."
 
 [[python_module]]
@@ -1229,6 +1671,8 @@ name = "OpenSSL"
 severity = "medium"
 verdict = "CONDITIONAL"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "pyOpenSSL, inheriting whatever the installed cryptography provides."
 
 [[python_module]]
@@ -1236,6 +1680,8 @@ name = "M2Crypto"
 severity = "medium"
 verdict = "CONDITIONAL"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "OpenSSL binding; posture follows the OpenSSL it links."
 
 [[python_module]]
@@ -1243,6 +1689,8 @@ name = "blake3"
 severity = "low"
 verdict = "CONTEXT_DEPENDENT"
 family = "hash"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "BLAKE3, often a checksum rather than a security hash."
 
 [[python_module]]
@@ -1250,6 +1698,8 @@ name = "xxhash"
 severity = "low"
 verdict = "CONTEXT_DEPENDENT"
 family = "checksum"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "xxHash from Python. A non-cryptographic hash used for checksums and deduplication, with no security claim to evaluate."
 
 [[python_module]]
@@ -1257,6 +1707,8 @@ name = "murmurhash"
 severity = "low"
 verdict = "CONTEXT_DEPENDENT"
 family = "checksum"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "Non-cryptographic hash, common in ML feature hashing."
 
 [[python_module]]
@@ -1264,7 +1716,27 @@ name = "mmh3"
 severity = "low"
 verdict = "CONTEXT_DEPENDENT"
 family = "checksum"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "MurmurHash3 from Python. Non-cryptographic, and in practice almost always feature hashing or sharding."
+
+[[python_module]]
+name = "oqs"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+family = "kem"
+relation = "outside_module"
+basis = ["FIPS-203", "FIPS-140-3"]
+why = "Python binding for liboqs, the Open Quantum Safe library. Bundles reference implementations of post-quantum KEM and signature algorithms; the algorithms are approved, this build is not a validated module and runs outside the system provider."
+
+[[python_module]]
+name = "pqcrypto"
+severity = "high"
+verdict = "NON_APPROVED_CRYPTO"
+family = "kem"
+relation = "outside_module"
+basis = ["FIPS-203", "FIPS-140-3"]
+why = "PQClean bindings, covering post-quantum KEM and signature algorithms including ML-KEM. The algorithms are approved, this build is not a validated module and runs outside the system provider."
 
 
 # ---------------------------------------------------------------------------
@@ -1380,6 +1852,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Distribution wraps a system crypto library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "The wheel does not implement crypto itself, it delegates. Whether that is acceptable depends entirely on what it links against, which the binary evidence in the same record answers."
 [rule.match]
 kind = "dist_name"
@@ -1394,6 +1868,8 @@ confidence = "high"
 verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
 title = "Distribution provides a non-cryptographic hash"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "Fast hashes used for checksums, caching and feature hashing. Not approved, and usually not doing security work either. Someone has to look at how it is used."
 [rule.match]
 kind = "dist_name"
@@ -1409,6 +1885,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Distribution ships its own CA trust store"
 family = "trust_store"
+relation = "policy_bypass"
+basis = ["SP-800-52-r2"]
 why = "Not a crypto implementation, but code that uses a bundled CA bundle stops following the system trust policy and stops picking up system trust updates."
 [rule.match]
 kind = "dist_name"
@@ -1604,6 +2082,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Wheel ships its own OpenSSL"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "The single most valuable check in this tool. A libcrypto or libssl copied into the wheel by auditwheel or delocate cannot see the system FIPS provider, cannot see the system crypto policy, and will not be updated when the system OpenSSL is. The condition for approval does not hold for this build."
 [rule.match]
 kind = "bundled_library"
@@ -1646,6 +2126,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Depends on a hash-renamed crypto library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "A dependency such as libcrypto-3a1f2b4c.so.3, or libcrypto-3-x64-a1b2c3d4.dll on Windows, is a vendored copy: auditwheel, delocate and delvewheel rename libraries they bundle so they cannot collide with the system ones. Seeing this name means the wheel binds to its own copy even if the vendor directory itself is not where we expected."
 [rule.match]
 kind = "dt_needed"
@@ -1661,6 +2143,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Depends on a crypto library the wheel ships under its own name"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "delocate copies a dependency into .dylibs/ and rewrites the load command to point there without renaming the file, so a plain, unmangled needed entry can still resolve to an object this wheel itself ships -- and nothing stops a Linux build placing an unmangled dependency beside the extension the same way. BIN_NEEDED_MANGLED_CRYPTO only catches a hash-renamed name; this is the rule that says a needed entry is bundled when it resolves to a shipped object without one, so that reading of bundled is never silent."
 [rule.match]
 kind = "dt_needed"
@@ -1690,6 +2174,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Defines OpenSSL symbols"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "OpenSSL entry points defined inside the wheel's own object mean OpenSSL was compiled into it. Statically linked crypto answers to no system policy and cannot be swapped for the FIPS provider."
 [rule.match]
 kind = "dynamic_symbol"
@@ -1718,6 +2204,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "OpenSSL statically linked into an extension"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "No OpenSSL dependency is declared and no vendor directory exists, yet the extension contains OpenSSL code. This is the case a vendor-directory check alone would miss, and it is the least visible way to end up outside the system FIPS provider."
 [rule.match]
 kind = "linkage"
@@ -1733,6 +2221,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "All OpenSSL use resolves to the system library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings. It is withheld in two cases: when some object in the wheel uses OpenSSL without saying which copy (its own posture is unknown: imported symbols with no declared dependency, a Rust crate that binds it and nothing else, a vendor-shaped dependency the wheel could not confirm, an OpenSSL-named definition beside AWS-LC or BoringSSL, which define the same names, or an uncorroborated version banner), or when the wheel's own SBOM names OpenSSL or a crate that binds it and no system-linked object's own cargo paths already carry that same crate. Either way not every piece of evidence points at the system library, even though the linkage field, where unknown never outvotes a definite posture, still reads system. A system-linked object naming its own openssl-sys is the ordinary shape of a system-linked Rust build, not a second, unaccounted-for copy, so an SBOM component that only restates it does not withhold this finding."
 [rule.match]
 kind = "linkage"
@@ -1827,6 +2317,8 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "libsodium primitives present"
+relation = "not_specified"
+basis = ["FIPS-197", "SP-800-56A-r3"]
 why = "NaCl primitives compiled into or shipped with the wheel. There is no system-policy path that makes them approved."
 [rule.match]
 kind = "dynamic_symbol"
@@ -1842,6 +2334,8 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "BoringSSL present"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "BoringSSL is a separate stack from OpenSSL and ignores the system crypto policy. A separately validated BoringCrypto build exists, so a reviewer has to determine which build this is rather than assuming the worst or the best. Suppressed on an object where the FIPS module's integrity test or a Go BoringCrypto build is identified, because both carry BoringSSL's own strings in read-only data; a stock BoringSSL object elsewhere in the wheel keeps its own finding."
 suppressed_by = ["BIN_BORINGSSL_FIPS_MODULE", "BIN_GO_BORING_CRYPTO"]
 [rule.match]
@@ -1857,6 +2351,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "BoringSSL-lineage FIPS module present"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "The FIPS module's power-on integrity test is compiled in. The symbol is shared by BoringCrypto and AWS-LC FIPS, so it identifies a FIPS build of the BoringSSL-lineage module, not which fork compiled it; the fork itself is still named by BIN_BORINGSSL's or BIN_AWS_LC's own strings. It is a condition, not a pass: the module is a static copy, and which validated version was compiled in is not something the wheel states. Suppresses BIN_BORINGSSL on the same object only, so a FIPS-built binary does not hide a stock one beside it in the wheel; a stripped static object loses this symbol along with everything else that would tell it apart and reads as stock BoringSSL."
 [rule.match]
 kind = "dynamic_symbol"
@@ -1872,6 +2368,8 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "AWS-LC present"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "AWS-LC statically linked into the wheel. A FIPS variant of AWS-LC exists and is a different build, so confirm which one before concluding. Suppressed on an object where the FIPS build is also identified, because the aws_lc substrings match both builds, and lowercase aws-lc also matches the cargo path of either crate; a stock AWS-LC object elsewhere in the same wheel keeps this finding."
 suppressed_by = ["BIN_AWS_LC_FIPS"]
 [rule.match]
@@ -1887,6 +2385,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "AWS-LC FIPS build present"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "The FIPS build of AWS-LC, identified by its version string, by the symbol prefix aws-lc-fips-sys applies, or by that crate's cargo path. A condition rather than an answer: it is still a static copy bundled into the wheel rather than the system provider, and which validated version was compiled in is not something the wheel states. The version string survives stripping -- it lives in .text, not .symtab, and ELF searches executable sections for this group alone -- so a stripped ELF object is still identified by it even once the symbol prefix is gone. Suppresses BIN_AWS_LC and BIN_AWS_LC_RS_CRATE on the same object only, so a wheel shipping one FIPS object and one stock one keeps the stock object's own finding; the per-object evidence stays in matched_symbols and matched_strings."
 [[rule.match]]
 kind = "binary_string"
@@ -1924,6 +2424,8 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Blowfish or bcrypt implementation present"
+relation = "not_specified"
+basis = ["FIPS-197"]
 why = "Defined, not imported, so Blowfish-based password hashing is compiled into the wheel. Not approved under any configuration. A statically linked or bundled OpenSSL defines this entry point too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. An object that only imports these names is BIN_BCRYPT_BLOWFISH_IMPORTED."
 [rule.match]
 kind = "dynamic_symbol"
@@ -1939,6 +2441,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Calls Blowfish or bcrypt from a linked library"
+relation = "boundary_unresolved"
+basis = ["FIPS-197", "FIPS-140-3"]
 why = "The object calls Blowfish or bcrypt that lives in a library it links, and does not carry the code itself. Blowfish is not approved under any configuration, so this is never a pass. It is CONDITIONAL rather than NON_APPROVED_CRYPTO because the wheel neither implements nor bundles the primitive: whichever library answers the call governs it, and verdict.conditions.openssl_linkage says whether that is the host's libcrypto. OpenSSL's low-level BF_ functions sit outside its provider mechanism, so a FIPS-enforcing host does not refuse them the way it refuses a Blowfish fetched through EVP; a reviewer has to read what the call is for. A bundled libcrypto that answers the call defines these names itself and carries BIN_BCRYPT_BLOWFISH on its own object."
 [rule.match]
 kind = "dynamic_symbol"
@@ -1954,6 +2458,8 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Argon2 implementation present"
+relation = "not_specified"
+basis = ["SP-800-132"]
 why = "Defined means an Argon2 implementation is compiled into the object; imported means it calls an Argon2 library at run time. Argon2 is not an approved key derivation function. The host OpenSSL exports no such name -- its own Argon2 is only reachable through EVP_KDF -- so an import here is never a call into the host FIPS provider, unlike a Blowfish import, which the system libcrypto does export. A dependency on libargon2 is also reported by BIN_LINKED_CRYPTO_LIBRARY."
 [rule.match]
 kind = "dynamic_symbol"
@@ -1968,11 +2474,30 @@ severity = "high"
 confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
-title = "Ships its own MD4/MD5/SHA-1 implementation"
-why = "Defined, not imported, so the wheel carries the code itself. That matters more than it first appears: a private implementation of a broken hash cannot be refused by FIPS mode the way hashlib can, so it will keep working silently on a FIPS-enforcing host. A statically linked or bundled OpenSSL defines these entry points too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy-provider code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. A statically linked AWS-LC defines them too, its FIPS build included: the FIPS module links as one monolithic object, so an unstripped FIPS build defines md5_final beside its aws_lc_fips_-prefixed entry points. BIN_AWS_LC_FIPS does not suppress this finding, because the module still offers the primitive and does not refuse it, and deciding the object is acceptable on balance is a reviewer's call; its CONDITIONAL stays in verdict.classes alongside."
+title = "Ships its own MD4/MD5/RIPEMD-160 implementation"
+relation = "not_specified"
+basis = ["FIPS-180-4"]
+why = "Defined, not imported, so the wheel carries the code itself. No approved standard specifies MD4, MD5 or RIPEMD-160, so a private implementation of one is never inside a module -- and unlike hashlib, it cannot be refused by FIPS mode either, so it will keep working silently on a FIPS-enforcing host. A statically linked or bundled OpenSSL defines these entry points too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy-provider code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. A statically linked AWS-LC defines them too, its FIPS build included: the FIPS module links as one monolithic object, so an unstripped FIPS build defines md5_final beside its aws_lc_fips_-prefixed entry points. BIN_AWS_LC_FIPS does not suppress this finding, because the module still offers the primitive and does not refuse it, and deciding the object is acceptable on balance is a reviewer's call; its CONDITIONAL stays in verdict.classes alongside."
 [rule.match]
 kind = "dynamic_symbol"
-group = "weak_hash_impl"
+group = "unspecified_hash_impl"
+binding = "defined"
+
+[[rule]]
+id = "BIN_OWN_SHA1_IMPL"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "medium"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Ships its own SHA-1 implementation"
+relation = "restricted"
+basis = ["FIPS-180-4", "SP-800-131A-r2", "FIPS-140-3"]
+why = "Defined, not imported, so SHA-1 is compiled into the object itself. SP 800-131A Rev. 2 Table 8 sets SHA-1 acceptable for non-digital-signature applications that do not require collision resistance, disallowed for signature generation, with retirement announced for the end of 2030 -- but a private implementation cannot be refused by FIPS mode the way hashlib can, so whichever use this is, it runs outside any validated module and outside the host's own restriction. A statically linked or bundled OpenSSL defines this entry point too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy-provider code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
+[rule.match]
+kind = "dynamic_symbol"
+group = "sha1_impl"
 binding = "defined"
 
 [[rule]]
@@ -1984,6 +2509,8 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Alternative TLS stack present"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "mbedTLS, wolfSSL or rustls compiled in. Each is a complete TLS implementation that does not consult the system crypto policy, so the host's FIPS configuration has no effect on it."
 [rule.match]
 kind = "binary_string"
@@ -1998,6 +2525,8 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "NSS or GnuTLS present"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "Both have FIPS modes in their system builds, and both are configured separately from OpenSSL. Whether FIPS applies depends on which copy is loaded and how it is configured."
 [rule.match]
 kind = "binary_string"
@@ -2012,6 +2541,8 @@ confidence = "medium"
 verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
 title = "BLAKE family hash present"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "Not approved, but commonly used for content addressing, deduplication and caching rather than for security. Worth a glance, rarely worth a change. Fires on a BLAKE2/BLAKE3 marker in read-only data or on a BLAKE entry point in the object's symbols: a reference implementation compiled in with no marker string carries only its blake2b_init-style names."
 [[rule.match]]
 kind = "binary_string"
@@ -2023,18 +2554,37 @@ group = "blake"
 binding = "any"
 
 [[rule]]
-id = "BIN_CURVE25519"
+id = "BIN_X25519"
 layer = "binary"
 category = "non-approved-impl"
 severity = "high"
 confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
-title = "Curve25519 family implementation present"
-why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here. A statically linked or bundled OpenSSL defines some of these entry points too: OpenSSL 3's ossl_x25519/ossl_ed25519_* provider names, 1.1.1's X25519/ED25519_*, and both versions' internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. A statically linked AWS-LC defines curve25519_x25519 too, its FIPS build included: s2n-bignum's X25519 implementation compiles into the FIPS module, so an unstripped FIPS build defines it beside the module's aws_lc_fips_-prefixed entry points. BIN_AWS_LC_FIPS does not suppress this finding either, for the same reason: the module still offers the primitive and does not refuse it, and deciding the object is acceptable on balance is a reviewer's call."
+title = "X25519 implementation present"
+relation = "not_specified"
+basis = ["SP-800-56A-r3", "SP-800-186"]
+why = "X25519 entry points compiled in, and the generic Curve25519 field-arithmetic helpers under them: the lowercase curve25519_/x25519_ names, OpenSSL 3's ossl_x25519_* provider names, 1.1.1's X25519_*, and both versions' internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers. SP 800-186 Table 2 lists Curve25519 for implementation flexibility only, not for direct ECDSA or EdDSA use, and SP 800-56A Rev. 3 does not include it; NIST decided in January 2026 to consider approving x-coordinate-only ECC key-agreement schemes, without naming a curve, so whether that update covers X25519 is not yet settled. A statically linked or bundled OpenSSL defines some of these entry points too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. A statically linked AWS-LC defines curve25519_x25519 too, its FIPS build included: s2n-bignum's X25519 implementation compiles into the FIPS module, so an unstripped FIPS build defines it beside the module's aws_lc_fips_-prefixed entry points. BIN_AWS_LC_FIPS does not suppress this finding either, for the same reason: the module still offers the primitive and does not refuse it, and deciding the object is acceptable on balance is a reviewer's call."
 [rule.match]
 kind = "dynamic_symbol"
-group = "curve25519"
+group = "x25519"
+binding = "defined"
+
+[[rule]]
+id = "BIN_ED25519"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "medium"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Ed25519 implementation present"
+relation = "outside_module"
+basis = ["FIPS-186-5", "FIPS-140-3"]
+why = "Ed25519 entry points compiled in: the generic lowercase ed25519_ name, OpenSSL 1.1.1's Ed25519_*/ED25519_*, and OpenSSL 3's ossl_ed25519_* provider names. FIPS 186-5 approves EdDSA (Ed25519, Ed448) since February 2023, and SP 800-186 Table 2 lists Edwards25519 for EdDSA use, so the algorithm is approved; this is a definition compiled into the object rather than a call into a validated module. A statically linked or bundled OpenSSL defines these entry points too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
+[rule.match]
+kind = "dynamic_symbol"
+group = "ed25519"
 binding = "defined"
 
 [[rule]]
@@ -2061,6 +2611,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Go binary built with BoringCrypto"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "Go's BoringCrypto backend replaces the stock Go implementations with a separately validated module. Which validated version was used is a property of the toolchain, not of this wheel, so a reviewer has to confirm it."
 [rule.match]
 kind = "binary_string"
@@ -2076,6 +2628,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Go binary built against the Go FIPS 140-3 module"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "Since Go 1.24 the standard library routes its crypto through crypto/internal/fips140, and a build with GOFIPS140 set compiles the validated module in and defaults GODEBUG to fips140=on. That is a condition rather than an answer: the module is in force only if the deployment does not turn GODEBUG back off, and which validated version was compiled in is a property of the toolchain this wheel does not state. Matched on the build settings rather than on the package paths, which a stock build carries too."
 [rule.match]
 kind = "binary_string"
@@ -2091,11 +2645,29 @@ verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Go binary using stock Go crypto"
 family = "library"
+relation = "outside_module"
+basis = ["FIPS-140-3"]
 why = "Go implements its primitives in Go. They are not the system provider and are not a validated module, and nothing on the host can redirect them. Suppressed when BoringCrypto or the Go FIPS 140-3 module is detected, because both builds still contain the stock package paths: measured on go1.27.1, a GOFIPS140 build carries crypto/sha256. and crypto/aes. exactly as often as a stock one, so without the suppression a binary whose crypto goes through the validated module would read as non-approved. Suppression is per object, so a wheel shipping one FIPS-built and one stock Go binary reports both, with the stock finding located on the stock object alone."
 suppressed_by = ["BIN_GO_BORING_CRYPTO", "BIN_GO_FIPS140"]
 [rule.match]
 kind = "binary_string"
 group = "go_stock_crypto"
+
+[[rule]]
+id = "BIN_LIBOQS"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "liboqs present"
+relation = "outside_module"
+basis = ["FIPS-203", "FIPS-204", "FIPS-205", "FIPS-140-3"]
+why = "liboqs bundles reference implementations of ML-KEM, ML-DSA and SLH-DSA. The algorithms it implements are approved; a bundled copy is not a validated module and does not read the system provider."
+[rule.match]
+kind = "binary_string"
+group = "liboqs"
 
 [[rule]]
 id = "BIN_OPAQUE"
@@ -2192,6 +2764,8 @@ verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
 title = "Imports the non-cryptographic random module"
 family = "drbg"
+relation = "use_unresolved"
+basis = ["SP-800-90A-r1"]
 why = "random is a Mersenne Twister, fine for sampling and wrong for keys, tokens, nonces or salts. Very common and usually benign, so it is low confidence on purpose: a reviewer decides, the tool only points."
 [rule.match]
 kind = "py_import"
@@ -2207,11 +2781,32 @@ verdict = "FIPS_BREAKING"
 needs_human_review = true
 title = "Weak hash called without usedforsecurity=False"
 family = "hash"
-why = "hashlib.md5() and hashlib.sha1() raise on a FIPS-enforcing host unless the caller passes usedforsecurity=False. This is the finding that predicts a runtime crash rather than a policy discussion, and the fix is usually one keyword argument. An explicit usedforsecurity=True is the same outcome, and at least as confident: the caller is not silent about intent, it is declaring one."
+relation = "runtime_refusal"
+basis = ["FIPS-140-3", "SP-800-131A-r2"]
+why = "hashlib.md5() and the rest of the refused algorithms (md4, md5-sha1, ripemd160, sm3, whirlpool, reached through hashlib.new()) raise on a FIPS-enforcing host unless the caller passes usedforsecurity=False. This is the finding that predicts a runtime crash rather than a policy discussion, and the fix is usually one keyword argument. An explicit usedforsecurity=True is the same outcome, and at least as confident: the caller is not silent about intent, it is declaring one. hashlib.sha1() is a different call: the OpenSSL FIPS provider (providers/fips/fipsprov.c, fips_digests[]) registers SHA1 with the default, approved properties, so a bare call fetches successfully and does not raise -- PY_RESTRICTED_HASH_CALL covers it instead."
 [rule.match]
 kind = "py_call"
-targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
-algorithm_list = "weak"
+targets = ["hashlib.md5", "hashlib.new"]
+algorithm_list = "refused"
+usedforsecurity = ["absent", "true"]
+
+[[rule]]
+id = "PY_RESTRICTED_HASH_CALL"
+layer = "python"
+category = "fips-restricted"
+severity = "medium"
+confidence = "high"
+verdict = "CONTEXT_DEPENDENT"
+needs_human_review = true
+title = "SHA-1 called without usedforsecurity=False"
+family = "hash"
+relation = "restricted"
+basis = ["FIPS-180-4", "SP-800-131A-r2"]
+why = "hashlib.sha1() fetches successfully from the OpenSSL FIPS provider (providers/fips/fipsprov.c, fips_digests[], which registers SHA1 with the default, approved properties), so it does not raise the way PY_WEAK_HASH_CALL's algorithms do. SP 800-131A Rev. 2 Table 8 sets SHA-1 acceptable for non-digital-signature applications that do not require collision resistance, disallowed for signature generation, with retirement announced for the end of 2030. Which of those the call site is doing is not readable from the call alone, so a human decides."
+[rule.match]
+kind = "py_call"
+targets = ["hashlib.sha1", "hashlib.new"]
+algorithm_list = "restricted"
 usedforsecurity = ["absent", "true"]
 
 [[rule]]
@@ -2224,6 +2819,8 @@ verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
 title = "Weak hash called with usedforsecurity=False"
 family = "hash"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "The caller declared this is not a security use, so it will keep working on a FIPS-enforcing host. Degraded severity rather than cleared: the declaration is an assertion by the author, and someone should agree with it."
 [rule.match]
 kind = "py_call"
@@ -2241,6 +2838,8 @@ verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
 title = "Hash choice or security use not resolvable at scan time"
 family = "hash"
+relation = "use_unresolved"
+basis = ["FIPS-180-4", "FIPS-202"]
 why = "hashlib.new(name) where name is a variable, or usedforsecurity passed a non-constant on a weak-hash-capable call. Static analysis stops here by design: we record the call site and let a human read the surrounding code rather than guessing which branch runs. Restricted to weak algorithms: usedforsecurity is irrelevant to sha256 and the like, which stay approved regardless of the flag, so a non-constant flag there is not this finding."
 [[rule.match]]
 kind = "py_call"
@@ -2263,6 +2862,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Overrides TLS protocol or cipher policy"
 family = "tls"
+relation = "policy_bypass"
+basis = ["SP-800-52-r2"]
 why = "Applications should inherit the system crypto policy rather than set their own. Pinning ciphers or protocol versions in code means a host-level policy change, including enabling FIPS, will not reach this code path."
 [rule.match]
 kind = "py_call"
@@ -2278,6 +2879,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Pins a TLS version"
 family = "tls"
+relation = "policy_bypass"
+basis = ["SP-800-52-r2"]
 why = "Assigning minimum_version or maximum_version fixes the protocol range in code, overriding the system policy in both directions."
 [rule.match]
 kind = "py_attr"
@@ -2293,6 +2896,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "References a legacy TLS protocol constant"
 family = "tls"
+relation = "policy_bypass"
+basis = ["SP-800-52-r2"]
 why = "PROTOCOL_TLSv1 and PROTOCOL_SSLv23 select protocol versions the system policy normally refuses. Code naming them explicitly is trying to go around that."
 [rule.match]
 kind = "py_constant"
@@ -2308,6 +2913,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Assigns away certificate or hostname verification"
 family = "tls"
+relation = "policy_bypass"
+basis = ["SP-800-52-r2"]
 why = "check_hostname = False or verify_mode = CERT_NONE. Strictly a transport security failure rather than a FIPS one, but it is the same mistake in the same family: code deciding it knows better than the system policy. Only the disabling assignments match, so setting check_hostname = True is not flagged."
 [rule.match]
 kind = "py_attr"
@@ -2324,6 +2931,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "References an unverified TLS context or CERT_NONE"
 family = "tls"
+relation = "policy_bypass"
+basis = ["SP-800-52-r2"]
 why = "ssl._create_unverified_context is a private function whose entire purpose is to skip verification, and a bare CERT_NONE reference is usually on its way to the same place. Separate from the assignment rule above because it is a plain name reference, which is a different thing to look for."
 [rule.match]
 kind = "py_constant"
@@ -2339,6 +2948,8 @@ verdict = "CONDITIONAL"
 needs_human_review = true
 title = "Loads a crypto library through ctypes"
 family = "library"
+relation = "boundary_unresolved"
+basis = ["FIPS-140-3"]
 why = "A crypto library reached by name at runtime appears in no dependency graph and in no SBOM. Which copy gets loaded depends on the loader path at execution time, so the record cannot say and a human must."
 [rule.match]
 kind = "py_ctypes_load"
