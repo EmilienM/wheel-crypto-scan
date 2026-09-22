@@ -74,6 +74,12 @@ header {
   flex-wrap: wrap;
 }
 
+#header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 h1 { font-size: 1.25rem; margin: 0; }
 h2 { font-size: 1.05rem; margin: 0 0 8px; }
 h3 { font-size: 0.95rem; margin: 16px 0 6px; }
@@ -90,6 +96,17 @@ button {
 
 button:hover { border-color: var(--accent); }
 
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  text-decoration: underline;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.link-btn:hover { opacity: 0.8; border-color: transparent; }
+
 .banner {
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -97,19 +114,6 @@ button:hover { border-color: var(--accent); }
   border-radius: 6px;
   padding: 10px 12px;
   margin: 0 0 16px;
-  font-weight: 600;
-}
-
-details.legend {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  margin: 0 0 16px;
-  padding: 8px 12px;
-  background: var(--bg-alt);
-}
-
-details.legend summary {
-  cursor: pointer;
   font-weight: 600;
 }
 
@@ -158,6 +162,39 @@ details.legend summary {
   padding: 0 4px 0 0;
 }
 
+.filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.class-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.class-chip[aria-pressed="false"] {
+  opacity: 0.5;
+}
+
+.count-chip {
+  color: var(--fg-muted);
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
 #search, select {
   font: inherit;
   padding: 6px 8px;
@@ -196,6 +233,17 @@ table {
   min-width: 640px;
 }
 
+/* The wheel table alone carries a fixed layout: every column but the last (`reasons`,
+   the flex column) is sized from its `<col>` element, which survives a header rebuild
+   on sort the way a `<th>`-carried width never could. Its `min-width` is set only in
+   JavaScript (`recomputeTableMinWidth`), from the columns' actual widths, and kept no
+   static value here: the page needs JavaScript to render any row at all, so there is
+   no no-JS case for a static number to serve, only a second number that could drift
+   from the one the script computes. */
+#wheel-table {
+  table-layout: fixed;
+}
+
 th, td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
@@ -206,6 +254,7 @@ th, td {
 thead th {
   background: var(--bg-alt);
   white-space: nowrap;
+  position: relative;
 }
 
 th button.sort-btn {
@@ -220,6 +269,8 @@ th button.sort-btn {
 
 th button.sort-btn:hover { text-decoration: underline; }
 
+.rule-link { font-weight: 600; }
+
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--row-hover); }
 
@@ -230,6 +281,55 @@ tbody tr:hover { background: var(--row-hover); }
    table scrolls in its own box. */
 td.wrap { word-break: break-word; min-width: 16em; }
 
+/* The wheel table's own filename column: under `table-layout: fixed` the column no
+   longer grows to fit an unbreakable filename, so the cell wraps one instead. Not
+   `td.wrap` -- that class's 16em floor exists for the detail panel's tables and would
+   fight a user narrowing this column below 16em on purpose. */
+td.wheel-cell { overflow-wrap: anywhere; }
+
+/* A resize handle sits on the trailing edge of every fixed-width `<th>` but the last
+   (`reasons`, which has no explicit width to drag). `::before` carries the visible
+   line so hover and focus can colour it without moving the handle's own hit box. The
+   handle straddles the column boundary -- half its 10px width inside this `<th>`,
+   half inside the next one, which also carries `position: relative` -- so without
+   `z-index: 1` the next `<th>`'s own (unpositioned but later-painted) content wins
+   the trailing half for hit-testing, shrinking the handle's effective target to
+   about 5px; confirmed with `elementFromPoint` across the handle's full declared
+   width in a real browser, both before and after. */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.col-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+}
+
+.col-resize-handle:hover::before {
+  background: var(--accent);
+}
+
+.col-resize-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.col-resize-handle:focus-visible::before {
+  background: var(--accent);
+}
+
 .badge {
   display: inline-block;
   border-radius: 999px;
@@ -239,6 +339,7 @@ td.wrap { word-break: break-word; min-width: 16em; }
   color: var(--accent-fg);
   background: var(--class-color, var(--class-warn));
   cursor: help;
+  white-space: nowrap;
 }
 
 /* Every verdict class maps to one of three tokens, none of them a favourable
@@ -265,6 +366,7 @@ td.wrap { word-break: break-word; min-width: 16em; }
   border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--fg-muted);
+  white-space: nowrap;
 }
 
 .review-flag.flagged {
@@ -323,6 +425,19 @@ td.wrap { word-break: break-word; min-width: 16em; }
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+#detail-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+}
+
+#detail-nav button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .tabs {
@@ -394,19 +509,60 @@ pre {
   font-size: 13px;
 }
 
+dialog#intro {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  max-width: 640px;
+  width: 90%;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+dialog#intro::backdrop {
+  background: var(--shadow);
+}
+
+dialog#intro h2 { margin: 0 0 4px; }
+
+dialog#intro p { margin: 10px 0; }
+
+#intro-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+#intro-footer label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 [hidden] { display: none !important; }
 
 @media (max-width: 640px) {
   #toolbar { flex-direction: column; align-items: stretch; }
   #count { margin-left: 0; }
   header { flex-direction: column; align-items: flex-start; }
+  dialog#intro { width: 94vw; max-height: 90vh; padding: 12px; }
+  #detail-nav { flex-wrap: wrap; }
 }
 </style>
 </head>
 <body>
 <header>
   <h1>wheel-crypto-scan report</h1>
-  <button id="theme-toggle" type="button">Theme: system</button>
+  <div id="header-actions">
+    <button id="help-open" type="button">Help</button>
+    <button id="theme-toggle" type="button">Theme: system</button>
+  </div>
 </header>
 
 <p class="banner">
@@ -414,40 +570,66 @@ pre {
   deployment is a human's judgement, not this report's.
 </p>
 
-<details class="legend">
-  <summary>Legend and column help</summary>
-  <div id="legend-body"></div>
-</details>
-
-<section id="toolbar">
-  <input id="search" type="search" placeholder="Filter by filename or reason">
-  <fieldset id="class-filter">
-    <legend>Class</legend>
-  </fieldset>
-  <label for="linkage-filter">OpenSSL linkage
-    <select id="linkage-filter">
-      <option value="">any</option>
-    </select>
-  </label>
-  <label><input type="checkbox" id="review-only"> needs review only</label>
-  <span id="count"></span>
-</section>
-
-<div class="table-scroll">
-  <table id="wheel-table">
-    <thead>
-      <tr id="header-row"></tr>
-    </thead>
-    <tbody id="wheel-rows"></tbody>
-  </table>
+<div class="tabs" id="view-tabs" role="tablist" aria-label="Report views">
+  <button type="button" role="tab" id="view-tab-wheels" aria-selected="true">Wheels</button>
+  <button type="button" role="tab" id="view-tab-rules" aria-selected="false">Rules</button>
 </div>
 
-<div id="empty" hidden>No wheels scanned.</div>
+<section id="view-wheels">
+  <section id="toolbar">
+    <input id="search" type="search" placeholder="Filter by filename, rule id or reason">
+    <fieldset id="class-filter">
+      <legend>Class</legend>
+      <div id="class-chips" class="chip-row"></div>
+      <button type="button" id="class-reset" class="link-btn" hidden>all</button>
+    </fieldset>
+    <label for="linkage-filter">OpenSSL linkage
+      <select id="linkage-filter">
+        <option value="">any</option>
+      </select>
+    </label>
+    <span class="filter-group" id="review-group">
+      <label><input type="checkbox" id="review-only"> needs review only</label>
+    </span>
+    <span id="review-count" class="count-chip"></span>
+    <button type="button" id="clear-filters" class="link-btn" hidden>Clear filters</button>
+    <button type="button" id="reset-columns" class="link-btn" hidden>Reset columns</button>
+    <span id="count"></span>
+  </section>
+
+  <div class="table-scroll">
+    <table id="wheel-table">
+      <colgroup id="wheel-colgroup"></colgroup>
+      <thead>
+        <tr id="header-row"></tr>
+      </thead>
+      <tbody id="wheel-rows"></tbody>
+    </table>
+  </div>
+
+  <div id="empty" hidden>No wheels scanned.</div>
+</section>
+
+<section id="view-rules" hidden>
+  <div class="table-scroll">
+    <table id="rules-table">
+      <thead>
+        <tr id="rules-header-row"></tr>
+      </thead>
+      <tbody id="rules-rows"></tbody>
+    </table>
+  </div>
+</section>
 
 <div id="detail" hidden>
   <div id="detail-panel" role="dialog" aria-modal="true">
     <div id="detail-head">
       <h2 id="detail-title"></h2>
+      <div id="detail-nav">
+        <button id="detail-prev" type="button">Previous</button>
+        <span id="detail-position"></span>
+        <button id="detail-next" type="button">Next</button>
+      </div>
       <button id="detail-close" type="button">Close</button>
     </div>
     <div class="tabs" id="tabs" role="tablist"></div>
@@ -461,6 +643,46 @@ pre {
 
 <div id="popover" hidden role="tooltip"></div>
 
+<dialog id="intro" aria-labelledby="intro-title">
+  <h2 id="intro-title">How to read this report</h2>
+  <div class="tabs" id="intro-tabs" role="tablist">
+    <button type="button" role="tab" id="intro-tab-intro" aria-selected="true">Intro</button>
+    <button type="button" role="tab" id="intro-tab-reference" aria-selected="false">Reference</button>
+  </div>
+  <div id="intro-panel-intro" class="tab-panel" role="tabpanel">
+    <p>
+      Each row is one wheel. The table shows the cryptographic evidence found inside
+      it: which primitive families and libraries it carries and how they link, then
+      what that evidence means through the FIPS lens: the class badge, the relations,
+      and the reasons behind them.
+    </p>
+    <p>
+      It reports evidence, not a decision. Nothing here says a wheel is fine to ship
+      on a FIPS host. A human makes that call; this report exists to make it an
+      informed one.
+    </p>
+    <p>
+      Click a row for the full evidence: findings, binaries, wheel metadata, errors
+      and the raw record. Click a column name to sort. Filter by class, OpenSSL
+      linkage or "needs review only", or type part of a filename or rule id in the
+      search box. Every column and filter has a "?" beside it, and Reference (in
+      Help) explains every value.
+    </p>
+    <p>
+      Where to start: the "needs review" chip. Those are the wheels a rule asked a
+      human to look at. OPAQUE means the tool could not read enough to say, not that
+      nothing is there.
+    </p>
+  </div>
+  <div id="intro-panel-reference" class="tab-panel" role="tabpanel" hidden>
+    <div id="legend-body"></div>
+  </div>
+  <div id="intro-footer">
+    <label><input type="checkbox" id="intro-dismiss" checked> Don't show this again</label>
+    <button type="button" id="intro-close">Close</button>
+  </div>
+</dialog>
+
 <script type="application/json" id="wcs-data">/*WCS_DATA*/</script>
 <script>
 // Every value from a record reaches the DOM through textContent or element
@@ -472,16 +694,58 @@ pre {
   // Inventory-first, the same order `report.py`'s `_HEADERS` gives the Markdown
   // summary table: what the wheel carries (families, libraries and their linkage,
   // the relations that follow from it), then the FIPS compatibility lens's own
-  // summary (the class badge), then review and reasons.
+  // summary (the class badge), then review and reasons. `width`/`min` seed the
+  // wheel table's `<col>` elements and each column's resize-handle floor; `reasons`
+  // carries no `width`, since it is the flex column that takes whatever space the
+  // others do not claim -- `min` still bounds how far it can be squeezed. The seven
+  // fixed columns' `width` plus `reasons`' own `min` is the table's default rendered
+  // width: kept comfortably under 1200px so a common 1280px-wide browser window
+  // shows the table with no horizontal scrollbar before any user resizing.
   var COLUMNS = [
-    { key: "filename", label: "wheel", help: "The wheel's filename. The primary key for this report." },
-    { key: "version", label: "version", help: "The project version declared in the wheel's own metadata." },
-    { key: "families", label: "families", help: "crypto.families: every kind of primitive a finding in this wheel is evidence of. See the legend for what each family means." },
-    { key: "libraries", label: "libraries", help: "crypto.libraries: every crypto library this wheel carries evidence for, and how it links. See the legend's OpenSSL linkage table for what each linkage value means." },
-    { key: "relations", label: "relations", help: "verdict.relations: what would have to change, for every relation a contributing finding cited. See the legend for what each relation means." },
-    { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel: the FIPS compatibility lens's own summary, not the wheel's identity. See the legend for what each class means." },
-    { key: "review", label: "review", help: "Whether a rule flagged this wheel as needing a human look." },
-    { key: "reasons", label: "reasons", help: "The rule ids and subjects behind the verdict, in short form. Hover a chip for its full reason." }
+    { key: "filename", label: "wheel", help: "The wheel's filename. The primary key for this report.", width: 240, min: 160 },
+    { key: "version", label: "version", help: "The project version declared in the wheel's own metadata.", width: 70, min: 60 },
+    { key: "families", label: "families", help: "crypto.families: every kind of primitive a finding in this wheel is evidence of. See the Help dialog's Reference tab for what each family means.", width: 150, min: 100 },
+    { key: "libraries", label: "libraries", help: "crypto.libraries: every crypto library this wheel carries evidence for, and how it links. See the Help dialog's Reference tab for its OpenSSL linkage table.", width: 120, min: 90 },
+    { key: "relations", label: "relations", help: "verdict.relations: what would have to change, for every relation a contributing finding cited. See the Help dialog's Reference tab for what each relation means.", width: 150, min: 110 },
+    { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel: the FIPS compatibility lens's own summary, not the wheel's identity. See the Help dialog's Reference tab for what each class means.", width: 200, min: 150 },
+    { key: "review", label: "review", help: "Whether a rule flagged this wheel as needing a human look.", width: 120, min: 105 },
+    { key: "reasons", label: "reasons", help: "The rule ids and subjects behind the verdict, in short form. Hover a chip for its full reason.", min: 150 }
+  ];
+
+  // The write-side ceiling a drag or Shift+Arrow resize can never exceed, matching
+  // the ceiling `readColumnWidths` already validates a stored value against: without
+  // a shared bound, a width the UI lets a user create could still fail the storage
+  // read path's own validation and silently revert on the next load.
+  var MAX_COLUMN_WIDTH = 2000;
+
+  var CLASS_FILTER_HELP = "Keep only wheels whose class badge is one of the ticked " +
+    "classes. Every class starts ticked; untick one to hide those wheels. A wheel " +
+    "that fired several classes is filtered by the one its badge shows, the highest " +
+    "in precedence.";
+  var REVIEW_FILTER_HELP = "Keep only wheels a rule flagged for a human look: the " +
+    "ones whose review column says \"needs review\". Off, flagged and unflagged " +
+    "wheels show alike.";
+  var LINKAGE_FILTER_HELP = "Keep only wheels whose conditions.openssl_linkage is " +
+    "this value. The list holds only the values present in this report.";
+
+  // The Rules view's own columns: one row per rule the embedded records actually
+  // reference, `why` shown in full rather than only as a reason-chip tooltip, and
+  // `fired` computed client-side from RECORD_RULE_IDS, the per-record rule-id
+  // membership index built below. Carries `help` the same shape COLUMNS does, so
+  // `renderSortableHeader` wires up a "?" button for every column of both tables
+  // alike, and `defaultDir` for the one column (`count`) that should land sorted
+  // highest-first the first time it is clicked, the same way COLUMNS never needs
+  // to say so because every one of its columns is happy to start ascending.
+  var RULES_COLUMNS = [
+    { key: "id", label: "rule id", help: "The rule's id, as it appears in reasons and rule_ids. Click it to filter the Wheels view to exactly the wheels this rule fired on." },
+    { key: "title", label: "title", help: "The rule's short, human-readable title." },
+    { key: "why", label: "why", help: "Why the rule exists and what a finding from it is evidence of." },
+    { key: "verdict", label: "verdict", help: "The verdict class this rule assigns when it fires, if it assigns one. Blank for a purely informational rule." },
+    { key: "severity", label: "severity", help: "How serious a finding from this rule is." },
+    { key: "family", label: "family", help: "The crypto.families entry a finding from this rule is evidence of, if any." },
+    { key: "relation", label: "relation", help: "The verdict.relations entry this rule cites, if any." },
+    { key: "basis", label: "basis", help: "The NIST/FIPS standards this rule's basis cites, if any." },
+    { key: "count", label: "fired", help: "The number of distinct wheels in this run this rule fired on, counting a wheel once no matter how many subjects it fired on.", defaultDir: "desc" }
   ];
 
   var NO_HELP = "No description; see the output schema.";
@@ -505,8 +769,61 @@ pre {
   // in Python (see report.py's _all_classes), so this page is a plain renderer of
   // what it is handed and never needs to recompute the union itself.
 
+  // Read-only summaries over the whole embedded run, computed once at boot rather
+  // than per render: the class strip's counts, the "needs review" chip and the
+  // Rules view's fired-count all describe the report as a whole, not the currently
+  // filtered rows.
+  var CLASS_COUNTS = (function () {
+    var counts = {};
+    DATA.records.forEach(function (rec) {
+      var cls = (rec.verdict || {}).class;
+      if (cls) counts[cls] = (counts[cls] || 0) + 1;
+    });
+    return counts;
+  })();
+
+  var NEEDS_REVIEW_COUNT = DATA.records.filter(function (rec) {
+    return (rec.verdict || {}).needs_human_review;
+  }).length;
+
+  // A per-record set of every rule id that fired on it: the union of
+  // `verdict.rule_ids` (every finding whose `verdict` field is set -- see
+  // `classify` in verdict.py) and every finding's own `rule_id`, verdict or not.
+  // The second half matters on its own: a purely informational rule (such as
+  // WHEEL_GENERATOR) carries no `verdict` at all, so it never reaches
+  // `verdict.rule_ids` no matter how many records it fires on, and without this
+  // its Rules-tab count would read a permanent 0. Built once, in `DATA.records`
+  // order, so both the fired-count below and the Rules tab's click-through can
+  // query it -- by rule id for a count, by record index for exact membership --
+  // without rescanning `reasons` text, which is deduped per `(rule_id, subject)`
+  // pair and would overcount a rule that fires on several subjects of one wheel,
+  // and substring-matches, which reads a click on `BIN_AWS_LC` as also matching
+  // `BIN_AWS_LC_FIPS`.
+  var RECORD_RULE_IDS = DATA.records.map(function (rec) {
+    var ids = new Set(((rec.verdict || {}).rule_ids) || []);
+    (rec.findings || []).forEach(function (finding) {
+      if (finding.rule_id) ids.add(finding.rule_id);
+    });
+    return ids;
+  });
+
+  // Distinct wheels a rule fired on, not distinct reasons: a rule that fires with
+  // two different subjects on the same wheel counts once here, matching what
+  // "fired" means to a reader, not twice the way one entry per reason would.
+  var RULE_FIRED_COUNTS = (function () {
+    var counts = {};
+    RECORD_RULE_IDS.forEach(function (ids) {
+      ids.forEach(function (id) { counts[id] = (counts[id] || 0) + 1; });
+    });
+    return counts;
+  })();
+
   var state = {
     search: "",
+    // The rule id a Rules-tab click is filtering the table to, exactly, or null for
+    // plain substring search over `search`: not part of the hash grammar, and reset
+    // to null by `applyHashParams` and whenever the search box is edited by hand.
+    ruleId: null,
     classes: new Set(DATA.classes),
     linkage: "",
     reviewOnly: false,
@@ -514,24 +831,62 @@ pre {
     sortDir: "asc"
   };
 
+  var rulesState = { sortKey: "count", sortDir: "desc" };
+
+  // The record position currently open in the detail panel, or null: the single
+  // source of truth the hash is written from, never read back out of the hash on
+  // every render, so a hash written by this page's own replaceState never has to
+  // round-trip through parsing to know what is open.
+  var currentWheel = null;
+  // The top-level view currently showing ("wheels" or "rules"), the same
+  // single-source-of-truth role `currentWheel` plays: `syncHash` reads it to write
+  // `view=`, and `switchView` below is the only place that ever changes it.
+  var currentView = "wheels";
+  var introTab = "intro";
+  var columnWidths = {};
+
   var els = {
     themeToggle: document.getElementById("theme-toggle"),
+    helpOpen: document.getElementById("help-open"),
     search: document.getElementById("search"),
     classFilter: document.getElementById("class-filter"),
+    classChips: document.getElementById("class-chips"),
+    classReset: document.getElementById("class-reset"),
     linkageFilter: document.getElementById("linkage-filter"),
     reviewOnly: document.getElementById("review-only"),
+    reviewCount: document.getElementById("review-count"),
+    clearFilters: document.getElementById("clear-filters"),
+    resetColumns: document.getElementById("reset-columns"),
     count: document.getElementById("count"),
+    colgroup: document.getElementById("wheel-colgroup"),
     headerRow: document.getElementById("header-row"),
     rows: document.getElementById("wheel-rows"),
     table: document.getElementById("wheel-table"),
     empty: document.getElementById("empty"),
+    viewTabWheels: document.getElementById("view-tab-wheels"),
+    viewTabRules: document.getElementById("view-tab-rules"),
+    viewWheels: document.getElementById("view-wheels"),
+    viewRules: document.getElementById("view-rules"),
+    rulesHeaderRow: document.getElementById("rules-header-row"),
+    rulesRows: document.getElementById("rules-rows"),
     detail: document.getElementById("detail"),
     detailPanel: document.getElementById("detail-panel"),
     detailTitle: document.getElementById("detail-title"),
+    detailNav: document.getElementById("detail-nav"),
+    detailPrev: document.getElementById("detail-prev"),
+    detailNext: document.getElementById("detail-next"),
+    detailPosition: document.getElementById("detail-position"),
     detailClose: document.getElementById("detail-close"),
     tabs: document.getElementById("tabs"),
     popover: document.getElementById("popover"),
-    legendBody: document.getElementById("legend-body")
+    legendBody: document.getElementById("legend-body"),
+    intro: document.getElementById("intro"),
+    introTabIntro: document.getElementById("intro-tab-intro"),
+    introTabReference: document.getElementById("intro-tab-reference"),
+    introPanelIntro: document.getElementById("intro-panel-intro"),
+    introPanelReference: document.getElementById("intro-panel-reference"),
+    introDismiss: document.getElementById("intro-dismiss"),
+    introClose: document.getElementById("intro-close")
   };
 
   var TAB_PANELS = ["findings", "binaries", "wheel", "errors", "raw"];
@@ -588,6 +943,74 @@ pre {
   els.themeToggle.addEventListener("click", cycleTheme);
   applyTheme(themePref);
 
+  // --- intro / help dialog -------------------------------------------------
+
+  function readIntroPref() {
+    try {
+      return window.localStorage.getItem("wcs-intro");
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function writeIntroPref(value) {
+    try {
+      window.localStorage.setItem("wcs-intro", value);
+    } catch (err) {
+      // Storage unavailable: the checkbox still reflects this session's choice, it
+      // just forgets it on reload, the same fallback the theme toggle relies on.
+    }
+  }
+
+  function showIntroTab(tab) {
+    introTab = tab;
+    els.introTabIntro.setAttribute("aria-selected", tab === "intro" ? "true" : "false");
+    els.introTabReference.setAttribute("aria-selected", tab === "reference" ? "true" : "false");
+    els.introPanelIntro.hidden = tab !== "intro";
+    els.introPanelReference.hidden = tab !== "reference";
+  }
+
+  function openIntro(tab) {
+    showIntroTab(tab || introTab);
+    // Three stored states, not two: absent (never decided), "dismissed" (checked,
+    // don't auto-show again) and "keep" (explicitly unchecked, keep auto-showing).
+    // Checked is the default for both "never decided" and "dismissed" -- only a
+    // stored "keep" reads unchecked -- so a first-time visitor sees the checkbox
+    // checked, matching the static markup's own `checked` attribute, instead of an
+    // absent key collapsing into the same unchecked state a deliberate opt-out
+    // leaves.
+    els.introDismiss.checked = readIntroPref() !== "keep";
+    els.intro.showModal();
+  }
+
+  els.introTabIntro.addEventListener("click", function () { showIntroTab("intro"); });
+  els.introTabReference.addEventListener("click", function () { showIntroTab("reference"); });
+  els.helpOpen.addEventListener("click", function () { openIntro(); });
+  els.introClose.addEventListener("click", function () { els.intro.close(); });
+
+  // A backdrop click on a native <dialog> still targets the dialog element itself
+  // (there is no separate DOM node for ::backdrop): `event.target` is the dialog
+  // only for a genuine backdrop click, since a click on any child -- a tab button,
+  // the checkbox, a paragraph -- has that child as its target instead. The same
+  // pattern #detail's own outside-click handler below already uses. A coordinate
+  // check against the dialog's rect looks equivalent but is not: a keyboard
+  // activation (Enter/Space on a button or checkbox inside the dialog) dispatches
+  // a click with clientX/clientY both 0 in every major browser, which such a check
+  // reads as "outside" and closes the dialog on every keyboard interaction inside
+  // it, trapping a keyboard-only user out of the Reference tab entirely.
+  els.intro.addEventListener("click", function (event) {
+    if (event.target !== els.intro) return;
+    els.intro.close();
+  });
+
+  // The dialog's native `close` event fires uniformly whether it was closed by the
+  // Close button, Escape (the browser's own default for a <dialog>) or the backdrop
+  // click above, so the checkbox's storage write lives here once rather than being
+  // repeated at each closing path.
+  els.intro.addEventListener("close", function () {
+    writeIntroPref(els.introDismiss.checked ? "dismissed" : "keep");
+  });
+
   // --- popover -------------------------------------------------------------
 
   var popoverOwner = null;
@@ -636,7 +1059,7 @@ pre {
     return btn;
   }
 
-  // --- legend --------------------------------------------------------------
+  // --- legend (the Help dialog's Reference tab) -----------------------------
 
   // A `code value / description` legend grid off a plain `{value: help}` map, sorted
   // by value: the shape `renderLegend` repeats for families, relations and OpenSSL
@@ -728,57 +1151,263 @@ pre {
   // `data-class` attribute set on each badge and swatch below: no verdict class is
   // ever a favourable colour, and the JS never picks one.
 
+  // --- top-level view switch (Wheels / Rules) -------------------------------
+
+  // Pure view switching, with no hash write of its own: `applyHashParams`'s boot and
+  // `hashchange` callers both call this to apply a parsed `view=` (or its default),
+  // before `currentWheel` and the rest of `state` are themselves settled, so it must
+  // not call `syncHash` and risk writing a partial hash over the one just parsed. A
+  // user-driven switch (the tab click handlers below, and `filterWheelsByRule`)
+  // calls `syncHash` itself, right after.
+  function switchView(view) {
+    currentView = view;
+    els.viewTabWheels.setAttribute("aria-selected", view === "wheels" ? "true" : "false");
+    els.viewTabRules.setAttribute("aria-selected", view === "rules" ? "true" : "false");
+    els.viewWheels.hidden = view !== "wheels";
+    els.viewRules.hidden = view !== "rules";
+  }
+
+  els.viewTabWheels.addEventListener("click", function () { switchView("wheels"); syncHash(); });
+  els.viewTabRules.addEventListener("click", function () { switchView("rules"); syncHash(); });
+
+  // --- wheel table columns: colgroup and resize -----------------------------
+
+  function readColumnWidths() {
+    try {
+      var raw2 = window.localStorage.getItem("wcs-column-widths");
+      if (!raw2) return {};
+      var parsed = JSON.parse(raw2);
+      if (!parsed || typeof parsed !== "object") return {};
+      var result = {};
+      COLUMNS.forEach(function (column) {
+        if (column.width === undefined) return;
+        var value = parsed[column.key];
+        if (
+          typeof value === "number" &&
+          Number.isFinite(value) &&
+          Number.isInteger(value) &&
+          value >= column.min &&
+          value <= MAX_COLUMN_WIDTH
+        ) {
+          result[column.key] = value;
+        }
+      });
+      return result;
+    } catch (err) {
+      return {};
+    }
+  }
+
+  function clearColumnWidths() {
+    try {
+      window.localStorage.removeItem("wcs-column-widths");
+    } catch (err) {
+      // Storage unavailable: nothing was stored to clear.
+    }
+  }
+
+  function writeColumnWidths(widths) {
+    try {
+      window.localStorage.setItem("wcs-column-widths", JSON.stringify(widths));
+    } catch (err) {
+      // Storage unavailable: the resized widths still apply to this view, they just
+      // do not survive a reload, the same fallback the theme toggle relies on.
+    }
+  }
+
+  // The table's `min-width` is computed here, once at boot and again on every
+  // resize, from every column's actual width -- `reasons`' own floor, since it
+  // carries no fixed width -- rather than restated as a static CSS number that
+  // could drift from `COLUMNS`. Every fixed column's contribution is already
+  // `>= its own min` by construction (a resize can only set it there or higher),
+  // so `total` needs no further floor of its own.
+  function recomputeTableMinWidth() {
+    var total = 0;
+    COLUMNS.forEach(function (column, index) {
+      if (column.width === undefined) {
+        total += column.min;
+        return;
+      }
+      var col = els.colgroup.children[index];
+      total += parseInt(col.style.width, 10) || column.width;
+    });
+    els.table.style.minWidth = total + "px";
+  }
+
+  function columnsAreDefault() {
+    return Object.keys(columnWidths).length === 0;
+  }
+
+  function buildColgroup() {
+    els.colgroup.textContent = "";
+    COLUMNS.forEach(function (column) {
+      var col = document.createElement("col");
+      if (column.width !== undefined) {
+        col.style.width = (columnWidths[column.key] || column.width) + "px";
+      }
+      els.colgroup.appendChild(col);
+    });
+    recomputeTableMinWidth();
+  }
+
+  function persistColumnWidths() {
+    writeColumnWidths(columnWidths);
+    updateFilterButtonsVisibility();
+  }
+
+  function makeResizeHandle(column, index) {
+    var handle = document.createElement("span");
+    handle.className = "col-resize-handle";
+    handle.setAttribute("role", "separator");
+    handle.setAttribute("aria-orientation", "vertical");
+    handle.tabIndex = 0;
+    handle.setAttribute("aria-label", "Resize " + column.label + " column");
+
+    var dragStartX = 0;
+    var dragStartWidth = column.width;
+
+    function setWidth(px) {
+      var width = Math.min(MAX_COLUMN_WIDTH, Math.max(column.min, Math.round(px)));
+      columnWidths[column.key] = width;
+      els.colgroup.children[index].style.width = width + "px";
+      recomputeTableMinWidth();
+    }
+
+    handle.addEventListener("pointerdown", function (event) {
+      event.stopPropagation();
+      handle.setPointerCapture(event.pointerId);
+      dragStartX = event.clientX;
+      dragStartWidth = parseInt(els.colgroup.children[index].style.width, 10) || column.width;
+    });
+    handle.addEventListener("pointermove", function (event) {
+      if (!handle.hasPointerCapture(event.pointerId)) return;
+      setWidth(dragStartWidth + (event.clientX - dragStartX));
+    });
+    handle.addEventListener("pointerup", function (event) {
+      if (!handle.hasPointerCapture(event.pointerId)) return;
+      handle.releasePointerCapture(event.pointerId);
+      persistColumnWidths();
+    });
+    // A browser-initiated interruption mid-drag (an OS gesture, a context menu, a
+    // touch sequence getting interrupted) releases pointer capture without ever
+    // firing `pointerup`: the visual resize already happened through `pointermove`
+    // above, so without this the width sticks but is never persisted, and "Reset
+    // columns" -- whose visibility `persistColumnWidths` alone recomputes -- stays
+    // hidden even though the table is no longer at its defaults.
+    handle.addEventListener("pointercancel", function () {
+      persistColumnWidths();
+    });
+    handle.addEventListener("keydown", function (event) {
+      // Stops this key press from also reaching the document-level Previous/Next
+      // handler below: the detail panel is not a native modal and does not trap
+      // focus, so a resize handle can hold focus while the panel is open, and
+      // without this one ArrowRight would both resize a column and step the
+      // detail panel to the next wheel.
+      event.stopPropagation();
+      var step = event.shiftKey ? 64 : 16;
+      var current = columnWidths[column.key] || column.width;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setWidth(current - step);
+        persistColumnWidths();
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setWidth(current + step);
+        persistColumnWidths();
+      }
+    });
+    return handle;
+  }
+
+  els.resetColumns.addEventListener("click", function () {
+    columnWidths = {};
+    clearColumnWidths();
+    buildColgroup();
+    updateFilterButtonsVisibility();
+  });
+
   // --- table header ----------------------------------------------------------
 
-  function renderHeader() {
-    els.headerRow.textContent = "";
-    COLUMNS.forEach(function (column) {
+  // Shared by the wheel table and the Rules table: the same sort-toggle logic and
+  // arrow-in-label display, over whichever `columns`/`sortState` the caller hands
+  // it. `extra` is called per column, after the help button, for whatever a
+  // table's own header carries beyond that -- the wheel table's resize handles;
+  // the Rules table has none, and leaves the argument out.
+  function renderSortableHeader(row, columns, sortState, onChange, extra) {
+    row.textContent = "";
+    columns.forEach(function (column, index) {
       var th = document.createElement("th");
       var btn = document.createElement("button");
       btn.type = "button";
       btn.className = "sort-btn";
-      btn.textContent = columnLabel(column);
+      var arrow = "";
+      if (sortState.sortKey === column.key) {
+        arrow = sortState.sortDir === "asc" ? " \u2191" : " \u2193";
+      }
+      btn.textContent = column.label + arrow;
       btn.addEventListener("click", function () {
-        if (state.sortKey === column.key) {
-          state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+        if (sortState.sortKey === column.key) {
+          sortState.sortDir = sortState.sortDir === "asc" ? "desc" : "asc";
         } else {
-          state.sortKey = column.key;
-          state.sortDir = "asc";
+          sortState.sortKey = column.key;
+          sortState.sortDir = column.defaultDir || "asc";
         }
-        renderHeader();
-        renderTable();
+        onChange();
       });
       th.appendChild(btn);
-      th.appendChild(document.createTextNode(" "));
-      th.appendChild(makeHelpButton(column.help));
-      els.headerRow.appendChild(th);
+      if (column.help) {
+        th.appendChild(document.createTextNode(" "));
+        th.appendChild(makeHelpButton(column.help));
+      }
+      if (extra) extra(th, column, index);
+      row.appendChild(th);
     });
   }
 
-  function columnLabel(column) {
-    var arrow = "";
-    if (state.sortKey === column.key) arrow = state.sortDir === "asc" ? " \u2191" : " \u2193";
-    return column.label + arrow;
+  function renderHeader() {
+    renderSortableHeader(els.headerRow, COLUMNS, state, function () {
+      renderHeader();
+      renderTable();
+    }, function (th, column, index) {
+      if (column.width !== undefined) th.appendChild(makeResizeHandle(column, index));
+    });
   }
 
   // --- toolbar -----------------------------------------------------------
 
-  function renderClassFilter() {
-    els.classFilter.querySelectorAll("label").forEach(function (label) { label.remove(); });
+  function renderClassChips() {
+    els.classChips.textContent = "";
     DATA.classes.forEach(function (cls) {
-      var label = document.createElement("label");
-      var box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = state.classes.has(cls);
-      box.addEventListener("change", function () {
-        if (box.checked) state.classes.add(cls); else state.classes.delete(cls);
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "class-chip";
+      chip.setAttribute("aria-pressed", state.classes.has(cls) ? "true" : "false");
+      var swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.setAttribute("data-class", cls);
+      chip.appendChild(swatch);
+      chip.appendChild(document.createTextNode(cls + " "));
+      var count = document.createElement("span");
+      count.className = "count-badge";
+      count.textContent = String(CLASS_COUNTS[cls] || 0);
+      chip.appendChild(count);
+      chip.addEventListener("click", function () {
+        if (state.classes.has(cls)) state.classes.delete(cls); else state.classes.add(cls);
+        renderClassChips();
         renderTable();
+        syncHash();
       });
-      label.appendChild(box);
-      label.appendChild(document.createTextNode(" " + cls));
-      els.classFilter.appendChild(label);
+      els.classChips.appendChild(chip);
     });
+    els.classReset.hidden = classesAreDefault();
   }
+
+  els.classReset.addEventListener("click", function () {
+    state.classes = new Set(DATA.classes);
+    renderClassChips();
+    renderTable();
+    syncHash();
+  });
 
   function renderLinkageOptions() {
     var values = new Set();
@@ -796,16 +1425,37 @@ pre {
   }
 
   els.search.addEventListener("input", function () {
+    // Typing in the search box by hand always falls back to plain substring
+    // search: a prior rule click's exact-match filter (state.ruleId) does not
+    // survive the user editing the very box that displays it.
+    state.ruleId = null;
     state.search = els.search.value;
     renderTable();
+    syncHash();
   });
   els.linkageFilter.addEventListener("change", function () {
     state.linkage = els.linkageFilter.value;
     renderTable();
+    syncHash();
   });
   els.reviewOnly.addEventListener("change", function () {
     state.reviewOnly = els.reviewOnly.checked;
     renderTable();
+    syncHash();
+  });
+
+  els.clearFilters.addEventListener("click", function () {
+    state.ruleId = null;
+    state.search = "";
+    state.linkage = "";
+    state.reviewOnly = false;
+    state.classes = new Set(DATA.classes);
+    els.search.value = "";
+    els.linkageFilter.value = "";
+    els.reviewOnly.checked = false;
+    renderClassChips();
+    renderTable();
+    syncHash();
   });
 
   // --- filtering and sorting ------------------------------------------------
@@ -823,13 +1473,23 @@ pre {
     return text || "-";
   }
 
-  function matchesFilters(record) {
+  // `index` is DATA.records.filter's own second callback argument, `record`'s
+  // position in DATA.records, the same array RECORD_RULE_IDS is built from in
+  // lockstep -- every caller here is DATA.records.filter(matchesFilters), never a
+  // filter of some other, unrelated array, so the two stay aligned.
+  function matchesFilters(record, index) {
     var wheel = record.wheel || {};
     var verdict = record.verdict || {};
     var conditions = verdict.conditions || {};
     var reasons = verdict.reasons || [];
 
-    if (state.search) {
+    if (state.ruleId) {
+      // A rule click's own filter: exact membership in the rule-id set this
+      // record actually fired, not a substring match against reason text, which
+      // a real rule-id pair such as BIN_AWS_LC / BIN_AWS_LC_FIPS would satisfy
+      // for the wrong rule.
+      if (!RECORD_RULE_IDS[index].has(state.ruleId)) return false;
+    } else if (state.search) {
       var haystack = ((wheel.filename || "") + " " + reasons.join(" ")).toLowerCase();
       if (haystack.indexOf(state.search.toLowerCase()) === -1) return false;
     }
@@ -878,13 +1538,132 @@ pre {
     return rows;
   }
 
+  // --- filter/column state reflected in the URL hash --------------------------
+
+  // The hash grammar is `key=value` pairs joined by `&`, the same shape a query
+  // string uses: `wheel=<index>` for the open detail record, `view=rules` for the
+  // top-level view (omitted for its default, `wheels`), plus `class=<comma list>`,
+  // `linkage=<value>`, `review=1` and `q=<text>` for the toolbar's filters, each
+  // present only when it differs from its default -- except `class`, which is
+  // present and empty (`class=`) for the one reachable state whose value happens to
+  // be an empty string: every class chip unticked. A comma inside `class` is left
+  // unencoded so the hash reads the same as it is written here; every other
+  // character follows normal percent-encoding.
+  function parseHashParams() {
+    var hash = window.location.hash.replace(/^#/, "");
+    var params = {};
+    if (!hash) return params;
+    hash.split("&").forEach(function (pair) {
+      if (!pair) return;
+      var eq = pair.indexOf("=");
+      var key = eq === -1 ? pair : pair.slice(0, eq);
+      var value = eq === -1 ? "" : pair.slice(eq + 1);
+      try {
+        params[decodeURIComponent(key)] = decodeURIComponent(value);
+      } catch (err) {
+        // A malformed percent-escape in a hand-edited hash: drop that one pair
+        // rather than letting it throw and leave every other param unread.
+      }
+    });
+    return params;
+  }
+
+  // A param is omitted from the hash only by the caller deciding not to set it on
+  // `params` in the first place (see `syncHash`): once a key is present here, its
+  // value is written even when that value is an empty string, since "every class
+  // chip unticked" is a real, reachable, intentional state whose `class` value is
+  // "" -- conflating "omit this param" with "this param's value is empty" would
+  // make that state round-trip back to "every class ticked" on reload.
+  function serializeHashParams(params) {
+    var parts = [];
+    Object.keys(params).forEach(function (key) {
+      var value = params[key];
+      if (value === null || value === undefined) return;
+      var encoded = encodeURIComponent(String(value)).replace(/%2C/g, ",");
+      parts.push(encodeURIComponent(key) + "=" + encoded);
+    });
+    return parts.join("&");
+  }
+
+  // Every class in DATA.classes ticked, and nothing else -- membership, not just a
+  // matching size: a hash such as `class=A,B,C,D,E,UNKNOWN_TOKEN` (five real classes
+  // plus a bogus token, the same count as `DATA.classes`) is actively filtering out
+  // whichever real class the bogus token stands in for, and must not read as
+  // "default" just because the two sets happen to be the same size.
+  function classesAreDefault() {
+    if (state.classes.size !== DATA.classes.length) return false;
+    return DATA.classes.every(function (cls) { return state.classes.has(cls); });
+  }
+
+  function filtersAreDefault() {
+    return classesAreDefault() && !state.linkage && !state.reviewOnly && !state.search;
+  }
+
+  function updateFilterButtonsVisibility() {
+    els.clearFilters.hidden = filtersAreDefault();
+    els.resetColumns.hidden = columnsAreDefault();
+  }
+
+  // Parses `class`'s comma list and drops anything not in `DATA.classes`: a stale or
+  // hand-edited token (a class a prior ruleset had, a typo, a value swapped in on
+  // purpose) must not silently keep a filter active that nothing on screen explains.
+  function parseClassParam(raw) {
+    var tokens = raw ? raw.split(",").filter(Boolean) : [];
+    return tokens.filter(function (cls) { return DATA.classes.indexOf(cls) !== -1; });
+  }
+
+  // Total, not a merge: every recognised field is set here on every call, either
+  // from the param present in `params` or back to its own default, so applying a
+  // hash that omits a param already means "this filter is off", the same as if it
+  // had never been set. `state.ruleId` (the Rules tab's exact-match click-through)
+  // is not part of the hash grammar and always resets to null here too, so a link
+  // carrying `q=` always behaves like a plain substring search, never a stale
+  // rule-click filter left over from whatever this page was doing before.
+  function applyHashParams(params) {
+    state.classes = new Set("class" in params ? parseClassParam(params.class) : DATA.classes);
+    state.linkage = "linkage" in params ? params.linkage : "";
+    state.reviewOnly = "review" in params ? params.review === "1" : false;
+    state.search = "q" in params ? params.q : "";
+    state.ruleId = null;
+  }
+
+  function validWheelIndex(raw2) {
+    if (raw2 === undefined) return null;
+    var index = parseInt(raw2, 10);
+    return Number.isFinite(index) && index >= 0 && index < DATA.records.length ? index : null;
+  }
+
+  function writeHash(params) {
+    var hash = serializeHashParams(params);
+    var url = window.location.pathname + window.location.search + (hash ? "#" + hash : "");
+    history.replaceState(null, "", url);
+  }
+
+  // Called after every state-changing action (search, a filter, opening or closing
+  // a wheel): rebuilds the hash from `state` and `currentWheel` in full, so a param
+  // no longer in effect (a filter cleared, a detail panel closed) simply does not
+  // appear in what this builds, rather than needing to be stripped from whatever
+  // the hash held before.
+  function syncHash() {
+    var params = {};
+    if (!classesAreDefault()) {
+      params.class = DATA.classes.filter(function (cls) { return state.classes.has(cls); }).join(",");
+    }
+    if (state.linkage) params.linkage = state.linkage;
+    if (state.reviewOnly) params.review = "1";
+    if (state.search) params.q = state.search;
+    if (currentView !== "wheels") params.view = currentView;
+    if (currentWheel !== null) params.wheel = String(currentWheel);
+    writeHash(params);
+    updateFilterButtonsVisibility();
+  }
+
   // --- table body ----------------------------------------------------------
 
   function renderTable() {
     if (!DATA.records.length) {
       els.table.parentNode.hidden = true;
       document.getElementById("toolbar").hidden = true;
-      document.querySelector("details.legend").hidden = true;
       els.empty.hidden = false;
       els.count.textContent = "";
       return;
@@ -896,6 +1675,14 @@ pre {
       els.rows.appendChild(renderRow(record));
     });
     els.count.textContent = rows.length + " of " + DATA.records.length + " wheels";
+
+    // A filter change while the detail panel is already open can drop the open
+    // record out of the visible set (or bring it back into one it had fallen out
+    // of), so the Previous/Next nav is recomputed here too, not only when the
+    // panel is first opened.
+    if (currentWheel !== null && !els.detail.hidden) {
+      updateDetailNav(DATA.records[currentWheel]);
+    }
   }
 
   // A chip per library, "name: linkage", the tooltip drawn from the same
@@ -955,6 +1742,7 @@ pre {
     });
 
     var filenameCell = document.createElement("td");
+    filenameCell.className = "wheel-cell";
     filenameCell.textContent = wheel.filename || "?";
     tr.appendChild(filenameCell);
 
@@ -1017,45 +1805,118 @@ pre {
     return tr;
   }
 
-  // --- detail panel ----------------------------------------------------------
+  // --- Rules view --------------------------------------------------------
 
-  function goToWheel(index) {
-    if (index === -1 || index === null || index === undefined) return;
-    window.location.hash = "wheel=" + index;
+  function ruleRows() {
+    return Object.keys(DATA.rules).map(function (id) {
+      return { id: id, rule: DATA.rules[id], count: RULE_FIRED_COUNTS[id] || 0 };
+    });
   }
 
-  // The hash carries the record's position in DATA.records, not its filename: two
-  // records can share a filename, and a lookup keyed on the filename would silently
-  // hand one record's row the other's detail view.
-  function currentHashIndex() {
-    var hash = window.location.hash.replace(/^#/, "");
-    var match = /(?:^|&)wheel=(\d+)/.exec(hash);
-    if (!match) return null;
-    var index = parseInt(match[1], 10);
-    return index >= 0 && index < DATA.records.length ? index : null;
-  }
-
-  function closeDetail() {
-    els.detail.hidden = true;
-    if (currentHashIndex() !== null) {
-      history.replaceState(null, "", window.location.pathname + window.location.search);
+  function ruleSortValue(row, key) {
+    var rule = row.rule;
+    switch (key) {
+      case "id": return row.id;
+      case "title": return rule.title || "";
+      case "why": return rule.why || "";
+      case "verdict": return rule.verdict || "";
+      case "severity": return rule.severity || "";
+      case "family": return rule.family || "";
+      case "relation": return rule.relation || "";
+      case "basis": return (rule.basis || []).join(", ");
+      case "count": return row.count;
+      default: return "";
     }
   }
 
-  els.detailClose.addEventListener("click", closeDetail);
-  els.detail.addEventListener("click", function (event) {
-    if (event.target === els.detail) closeDetail();
-  });
-  document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape" && !els.detail.hidden) closeDetail();
-  });
+  function sortedRuleRows() {
+    var rows = ruleRows();
+    var key = rulesState.sortKey;
+    var sign = rulesState.sortDir === "desc" ? -1 : 1;
+    rows.sort(function (a, b) {
+      var av = ruleSortValue(a, key);
+      var bv = ruleSortValue(b, key);
+      var cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      if (cmp !== 0) return cmp * sign;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+    return rows;
+  }
 
-  function openDetailFromHash() {
-    var index = currentHashIndex();
-    if (index === null) {
-      els.detail.hidden = true;
+  function renderRulesHeader() {
+    renderSortableHeader(els.rulesHeaderRow, RULES_COLUMNS, rulesState, function () {
+      renderRulesHeader();
+      renderRulesTable();
+    });
+  }
+
+  // Switching to the Wheels tab with the rule id in the search box keeps the
+  // filter discoverable and editable through the same control a typed search
+  // uses, but the filter predicate itself is `state.ruleId`, checked by
+  // `matchesFilters` in preference to substring search: exact membership in
+  // RECORD_RULE_IDS, not a substring match against reason text, which a real
+  // rule-id pair such as BIN_AWS_LC / BIN_AWS_LC_FIPS would satisfy for the
+  // wrong rule.
+  function filterWheelsByRule(ruleId) {
+    state.ruleId = ruleId;
+    state.search = ruleId;
+    els.search.value = ruleId;
+    switchView("wheels");
+    renderTable();
+    syncHash();
+  }
+
+  function renderRuleRow(row) {
+    var rule = row.rule;
+    var tr = document.createElement("tr");
+
+    var idCell = document.createElement("td");
+    var idBtn = document.createElement("button");
+    idBtn.type = "button";
+    idBtn.className = "sort-btn rule-link";
+    idBtn.textContent = row.id;
+    idBtn.title = "Show the wheels this rule fired on";
+    idBtn.addEventListener("click", function () { filterWheelsByRule(row.id); });
+    idCell.appendChild(idBtn);
+    tr.appendChild(idCell);
+
+    appendCell(tr, rule.title);
+    appendCell(tr, rule.why).className = "wrap";
+    appendCell(tr, rule.verdict);
+    appendCell(tr, rule.severity);
+    appendCell(tr, rule.family);
+    appendCell(tr, rule.relation);
+
+    var basisCell = document.createElement("td");
+    appendBasisChips(basisCell, rule.basis || []);
+    tr.appendChild(basisCell);
+
+    appendCell(tr, row.count);
+
+    return tr;
+  }
+
+  function renderRulesTable() {
+    var rows = sortedRuleRows();
+    els.rulesRows.textContent = "";
+    if (!rows.length) {
+      var tr = document.createElement("tr");
+      var td = document.createElement("td");
+      td.colSpan = RULES_COLUMNS.length;
+      td.className = "note";
+      td.textContent = "No rules referenced by any scanned wheel.";
+      tr.appendChild(td);
+      els.rulesRows.appendChild(tr);
       return;
     }
+    rows.forEach(function (row) {
+      els.rulesRows.appendChild(renderRuleRow(row));
+    });
+  }
+
+  // --- detail panel ----------------------------------------------------------
+
+  function showDetail(index) {
     var record = DATA.records[index];
     if (!record) {
       els.detail.hidden = true;
@@ -1065,7 +1926,90 @@ pre {
     els.detail.hidden = false;
   }
 
-  window.addEventListener("hashchange", openDetailFromHash);
+  function goToWheel(index) {
+    if (index === -1 || index === null || index === undefined) return;
+    currentWheel = index;
+    syncHash();
+    showDetail(index);
+  }
+
+  function closeDetail() {
+    els.detail.hidden = true;
+    currentWheel = null;
+    syncHash();
+  }
+
+  els.detailClose.addEventListener("click", closeDetail);
+  els.detail.addEventListener("click", function (event) {
+    if (event.target === els.detail) closeDetail();
+  });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !els.detail.hidden && !els.intro.open) closeDetail();
+  });
+
+  // Previous/Next step through the currently filtered and sorted set -- the same
+  // list `visibleRecords()` computes for the table -- so filtering to "needs
+  // review" and stepping through it visits only the flagged wheels, in the order
+  // the table itself shows them.
+  function stepDetail(delta) {
+    if (currentWheel === null) return;
+    var record = DATA.records[currentWheel];
+    var rows = visibleRecords();
+    var pos = rows.indexOf(record);
+    if (pos === -1) return;
+    var next = pos + delta;
+    if (next < 0 || next >= rows.length) return;
+    goToWheel(DATA.records.indexOf(rows[next]));
+  }
+
+  els.detailPrev.addEventListener("click", function () { stepDetail(-1); });
+  els.detailNext.addEventListener("click", function () { stepDetail(1); });
+
+  // True when `el` is a resize handle (`role="separator"`) or sits inside a
+  // tablist: both already own ArrowLeft/ArrowRight for themselves -- the ARIA tab
+  // pattern reserves them for moving between tabs, and the resize handle's own
+  // keydown handler (above) resizes with them -- so the document-level Prev/Next
+  // handler below must not also act on the same press. Checked by ancestor, not
+  // by exact element match, since the actual focused element (a `<button
+  // role="tab">`, say) can be nested inside the `[role="tablist"]` container
+  // rather than carrying the role itself.
+  function isOwnedByTablistOrResizeHandle(el) {
+    if (!el) return false;
+    if (el.getAttribute && el.getAttribute("role") === "separator") return true;
+    return !!(el.closest && el.closest('[role="tablist"]'));
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if (els.detail.hidden || els.intro.open) return;
+    var active = document.activeElement;
+    var tag = active ? active.tagName : "";
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (isOwnedByTablistOrResizeHandle(active)) return;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      stepDetail(-1);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      stepDetail(1);
+    }
+  });
+
+  // The open record's position (and Previous/Next) among the *currently visible*
+  // rows: filtering the table while the panel is open can drop the open record out
+  // of that set entirely, which hides the nav rather than pointing it at a
+  // position that no longer means anything.
+  function updateDetailNav(record) {
+    var rows = visibleRecords();
+    var pos = rows.indexOf(record);
+    if (pos === -1) {
+      els.detailNav.hidden = true;
+      return;
+    }
+    els.detailNav.hidden = false;
+    els.detailPosition.textContent = (pos + 1) + " of " + rows.length;
+    els.detailPrev.disabled = pos === 0;
+    els.detailNext.disabled = pos === rows.length - 1;
+  }
 
   function renderTabs(record) {
     els.tabs.textContent = "";
@@ -1129,33 +2073,38 @@ pre {
     tr.appendChild(td);
   }
 
-  // One chip per standard id in `finding.basis`, tooltip "title \u00b7 edition \u00b7
+  // One chip per standard id, tooltip "title, middle dot, edition, middle dot,
   // status" read off the `standards` payload `report.py` narrows to only the
-  // standards some embedded finding actually cites.
+  // standards some embedded finding actually cites. Shared by a finding's own
+  // basis cell in the detail panel and a rule's basis cell in the Rules view,
+  // which cites the same ids.
+  function appendBasisChips(container, basis) {
+    if (!basis.length) {
+      container.textContent = "-";
+      return;
+    }
+    var list = document.createElement("div");
+    list.className = "reasons-list";
+    basis.forEach(function (id) {
+      var chip = document.createElement("span");
+      chip.className = "reason-chip";
+      chip.textContent = id;
+      var standard = DATA.standards[id];
+      chip.title = standard
+        ? (standard.title + " \u00b7 " + standard.edition + " \u00b7 " + standard.status)
+        : NO_HELP;
+      list.appendChild(chip);
+    });
+    container.appendChild(list);
+  }
+
   function appendBasisCell(tr, finding) {
     var td = document.createElement("td");
     // A basis id is ordinarily a short, ruleset-controlled token, but this column
     // gets the same `wrap` treatment as a location or matched-string cell rather
     // than trusting that: nothing here should assume a future citation stays short.
     td.className = "wrap";
-    var basis = finding.basis || [];
-    if (!basis.length) {
-      td.textContent = "-";
-    } else {
-      var list = document.createElement("div");
-      list.className = "reasons-list";
-      basis.forEach(function (id) {
-        var chip = document.createElement("span");
-        chip.className = "reason-chip";
-        chip.textContent = id;
-        var standard = DATA.standards[id];
-        chip.title = standard
-          ? (standard.title + " \u00b7 " + standard.edition + " \u00b7 " + standard.status)
-          : NO_HELP;
-        list.appendChild(chip);
-      });
-      td.appendChild(list);
-    }
+    appendBasisChips(td, finding.basis || []);
     tr.appendChild(td);
   }
 
@@ -1655,6 +2604,7 @@ pre {
   function renderDetail(record) {
     var wheel = record.wheel || {};
     els.detailTitle.textContent = wheel.filename || "?";
+    updateDetailNav(record);
     renderTabs(record);
 
     TAB_PANELS.forEach(function (tab) {
@@ -1673,12 +2623,53 @@ pre {
 
   // --- boot ------------------------------------------------------------------
 
+  function shouldAutoShowIntro(initialParams) {
+    if (!DATA.records.length) return false;
+    // Any param at all in the hash, recognised or not, means someone was sent a
+    // specific link, so the intro must not cover it up.
+    if (Object.keys(initialParams).length) return false;
+    return readIntroPref() !== "dismissed";
+  }
+
+  function applyHashAndRender() {
+    var params = parseHashParams();
+    applyHashParams(params);
+    switchView(params.view === "rules" ? "rules" : "wheels");
+    currentWheel = validWheelIndex(params.wheel);
+    els.search.value = state.search;
+    els.linkageFilter.value = state.linkage;
+    els.reviewOnly.checked = state.reviewOnly;
+    renderClassChips();
+    renderTable();
+    updateFilterButtonsVisibility();
+    if (currentWheel !== null) showDetail(currentWheel); else els.detail.hidden = true;
+  }
+
+  var initialParams = parseHashParams();
+  applyHashParams(initialParams);
+  switchView(initialParams.view === "rules" ? "rules" : "wheels");
+  currentWheel = validWheelIndex(initialParams.wheel);
+  columnWidths = readColumnWidths();
+
   renderLegend();
+  buildColgroup();
   renderHeader();
-  renderClassFilter();
+  renderClassChips();
   renderLinkageOptions();
+  els.linkageFilter.value = state.linkage;
+  els.reviewOnly.checked = state.reviewOnly;
+  els.search.value = state.search;
+  els.reviewCount.textContent = "needs review: " + NEEDS_REVIEW_COUNT;
+  document.querySelector('label[for="linkage-filter"]').appendChild(makeHelpButton(LINKAGE_FILTER_HELP));
+  document.getElementById("review-group").appendChild(makeHelpButton(REVIEW_FILTER_HELP));
+  els.classFilter.querySelector("legend").appendChild(makeHelpButton(CLASS_FILTER_HELP));
   renderTable();
-  openDetailFromHash();
+  renderRulesHeader();
+  renderRulesTable();
+  updateFilterButtonsVisibility();
+  if (currentWheel !== null) showDetail(currentWheel);
+  if (shouldAutoShowIntro(initialParams)) openIntro("intro");
+  window.addEventListener("hashchange", applyHashAndRender);
 })();
 </script>
 </body>

@@ -6253,11 +6253,55 @@ the one that lost.
 
 **Byte-stable, like the JSONL it views.** `render_html` is a pure function of the
 records, the ruleset and the shipped template: no timestamp, host path, hostname or
-random id. The theme toggle reads and writes `localStorage` at view time only, wrapped in
-try/catch since storage can be unavailable, so it never touches the file's bytes. The
-template itself is pure ASCII, so `--format html` to a redirected stdout does not crash
-on a non-UTF-8 locale the way a stray arrow glyph or em dash in the JavaScript source
-would.
+random id. Three keys hold every view-time preference the page remembers, each read and
+written through the same try/catch pattern since storage can be unavailable (private
+browsing, disabled cookies, a `data:` origin): `wcs-theme` for the theme toggle,
+`wcs-intro` for the onboarding dialog's checkbox, and `wcs-column-widths` for the wheel
+table's resized column widths, a JSON object keyed by `COLUMNS`'s own column key. `wcs-intro`
+holds one of three states, not two: a missing key (never decided) and the value `keep`
+(explicitly chose to keep seeing it) both show the dialog on the next visit and default
+its checkbox to checked; only `dismissed` (checked and closed) suppresses it, and only a
+stored `keep` shows the checkbox unchecked on reopen -- collapsing "never decided" and
+"keep" into one state would default a first-time visitor's checkbox to unchecked despite
+the static markup's own `checked` attribute, defeating the dialog for anyone who never
+notices and unticks a box they would reasonably assume already reflects the recommended
+choice. A stored column width is applied only once validated -- a finite integer within
+that column's own resize-handle minimum and the same fixed ceiling (`MAX_COLUMN_WIDTH`)
+a drag or a Shift+Arrow resize is itself clamped to on the way in, so a value the UI
+cannot even create in the first place cannot fail this read either -- so a stale or
+hand-edited value is dropped rather than pinning a column narrower than its floor or wider
+than sensible; malformed JSON is dropped the same way rather than thrown. None of the
+three ever touches the file's bytes: unavailable or corrupt storage renders the same page
+`render_html` would have produced with no storage at all, just with every preference at
+its default. The template itself is pure ASCII, so `--format html` to a redirected
+stdout does not crash on a non-UTF-8 locale the way a stray arrow glyph or em dash in the
+JavaScript source would.
+
+**The URL hash carries the open wheel, the top-level view and the toolbar's filters.**
+`wheel=<index>` names the record open in the detail panel; `view=rules` names the
+top-level view (omitted for its default, `wheels`); `class=<comma list>`, `linkage=<value>`,
+`review=1` and `q=<text>` each name a toolbar filter, present only when it differs from
+its default -- except `class`, which is present and empty (`class=`) for the one reachable
+state whose value happens to be an empty string, every class chip unticked, so that state
+round-trips instead of reading as "no filter" and silently re-ticking every class on
+reload. A `class` token not in the report's own `DATA.classes` (a stale link, a hand-edited
+value) is dropped on read rather than kept as a filter nothing on screen explains. Multiple
+params join with `&`, for example
+`#class=NON_APPROVED_CRYPTO,FIPS_BREAKING&linkage=bundled&review=1&q=somefilename`, and a
+comma inside `class` stays literal rather than percent-encoded, so the hash reads the same
+as it is written. The page writes the hash with `history.replaceState`, never `pushState`:
+a new history entry on every keystroke in the search box would make the back button
+useless. Reading is total, not a merge: on boot, and again on `hashchange` (a shared or
+bookmarked link, or a hand-edited address bar), every recognised field is set from whatever
+the new hash carries or reset to its own default when the hash omits it, so applying a hash
+produces the same `state` regardless of whatever filter was active before -- a plain
+`#wheel=1` link a colleague sends clears a search or class filter already active in the tab
+that follows it, rather than keeping it and writing it back into the URL on the next
+interaction as though it had always belonged there. Opening a wheel merges `wheel=` into
+whatever filter params are already in the hash rather than overwriting them, and closing
+the detail panel strips only `wheel=`, leaving the filters in place. A hash-encoded param
+present at load, of any kind, also keeps the onboarding dialog from auto-opening over a
+link someone was sent on purpose.
 
 **No verdict class gets a favourable colour.** The taxonomy has no passing class, and the
 page must not invent one by way of colour: the two classes that mean "nothing was
