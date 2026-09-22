@@ -1271,7 +1271,7 @@ severity = "medium"
 family = "hash"
 relation = "outside_module"
 basis = ["FIPS-202", "FIPS-140-3"]
-why = "Pure-Rust SHA-3 and SHAKE. The algorithms are approved; this implementation is not a validated module and does not read the system provider, so the condition is which build it is trusted under."
+why = "Pure-Rust SHA-3 and SHAKE. The algorithms are approved; this implementation is not a validated module and runs outside the system provider."
 
 [[rust_crate]]
 name = "md-5"
@@ -1726,7 +1726,7 @@ severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "kem"
 relation = "outside_module"
-basis = ["FIPS-203", "FIPS-140-3"]
+basis = ["FIPS-203", "FIPS-204", "FIPS-205", "FIPS-140-3"]
 why = "Python binding for liboqs, the Open Quantum Safe library. Bundles reference implementations of post-quantum KEM and signature algorithms; the algorithms are approved, this build is not a validated module and runs outside the system provider."
 
 [[python_module]]
@@ -1735,7 +1735,7 @@ severity = "high"
 verdict = "NON_APPROVED_CRYPTO"
 family = "kem"
 relation = "outside_module"
-basis = ["FIPS-203", "FIPS-140-3"]
+basis = ["FIPS-203", "FIPS-204", "FIPS-205", "FIPS-140-3"]
 why = "PQClean bindings, covering post-quantum KEM and signature algorithms including ML-KEM. The algorithms are approved, this build is not a validated module and runs outside the system provider."
 
 

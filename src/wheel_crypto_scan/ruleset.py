@@ -683,8 +683,11 @@ class Ruleset:
     ctypes_substrings: tuple[str, ...]
     # Keyed on `Standard.id`. Defaults to empty rather than requiring every direct
     # `Ruleset(...)` construction in a test to supply one: a ruleset with no `basis`
-    # anywhere is coherent with no standards declared at all.
-    standards: Mapping[str, Standard] = MappingProxyType({})
+    # anywhere is coherent with no standards declared at all. `default_factory`
+    # rather than a bare literal: `MappingProxyType({}).__hash__` is `None` on Python
+    # 3.11, so `dataclasses` reads the literal as a mutable default and refuses to
+    # build the class at all -- a factory sidesteps that check regardless of hashability.
+    standards: Mapping[str, Standard] = field(default_factory=lambda: MappingProxyType({}))
     _by_id: Mapping[str, Rule] = field(repr=False, default_factory=dict)
     _libraries_by_sbom_key: Mapping[str, CryptoLibrary] = field(repr=False, default_factory=dict)
     _crates_by_sbom_key: Mapping[str, RustCrateEntry] = field(repr=False, default_factory=dict)
