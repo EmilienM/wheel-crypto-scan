@@ -15,16 +15,17 @@ input order. `wheel-crypto-scan schema` prints the machine-readable JSON Schema
 |---|---|
 | A new optional key | unchanged |
 | A new key that is always present (`required` in the JSON Schema) | unchanged |
-| A new `rule_id`, `subject_kind`, verdict class, binary format, layer or error kind | unchanged |
+| A new `rule_id`, `subject_kind`, `relation`, `family`, verdict class, binary format, layer or error kind | unchanged |
 | A key removed, renamed, or changed type | **bumped** |
 
 Consumers **must ignore unknown keys** and **must not** treat the documented value lists as
-closed. That is why the schema deliberately leaves the verdict class, binary format, layer
-and stage fields as open strings: closing them would turn every intended addition into a
-breaking change. Pin `tool.ruleset_version` if you need a fixed value set. A new key can be
-`required` in the schema without bumping this version: it is a statement that the key is
-always present *from here on*, not a guarantee an old consumer relied on and would break by
-its arrival — ignoring an unknown key already covers that consumer.
+closed. That is why the schema deliberately leaves the verdict class, `relation`, `family`,
+binary format, layer and stage fields as open strings: closing them would turn every
+intended addition into a breaking change. Pin `tool.ruleset_version` if you need a fixed
+value set. A new key can be `required` in the schema without bumping this version: it is a
+statement that the key is always present *from here on*, not a guarantee an old consumer
+relied on and would break by its arrival — ignoring an unknown key already covers that
+consumer.
 
 Canonical serialisation: keys sorted, ASCII only (`\uXXXX`-escaped), no floats anywhere, no
 insignificant whitespace, exactly one trailing newline per record. No host paths,

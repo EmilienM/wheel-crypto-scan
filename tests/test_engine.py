@@ -92,6 +92,25 @@ def test_a_wrapper_distribution_gets_the_conditional_rule_not_the_non_approved_o
     assert "DIST_NON_APPROVED_CRYPTO" not in ids(findings)
 
 
+def test_a_distribution_entry_with_no_own_basis_still_inherits_the_rules(ruleset) -> None:
+    """`cryptography`'s own `[[crypto_distribution]]` entry sets no `relation`/`basis`
+    of its own (checked first so this is not vacuous): the resolved finding must fall
+    back to `DIST_SYSTEM_CRYPTO_WRAPPER`'s own `relation`/`basis` rather than reading
+    an empty `basis` paired with a non-null `relation`, which would break the
+    "always both or neither" pairing invariant `findings.py` documents. This is the
+    inherit-from-rule path `_basis_override` exists for: an entry's `basis` defaults
+    to `()`, not `None`, so passing it through unmodified reads as "explicitly
+    overridden to empty" instead of "not overridden"."""
+    entry = ruleset.distributions["cryptography"]
+    assert entry.relation is None
+    assert entry.basis == ()
+    findings = run(ruleset, wheel(metadata=metadata(name="cryptography", version="42.0.5")))
+    finding = one(findings, "DIST_SYSTEM_CRYPTO_WRAPPER")
+    rule = next(r for r in ruleset.rules if r.id == "DIST_SYSTEM_CRYPTO_WRAPPER")
+    assert finding.relation == rule.relation == "boundary_unresolved"
+    assert finding.basis == rule.basis == ("FIPS-140-3",)
+
+
 def test_an_unlisted_distribution_matches_no_name_rule(ruleset) -> None:
     findings = run(ruleset, wheel(metadata=metadata(name="numpy")))
     assert not ids(findings) & {"DIST_NON_APPROVED_CRYPTO", "DIST_SYSTEM_CRYPTO_WRAPPER"}
@@ -1833,3 +1852,41 @@ def test_every_matcher_locates_where_its_declared_location_says(ruleset) -> None
     assert used_kinds_with_a_location <= fired_kinds
     assert object_values_seen
     assert wheel_linkage_seen
+
+
+# --- relation/basis pairing --------------------------------------------------
+
+
+def test_relation_and_basis_are_never_one_without_the_other(ruleset) -> None:
+    """`Finding.relation` and `Finding.basis` are "always both or neither" -- a
+    citation must never stand alone -- across every site this task threads them
+    through, not only the one `test_a_distribution_entry_with_no_own_basis_still_
+    inherits_the_rules` above pins by name. Combines evidence for three different
+    matcher kinds whose matched entry carries no `relation`/`basis` of its own, each
+    relying entirely on its owning rule's: `dist_name` (`cryptography`), `rust_crate`
+    (`aws-lc-fips-sys`, which does carry its own `verdict` but not its own `relation`/
+    `basis`) and `py_import` (`random`, likewise). A regression in any of the nine
+    `Hit`-construction sites that reads an entry's `basis` -- not only the one this
+    fixture happens to hit -- has a good chance of producing a finding whose `basis`
+    is `()` beside a non-`null` `relation`, which this asserts never happens."""
+    crate_entry = ruleset.rust_crates["aws-lc-fips-sys"]
+    assert crate_entry.relation is None
+    module_entry = ruleset.python_modules["random"]
+    assert module_entry.relation is None
+
+    findings = run(
+        ruleset,
+        wheel(
+            metadata=metadata(name="cryptography", version="42.0.5"),
+            binaries=(
+                binary(
+                    "demo/_ext.so",
+                    rust_crates=(RustCrate("aws-lc-fips-sys", "0.14.2"),),
+                ),
+            ),
+            py_sites=(site("py_import", "random"),),
+        ),
+    )
+    assert {"DIST_SYSTEM_CRYPTO_WRAPPER", "BIN_AWS_LC_FIPS", "PY_INSECURE_RNG"} <= ids(findings)
+    for finding in findings:
+        assert (finding.relation is None) == (not finding.basis), finding.rule_id

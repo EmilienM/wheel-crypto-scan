@@ -815,39 +815,11 @@
     },
     "relation": {
       "type": "string",
-      "enum": [
-        "not_specified",
-        "restricted",
-        "outside_module",
-        "boundary_unresolved",
-        "runtime_refusal",
-        "policy_bypass",
-        "use_unresolved"
-      ],
-      "description": "What would have to change for a finding to go away, the question a consumer of the index actually asks. New relations may be added without a schema_version bump; the authoritative list is ruleset.RELATIONS."
+      "description": "What would have to change for a finding to go away, the question a consumer of the index actually asks. Current values: not_specified, restricted, outside_module, boundary_unresolved, runtime_refusal, policy_bypass, use_unresolved. New relations may be added without a schema_version bump; the authoritative list is ruleset.RELATIONS."
     },
     "family": {
       "type": "string",
-      "enum": [
-        "hash",
-        "checksum",
-        "block_cipher",
-        "stream_cipher",
-        "aead",
-        "mac",
-        "kdf",
-        "password_hash",
-        "signature",
-        "key_agreement",
-        "kem",
-        "drbg",
-        "entropy",
-        "tls",
-        "ssh",
-        "trust_store",
-        "library"
-      ],
-      "description": "The FIPS-agnostic vocabulary for what a piece of evidence is, as opposed to what it means for FIPS compatibility. New families may be added without a schema_version bump; the authoritative list is ruleset.FAMILIES."
+      "description": "The FIPS-agnostic vocabulary for what a piece of evidence is, as opposed to what it means for FIPS compatibility. Current values: hash, checksum, block_cipher, stream_cipher, aead, mac, kdf, password_hash, signature, key_agreement, kem, drbg, entropy, tls, ssh, trust_store, library. New families may be added without a schema_version bump; the authoritative list is ruleset.FAMILIES."
     }
   }
 }

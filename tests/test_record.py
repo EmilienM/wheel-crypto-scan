@@ -26,6 +26,7 @@ from wheel_crypto_scan.evidence import (
 )
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.record import build_record, to_json_line
+from wheel_crypto_scan.ruleset import FAMILIES, LINKAGE_VALUES, RELATIONS
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext, scan_wheel
 from wheel_crypto_scan.verdict import classify
@@ -596,6 +597,35 @@ def test_the_schema_forbids_a_passing_class() -> None:
     text = files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
     assert "COMPLIANT" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
     assert "COMPATIBLE" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
+
+
+def test_the_schema_does_not_close_the_relation_or_family_lists() -> None:
+    """The same argument as `test_the_schema_does_not_close_the_verdict_class_list`,
+    for the two vocabularies this task added: a closed enum turns adding a relation or
+    a family to `ruleset.py` into a silent schema break."""
+    schema = json.loads(
+        files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
+    )
+    assert "enum" not in schema["$defs"]["relation"]
+    assert "enum" not in schema["$defs"]["family"]
+    for name in RELATIONS:
+        assert name in schema["$defs"]["relation"]["description"], name
+    for name in FAMILIES:
+        assert name in schema["$defs"]["family"]["description"], name
+
+
+def test_crypto_library_linkage_enum_matches_the_linkage_vocabulary_minus_none() -> None:
+    """`crypto.libraries[].linkage` can never report `none` -- a library reading that
+    posture is excluded from the array entirely, not listed with it -- so its closed
+    enum is `LINKAGE_VALUES` minus that one value, and a value added to or removed from
+    `LINKAGE_VALUES` must not drift from this copy silently."""
+    schema = json.loads(
+        files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
+    )
+    linkage_enum = schema["properties"]["crypto"]["properties"]["libraries"]["items"]["properties"][
+        "linkage"
+    ]["enum"]
+    assert set(linkage_enum) == LINKAGE_VALUES - {"none"}
 
 
 def test_the_record_says_which_evidence_level_produced_it(tmp_path: Path) -> None:
