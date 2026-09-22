@@ -1,10 +1,13 @@
 # wheel-crypto-scan
 
-Static analyser that reports crypto-relevant **evidence** inside Python wheels so consumers
-of a package index can see per-wheel FIPS risk. It gathers evidence; it does not decide FIPS
-compatibility. Read `README.md` for what it detects, `SCHEMA.md` for the output contract, and
-`DESIGN.md` for the design calls that cost something, including the holes left open on
-purpose and the measurement behind each one.
+Static analyser that reports crypto-relevant **evidence** inside Python wheels: which
+primitive families and libraries are present, how they are linked, and what the Python
+code does with TLS, hashing and randomness. FIPS compatibility is one lens over that
+evidence, not the whole of it -- whether a FIPS-enforcing host can run the wheel's
+crypto as shipped. It gathers evidence; it does not decide FIPS compatibility. Read
+`README.md` for what it detects, `SCHEMA.md` for the output contract, and `DESIGN.md`
+for the design calls that cost something, including the holes left open on purpose and
+the measurement behind each one.
 
 ## Invariants
 

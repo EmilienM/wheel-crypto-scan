@@ -5331,12 +5331,13 @@ exported, so a bundled copy matches it too only if the bundle still carries its 
 precedence`, so such a wheel's headline is `NON_APPROVED_CRYPTO`.
 
 **Why this is correct rather than a false positive.** The taxonomy's own definition of
-`NON_APPROVED_CRYPTO` is "implements or bundles a non-FIPS-approved primitive". A
-statically linked OpenSSL does bundle Blowfish, MD4 and the rest, and because it is
-static the host FIPS provider has no way to refuse them -- the exact argument
-`BIN_OWN_WEAK_HASH_IMPL`'s own `why` makes for a private implementation. The record is
-telling the truth; the tool's accepted error direction is over-flagging, and it has no
-passing class to be tricked into.
+`NON_APPROVED_CRYPTO` is cryptography that no validated module provides: a primitive no
+approved standard specifies, or an approved algorithm outside any validated module. A
+statically linked OpenSSL does bundle Blowfish, MD4 and the rest -- primitives no
+approved standard specifies -- and because it is static the host FIPS provider has no
+way to refuse them -- the exact argument `BIN_OWN_WEAK_HASH_IMPL`'s own `why` makes for
+a private implementation. The record is telling the truth; the tool's accepted error
+direction is over-flagging, and it has no passing class to be tricked into.
 
 **Why an import of the same names gets a separate rule.** Calling `BF_encrypt` through
 a library the wheel links neither implements nor bundles Blowfish, so

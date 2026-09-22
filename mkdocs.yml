@@ -1,7 +1,7 @@
 site_name: wheel-crypto-scan
 site_description: >-
-  Deterministic FIPS-risk evidence inspector for Python wheels. It gathers
-  evidence; it does not decide FIPS compatibility.
+  Deterministic crypto inventory for Python wheels, with FIPS compatibility as one
+  lens over it. It gathers evidence; it does not decide FIPS compatibility.
 site_url: https://emilienm.github.io/wheel-crypto-scan/
 repo_url: https://github.com/EmilienM/wheel-crypto-scan
 repo_name: EmilienM/wheel-crypto-scan
