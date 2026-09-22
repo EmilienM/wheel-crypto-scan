@@ -292,8 +292,22 @@ that reads it back never uses `innerHTML`: every value reaches the DOM through
 markup.
 
 The page is byte-stable: a pure function of the records, the ruleset and the template,
-with no timestamp, host path or hostname. The theme toggle reads and writes
-`localStorage` at view time only, so it never touches the file's bytes.
+with no timestamp, host path or hostname. Three `localStorage` keys hold view-time
+preferences only — the theme, the onboarding dialog's checkbox (a missing key or `keep`
+both show it with the checkbox checked; only `dismissed` suppresses it), and the wheel
+table's resized column widths, each validated against the same ceiling a resize is
+itself clamped to on the way in — each read and written through the same try/catch, so
+unavailable or corrupt storage renders the same page with every preference at its
+default.
+
+The URL hash carries the open wheel (`wheel=<index>`), the top-level view (`view=rules`,
+omitted for its default), and the toolbar's filters (`class=`, `linkage=`, `review=`,
+`q=`), joined by `&` and written with `history.replaceState` rather than `pushState` so
+filtering does not spam browser history. Reading is total: applying a hash always sets
+every recognised field, from the hash or back to its default, so a plain link never
+inherits a filter left active from whatever was open before. Opening a wheel merges into
+the existing filter params instead of overwriting them, and a link carrying any of these
+reproduces the same filtered view on load.
 
 No verdict class gets a favourable colour. The two classes that mean "nothing was
 decided" share one neutral token; every other class is a warning or a danger token, and

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import html
 import inspect
 import json
 import re
@@ -50,6 +51,7 @@ def _render_in_browser(
     fragment: str = "",
     extra_script: str = "",
     window_size: str = "",
+    virtual_time_budget: int = 0,
 ) -> str:
     """Render `page` in headless Chrome (or Chromium) and return the DOM it
     produces after load.
@@ -65,7 +67,17 @@ def _render_in_browser(
     page's own hash-routing sees it the same way it would a link to one wheel.
     `window_size` is Chrome's `WIDTH,HEIGHT`, for a test that measures layout;
     left empty, the page lays out in Chrome's default headless window.
-    """
+
+    `virtual_time_budget` is milliseconds of Chrome's simulated time to run
+    before `--dump-dom` reads the page back; left at 0 (the default), no
+    `--virtual-time-budget` flag is passed and Chrome dumps as soon as the load
+    event fires, which is enough for every test whose `extra_script` runs
+    synchronously. A native `<dialog>`'s "close" event fires as a queued task
+    rather than inline with the call that closes it (confirmed against a real
+    browser, not only reasoned from the spec), so a test whose `extra_script`
+    depends on that event having already run -- the intro dialog's storage
+    write on close, or a chain of reopen/close cycles driven by it -- passes an
+    explicit budget instead."""
     binary = _chrome_binary()
     if binary is None:
         pytest.skip("no headless-capable browser (google-chrome/chromium) on this host")
@@ -75,8 +87,18 @@ def _render_in_browser(
     path.write_text(page, encoding="utf-8")
     url = f"file://{path}#{fragment}" if fragment else f"file://{path}"
     size = [f"--window-size={window_size}"] if window_size else []
+    budget = [f"--virtual-time-budget={virtual_time_budget}"] if virtual_time_budget else []
     result = subprocess.run(
-        [binary, "--headless=new", "--disable-gpu", "--no-sandbox", *size, "--dump-dom", url],
+        [
+            binary,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            *size,
+            *budget,
+            "--dump-dom",
+            url,
+        ],
         capture_output=True,
         text=True,
         timeout=30,
@@ -90,9 +112,14 @@ _TAB_ORDER = ("findings", "binaries", "wheel", "errors", "raw")
 
 def _click_tab(tab: str) -> str:
     """JS that clicks the detail view's tab button for `tab`, test-authored code
-    to append after the page's own script through `extra_script`."""
+    to append after the page's own script through `extra_script`.
+
+    Scoped to `#tabs`, the detail panel's own tablist, rather than a bare
+    `.tabs button`: the page reuses the `.tabs` styling for the top-level
+    Wheels/Rules switch and the Help dialog's Intro/Reference switch too, and a
+    document-wide query would count buttons across all three."""
     index = _TAB_ORDER.index(tab)
-    return f'document.querySelectorAll(".tabs button")[{index}].click();'
+    return f'document.querySelectorAll("#tabs button")[{index}].click();'
 
 
 def _tab(dom: str, tab: str) -> str:
@@ -1175,3 +1202,1277 @@ def test_browser_theme_toggle_cycles_without_storage(tmp_path: Path) -> None:
         "Theme: dark",
         "Theme: system",
     ]
+
+
+# --- HTML rendered in a real browser: onboarding dialog, columns, filters -----------
+#
+# Same shape as the browser tests above: each self-skips without a browser on the
+# host. `_seed_script` mirrors `test_browser_theme_toggle_cycles_without_storage`'s
+# `block_storage` rig -- test-authored JavaScript that must run before the page's own
+# script (which reads storage and builds the DOM at boot), so it goes in ahead of the
+# data block rather than through `extra_script`, which only runs after.
+
+
+def _seed_script(page: str, script: str) -> str:
+    return page.replace(
+        '<script type="application/json" id="wcs-data">',
+        f"<script>{script}</script>" + '<script type="application/json" id="wcs-data">',
+        1,
+    )
+
+
+_INTRO_OPEN_SCRIPT = "document.title = String(document.getElementById('intro').open);"
+
+_FILENAME_COL_WIDTH_SCRIPT = (
+    "document.title = document.getElementById('wheel-colgroup').children[0].style.width;"
+)
+
+
+def _find_chip_js(class_name: str) -> str:
+    """JS expression (no trailing `;`) for the class chip whose text names
+    `class_name`, for a test to append `.click()` or a property read to."""
+    return (
+        "Array.prototype.find.call(document.querySelectorAll('.class-chip'), "
+        f"function (c) {{ return c.textContent.indexOf('{class_name}') !== -1; }})"
+    )
+
+
+def _title(dom: str) -> str:
+    """Unescaped: `--dump-dom` serialises the title element's text back to HTML, so
+    a literal `&` a test put there (the hash's own param separator, among other
+    things) comes back as `&amp;`."""
+    match = re.search(r"<title>([^<]*)</title>", dom)
+    assert match is not None
+    return html.unescape(match.group(1))
+
+
+def _three_records() -> list[dict]:
+    """Three wheels spanning three classes and both review states, named so their
+    sorted order (by filename) is a, b, c: enough spread to exercise the class chip
+    counts, the review-only filter, and Previous/Next stepping through a filtered
+    set that skips the excluded middle record. Each carries a rule id the real
+    ruleset actually defines (`BIN_BUNDLED_OPENSSL`, `WHEEL_UNREADABLE`,
+    `PY_WEAK_HASH_CALL`), not a placeholder one: `render_html`'s `rules` payload
+    only ever carries a rule the given `Ruleset` defines, so a fixture rule id the
+    Rules tab is meant to list has to be one of those."""
+    a = html_record("a", "CONDITIONAL", "bundled", review=True, rule_id="BIN_BUNDLED_OPENSSL")
+    b = html_record("b", "OPAQUE", "none", review=False, rule_id="WHEEL_UNREADABLE")
+    c = html_record("c", "FIPS_BREAKING", "static", review=True, rule_id="PY_WEAK_HASH_CALL")
+    return [a, b, c]
+
+
+def _finding(
+    rule_id: str,
+    subject: str | None,
+    *,
+    verdict: str | None = None,
+    relation: str | None = None,
+    family: str | None = None,
+    basis: list[str] | None = None,
+) -> dict:
+    """A single finding dict, the shape `record.py._finding_block` emits, for a
+    test that wants more than one finding on a record or a finding with no
+    `verdict` at all (a purely informational rule such as WHEEL_GENERATOR) --
+    `html_record` always builds exactly one, verdict-bearing finding, which
+    cannot exercise either case."""
+    return {
+        "rule_id": rule_id,
+        "subject": subject,
+        "subject_kind": "library",
+        "severity": "medium",
+        "category": "bundled-crypto",
+        "layer": "binary",
+        "confidence": "high",
+        "verdict": verdict,
+        "relation": relation,
+        "basis": basis or [],
+        "family": family,
+        "needs_human_review": False,
+        "occurrences": 1,
+        "truncated": False,
+        "locations": [{"path": str(subject), "line": None, "evidence": subject}],
+    }
+
+
+# --- onboarding dialog ---------------------------------------------------------
+
+
+def test_html_has_intro_dialog_and_no_legacy_legend_accordion() -> None:
+    """The onboarding dialog sits in the static markup, covered by the same
+    ASCII/no-compliance-language scans that already cover the whole page, and the
+    accordion it replaces is gone rather than left as dead markup beside it."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    assert '<dialog id="intro" aria-labelledby="intro-title">' in page
+    assert 'id="intro-dismiss" checked' in page
+    assert 'id="help-open"' in page
+    assert "<details" not in page
+    assert "Legend and column help" not in page
+
+
+def test_browser_intro_auto_opens_on_first_visit_with_records(tmp_path: Path) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    dom = _render_in_browser(tmp_path, page, extra_script=_INTRO_OPEN_SCRIPT)
+    assert _title(dom) == "true"
+
+
+def test_browser_intro_does_not_auto_open_with_a_wheel_hash(tmp_path: Path) -> None:
+    """Someone was sent a link straight to a wheel's evidence; the onboarding
+    dialog must not cover it up."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        fragment="wheel=0",
+        extra_script="document.title = String(document.getElementById('intro').open);",
+    )
+    assert _title(dom) == "false"
+
+
+def test_browser_intro_does_not_auto_open_on_an_empty_run(tmp_path: Path) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html([], ruleset)
+    dom = _render_in_browser(tmp_path, page, extra_script=_INTRO_OPEN_SCRIPT)
+    assert _title(dom) == "false"
+
+
+def test_browser_intro_checkbox_defaults_to_checked_on_a_first_visit(tmp_path: Path) -> None:
+    """Never decided (no stored preference at all) defaults to showing the checkbox
+    checked, matching the static markup's own `checked` attribute -- reading it back
+    needs no wait, since `openIntro` sets it synchronously within the same click
+    handler that opens the dialog."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "document.getElementById('help-open').click();"
+        "document.title = String(document.getElementById('intro-dismiss').checked);"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    assert _title(dom) == "true"
+
+
+def test_browser_intro_checking_and_closing_stores_dismissed(tmp_path: Path) -> None:
+    """Checking the box and closing writes "dismissed" to storage.
+
+    A native `<dialog>`'s "close" event fires as a queued task, not inline with
+    the call that closes it (confirmed against a real browser, not only reasoned
+    from the spec), so this waits on the page's own listener -- the one that
+    writes storage -- via a second listener on the same event rather than
+    reading storage right after the closing click. `localStorage.getItem` itself
+    is a synchronous read once that listener has run, so no further wait is
+    needed to observe what it wrote."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "var intro = document.getElementById('intro');"
+        "intro.addEventListener('close', function () {"
+        "  document.title = String(window.localStorage.getItem('wcs-intro'));"
+        "});"
+        "document.getElementById('help-open').click();"
+        "document.getElementById('intro-dismiss').checked = true;"
+        "document.getElementById('intro-close').click();"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, fragment="wheel=0", extra_script=script, virtual_time_budget=1000
+    )
+    assert _title(dom) == "dismissed"
+
+
+def test_browser_intro_reopens_checked_when_stored_choice_is_dismissed(tmp_path: Path) -> None:
+    """A dialog reopened with `wcs-intro` already "dismissed" in storage shows the
+    checkbox checked -- reflecting the currently stored preference, not a fixed
+    default -- and unchecking it and closing stores "keep" instead, in the same
+    render (one close event, not chained off a prior one)."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    rigged = _seed_script(page, "window.localStorage.setItem('wcs-intro', 'dismissed');")
+    script = (
+        "var out = {};"
+        "var intro = document.getElementById('intro');"
+        "intro.addEventListener('close', function () {"
+        "  out.stored = window.localStorage.getItem('wcs-intro');"
+        "  document.title = JSON.stringify(out);"
+        "});"
+        "document.getElementById('help-open').click();"
+        "out.checkedOnOpen = document.getElementById('intro-dismiss').checked;"
+        "document.getElementById('intro-dismiss').checked = false;"
+        "document.getElementById('intro-close').click();"
+    )
+    dom = _render_in_browser(
+        tmp_path, rigged, fragment="wheel=0", extra_script=script, virtual_time_budget=1000
+    )
+    out = json.loads(_title(dom))
+    assert out == {"checkedOnOpen": True, "stored": "keep"}
+
+
+def test_browser_intro_reopens_unchecked_when_stored_choice_is_keep(tmp_path: Path) -> None:
+    """A dialog reopened with `wcs-intro` already "keep" in storage shows the
+    checkbox unchecked, needing no wait since reading it back is synchronous."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    rigged = _seed_script(page, "window.localStorage.setItem('wcs-intro', 'keep');")
+    script = (
+        "document.getElementById('help-open').click();"
+        "document.title = String(document.getElementById('intro-dismiss').checked);"
+    )
+    dom = _render_in_browser(tmp_path, rigged, fragment="wheel=0", extra_script=script)
+    assert _title(dom) == "false"
+
+
+def test_browser_intro_survives_blocked_storage(tmp_path: Path) -> None:
+    """A blocked `localStorage` (private browsing, a data: origin) must not stop the
+    dialog from auto-opening, or stop the rest of the page from booting: `wcs-intro`
+    is read and written through the same try/catch pattern as the theme toggle."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    rigged = _seed_script(
+        page,
+        "Object.defineProperty(window, 'localStorage', "
+        "{ get: function () { throw new DOMException('blocked'); } });",
+    )
+    script = (
+        "var out = {};"
+        "out.introOpen = document.getElementById('intro').open;"
+        "document.getElementById('intro-dismiss').checked = true;"
+        "document.getElementById('intro-close').click();"
+        "out.count = document.getElementById('count').textContent;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, rigged, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["introOpen"] is True
+    assert out["count"] == "1 of 1 wheels"
+
+
+def test_browser_help_button_reopens_the_last_viewed_tab(tmp_path: Path) -> None:
+    """`.click()` on the Reference tab button synthesises a click at (0, 0) -- the
+    same coordinates a keyboard activation (Enter/Space) produces in every major
+    browser -- so this also stands in for the keyboard case the P0 keyboard-trap
+    regression is about: `out.introOpenAfterTabClick` is the guard that fails if
+    the dialog's outside-click handler goes back to reading (0, 0) as "outside"
+    and closes the dialog on every keyboard interaction inside it."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "var out = {};"
+        "document.getElementById('help-open').click();"
+        "out.introVisibleFirst = !document.getElementById('intro-panel-intro').hidden;"
+        "document.getElementById('intro-tab-reference').click();"
+        "out.introOpenAfterTabClick = document.getElementById('intro').open;"
+        "out.referenceVisible = !document.getElementById('intro-panel-reference').hidden;"
+        "document.getElementById('intro-close').click();"
+        "document.getElementById('help-open').click();"
+        "out.referenceVisibleOnReopen = !document.getElementById('intro-panel-reference').hidden;"
+        "out.introHiddenOnReopen = document.getElementById('intro-panel-intro').hidden;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out == {
+        "introVisibleFirst": True,
+        "introOpenAfterTabClick": True,
+        "referenceVisible": True,
+        "referenceVisibleOnReopen": True,
+        "introHiddenOnReopen": True,
+    }
+
+
+def test_browser_intro_backdrop_click_still_closes_the_dialog(tmp_path: Path) -> None:
+    """A genuine backdrop click -- `event.target` is the dialog element itself,
+    never a child -- still closes the dialog: the P0 fix (`event.target !==
+    els.intro`) narrows what counts as "outside", but must not stop recognising
+    the one case that always was."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "var intro = document.getElementById('intro');"
+        "document.getElementById('help-open').click();"
+        "var out = { openBefore: intro.open };"
+        "intro.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 5, clientY: 5 }));"
+        "out.openAfter = intro.open;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out == {"openBefore": True, "openAfter": False}
+
+
+def test_browser_reference_tab_carries_the_legend_content(tmp_path: Path) -> None:
+    """The Reference tab is the legend's new home: it lists the verdict classes and
+    the columns the accordion used to, now inside the Help dialog."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "CONDITIONAL", "bundled")], ruleset)
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        extra_script="document.getElementById('intro-tab-reference').click();",
+    )
+    assert "Verdict classes" in dom
+    assert "OpenSSL linkage" in dom
+
+
+# --- toolbar help buttons -------------------------------------------------------
+
+
+def test_browser_toolbar_help_buttons_show_expected_text(tmp_path: Path) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "var out = [];"
+        "function open(sel) {"
+        "  document.querySelector(sel).click();"
+        "  out.push(document.getElementById('popover').textContent);"
+        "}"
+        "open('#class-filter legend .help-btn');"
+        "open('#review-group .help-btn');"
+        "open('label[for=\"linkage-filter\"] .help-btn');"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    texts = json.loads(_title(dom))
+    assert texts[0].startswith("Keep only wheels whose class badge is one of the ticked")
+    assert texts[1].startswith("Keep only wheels a rule flagged for a human look")
+    assert texts[2].startswith("Keep only wheels whose conditions.openssl_linkage is this value")
+
+
+# --- resizable wheel-table columns -----------------------------------------------
+
+
+def _parse_columns(page: str) -> list[dict]:
+    """The COLUMNS array's `key`/`width`/`min` fields, parsed straight out of the
+    page's own script rather than restated in the test: the source both
+    `test_browser_wheel_table_min_width_matches_the_columns_default_widths` and a
+    test that wants to reason about a specific column's default or floor compare
+    against, so a COLUMNS edit cannot silently leave the test asserting stale
+    arithmetic."""
+    script = _js(page)
+    match = re.search(r"var COLUMNS = \[(.*?)\];", script, re.DOTALL)
+    assert match is not None
+    columns = []
+    for entry in re.findall(r"\{[^{}]*\}", match.group(1)):
+        key_match = re.search(r'key:\s*"(\w+)"', entry)
+        width_match = re.search(r"width:\s*(\d+)", entry)
+        min_match = re.search(r"min:\s*(\d+)", entry)
+        assert key_match is not None and min_match is not None
+        columns.append(
+            {
+                "key": key_match.group(1),
+                "width": int(width_match.group(1)) if width_match else None,
+                "min": int(min_match.group(1)),
+            }
+        )
+    return columns
+
+
+def test_html_wheel_table_layout_is_fixed_with_no_static_min_width() -> None:
+    """`table-layout: fixed` is static CSS; `min-width` is not -- it is computed at
+    view time from COLUMNS (see the browser test below), so the static rule never
+    carries a second number that could drift from what the script actually
+    computes."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    css = _css(page)
+    match = re.search(r"#wheel-table\s*\{([^}]*)\}", css)
+    assert match is not None
+    assert "table-layout: fixed" in match.group(1)
+    assert "min-width" not in match.group(1)
+
+
+def test_browser_wheel_table_min_width_matches_the_columns_default_widths(
+    tmp_path: Path,
+) -> None:
+    """The table's computed `min-width` at boot is the sum of every fixed column's
+    own default `width` plus the flex column's (`reasons`) `min`: self-consistent
+    with COLUMNS, the way a number restated by hand in a test could drift from it
+    without either one failing to parse."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    columns = _parse_columns(page)
+    expected = sum(
+        column["width"] if column["width"] is not None else column["min"] for column in columns
+    )
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        extra_script="document.title = document.getElementById('wheel-table').style.minWidth;",
+    )
+    assert _title(dom) == f"{expected}px"
+
+
+def test_browser_wheel_table_fits_a_1280px_wide_window_with_no_horizontal_scroll(
+    tmp_path: Path,
+) -> None:
+    """A common 1280px-wide laptop window shows the table with no horizontal
+    scrollbar before any user resizing -- parity with the table this feature
+    replaced, which fit the same width.
+
+    Measured against `.table-scroll`, the element the wheel table's own
+    horizontal scrollbar actually appears on, not `document.documentElement`:
+    `.table-scroll` has its own `overflow-x: auto`, so an over-wide table gets
+    contained there and never widens the outer page at all -- confirmed
+    empirically (`document.documentElement.scrollWidth` reads equal to
+    `clientWidth` at this window size both before and after this fix, while
+    `.table-scroll`'s own `scrollWidth` reads 1310 (over) before it and 1246 (at
+    or under) after -- the real signal the reviewer's own repro was pointing at."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        window_size="1280,900",
+        extra_script=(
+            "var scroll = document.querySelector('.table-scroll');"
+            "document.title = JSON.stringify({"
+            " scrollWidth: scroll.scrollWidth,"
+            " clientWidth: scroll.clientWidth"
+            "});"
+        ),
+    )
+    out = json.loads(_title(dom))
+    assert out["scrollWidth"] <= out["clientWidth"]
+
+
+def test_browser_column_resize_via_pointer_updates_the_col_width(tmp_path: Path) -> None:
+    """A pointer drag on the filename column's resize handle updates that column's
+    `<col>` width live, by the pointer's movement from the drag's start, and shows
+    `Reset columns` once a width no longer matches the default. Native pointer
+    capture requires a trusted, hardware-originated pointer that headless Chrome
+    never creates for a scripted `PointerEvent`, so this stands in a same-origin
+    polyfill that tracks capture the way the browser would, letting the handler's
+    own `hasPointerCapture` check pass the way it does for a real drag."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "Element.prototype.setPointerCapture = function (id) { this._captured = id; };"
+        "Element.prototype.hasPointerCapture = function (id) { return this._captured === id; };"
+        "Element.prototype.releasePointerCapture = function (id) { this._captured = null; };"
+        "var handle = document.querySelectorAll('.col-resize-handle')[0];"
+        "var down = new PointerEvent('pointerdown', { clientX: 100, pointerId: 1, bubbles: true });"
+        "var move = new PointerEvent('pointermove', { clientX: 220, pointerId: 1, bubbles: true });"
+        "var up = new PointerEvent('pointerup', { clientX: 220, pointerId: 1, bubbles: true });"
+        "handle.dispatchEvent(down);"
+        "handle.dispatchEvent(move);"
+        "var mid = document.getElementById('wheel-colgroup').children[0].style.width;"
+        "handle.dispatchEvent(up);"
+        "document.title = JSON.stringify({"
+        " mid: mid,"
+        " resetHidden: document.getElementById('reset-columns').hidden"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["mid"] == "360px"
+    assert out["resetHidden"] is False
+
+
+def test_browser_column_resize_via_keyboard_respects_the_minimum(tmp_path: Path) -> None:
+    """Shift+ArrowLeft resizes by 64px per press without any pointer at all, and
+    clamps at the column's own minimum rather than going negative: the version
+    column defaults to 70px with a 60px floor, so two presses (70 - 64, then
+    6 - 64) both land on 60."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "var handle = document.querySelectorAll('.col-resize-handle')[1];"
+        "handle.focus();"
+        "var press = function () {"
+        "  handle.dispatchEvent(new KeyboardEvent('keydown', {"
+        "    key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true"
+        "  }));"
+        "};"
+        "press(); press();"
+        "document.title = document.getElementById('wheel-colgroup').children[1].style.width;"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    assert _title(dom) == "60px"
+
+
+def test_browser_column_resize_clamps_at_the_ceiling_and_survives_a_reload(
+    tmp_path: Path,
+) -> None:
+    """A drag past 2000px clamps live, during the drag itself, not only once
+    persisted: the write path (`setWidth`) shares the same `MAX_COLUMN_WIDTH` the
+    storage read path already validated against, so a width the UI lets a user
+    create can never fail that validation on the next load and silently revert to
+    the default with no indication why."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "Element.prototype.setPointerCapture = function (id) { this._captured = id; };"
+        "Element.prototype.hasPointerCapture = function (id) { return this._captured === id; };"
+        "Element.prototype.releasePointerCapture = function (id) { this._captured = null; };"
+        "var handle = document.querySelectorAll('.col-resize-handle')[0];"
+        "var down = new PointerEvent('pointerdown', { clientX: 100, pointerId: 1, bubbles: true });"
+        "var move = new PointerEvent('pointermove', { clientX: 5e3, pointerId: 1, bubbles: true });"
+        "var up = new PointerEvent('pointerup', { clientX: 5e3, pointerId: 1, bubbles: true });"
+        "handle.dispatchEvent(down);"
+        "handle.dispatchEvent(move);"
+        "var duringDrag = document.getElementById('wheel-colgroup').children[0].style.width;"
+        "handle.dispatchEvent(up);"
+        "document.title = JSON.stringify({"
+        " duringDrag: duringDrag,"
+        " stored: window.localStorage.getItem('wcs-column-widths')"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["duringDrag"] == "2000px"
+    assert json.loads(out["stored"]) == {"filename": 2000}
+
+    # The value the drag actually saved -- at the ceiling, not above it -- boots
+    # back at the same width rather than failing the storage read's own
+    # validation and silently resetting to the default.
+    seed = f"window.localStorage.setItem('wcs-column-widths', {out['stored']!r});"
+    rigged = _seed_script(page, seed)
+    reloaded = _render_in_browser(tmp_path, rigged, extra_script=_FILENAME_COL_WIDTH_SCRIPT)
+    assert _title(reloaded) == "2000px"
+
+
+def test_browser_column_width_restored_from_storage_at_boot(tmp_path: Path) -> None:
+    """A valid stored width is applied to its column at boot; an out-of-range value
+    (below that column's minimum) and an unrecognised column key are both ignored,
+    falling back to the default -- validated per SPEC, not merely parsed."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    rigged = _seed_script(
+        page,
+        "window.localStorage.setItem('wcs-column-widths', "
+        "JSON.stringify({ filename: 400, version: 5, bogus: 999 }));",
+    )
+    dom = _render_in_browser(
+        tmp_path,
+        rigged,
+        extra_script=(
+            "document.title = JSON.stringify(["
+            " document.getElementById('wheel-colgroup').children[0].style.width,"
+            " document.getElementById('wheel-colgroup').children[1].style.width"
+            "]);"
+        ),
+    )
+    widths = json.loads(_title(dom))
+    assert widths == ["400px", "70px"]
+
+
+def test_browser_column_widths_garbage_storage_does_not_throw(tmp_path: Path) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    rigged = _seed_script(page, "window.localStorage.setItem('wcs-column-widths', 'not json{{');")
+    dom = _render_in_browser(tmp_path, rigged, extra_script=_FILENAME_COL_WIDTH_SCRIPT)
+    assert _title(dom) == "240px"
+
+
+def test_browser_reset_columns_restores_defaults_and_hides_itself(tmp_path: Path) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    rigged = _seed_script(
+        page, "window.localStorage.setItem('wcs-column-widths', JSON.stringify({ filename: 400 }));"
+    )
+    script = (
+        "var out = {};"
+        "out.widthBefore = document.getElementById('wheel-colgroup').children[0].style.width;"
+        "out.resetHiddenBefore = document.getElementById('reset-columns').hidden;"
+        "document.getElementById('reset-columns').click();"
+        "out.widthAfter = document.getElementById('wheel-colgroup').children[0].style.width;"
+        "out.resetHiddenAfter = document.getElementById('reset-columns').hidden;"
+        "out.storedAfter = window.localStorage.getItem('wcs-column-widths');"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, rigged, fragment="wheel=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["widthBefore"] == "400px"
+    assert out["resetHiddenBefore"] is False
+    assert out["widthAfter"] == "240px"
+    assert out["resetHiddenAfter"] is True
+    assert out["storedAfter"] is None
+
+
+def test_browser_resize_handle_hit_area_spans_its_full_declared_width(tmp_path: Path) -> None:
+    """The handle is `right: -5px; width: 10px` on a `th` with `position:
+    relative`, straddling the column boundary -- the trailing half of that box
+    falls inside the next `<th>`, which (by normal DOM paint order, absent a
+    `z-index`) would otherwise win hit-testing there, shrinking the effective
+    target to about half its declared width. Checked the way the reviewer who
+    found the regression did: `elementFromPoint` across the handle's full
+    `getBoundingClientRect()`, at both ends, not only its centre."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "var handle = document.querySelectorAll('.col-resize-handle')[0];"
+        "var rect = handle.getBoundingClientRect();"
+        "var y = rect.top + rect.height / 2;"
+        "var leftEdge = document.elementFromPoint(rect.left + 1, y) === handle;"
+        "var rightEdge = document.elementFromPoint(rect.right - 1, y) === handle;"
+        "document.title = JSON.stringify({ leftEdge: leftEdge, rightEdge: rightEdge });"
+    )
+    # A recognised, harmless hash param so the onboarding dialog does not auto-open
+    # and intercept every point on the page for elementFromPoint.
+    dom = _render_in_browser(tmp_path, page, fragment="review=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["leftEdge"] is True
+    assert out["rightEdge"] is True
+
+
+# --- class summary strip and the "needs review" indicator -------------------------
+
+
+def test_browser_class_chips_show_counts_and_toggle_the_table(tmp_path: Path) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        # Toggling a chip re-renders the whole strip (renderClassChips() rebuilds
+        # #class-chips from scratch), so the chip element itself is looked up fresh
+        # after every click rather than reused: the pre-click node stays in memory
+        # with its old attributes but is no longer in the document.
+        "var findChip = function () {"
+        "  return Array.prototype.find.call(document.querySelectorAll('.class-chip'), "
+        "    function (c) { return c.textContent.indexOf('FIPS_BREAKING') !== -1; });"
+        "};"
+        "var chip = findChip();"
+        "out.countText = chip.querySelector('.count-badge').textContent;"
+        "out.pressedBefore = chip.getAttribute('aria-pressed');"
+        "out.resetHiddenBefore = document.getElementById('class-reset').hidden;"
+        "chip.click();"
+        "chip = findChip();"
+        "out.pressedAfter = chip.getAttribute('aria-pressed');"
+        "out.countAfterToggle = document.getElementById('count').textContent;"
+        "out.resetHiddenAfter = document.getElementById('class-reset').hidden;"
+        "document.getElementById('class-reset').click();"
+        "chip = findChip();"
+        "out.pressedAfterReset = chip.getAttribute('aria-pressed');"
+        "out.countAfterReset = document.getElementById('count').textContent;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["countText"] == "1"
+    assert out["pressedBefore"] == "true"
+    assert out["resetHiddenBefore"] is True
+    assert out["pressedAfter"] == "false"
+    assert out["countAfterToggle"] == "2 of 3 wheels"
+    assert out["resetHiddenAfter"] is False
+    assert out["pressedAfterReset"] == "true"
+    assert out["countAfterReset"] == "3 of 3 wheels"
+
+
+def test_browser_needs_review_indicator_counts_the_whole_run(tmp_path: Path) -> None:
+    """The "needs review" indicator counts every record in the run, not the
+    filtered set: it stays put while the class chips above change what the table
+    shows."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "out.before = document.getElementById('review-count').textContent;"
+        f"{_find_chip_js('OPAQUE')}.click();"
+        "out.countAfterToggle = document.getElementById('count').textContent;"
+        "out.after = document.getElementById('review-count').textContent;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["before"] == "needs review: 2"
+    # The chip toggle actually changed what the table shows -- otherwise this
+    # would hold even if "needs review" secretly counted the filtered set too.
+    assert out["countAfterToggle"] == "2 of 3 wheels"
+    assert out["after"] == "needs review: 2"
+
+
+# --- URL hash: filter state and Clear filters --------------------------------------
+
+
+def test_browser_hash_round_trips_toolbar_filters(tmp_path: Path) -> None:
+    """Search, linkage, review-only and an untoggled class all land in the hash as
+    `state` changes, and loading a fresh page with that same hash reproduces the
+    identical filter state -- a shared or reloaded link shows the same view."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    set_filters = (
+        "document.getElementById('search').value = 'openssl';"
+        "document.getElementById('search').dispatchEvent(new Event('input'));"
+        "document.getElementById('linkage-filter').value = 'bundled';"
+        "document.getElementById('linkage-filter').dispatchEvent(new Event('change'));"
+        "document.getElementById('review-only').checked = true;"
+        "document.getElementById('review-only').dispatchEvent(new Event('change'));"
+        f"{_find_chip_js('OPAQUE')}.click();"
+        "document.title = window.location.hash;"
+    )
+    hash_value = _title(_render_in_browser(tmp_path, page, extra_script=set_filters))
+    assert hash_value.startswith("#")
+    assert "q=openssl" in hash_value
+    assert "linkage=bundled" in hash_value
+    assert "review=1" in hash_value
+    assert "class=" in hash_value
+    assert "OPAQUE" not in hash_value.split("class=", 1)[1].split("&", 1)[0]
+
+    fragment = hash_value[1:]
+    read_back = (
+        "document.title = JSON.stringify({"
+        " search: document.getElementById('search').value,"
+        " linkage: document.getElementById('linkage-filter').value,"
+        " review: document.getElementById('review-only').checked,"
+        f" opaquePressed: {_find_chip_js('OPAQUE')}.getAttribute('aria-pressed')"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment=fragment, extra_script=read_back)
+    out = json.loads(_title(dom))
+    expected = {"search": "openssl", "linkage": "bundled", "review": True, "opaquePressed": "false"}
+    assert out == expected
+
+
+def test_browser_stale_class_token_in_hash_still_filters_and_says_so(tmp_path: Path) -> None:
+    """`#class=<5 real classes>,UNKNOWN_TOKEN` -- one real class (OPAQUE) swapped
+    for a bogus token, so the hash still names as many tokens as `DATA.classes`
+    holds -- must still hide the OPAQUE wheel (`b`) *and* show "Clear filters" and
+    the class-strip's "all" reset chip, so nothing on screen tells the reader a
+    filter is silently active. Checking count alone against `DATA.classes.length`
+    (rather than membership) reads this as "every class ticked" and hides both
+    affordances even though a class is actively excluded."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        fragment="class=NON_APPROVED_CRYPTO,FIPS_BREAKING,CONDITIONAL,CONTEXT_DEPENDENT,NO_CRYPTO_DETECTED,UNKNOWN_TOKEN",
+        extra_script=(
+            "document.title = JSON.stringify({"
+            " count: document.getElementById('count').textContent,"
+            " clearHidden: document.getElementById('clear-filters').hidden,"
+            " classResetHidden: document.getElementById('class-reset').hidden"
+            "});"
+        ),
+    )
+    out = json.loads(_title(dom))
+    assert out["count"] == "2 of 3 wheels"
+    assert out["clearHidden"] is False
+    assert out["classResetHidden"] is False
+
+
+def test_browser_unknown_class_token_is_dropped_not_counted_toward_default(
+    tmp_path: Path,
+) -> None:
+    """`#class=<all 6 real classes>,UNKNOWN_TOKEN` -- every real class ticked, plus
+    one bogus token along for the ride -- must read as the default (every class
+    shown, "Clear filters" and the reset chip both hidden), since the bogus token
+    names nothing this report actually classifies. Keeping an un-intersected token
+    in `state.classes` inflates its size past `DATA.classes.length` and misreads a
+    fully-default filter as active."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        fragment=(
+            "class=NON_APPROVED_CRYPTO,FIPS_BREAKING,CONDITIONAL,CONTEXT_DEPENDENT,"
+            "OPAQUE,NO_CRYPTO_DETECTED,UNKNOWN_TOKEN"
+        ),
+        extra_script=(
+            "document.title = JSON.stringify({"
+            " count: document.getElementById('count').textContent,"
+            " clearHidden: document.getElementById('clear-filters').hidden,"
+            " classResetHidden: document.getElementById('class-reset').hidden"
+            "});"
+        ),
+    )
+    out = json.loads(_title(dom))
+    assert out["count"] == "3 of 3 wheels"
+    assert out["clearHidden"] is True
+    assert out["classResetHidden"] is True
+
+
+def test_browser_wheel_param_merges_with_existing_filter_params(tmp_path: Path) -> None:
+    """Opening a wheel from a filtered table adds `wheel=` to the hash's existing
+    filter params rather than overwriting them, and closing the panel again strips
+    only `wheel=`, leaving the filters in place."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "document.getElementById('search').value = 'openssl';"
+        "document.getElementById('search').dispatchEvent(new Event('input'));"
+        "document.querySelectorAll('#wheel-rows tr')[0].click();"
+        "var withWheel = window.location.hash;"
+        "document.getElementById('detail-close').click();"
+        "var afterClose = window.location.hash;"
+        "document.title = JSON.stringify({ withWheel: withWheel, afterClose: afterClose });"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert "q=openssl" in out["withWheel"]
+    assert re.search(r"(?:^|&)wheel=\d+", out["withWheel"].lstrip("#"))
+    assert "q=openssl" in out["afterClose"]
+    assert "wheel=" not in out["afterClose"]
+
+
+def test_browser_clear_filters_resets_state_and_hash(tmp_path: Path) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "document.getElementById('search').value = 'a';"
+        "document.getElementById('search').dispatchEvent(new Event('input'));"
+        "out.clearHiddenBefore = document.getElementById('clear-filters').hidden;"
+        "document.getElementById('clear-filters').click();"
+        "out.searchAfter = document.getElementById('search').value;"
+        "out.hashAfter = window.location.hash;"
+        "out.clearHiddenAfter = document.getElementById('clear-filters').hidden;"
+        "out.countAfter = document.getElementById('count').textContent;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["clearHiddenBefore"] is False
+    assert out["searchAfter"] == ""
+    assert out["hashAfter"] in ("", "#")
+    assert out["clearHiddenAfter"] is True
+    assert out["countAfter"] == "3 of 3 wheels"
+
+
+def test_browser_hashchange_resets_a_filter_the_new_hash_omits(tmp_path: Path) -> None:
+    """Applying a hash is total, not a merge: a search set through the toolbar
+    (`q=openssl`), then navigating (via `hashchange`, not a fresh boot) to a plain
+    `#wheel=1` link that never mentions `q=` at all, clears the search rather than
+    keeping it active under a URL that no longer claims it is."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "document.getElementById('search').value = 'openssl';"
+        "document.getElementById('search').dispatchEvent(new Event('input'));"
+        "out.hashBefore = window.location.hash;"
+        "window.addEventListener('hashchange', function () {"
+        "  out.searchAfter = document.getElementById('search').value;"
+        "  out.countAfter = document.getElementById('count').textContent;"
+        "  out.detailTitleAfter = document.getElementById('detail-title').textContent;"
+        "  document.getElementById('detail-close').click();"
+        "  out.hashAfterClose = window.location.hash;"
+        "  document.title = JSON.stringify(out);"
+        "});"
+        "window.location.hash = 'wheel=1';"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["hashBefore"] == "#q=openssl"
+    assert out["searchAfter"] == ""
+    assert out["countAfter"] == "3 of 3 wheels"
+    assert out["detailTitleAfter"] == "b-1.0-py3-none-any.whl"
+    # Closing the panel resyncs the hash from `state`: the search the colleague's
+    # link never carried must not reappear in it now either.
+    assert "q=" not in out["hashAfterClose"]
+
+
+def test_browser_view_hash_round_trips_the_rules_tab(tmp_path: Path) -> None:
+    """Switching to the Rules tab writes `view=rules` into the hash -- the one
+    piece of top-level page state (Wheels vs Rules) the hash grammar otherwise
+    leaves uncovered -- and a fresh load with that hash opens directly to the
+    Rules view, no click needed, the same shareable-link behaviour the toolbar's
+    own filter params already get."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "document.getElementById('view-tab-rules').click();document.title = window.location.hash;"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    assert _title(dom) == "#view=rules"
+
+    reloaded = _render_in_browser(
+        tmp_path,
+        page,
+        fragment="view=rules",
+        extra_script=(
+            "document.title = JSON.stringify({"
+            " wheelsHidden: document.getElementById('view-wheels').hidden,"
+            " rulesHidden: document.getElementById('view-rules').hidden,"
+            " rulesTabSelected: "
+            "   document.getElementById('view-tab-rules').getAttribute('aria-selected')"
+            "});"
+        ),
+    )
+    out = json.loads(_title(reloaded))
+    assert out == {"wheelsHidden": True, "rulesHidden": False, "rulesTabSelected": "true"}
+
+
+def test_browser_hashchange_resets_the_view_the_new_hash_omits(tmp_path: Path) -> None:
+    """Total, not a merge, the same discipline the toolbar's filter params get:
+    switching to Rules, then navigating (via `hashchange`) to a hash that never
+    mentions `view=` at all, falls back to Wheels rather than staying on Rules
+    under a URL that no longer claims it."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "document.getElementById('view-tab-rules').click();"
+        "window.addEventListener('hashchange', function () {"
+        "  document.title = JSON.stringify({"
+        "    wheelsHidden: document.getElementById('view-wheels').hidden,"
+        "    rulesHidden: document.getElementById('view-rules').hidden"
+        "  });"
+        "});"
+        "window.location.hash = 'q=openssl';"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out == {"wheelsHidden": False, "rulesHidden": True}
+
+
+def test_browser_all_classes_unticked_round_trips_through_the_hash(tmp_path: Path) -> None:
+    """Every class chip unticked is a real, reachable, intentional state -- the
+    table shows "0 of N wheels" and "Clear filters" -- whose `class` value happens
+    to be the empty string. The hash must carry `class=` (present, empty) rather
+    than omit the param entirely and have a reload silently re-tick every class."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    untick_all = (
+        "var chip = document.querySelector('.class-chip[aria-pressed=\"true\"]');"
+        "while (chip) {"
+        "  chip.click();"
+        "  chip = document.querySelector('.class-chip[aria-pressed=\"true\"]');"
+        "}"
+    )
+    script = (
+        f"{untick_all}"
+        "document.title = JSON.stringify({"
+        " hash: window.location.hash,"
+        " count: document.getElementById('count').textContent"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["hash"] == "#class="
+    assert out["count"] == "0 of 3 wheels"
+
+    # Reloading that exact hash must reproduce zero classes selected, not silently
+    # fall back to "no filter" and re-tick every class.
+    reloaded = _render_in_browser(
+        tmp_path,
+        page,
+        fragment="class=",
+        extra_script=(
+            "document.title = JSON.stringify({"
+            " count: document.getElementById('count').textContent,"
+            " anyPressed: !!document.querySelector('.class-chip[aria-pressed=\"true\"]')"
+            "});"
+        ),
+    )
+    reloaded_out = json.loads(_title(reloaded))
+    assert reloaded_out["count"] == "0 of 3 wheels"
+    assert reloaded_out["anyPressed"] is False
+
+
+# --- detail panel Previous/Next navigation -----------------------------------------
+
+
+def test_browser_prev_next_step_through_the_filtered_set_and_disable_at_ends(
+    tmp_path: Path,
+) -> None:
+    """Filtering to "needs review only" excludes the OPAQUE middle record (`b`,
+    `needs_human_review: false`); stepping Next from `a` lands on `c`, skipping over
+    it, and each end disables the button that would step past it."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "document.getElementById('review-only').checked = true;"
+        "document.getElementById('review-only').dispatchEvent(new Event('change'));"
+        "document.querySelectorAll('#wheel-rows tr')[0].click();"
+        "out.firstTitle = document.getElementById('detail-title').textContent;"
+        "out.firstPosition = document.getElementById('detail-position').textContent;"
+        "out.prevDisabledFirst = document.getElementById('detail-prev').disabled;"
+        "out.nextDisabledFirst = document.getElementById('detail-next').disabled;"
+        "document.getElementById('detail-next').click();"
+        "out.secondTitle = document.getElementById('detail-title').textContent;"
+        "out.secondPosition = document.getElementById('detail-position').textContent;"
+        "out.prevDisabledSecond = document.getElementById('detail-prev').disabled;"
+        "out.nextDisabledSecond = document.getElementById('detail-next').disabled;"
+        "document.getElementById('detail-prev').click();"
+        "out.thirdTitle = document.getElementById('detail-title').textContent;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["firstTitle"] == "a-1.0-py3-none-any.whl"
+    assert out["firstPosition"] == "1 of 2"
+    assert out["prevDisabledFirst"] is True
+    assert out["nextDisabledFirst"] is False
+    assert out["secondTitle"] == "c-1.0-py3-none-any.whl"
+    assert out["secondPosition"] == "2 of 2"
+    assert out["prevDisabledSecond"] is False
+    assert out["nextDisabledSecond"] is True
+    assert out["thirdTitle"] == "a-1.0-py3-none-any.whl"
+
+
+def test_browser_prev_next_hides_when_the_open_record_leaves_the_filtered_set(
+    tmp_path: Path,
+) -> None:
+    """Opening `b` (not flagged for review) and then turning on "needs review
+    only" drops `b` out of the visible set the nav steps through; the nav hides
+    rather than showing a position or Next/Previous that no longer means anything."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "out.navHiddenBefore = document.getElementById('detail-nav').hidden;"
+        "document.getElementById('review-only').checked = true;"
+        "document.getElementById('review-only').dispatchEvent(new Event('change'));"
+        "out.navHiddenAfter = document.getElementById('detail-nav').hidden;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=1", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["navHiddenBefore"] is False
+    assert out["navHiddenAfter"] is True
+
+
+def test_browser_arrow_key_on_a_detail_tab_button_does_not_step_the_wheel(
+    tmp_path: Path,
+) -> None:
+    """ArrowRight/Left are reserved by the ARIA tab pattern for moving between the
+    detail panel's own tab buttons (`role="tab"` inside `role="tablist"`): the
+    document-level Previous/Next handler must skip a press while one of those
+    buttons is focused, rather than stepping to the next wheel record and
+    rebuilding the tab strip out from under the very button that had focus."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "var tabBtn = document.querySelectorAll('#tabs button')[1];"
+        "tabBtn.focus();"
+        "out.positionBefore = document.getElementById('detail-position').textContent;"
+        "tabBtn.dispatchEvent(new KeyboardEvent('keydown', {"
+        "  key: 'ArrowRight', bubbles: true, cancelable: true"
+        "}));"
+        "out.positionAfter = document.getElementById('detail-position').textContent;"
+        "out.activeIsSameTabButton = document.activeElement === tabBtn;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["positionBefore"] == "1 of 3"
+    assert out["positionAfter"] == "1 of 3"
+    assert out["activeIsSameTabButton"] is True
+
+
+def test_browser_arrow_key_on_a_focused_resize_handle_does_not_also_step_the_wheel(
+    tmp_path: Path,
+) -> None:
+    """A resize handle can hold focus while the detail panel is open at the same
+    time -- the panel is not a native modal and does not trap focus -- so an
+    ArrowRight press there must only resize the column, not also advance the
+    detail panel to the next wheel: the two handlers must not both act on the
+    same key press."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "var handle = document.querySelectorAll('.col-resize-handle')[0];"
+        "handle.focus();"
+        "out.positionBefore = document.getElementById('detail-position').textContent;"
+        "out.widthBefore = document.getElementById('wheel-colgroup').children[0].style.width;"
+        "handle.dispatchEvent(new KeyboardEvent('keydown', {"
+        "  key: 'ArrowRight', bubbles: true, cancelable: true"
+        "}));"
+        "out.positionAfter = document.getElementById('detail-position').textContent;"
+        "out.widthAfter = document.getElementById('wheel-colgroup').children[0].style.width;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["positionBefore"] == "1 of 3"
+    assert out["positionAfter"] == "1 of 3"
+    assert out["widthBefore"] == "240px"
+    assert out["widthAfter"] == "256px"
+
+
+def test_browser_pointercancel_mid_drag_persists_the_width_and_shows_reset(
+    tmp_path: Path,
+) -> None:
+    """A `pointercancel` (an OS gesture, a context menu, a touch sequence getting
+    interrupted) releases pointer capture without `pointerup` ever firing: the
+    visual resize already happened through `pointermove`, so without a
+    `pointercancel` listener of its own the width is never saved, and "Reset
+    columns" -- whose visibility only `persistColumnWidths` recomputes -- stays
+    hidden even though the table is no longer at its defaults."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "Element.prototype.setPointerCapture = function (id) { this._captured = id; };"
+        "Element.prototype.hasPointerCapture = function (id) { return this._captured === id; };"
+        "Element.prototype.releasePointerCapture = function (id) { this._captured = null; };"
+        "var handle = document.querySelectorAll('.col-resize-handle')[0];"
+        "var down = new PointerEvent('pointerdown', { clientX: 100, pointerId: 1, bubbles: true });"
+        "var move = new PointerEvent('pointermove', { clientX: 180, pointerId: 1, bubbles: true });"
+        "var cancel = new PointerEvent('pointercancel', { pointerId: 1, bubbles: true });"
+        "handle.dispatchEvent(down);"
+        "handle.dispatchEvent(move);"
+        "handle.dispatchEvent(cancel);"
+        "document.title = JSON.stringify({"
+        " width: document.getElementById('wheel-colgroup').children[0].style.width,"
+        " stored: window.localStorage.getItem('wcs-column-widths'),"
+        " resetHidden: document.getElementById('reset-columns').hidden"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["width"] == "320px"
+    assert json.loads(out["stored"]) == {"filename": 320}
+    assert out["resetHidden"] is False
+
+
+# --- Rules view -----------------------------------------------------------------
+
+
+def test_browser_rules_tab_lists_a_known_rule_and_clicking_it_filters_wheels(
+    tmp_path: Path,
+) -> None:
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var out = {};"
+        "document.getElementById('view-tab-rules').click();"
+        "out.wheelsHiddenOnRules = document.getElementById('view-wheels').hidden;"
+        "out.rulesTableText = document.getElementById('rules-rows').textContent;"
+        "var link = Array.prototype.find.call(document.querySelectorAll('.rule-link'), "
+        "  function (b) { return b.textContent === 'PY_WEAK_HASH_CALL'; });"
+        "link.click();"
+        "var wheelsTab = document.getElementById('view-tab-wheels');"
+        "out.viewAfterClick = wheelsTab.getAttribute('aria-selected');"
+        "out.rulesHiddenAfterClick = document.getElementById('view-rules').hidden;"
+        "out.searchAfterClick = document.getElementById('search').value;"
+        "out.countAfterClick = document.getElementById('count').textContent;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["wheelsHiddenOnRules"] is True
+    assert "PY_WEAK_HASH_CALL" in out["rulesTableText"]
+    assert "WHEEL_UNREADABLE" in out["rulesTableText"]
+    assert "BIN_BUNDLED_OPENSSL" in out["rulesTableText"]
+    assert out["viewAfterClick"] == "true"
+    assert out["rulesHiddenAfterClick"] is True
+    assert out["searchAfterClick"] == "PY_WEAK_HASH_CALL"
+    assert out["countAfterClick"] == "1 of 3 wheels"
+
+
+def test_browser_rules_tab_shows_fired_counts_and_basis_chips(tmp_path: Path) -> None:
+    """The "fired" count is distinct wheels, not distinct reasons, and counts a
+    rule whose finding carries no `verdict` at all (informational, such as
+    WHEEL_GENERATOR) the same as any other -- neither is true of a count built by
+    scanning `verdict.reasons`, which never lists a verdict-less rule and lists a
+    rule once per `(rule_id, subject)` pair rather than once per wheel."""
+    ruleset = load_ruleset(None)
+
+    # Two findings, same rule, two different subjects on one wheel: fired once,
+    # not twice, since "fired" means "this wheel", not "this reason".
+    two_subjects = html_record("d", "CONDITIONAL", "bundled")
+    two_subjects["verdict"]["rule_ids"] = ["BIN_BUNDLED_OPENSSL"]
+    two_subjects["verdict"]["reasons"] = [
+        "BIN_BUNDLED_OPENSSL: libcrypto.so",
+        "BIN_BUNDLED_OPENSSL: libssl.so",
+    ]
+    two_subjects["findings"] = [
+        _finding(
+            "BIN_BUNDLED_OPENSSL",
+            "libcrypto.so",
+            verdict="CONDITIONAL",
+            relation="boundary_unresolved",
+            family="library",
+            basis=["FIPS-140-3"],
+        ),
+        _finding(
+            "BIN_BUNDLED_OPENSSL",
+            "libssl.so",
+            verdict="CONDITIONAL",
+            relation="boundary_unresolved",
+            family="library",
+            basis=["FIPS-140-3"],
+        ),
+    ]
+
+    # A purely informational finding: no `verdict`, so `classify()` never puts its
+    # rule id in `verdict.rule_ids` or a reason string in `verdict.reasons` --
+    # `findings[].rule_id` is the only place this wheel's fired rule shows up.
+    informational_only = html_record("e", "NO_CRYPTO_DETECTED", "none", review=False)
+    informational_only["verdict"]["rule_ids"] = []
+    informational_only["verdict"]["reasons"] = []
+    informational_only["findings"] = [_finding("WHEEL_GENERATOR", "maturin")]
+
+    # A plain, single-finding control: fired count should read 1, the same as
+    # every other row here, so a broken counter that always reads 0 or always
+    # reads the same wrong number for every rule cannot pass by accident.
+    control = html_record("f", "NON_APPROVED_CRYPTO", "static", rule_id="PY_WEAK_HASH_CALL")
+
+    page = render_html([two_subjects, informational_only, control], ruleset)
+    script = (
+        "function ruleRowCount(id) {"
+        "  var link = Array.prototype.find.call(document.querySelectorAll('.rule-link'), "
+        "    function (b) { return b.textContent === id; });"
+        "  var tr = link.closest('tr');"
+        "  return tr.children[tr.children.length - 1].textContent;"
+        "}"
+        "document.getElementById('view-tab-rules').click();"
+        "document.title = JSON.stringify({"
+        " bundled: ruleRowCount('BIN_BUNDLED_OPENSSL'),"
+        " generator: ruleRowCount('WHEEL_GENERATOR'),"
+        " weakHash: ruleRowCount('PY_WEAK_HASH_CALL')"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["bundled"] == "1"
+    assert out["generator"] == "1"
+    assert out["weakHash"] == "1"
+
+    rows_html = dom[dom.index('<tbody id="rules-rows"') :]
+    assert "FIPS-140-3" in rows_html
+
+
+def test_browser_rules_click_through_is_exact_not_a_prefix_substring_match(
+    tmp_path: Path,
+) -> None:
+    """`BIN_AWS_LC` is a prefix of `BIN_AWS_LC_FIPS`, a real pair the shipped
+    ruleset defines: clicking the `BIN_AWS_LC` row must show only the wheel that
+    actually fired `BIN_AWS_LC`, not one that only ever fired `BIN_AWS_LC_FIPS`,
+    which a search box doing substring matching against `reasons.join(" ")` would
+    also match."""
+    ruleset = load_ruleset(None)
+    plain = html_record("g", "NON_APPROVED_CRYPTO", "static", rule_id="BIN_AWS_LC")
+    fips_build = html_record("h", "CONDITIONAL", "static", rule_id="BIN_AWS_LC_FIPS")
+    page = render_html([plain, fips_build], ruleset)
+    script = (
+        "document.getElementById('view-tab-rules').click();"
+        "var link = Array.prototype.find.call(document.querySelectorAll('.rule-link'), "
+        "  function (b) { return b.textContent === 'BIN_AWS_LC'; });"
+        "link.click();"
+        "document.title = JSON.stringify({"
+        " count: document.getElementById('count').textContent,"
+        " filenames: Array.prototype.map.call("
+        "   document.querySelectorAll('#wheel-rows td.wheel-cell'), "
+        "   function (td) { return td.textContent; })"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["count"] == "1 of 2 wheels"
+    assert out["filenames"] == ["g-1.0-py3-none-any.whl"]
+
+
+def test_browser_rules_table_columns_have_help_buttons(tmp_path: Path) -> None:
+    """The intro dialog's own copy claims "Every column and filter has a '?'
+    beside it" -- true only once the Rules table's columns carry one too, the
+    same `makeHelpButton`/popover pattern the wheel table already uses."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "document.getElementById('view-tab-rules').click();"
+        "var buttons = document.querySelectorAll('#rules-header-row .help-btn');"
+        "var out = { buttonCount: buttons.length };"
+        "buttons[0].click();"
+        "out.firstPopoverText = document.getElementById('popover').textContent;"
+        "document.title = JSON.stringify(out);"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["buttonCount"] == len(
+        ["id", "title", "why", "verdict", "severity", "family", "relation", "basis", "count"]
+    )
+    assert out["firstPopoverText"] != ""
