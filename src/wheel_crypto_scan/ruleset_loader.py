@@ -27,11 +27,13 @@ from .ruleset import (
     CONFIDENCES,
     DEFAULTABLE_TABLES,
     ENTRY_TABLES,
+    FAMILIES,
     GENERIC_MATCH_SEQUENCE_KEYS,
     LAYERS,
     LINKAGE_VALUES,
     MATCH_KEYS,
     MATCHER_KINDS,
+    RELATIONS,
     ROUTED_KINDS,
     SEVERITIES,
     CryptoLibrary,
@@ -48,11 +50,15 @@ from .ruleset import (
     sbom_library_key,
 )
 from .ruleset_coherence import (
+    check_basis_targets_a_live_standard,
+    check_every_standard_is_reachable,
+    check_relation_matches_verdict,
     check_suppression_acyclic,
     check_suppression_can_fire,
     validate_sbom_component_coverage,
     validate_sbom_suppression_leaves_linkage_explained,
 )
+from .standards import parse_standards
 from .verdict import NO_CRYPTO_DETECTED
 
 # What each top-level table, and each entry within it, is allowed to carry. A key
@@ -61,9 +67,14 @@ from .verdict import NO_CRYPTO_DETECTED
 # `[rule.match]`.
 _TOP_LEVEL_KEYS = frozenset(
     {"ruleset_version", "verdict", "limits", "conventions", "linkage_policy", "rule", *ENTRY_TABLES}
-)
+) | {"standard"}
 _VERDICT_KEYS = frozenset({"precedence"})
 _LIMITS_KEYS = frozenset(f.name for f in dataclasses.fields(Limits))
+
+# `relation`, `basis` and `family` are legal on a rule and on every entry in the four
+# tables `_OVERRIDES` covers -- named once so `_RULE_KEYS` and `_OVERRIDES` cannot list
+# them differently from each other.
+_RELATION_FIELDS = frozenset({"relation", "basis", "family"})
 _RULE_KEYS = frozenset(
     {
         "id",
@@ -78,13 +89,16 @@ _RULE_KEYS = frozenset(
         "verdict",
         "suppressed_by",
     }
+    | _RELATION_FIELDS
 )
 
 # What `_entry_overrides` and `_entry_rule` read off every entry table. `name` and
 # `rule` are read separately (`_entry_name`/`_entry_rule`), but belong in the same
 # allowed set: they are ordinary entry-level keys, just not read through
 # `_entry_overrides`.
-_OVERRIDES = frozenset({"name", "rule", "why", "severity", "verdict", "needs_human_review"})
+_OVERRIDES = frozenset(
+    {"name", "rule", "why", "severity", "verdict", "needs_human_review"} | _RELATION_FIELDS
+)
 _ENTRY_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
         "crypto_distribution": _OVERRIDES,
@@ -101,8 +115,8 @@ _ENTRY_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
         },
         "rust_crate": _OVERRIDES | {"suppressed_by"},
         "python_module": _OVERRIDES,
-        "symbol_group": frozenset({"name", "prefixes", "exact", "why", "evidence_only"}),
-        "string_group": frozenset({"name", "substrings", "why", "in_code"}),
+        "symbol_group": frozenset({"name", "prefixes", "exact", "why", "evidence_only", "family"}),
+        "string_group": frozenset({"name", "substrings", "why", "in_code", "family"}),
         "ctypes_library": frozenset({"substrings", "why"}),
     }
 )
@@ -204,6 +218,38 @@ def _check_string_sequence(value: Any, label: str, where: str, *, allow_empty: b
     for item in value:
         if not isinstance(item, str):
             raise RulesetError(f"{where}: {label} must be a list of strings")
+
+
+def _parse_family(entry: Mapping[str, Any], where: str) -> str | None:
+    """`family`, checked against `FAMILIES` when given. Shared by `_entry_overrides`
+    and the `symbol_group`/`string_group` loops, the only other place it is read."""
+    family = entry.get("family")
+    if family is not None:
+        _check(family, FAMILIES, "family", where)
+    return None if family is None else str(family)
+
+
+def _parse_relation_fields(data: Mapping[str, Any], where: str) -> dict[str, Any]:
+    """`relation`, `basis` and `family` off a rule or an override-bearing entry.
+
+    `relation` without `basis`, or `basis` without `relation`, is refused here: a
+    relation names what would have to change for a finding to go away, and neither
+    half means anything without the other, so a citation must never stand alone.
+    """
+    relation = data.get("relation")
+    if relation is not None:
+        _check(relation, RELATIONS, "relation", where)
+    basis = data.get("basis")
+    if basis is not None:
+        _check_string_sequence(basis, "basis", where, allow_empty=False)
+    basis = tuple(basis) if basis is not None else ()
+    if (relation is None) != (not basis):
+        raise RulesetError(f"{where}: relation and basis must be given together")
+    return {
+        "relation": None if relation is None else str(relation),
+        "basis": basis,
+        "family": _parse_family(data, where),
+    }
 
 
 def _claimed_reasons(match: Mapping[str, Any]) -> frozenset[str]:
@@ -325,6 +371,7 @@ def _parse_rule(data: Mapping[str, Any], precedence: frozenset[str]) -> Rule:
         matches=matches,
         verdict=None if verdict is None else str(verdict),
         suppressed_by=tuple(data.get("suppressed_by", ())),
+        **_parse_relation_fields(data, where),
     )
 
 
@@ -633,6 +680,7 @@ def _entry_overrides(
         "severity": None if severity is None else str(severity),
         "verdict": None if verdict is None else str(verdict),
         "needs_human_review": entry.get("needs_human_review"),
+        **_parse_relation_fields(entry, where),
     }
 
 
@@ -664,6 +712,8 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         if table not in data:
             raise RulesetError(f"{source}: missing required table [[{table}]]")
     _refuse_unknown_keys(data, _TOP_LEVEL_KEYS, source)
+
+    standards = parse_standards(data.get("standard", []))
 
     rules = tuple(_parse_rule(entry, classes) for entry in _require(data, "rule", source))
     rule_ids = {rule.id for rule in rules}
@@ -859,7 +909,9 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         exact = frozenset(_require(entry, "exact", where))
         if not prefixes and not exact:
             raise RulesetError(f"{where}: has neither prefixes nor exact names")
-        symbol_groups[name] = SymbolGroup(name=name, prefixes=prefixes, exact=exact)
+        symbol_groups[name] = SymbolGroup(
+            name=name, prefixes=prefixes, exact=exact, family=_parse_family(entry, where)
+        )
     _validate_symbol_groups_are_read(data, rules)
 
     string_groups: dict[str, StringGroup] = {}
@@ -890,6 +942,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
             substrings=substrings,
             pattern=re.compile("|".join(re.escape(text) for text in substrings)),
             in_code=in_code,
+            family=_parse_family(entry, where),
         )
 
     ctypes_substrings: set[str] = set()
@@ -917,11 +970,15 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         symbol_groups=MappingProxyType(symbol_groups),
         string_groups=MappingProxyType(string_groups),
         ctypes_substrings=tuple(sorted(ctypes_substrings)),
+        standards=standards,
         _by_id=MappingProxyType(by_id),
         _libraries_by_sbom_key=MappingProxyType(libraries_by_sbom_key),
         _crates_by_sbom_key=MappingProxyType(crates_by_sbom_key),
     )
     validate_sbom_suppression_leaves_linkage_explained(ruleset, source)
+    check_basis_targets_a_live_standard(ruleset, source)
+    check_every_standard_is_reachable(ruleset, source)
+    check_relation_matches_verdict(ruleset, source)
     return ruleset
 
 

@@ -20,9 +20,12 @@ from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset import (
     DEFAULTABLE_TABLES,
     ENTRY_TABLES,
+    FAMILIES,
     MATCH_KEYS,
     MATCHER_KINDS,
     MATCHER_LOCATIONS,
+    RELATION_CLASSES,
+    RELATIONS,
     ROUTED_KINDS,
     StringGroup,
     SymbolGroup,
@@ -30,6 +33,7 @@ from wheel_crypto_scan.ruleset import (
     sbom_library_key,
 )
 from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset
+from wheel_crypto_scan.standards import STANDARD_STATUSES
 
 
 def minimal(**overrides: Any) -> dict[str, Any]:
@@ -2047,9 +2051,13 @@ def test_the_locator_is_told_when_the_symbol_matcher_grows_an_arm() -> None:
     They agree today because `SymbolGroup.matches` is exactly "exact, or prefix", and
     `_symbol_locator` is built from those two fields. A third field would be claimed by
     the matcher and invisible to the locator, and nothing else in the suite would say
-    so: the failure is a hidden symbol going unfound, not an error.
+    so: the failure is a hidden symbol going unfound, not an error. `family` is in the
+    expected set below because it is inert to matching -- `SymbolGroup.matches` and
+    `_symbol_locator` never read it, only the finding carries it -- so widening the set
+    to include it is the correct response to it being added, not a loosening of this
+    guard.
     """
-    assert {field.name for field in fields(SymbolGroup)} == {"name", "prefixes", "exact"}
+    assert {field.name for field in fields(SymbolGroup)} == {"name", "prefixes", "exact", "family"}
 
 
 def _two_string_groups_sharing_a_prefix_in_code() -> dict[str, Any]:
@@ -2095,13 +2103,17 @@ def test_the_code_locator_is_told_when_the_string_matcher_grows_an_arm() -> None
     does not cover. A field added to `StringGroup` that a matcher can build a wider
     `pattern` from -- a raw regex list, say -- would be claimed by `group.pattern` and
     invisible to `_code_string_locator`'s trie, and nothing else in the suite would
-    say so: the failure is a hidden code hit going unfound, not an error.
+    say so: the failure is a hidden code hit going unfound, not an error. `family` is
+    in the expected set below for the same reason it is in `SymbolGroup`'s: it is
+    inert to matching, so widening the set to include it is correct, not a loosening
+    of this guard.
     """
     assert {field.name for field in fields(StringGroup)} == {
         "name",
         "substrings",
         "pattern",
         "in_code",
+        "family",
     }
     patterns = load_ruleset().compile_patterns().binary
     for group in patterns.string_groups:
@@ -2964,3 +2976,269 @@ def test_every_crypto_library_with_a_verdict_is_reachable_by_a_linkage_rule() ->
 def test_windows_library_names_normalise(name: str, base: str, mangled: bool) -> None:
     info = load_ruleset().conventions.normalise_soname(name)
     assert (info.base, info.mangled) == (base, mangled)
+
+
+# --- standards, relation, basis and family -----------------------------------
+
+# Every class `RELATION_CLASSES` names, plus the fallback: a richer precedence than
+# `minimal()`'s own, so a relation/verdict test can name any class the compatibility
+# table cares about without also editing `[verdict] precedence`.
+_ALL_VERDICT_CLASSES = (
+    "NON_APPROVED_CRYPTO",
+    "FIPS_BREAKING",
+    "CONDITIONAL",
+    "CONTEXT_DEPENDENT",
+    "OPAQUE",
+    "NO_CRYPTO_DETECTED",
+)
+
+_TEST_STANDARD = {
+    "id": "TEST-STD",
+    "title": "Test Standard",
+    "edition": "2020",
+    "status": "current",
+    "why": "fixture",
+}
+
+
+def _with_standard(**overrides: Any) -> dict[str, Any]:
+    """`minimal()` plus the full verdict precedence and one live standard, so a
+    relation/verdict test does not also have to build its own `[[standard]]` table."""
+    data = minimal(
+        verdict={"precedence": list(_ALL_VERDICT_CLASSES)},
+        standard=[dict(_TEST_STANDARD)],
+    )
+    data.update(overrides)
+    return data
+
+
+def test_an_unknown_key_on_a_standard_is_rejected() -> None:
+    data = minimal(standard=[{**_TEST_STANDARD, "bogus": True}])
+    with pytest.raises(RulesetError, match="unknown keys"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize("field_name", ["id", "title", "edition", "status", "why"])
+def test_a_standard_missing_a_required_field_is_rejected(field_name: str) -> None:
+    entry = dict(_TEST_STANDARD)
+    del entry[field_name]
+    data = minimal(standard=[entry])
+    with pytest.raises(RulesetError, match="missing required field"):
+        parse_ruleset(data)
+
+
+def test_an_unknown_standard_status_is_rejected() -> None:
+    data = minimal(standard=[{**_TEST_STANDARD, "status": "deprecated"}])
+    with pytest.raises(RulesetError, match="unknown status"):
+        parse_ruleset(data)
+
+
+def test_a_duplicate_standard_id_is_rejected() -> None:
+    data = minimal(standard=[dict(_TEST_STANDARD), dict(_TEST_STANDARD)])
+    with pytest.raises(RulesetError, match="duplicate standard id"):
+        parse_ruleset(data)
+
+
+def test_a_standard_successor_naming_nothing_is_rejected() -> None:
+    data = minimal(standard=[{**_TEST_STANDARD, "status": "withdrawn", "successor": "NOPE"}])
+    with pytest.raises(RulesetError, match="successor names unknown standard"):
+        parse_ruleset(data)
+
+
+def test_a_standard_successor_cycle_is_rejected() -> None:
+    data = minimal(
+        standard=[
+            {**_TEST_STANDARD, "id": "A", "status": "withdrawn", "successor": "B"},
+            {**_TEST_STANDARD, "id": "B", "status": "withdrawn", "successor": "A"},
+        ]
+    )
+    with pytest.raises(RulesetError, match="cycle"):
+        parse_ruleset(data)
+
+
+def test_a_basis_naming_an_undeclared_standard_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["relation"] = "not_specified"
+    data["rule"][0]["basis"] = ["NOPE"]
+    with pytest.raises(RulesetError, match="basis names unknown standard"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize("status", ["withdrawn", "draft", "planned"])
+def test_a_basis_naming_a_non_live_standard_is_rejected(status: str) -> None:
+    """The supersession check: `basis` may only cite a standard still in force or on
+    a published revision schedule."""
+    data = minimal(standard=[{**_TEST_STANDARD, "status": status}])
+    data["rule"][0]["relation"] = "not_specified"
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="not current or revision_planned"):
+        parse_ruleset(data)
+
+
+def test_flipping_a_cited_standards_status_to_withdrawn_breaks_a_previously_loading_ruleset() -> (
+    None
+):
+    """Breaks to prove the supersession check is live: a ruleset that loads clean
+    today must stop loading once the standard it cites is marked withdrawn, with no
+    other edit."""
+    data = minimal(standard=[dict(_TEST_STANDARD)])
+    data["rule"][0]["relation"] = "not_specified"
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    parse_ruleset(data)
+
+    data["standard"][0] = {**_TEST_STANDARD, "status": "withdrawn"}
+    with pytest.raises(RulesetError, match="not current or revision_planned"):
+        parse_ruleset(data)
+
+
+def test_an_unreferenced_current_standard_is_rejected() -> None:
+    data = minimal(standard=[dict(_TEST_STANDARD)])
+    with pytest.raises(RulesetError, match="named by no basis"):
+        parse_ruleset(data)
+
+
+def test_an_unreferenced_withdrawn_standard_is_accepted() -> None:
+    data = minimal(standard=[{**_TEST_STANDARD, "status": "withdrawn"}])
+    parse_ruleset(data)
+
+
+def test_an_unknown_relation_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["relation"] = "not_a_relation"
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="unknown relation"):
+        parse_ruleset(data)
+
+
+def test_an_unknown_family_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["family"] = "not_a_family"
+    with pytest.raises(RulesetError, match="unknown family"):
+        parse_ruleset(data)
+
+
+def test_a_relation_without_basis_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["relation"] = "not_specified"
+    with pytest.raises(RulesetError, match="relation and basis must be given together"):
+        parse_ruleset(data)
+
+
+def test_a_basis_without_relation_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="relation and basis must be given together"):
+        parse_ruleset(data)
+
+
+def test_an_empty_basis_list_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["relation"] = "not_specified"
+    data["rule"][0]["basis"] = []
+    with pytest.raises(RulesetError, match="basis must not be an empty list"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize(
+    ("relation", "bad_verdict"),
+    [
+        ("not_specified", "CONDITIONAL"),
+        ("restricted", "FIPS_BREAKING"),
+        ("outside_module", "CONTEXT_DEPENDENT"),
+        ("boundary_unresolved", "NON_APPROVED_CRYPTO"),
+        ("runtime_refusal", "CONDITIONAL"),
+        ("policy_bypass", "FIPS_BREAKING"),
+        ("use_unresolved", "NON_APPROVED_CRYPTO"),
+    ],
+)
+def test_an_incompatible_relation_verdict_pair_on_a_rule_is_rejected(
+    relation: str, bad_verdict: str
+) -> None:
+    """Breaks to prove it: comment out `check_relation_matches_verdict`'s call in
+    `parse_ruleset` and every case here turns green to red."""
+    data = _with_standard()
+    data["rule"][0]["verdict"] = bad_verdict
+    data["rule"][0]["relation"] = relation
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="pairs verdict"):
+        parse_ruleset(data)
+
+
+def test_an_incompatible_relation_verdict_pair_on_an_entry_is_rejected() -> None:
+    """The entry-level counterpart: `ring`'s own `verdict = "NON_APPROVED_CRYPTO"`
+    (from `minimal()`) only fits `not_specified`/`restricted`/`outside_module`, not
+    `runtime_refusal`."""
+    data = _with_standard()
+    data["rust_crate"][0]["relation"] = "runtime_refusal"
+    data["rust_crate"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="pairs verdict"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize("verdict", sorted(RELATION_CLASSES["restricted"]))
+def test_restricted_relation_accepts_both_its_classes(verdict: str) -> None:
+    data = _with_standard()
+    data["rule"][0]["verdict"] = verdict
+    data["rule"][0]["relation"] = "restricted"
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    parse_ruleset(data)
+
+
+def test_an_entry_with_no_own_verdict_inherits_the_owning_rules_verdict_for_the_pair_check() -> (
+    None
+):
+    """`boring` (added by `rust_crate_ruleset()`) carries no `verdict` of its own and
+    no explicit `rule`, so it falls to the default `rust_crate` rule
+    `BIN_RUST_CRYPTO_CRATE`, whose own verdict (copied from `minimal()`'s first rule)
+    is `NON_APPROVED_CRYPTO` -- compatible with `outside_module`, checked against the
+    pair the owning rule supplies, not against nothing."""
+    data = rust_crate_ruleset()
+    data["verdict"] = {"precedence": list(_ALL_VERDICT_CLASSES)}
+    data["standard"] = [dict(_TEST_STANDARD)]
+    data["rust_crate"][1]["relation"] = "outside_module"
+    data["rust_crate"][1]["basis"] = ["TEST-STD"]
+    ruleset = parse_ruleset(data)
+    assert ruleset.rust_crates["boring"].verdict is None
+    assert ruleset.rule("BIN_RUST_CRYPTO_CRATE").verdict == "NON_APPROVED_CRYPTO"
+
+
+def test_relation_basis_and_family_parse_on_every_bearing_object() -> None:
+    """Positive-path check over every place `relation`/`basis`/`family` can be
+    written, so the interface later tasks build on is known to round-trip."""
+    data = _with_standard()
+    data["rule"][0]["relation"] = "not_specified"
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    data["rule"][0]["family"] = "hash"
+    data["crypto_library"][0]["relation"] = "outside_module"
+    data["crypto_library"][0]["basis"] = ["TEST-STD"]
+    data["crypto_library"][0]["family"] = "library"
+    data["rust_crate"][0]["relation"] = "outside_module"
+    data["rust_crate"][0]["basis"] = ["TEST-STD"]
+    data["rust_crate"][0]["family"] = "library"
+    data["python_module"][0]["family"] = "library"
+    data["symbol_group"][0]["family"] = "library"
+    data["string_group"][0]["family"] = "library"
+
+    ruleset = parse_ruleset(data)
+
+    rule = ruleset.rule("DIST_NON_APPROVED_CRYPTO")
+    assert (rule.relation, rule.basis, rule.family) == ("not_specified", ("TEST-STD",), "hash")
+    library = ruleset.libraries["openssl"]
+    assert (library.relation, library.basis, library.family) == (
+        "outside_module",
+        ("TEST-STD",),
+        "library",
+    )
+    assert ruleset.rust_crates["ring"].family == "library"
+    assert ruleset.python_modules["nacl"].family == "library"
+    assert ruleset.symbol_groups["openssl"].family == "library"
+    assert ruleset.string_groups["openssl_banner"].family == "library"
+
+
+def test_relations_and_standard_statuses_are_valid_closed_vocabularies() -> None:
+    """`RELATIONS`/`STANDARD_STATUSES` are Python vocabularies, checked once here
+    against the shape every other closed vocabulary in this file has, rather than a
+    contradiction the loader could ever encounter."""
+    assert RELATIONS and STANDARD_STATUSES
+    assert set(RELATION_CLASSES) == RELATIONS
+    assert set(FAMILIES) >= {"hash", "library"}

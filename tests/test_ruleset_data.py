@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 
 from wheel_crypto_scan.errors import ERROR_KINDS
-from wheel_crypto_scan.ruleset import MATCHER_KINDS
+from wheel_crypto_scan.ruleset import MATCHER_KINDS, RELATIONS
+from wheel_crypto_scan.standards import STANDARD_STATUSES
 
 SEVERITIES = {"high", "medium", "low", "info"}
 CONFIDENCES = {"high", "medium", "low"}
@@ -117,6 +118,13 @@ def test_no_rule_can_emit_a_pass(ruleset: dict[str, Any]) -> None:
     assert not forbidden & set(ruleset["verdict"]["precedence"])
     for rule in ruleset["rule"]:
         assert rule.get("verdict") not in forbidden
+
+    # `RELATIONS` and `STANDARD_STATUSES` are Python vocabularies, not shipped data,
+    # so this checks the tokens themselves rather than anything in `ruleset`: a
+    # relation or a standard status can never be added under one of these names
+    # either, upper-cased for the comparison since both vocabularies are lower_snake.
+    assert not forbidden & {value.upper() for value in RELATIONS}
+    assert not forbidden & {value.upper() for value in STANDARD_STATUSES}
 
     # A rule's `title` is prose, not a token, and prose can legitimately carry
     # "approved" as a substring -- "Distribution implements non-approved
