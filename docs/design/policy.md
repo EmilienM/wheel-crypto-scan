@@ -170,6 +170,14 @@ the bundle still carries a `.symtab`. Either way `NON_APPROVED_CRYPTO` outranks 
 `BIN_BUNDLED_OPENSSL`. The taxonomy calls this correctly: a static or bundled OpenSSL
 bundles those primitives and the host FIPS provider cannot refuse them.
 
+An import of these same names -- `BF_encrypt` called through a linked library rather
+than defined by the wheel -- neither implements nor bundles Blowfish, so it does not
+match `BIN_BCRYPT_BLOWFISH` and does not read `NON_APPROVED_CRYPTO`. It still carries a
+class, through `BIN_BCRYPT_BLOWFISH_IMPORTED` at `CONDITIONAL`, so a Blowfish import
+against a library other than OpenSSL never reads `NO_CRYPTO_DETECTED`. OpenSSL's
+low-level `BF_` API bypasses its provider mechanism, which is why the import goes to a
+human rather than being called acceptable.
+
 **What was rejected.** A narrower `binding` on the three rules, because the record has
 no way to tell an exported symbol from one a version script kept local, and the names
 that would need separating are OpenSSL's own. Co-occurrence-aware precedence, because it

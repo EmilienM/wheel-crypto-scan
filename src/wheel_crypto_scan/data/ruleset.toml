@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "33"
+ruleset_version = "34"
 
 
 # ---------------------------------------------------------------------------
@@ -1674,11 +1674,26 @@ confidence = "high"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Blowfish or bcrypt implementation present"
-why = "Blowfish-based password hashing compiled into the wheel. Not approved under any configuration. A statically linked or bundled OpenSSL defines this entry point too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
+why = "Defined, not imported, so Blowfish-based password hashing is compiled into the wheel. Not approved under any configuration. A statically linked or bundled OpenSSL defines this entry point too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. An object that only imports these names is BIN_BCRYPT_BLOWFISH_IMPORTED."
 [rule.match]
 kind = "dynamic_symbol"
 group = "bcrypt_blowfish"
-binding = "any"
+binding = "defined"
+
+[[rule]]
+id = "BIN_BCRYPT_BLOWFISH_IMPORTED"
+layer = "binary"
+category = "non-approved-call"
+severity = "medium"
+confidence = "high"
+verdict = "CONDITIONAL"
+needs_human_review = true
+title = "Calls Blowfish or bcrypt from a linked library"
+why = "The object calls Blowfish or bcrypt that lives in a library it links, and does not carry the code itself. Blowfish is not approved under any configuration, so this is never a pass. It is CONDITIONAL rather than NON_APPROVED_CRYPTO because the wheel neither implements nor bundles the primitive: whichever library answers the call governs it, and verdict.conditions.openssl_linkage says whether that is the host's libcrypto. OpenSSL's low-level BF_ functions sit outside its provider mechanism, so a FIPS-enforcing host does not refuse them the way it refuses a Blowfish fetched through EVP; a reviewer has to read what the call is for. A bundled libcrypto that answers the call defines these names itself and carries BIN_BCRYPT_BLOWFISH on its own object."
+[rule.match]
+kind = "dynamic_symbol"
+group = "bcrypt_blowfish"
+binding = "imported"
 
 [[rule]]
 id = "BIN_OWN_WEAK_HASH_IMPL"

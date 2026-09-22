@@ -523,6 +523,35 @@ def test_imported_and_defined_symbols_produce_different_rules(ruleset) -> None:
     assert "BIN_OPENSSL_SYMBOLS_IMPORTED" not in ids(run(ruleset, defined))
 
 
+def test_an_imported_blowfish_call_is_not_a_compiled_in_one(ruleset) -> None:
+    imported = wheel(
+        binaries=(
+            binary(
+                "demo/_ext.so",
+                matched_symbols=(SymbolMatch("BF_encrypt", "bcrypt_blowfish", BINDING_IMPORTED),),
+            ),
+        )
+    )
+    defined = wheel(
+        binaries=(
+            binary(
+                "demo/_ext.so",
+                matched_symbols=(SymbolMatch("BF_encrypt", "bcrypt_blowfish", BINDING_DEFINED),),
+            ),
+        )
+    )
+    imported_findings = run(ruleset, imported)
+    imported_finding = one(imported_findings, "BIN_BCRYPT_BLOWFISH_IMPORTED")
+    assert imported_finding.verdict == "CONDITIONAL"
+    assert imported_finding.needs_human_review is True
+    assert "BIN_BCRYPT_BLOWFISH" not in ids(imported_findings)
+
+    defined_findings = run(ruleset, defined)
+    defined_finding = one(defined_findings, "BIN_BCRYPT_BLOWFISH")
+    assert defined_finding.verdict == "NON_APPROVED_CRYPTO"
+    assert "BIN_BCRYPT_BLOWFISH_IMPORTED" not in ids(defined_findings)
+
+
 def test_an_any_binding_rule_matches_both(ruleset) -> None:
     evidence = wheel(
         binaries=(
