@@ -35,7 +35,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "42"
+ruleset_version = "43"
 
 
 # ---------------------------------------------------------------------------
@@ -399,10 +399,10 @@ why = "Specifies SLH-DSA. Errata pending. SP 800-230 adds further parameter sets
 id = "SP-800-131A-r2"
 title = "Transitioning the Use of Cryptographic Algorithms and Key Lengths"
 edition = "2019-03"
-status = "current"
+status = "revision_planned"
 successor = "SP-800-131A-r3"
 url = "https://csrc.nist.gov/pubs/sp/800/131/a/r2/final"
-why = "Table 8 sets SHA-1 disallowed for signature generation except where NIST protocol-specific guidance allows it, legacy use for verification and acceptable for non-digital-signature applications that do not need collision resistance; SHA-2 and SHA-3 stay acceptable for every hash application. Also sets three-key TDEA disallowed for encryption after 2023-12-31, legacy use for decryption."
+why = "Table 8 sets SHA-1 disallowed for signature generation except where NIST protocol-specific guidance allows it, legacy use for verification and acceptable for non-digital-signature applications that do not need collision resistance; SHA-2 and SHA-3 stay acceptable for every hash application. Also sets three-key TDEA disallowed for encryption after 2023-12-31, legacy use for decryption. NIST published an initial public draft of SP 800-131A Rev. 3 on 2024-10-21 to replace it; not yet final, so this edition stays the one a basis cites."
 
 [[standard]]
 id = "SP-800-131A-r3"
@@ -425,7 +425,7 @@ why = "Specified Triple DES. Withdrawn 2024-01-01. Kept as the context a certifi
 id = "SP-800-56A-r3"
 title = "Recommendation for Pair-Wise Key-Establishment Schemes Using Discrete Logarithm Cryptography"
 edition = "2018-04"
-status = "current"
+status = "revision_planned"
 url = "https://csrc.nist.gov/pubs/sp/800/56/a/r3/final"
 why = "Sets the approved elliptic-curve key-establishment schemes. NIST decided in January 2026 to update it to approve x-coordinate-only ECC key agreement and align curves with SP 800-186; the announcement names neither X25519 nor X448, so which curves the update covers is not yet stated."
 
