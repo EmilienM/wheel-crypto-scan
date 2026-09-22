@@ -18,7 +18,7 @@ import argparse
 import json
 import stat
 import sys
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from importlib.resources import files
 from pathlib import Path
@@ -28,14 +28,13 @@ from . import TOOL_NAME, __version__
 from .cache import RecordCache, default_cache_root
 from .discovery import discover
 from .errors import SCAN_ABORTED_KINDS
+from .progress import Progress, wants_colour, wants_live
 from .record import EVIDENCE_LEVELS, to_json_line
 from .report import render_html, render_markdown
 from .ruleset import Ruleset
 from .ruleset_loader import load_ruleset
 from .scan import ScanContext, scan_wheel
 from .wheelfile import ArchiveLimits, hash_wheel
-
-_PROGRESS_EVERY = 100
 
 _CONTEXT: ScanContext | None = None
 _CACHE: RecordCache | None = None
@@ -131,13 +130,26 @@ def _run_scan(args: argparse.Namespace) -> int:
 
     pending = [wheel for wheel in wheels if wheel.name not in existing]
     scanned = _scan_all(pending, args, ruleset)
-    if not args.quiet:
-        scanned = _with_progress(scanned, len(pending))
 
     # Reuse kept records in discovery order rather than prepending them. Resuming an
     # interrupted run has to produce the same bytes as scanning from scratch, for the
     # same reason parallelism does.
-    return _write(_merge(wheels, existing, scanned), args, ruleset)
+    if args.quiet:
+        return _write(_merge(wheels, existing, scanned), args, ruleset)
+    with Progress(
+        sys.stderr,
+        total=len(pending),
+        jobs=args.jobs,
+        precedence=ruleset.precedence,
+        live=wants_live(sys.stderr, sys.stdout, args.output),
+        colour=wants_colour(sys.stderr),
+    ) as progress:
+        return _write(
+            _merge(wheels, existing, progress.feed(scanned)),
+            args,
+            ruleset,
+            before_error=progress.close,
+        )
 
 
 def _merge(
@@ -236,13 +248,6 @@ def _scan_was_aborted(record: dict[str, Any]) -> bool:
     return any(error["kind"] in SCAN_ABORTED_KINDS for error in record.get("errors", ()))
 
 
-def _with_progress(lines: Iterable[str], total: int) -> Iterator[str]:
-    for index, line in enumerate(lines, start=1):
-        if index % _PROGRESS_EVERY == 0 or index == total:
-            print(f"{TOOL_NAME}: {index}/{total} wheels", file=sys.stderr)
-        yield line
-
-
 def _existing_records(output: Path) -> dict[str, str]:
     """Complete records already in the output file, keyed by wheel filename.
 
@@ -270,9 +275,15 @@ def _existing_records(output: Path) -> dict[str, str]:
     return records
 
 
-def _write(lines: Iterable[str], args: argparse.Namespace, ruleset: Ruleset) -> int:
+def _write(
+    lines: Iterable[str],
+    args: argparse.Namespace,
+    ruleset: Ruleset,
+    before_error: Callable[[], None] | None = None,
+) -> int:
     """Stream records out. Only the Markdown and HTML views need them all in memory
-    at once."""
+    at once. `before_error` runs before a write error is printed, so a live progress
+    view can stop redrawing over the message first."""
 
     def emit(stream: TextIO) -> None:
         if args.format == "md":
@@ -303,6 +314,8 @@ def _write(lines: Iterable[str], args: argparse.Namespace, ruleset: Ruleset) -> 
     except OSError as error:
         if not non_regular:
             _discard(target)
+        if before_error is not None:
+            before_error()
         print(f"{TOOL_NAME}: cannot write output to {args.output}: {error}", file=sys.stderr)
         return 1
     return 0

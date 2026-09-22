@@ -57,7 +57,7 @@ wheel-crypto-scan scan [INPUTS...] [options]
 | `--resume` | Keep JSONL records already in `--output` and scan only the rest, keyed on wheel filename. Any other `--format` exits 2 before scanning anything. |
 | `--max-binary-bytes N` | Archive limit on one member's uncompressed size. |
 | `--max-total-bytes N` | Archive limit on the wheel's total uncompressed size. |
-| `-q`, `--quiet` | No progress on stderr. Otherwise progress is printed every 100 wheels and at the end. |
+| `-q`, `--quiet` | No progress on stderr. On a terminal, progress is a live view: a bar with rate and ETA, the worker count, the last wheel emitted, and running tallies of verdict classes, errors and libraries. Elsewhere, or when records go to the same terminal (through stdout or an `--output` naming it), a line is printed every 100 wheels with rate and ETA, then a summary. A run that stops early says so instead of reporting success. `NO_COLOR` turns colour off. |
 
 ### `rules`
 

@@ -69,6 +69,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `evidence.py` | What extractors may say: the record dataclasses, and the `FORMAT_*`, `STAGE_*`, `BINDING_*` and `PARTIAL_REASONS` vocabularies |
 | `errors.py` | The `ScanError` kinds, which the ruleset can match on |
 | `report.py`, `data/report.html` | Human views of the records: the Markdown table and the self-contained HTML page |
+| `progress.py` | The scan's progress on stderr: a live view on a terminal, plain lines elsewhere. Reads records, never writes them |
 | `docs/SCHEMA.md` | The output contract: every record field, versioned. `docs/output-schema.md` is its prose rendering on the site |
 | `docs/DESIGN.md` | The append-only design-decision ledger: what was accepted, what was rejected, and why. `docs/design-summaries/` summarises it by subsystem |
 
