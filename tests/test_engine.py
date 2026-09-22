@@ -1353,6 +1353,42 @@ def test_a_non_constant_usedforsecurity_on_a_strong_hash_is_not_flagged(ruleset)
     }
 
 
+def test_an_algorithm_list_of_refused_matches_only_the_refused_list() -> None:
+    """`algorithm_list = "refused"` and `"restricted"` name two different lists off
+    `conventions`; a rule reading the wrong one would still load and match, just the
+    wrong algorithms. Every shipped `py_call` rule uses `algorithm_list = "weak"`, the
+    union of both, so nothing else exercises either list on its own."""
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry(
+            "PY_CALL_REFUSED_TEST",
+            {"kind": "py_call", "targets": ["hashlib.new"], "algorithm_list": "refused"},
+            layer="python",
+        )
+    )
+    ruleset = parse_ruleset(data)
+    refused_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="md5"),))
+    restricted_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="sha1"),))
+    assert "PY_CALL_REFUSED_TEST" in ids(run(ruleset, refused_hit))
+    assert "PY_CALL_REFUSED_TEST" not in ids(run(ruleset, restricted_hit))
+
+
+def test_an_algorithm_list_of_restricted_matches_only_the_restricted_list() -> None:
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry(
+            "PY_CALL_RESTRICTED_TEST",
+            {"kind": "py_call", "targets": ["hashlib.new"], "algorithm_list": "restricted"},
+            layer="python",
+        )
+    )
+    ruleset = parse_ruleset(data)
+    refused_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="md5"),))
+    restricted_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="sha1"),))
+    assert "PY_CALL_RESTRICTED_TEST" not in ids(run(ruleset, refused_hit))
+    assert "PY_CALL_RESTRICTED_TEST" in ids(run(ruleset, restricted_hit))
+
+
 def test_a_method_call_matches_the_wildcard_target(ruleset) -> None:
     assert "PY_TLS_POLICY_OVERRIDE" in ids(
         run(ruleset, wheel(py_sites=(site("py_call", "ctx.set_ciphers"),)))

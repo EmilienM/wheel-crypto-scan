@@ -57,7 +57,7 @@ tool's invariants exist to catch for the single most certain shape the extractor
 produce.
 
 `PY_WEAK_HASH_UNRESOLVED` has a second `[[rule.match]]` table for `usedforsecurity =
-"unresolved"` with `weak_algorithms_only = true`, ORed with its `algorithm =
+"unresolved"` with `algorithm_list = "weak"`, ORed with its `algorithm =
 "unresolved"` table — one rule id, two ways of reaching it, since a non-constant flag on
 a weak algorithm is context-dependent whichever way `usedforsecurity` was passed. It is
 the one rule in the shipped ruleset with more than one match table; the mechanism is

@@ -2077,7 +2077,7 @@ non-constant," and a match table reading only a non-constant *algorithm name* on
 `engine.py` normalises a scalar string into a one-element tuple and checks membership,
 the same shape `_match_py_attr` uses for its `values` list. `PY_WEAK_HASH_UNRESOLVED`
 has a second `[[rule.match]]` table for `usedforsecurity = "unresolved"` with
-`weak_algorithms_only = true`, ORed with its `algorithm = "unresolved"` table -- one rule
+`algorithm_list = "weak"`, ORed with its `algorithm = "unresolved"` table -- one rule
 id, two ways of reaching it. It is the one rule in the shipped ruleset with more than
 one `[[rule.match]]` table; `Rule`'s docstring defines several tables as alternatives
 ORed together, and `tests/test_ruleset.py` exercises the form synthetically, so the
@@ -2095,11 +2095,11 @@ exists one layer down: `PySite.detail` carries `usedforsecurity=absent` or
 this finding, at any verdict class.** `hashlib.new("sha256", usedforsecurity=flag)` does
 not fire `PY_WEAK_HASH_UNRESOLVED` (or either of the other two): sha256 is FIPS-approved
 regardless of what the flag turns out to be at runtime, so the uncertainty a human would
-be asked to resolve does not exist. `weak_algorithms_only = true` on the second match
+be asked to resolve does not exist. `algorithm_list = "weak"` on the second match
 table does this for free, the same filter the two other hash-call rules rely on.
 
 Revisit if a future weak-hash rule needs the True/absent split visible at the rule_id
-level rather than in `detail`, or if `weak_algorithms_only`'s definition of "weak" ever
+level rather than in `detail`, or if `algorithm_list`'s definition of "weak" ever
 needs to move for reasons unrelated to `usedforsecurity`.
 
 ## Every dylib-loading command reaches `needed`, not just `LC_LOAD_DYLIB`

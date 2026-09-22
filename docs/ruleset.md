@@ -66,7 +66,8 @@ delocate's `.dylibs`), `mangled_soname_regex` (the content hash those tools appe
 `library_suffixes` and the Windows-specific `windows_library_suffixes` /
 `windows_version_suffix_regex` pair, `cargo_path_regex`, `cargo_vendor_path_regex` and
 `cargo_git_path_regex` for the cargo source paths a Rust object embeds, `go_boring_group` /
-`go_stock_group` naming the Go toolchain string groups, and `weak_hash_algorithms`.
+`go_stock_group` naming the Go toolchain string groups, and `refused_hash_algorithms` /
+`restricted_hash_algorithms`, the FIPS-refused and FIPS-restricted Python hash constructors.
 
 The Windows entries matter more than they look. Windows puts a library's version, and often
 its architecture, inside the file name where Unix puts it in a `.so.N` suffix:
@@ -145,8 +146,9 @@ matches on, refused if missing or empty: `kind = "py_call"` takes `targets` (dot
 callable names, `*.method` wildcards allowed), plus an optional `usedforsecurity`
 (`"absent"`, `"true"`, `"false"` or `"unresolved"`, scalar or list), an optional
 `algorithm` (any hash name a call might pass — never checked against a closed list, since
-a rule naming a *strong* algorithm on purpose is a real shape), and an optional boolean
-`weak_algorithms_only`. `kind = "py_attr"` takes `attributes`, plus an optional `values`
+a rule naming a *strong* algorithm on purpose is a real shape), and an optional
+`algorithm_list` (`"refused"`, `"restricted"` or `"weak"` -- the two `[conventions]`
+hash lists, or their union). `kind = "py_attr"` takes `attributes`, plus an optional `values`
 list. `kind = "py_constant"` takes `constants`. A `targets`/`attributes`/`constants`/
 `values`/`usedforsecurity` of the wrong shape (not a string or list of strings, or an
 empty list) is refused at load time rather than silently matching nothing or, for
