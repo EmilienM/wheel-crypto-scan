@@ -2291,3 +2291,195 @@ def test_a_fips_object_does_not_suppress_a_stock_aws_lc_object_elsewhere_in_the_
     assert "BIN_AWS_LC_FIPS" in rule_ids
     assert "BIN_AWS_LC" in rule_ids
     assert "BIN_AWS_LC_RS_CRATE" in rule_ids
+
+
+# --------------------------------------------------------------------------
+# A BoringSSL-lineage FIPS module is a condition, not a non-approved stack
+# --------------------------------------------------------------------------
+
+# BoringSSL's own strings, on their own, do not tell a FIPS build from a stock one:
+# a stripped stock BoringSSL object (grpcio's cygrpc extension) carries both `BoringSSL`
+# and `BoringCrypto` in .rodata. `BoringCrypto` is included here on purpose, to pin that
+# the string is not a distinguisher.
+_STOCK_BORINGSSL_RODATA = (
+    b"\x00BoringSSL\x00/boringssl/crypto/fipsmodule/bn/add.c\x00BoringCrypto\x00"
+)
+
+
+def _boringssl_binary(*, symtab_name: str, rodata: bytes = _STOCK_BORINGSSL_RODATA) -> bytes:
+    return ElfBuilder(
+        needed=("libc.so.6",),
+        dynsyms=(DynSym("PyInit__ext", defined=True),),
+        with_symtab=True,
+        symtab_syms=(DynSym(symtab_name, defined=True, info=_LOCAL_FUNC),),
+        rodata=rodata,
+    ).build()
+
+
+def test_a_boringcrypto_object_is_told_apart_by_its_integrity_test(context, tmp_path: Path) -> None:
+    """The FIPS module's power-on self-test calls `BORINGSSL_integrity_test`, which a
+    FIPS build defines and a stock build does not, even though both carry the same
+    `BoringSSL`/`BoringCrypto` strings in read-only data."""
+    wheel = build_wheel(
+        tmp_path / f"boringfips-1.0-{MANYLINUX}.whl",
+        name="boringfips",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "boringfips/_ext.abi3.so": _boringssl_binary(symtab_name="BORINGSSL_integrity_test"),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_BORINGSSL_FIPS_MODULE" in record["verdict"]["rule_ids"]
+    assert "BIN_BORINGSSL" not in record["verdict"]["rule_ids"]
+
+
+def test_a_stock_boringssl_object_stays_non_approved(context, tmp_path: Path) -> None:
+    """The other half of the pair: `BORINGSSL_self_test` is present in both a FIPS and
+    a stock BoringSSL build, so an object that carries it and not the integrity test
+    keeps reading as stock."""
+    wheel = build_wheel(
+        tmp_path / f"boringstock-1.0-{MANYLINUX}.whl",
+        name="boringstock",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "boringstock/_ext.abi3.so": _boringssl_binary(symtab_name="BORINGSSL_self_test"),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "BIN_BORINGSSL" in record["verdict"]["rule_ids"]
+    assert "BIN_BORINGSSL_FIPS_MODULE" not in record["verdict"]["rule_ids"]
+
+
+def test_an_exported_integrity_test_identifies_a_shared_boringcrypto_build(
+    context, tmp_path: Path
+) -> None:
+    """A shared-library build exports `BORINGSSL_integrity_test` rather than keeping it
+    local, so it survives in `.dynsym` after stripping removes `.symtab`. `binding =
+    "defined"` has to cover this exported `.dynsym` definition as well as a `.symtab`
+    local; the sibling test right below shows why `binding = "imported"` would miss it:
+    an import is not a definition, and this test would fail if the rule kept only that."""
+    wheel = build_wheel(
+        tmp_path / f"boringshared-1.0-{MANYLINUX}.whl",
+        name="boringshared",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "boringshared/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                dynsyms=(
+                    DynSym("PyInit__ext", defined=True),
+                    DynSym("BORINGSSL_integrity_test", defined=True),
+                ),
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_BORINGSSL_FIPS_MODULE" in record["verdict"]["rule_ids"]
+
+
+def test_an_imported_integrity_test_does_not_identify_a_fips_module(
+    context, tmp_path: Path
+) -> None:
+    """An object that only *imports* `BORINGSSL_integrity_test` calls into a FIPS module
+    it does not ship; it contains no module itself, so `binding = "defined"` must not
+    treat that import the same as a definition. Left as `binding = "any"`, this object
+    would misread as CONDITIONAL and lose its own `BIN_BORINGSSL` finding to the
+    suppression, even though it carries no FIPS module."""
+    wheel = build_wheel(
+        tmp_path / f"boringimport-1.0-{MANYLINUX}.whl",
+        name="boringimport",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "boringimport/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                dynsyms=(
+                    DynSym("PyInit__ext", defined=True),
+                    DynSym("BORINGSSL_integrity_test", defined=False),
+                ),
+                rodata=_STOCK_BORINGSSL_RODATA,
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "BIN_BORINGSSL" in record["verdict"]["rule_ids"]
+    assert "BIN_BORINGSSL_FIPS_MODULE" not in record["verdict"]["rule_ids"]
+
+
+def test_a_stripped_go_boringcrypto_binary_is_a_condition(context, tmp_path: Path) -> None:
+    """Measured on go1.26.7: a stripped Go binary built with `GOEXPERIMENT=boringcrypto`
+    carries BoringSSL's own strings in `.rodata` (its FIPS module is vendored source)
+    and no `.symtab`, so `BIN_BORINGSSL_FIPS_MODULE` cannot fire on it. Without
+    `BIN_GO_BORING_CRYPTO` in `BIN_BORINGSSL.suppressed_by`, this object's only
+    NON_APPROVED finding would be `BIN_BORINGSSL`, purely from the vendored module's
+    own strings."""
+    wheel = build_wheel(
+        tmp_path / f"goboring-1.0-{MANYLINUX}.whl",
+        name="goboring",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "goboring/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                rodata=(
+                    b"\x00/boring/boringssl/crypto/asn1/a_bitstr.c\x00BoringSSL\x00"
+                    b"crypto/internal/boring\x00"
+                ),
+                go_buildinfo=_go_buildinfo("go1.26.7", "build\tGOEXPERIMENT=boringcrypto\n"),
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert "BIN_GO_BORING_CRYPTO" in record["verdict"]["rule_ids"]
+    assert "BIN_BORINGSSL" not in record["verdict"]["rule_ids"]
+
+
+def test_a_fips_boringssl_object_does_not_suppress_a_stock_one_elsewhere_in_the_wheel(
+    context, tmp_path: Path
+) -> None:
+    """Suppression is per object: a wheel with one stock BoringSSL object and one FIPS
+    BoringSSL object keeps `BIN_BORINGSSL` for the stock object alone."""
+    wheel = build_wheel(
+        tmp_path / f"boringtwo-1.0-{MANYLINUX}.whl",
+        name="boringtwo",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "two/_stock.abi3.so": _boringssl_binary(symtab_name="BORINGSSL_self_test"),
+            "two/_fips.abi3.so": _boringssl_binary(symtab_name="BORINGSSL_integrity_test"),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert set(record["verdict"]["classes"]) == {"CONDITIONAL", "NON_APPROVED_CRYPTO"}
+    finding = next(f for f in record["findings"] if f["rule_id"] == "BIN_BORINGSSL")
+    assert {location["path"] for location in finding["locations"]} == {"two/_stock.abi3.so"}
+
+
+def test_an_unprefixed_aws_lc_fips_object_keeps_its_aws_lc_finding(context, tmp_path: Path) -> None:
+    """`BORINGSSL_integrity_test` is shared by AWS-LC's FIPS module too, so the
+    fork-neutral rule fires on an AWS-LC FIPS object -- but it must not hide the
+    fork-specific `BIN_AWS_LC` finding that names AWS-LC rather than BoringSSL."""
+    wheel = build_wheel(
+        tmp_path / f"awslcshared-1.0-{MANYLINUX}.whl",
+        name="awslcshared",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcshared/_ext.abi3.so": _aws_lc_binary(
+                symtab_name="BORINGSSL_integrity_test",
+                rodata=_AWS_LC_RODATA,
+            ),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "BIN_BORINGSSL_FIPS_MODULE" in record["verdict"]["rule_ids"]
+    assert "BIN_AWS_LC" in record["verdict"]["rule_ids"]

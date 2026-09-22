@@ -5272,9 +5272,10 @@ measured on aws-lc-rs 1.18.1, a FIPS build carries the `aws-lc-rs` cargo path an
 the crate alone. `aws-lc-sys` stays on the default rule and is not suppressed: it
 names the stock build, so a wheel carrying both crates still reads `NON_APPROVED_CRYPTO`.
 
-**BoringCrypto's names are not used.** BoringCrypto's FIPS module and AWS-LC's share
-`BORINGSSL_bcm_*` and `BORINGSSL_integrity_test`, so listing them would label a BoringSSL
-FIPS object as AWS-LC.
+**BoringCrypto's names are not used by `aws_lc_fips`.** BoringCrypto's FIPS module and
+AWS-LC's share `BORINGSSL_bcm_*` and `BORINGSSL_integrity_test`, so listing them in this
+group would label a BoringSSL FIPS object as AWS-LC. A fork-neutral rule uses one of
+them instead, below.
 
 **What it costs.** `CONDITIONAL`, never a pass: the validated module is compiled in, but
 it is a bundled static copy rather than the system provider, and which certificate
@@ -5319,9 +5320,82 @@ The distinction is ruleset data alone: two groups and two rules, read by readers
 treat AWS-LC no differently from any other library.
 
 **Revisit if** the ELF strings pass ever reads executable sections; a C build of AWS-LC
-FIPS (unprefixed) shows up in a wheel, since its FIPS-only symbols are the BoringCrypto
-names this group deliberately excludes; or AWS-LC FIPS ships a two-digit major, which
-this group's dot-anchored digits do not cover.
+FIPS (unprefixed) shows up in a wheel, since `BIN_AWS_LC` is not suppressed by the
+fork-neutral FIPS-module rule below and such an object still reads `NON_APPROVED_CRYPTO`
+through `BIN_AWS_LC` rather than through the FIPS condition alone; or AWS-LC FIPS ships a
+two-digit major, which this group's dot-anchored digits do not cover.
+
+## A BoringSSL FIPS module is told from a stock build by its integrity test, not its strings
+
+**Accepted.**
+
+`boringssl` matches `BoringSSL` and `boringssl` in read-only data, and `BIN_BORINGSSL`
+has no way to tell Google's separately validated BoringCrypto build from a stock
+BoringSSL build, the same gap the AWS-LC entry above describes for its own fork.
+
+**Measured rather than reasoned.** Three Go programs calling `crypto/sha256`, built
+`GOEXPERIMENT=boringcrypto` (once unstripped, once `-ldflags='-s -w'`) and stock,
+alongside a stripped stock BoringSSL object (`grpcio`'s `cygrpc` extension, which links
+BoringSSL directly rather than through Go):
+
+| | stock BoringSSL (`grpcio`, stripped) | BoringCrypto (Go, syso and built binary) |
+|---|---|---|
+| `BoringSSL` string outside `.text` | present | present, in `.rodata` |
+| `BoringCrypto`, `BoringCrypto Key`, `FIPS self test` strings | present | present |
+| `BORINGSSL_integrity_test` | absent | a local definition in `.symtab`, unstripped only |
+| go_boring strings (`crypto/internal/boring`, `boringcrypto`) | absent | present |
+
+**The strings do not separate the builds.** `BoringSSL`, `BoringCrypto` and `FIPS self
+test` all appear in the stock `grpcio` object measured above, so a group built from any
+of them reads a stock build as a FIPS one. The stock side of the `BORINGSSL_integrity_test`
+row is source reading together with the AWS-LC stock measurement above, not a second
+unstripped stock BoringSSL object: upstream defines the symbol only inside
+`#if defined(BORINGSSL_FIPS)` and `#if !defined(OPENSSL_ASAN)`, and its header documents
+it as existing only in a FIPS build without ASAN. AWS-LC shares the same module source,
+and its own stock build, measured above, carries no such symbol either.
+
+**What separates the builds is `BORINGSSL_integrity_test`, the module's own power-on
+self-test entry point, and nothing else.** It is a local `.symtab` definition, read the
+same way `aws_lc_fips`'s local definitions are read above, so a stripped static object
+loses it and reads as stock BoringSSL -- the over-flag direction this tool errs in, and
+the same shape the AWS-LC entry accepts for its own stripped case. A shared-library
+build exports the symbol instead of keeping it local, so it survives in `.dynsym` after
+stripping removes `.symtab` (source reading: `crypto.h` declares it `OPENSSL_EXPORT`; no
+shared FIPS build was measured). The rule's `binding = "defined"` covers both shapes, a
+local `.symtab` definition and an exported `.dynsym` definition, while an object that
+only *imports* the symbol from elsewhere still fails to match: it contains no module.
+
+**The rule is fork-neutral.** `BORINGSSL_integrity_test` is compiled from source AWS-LC's
+FIPS module shares with BoringCrypto's, so a rule built on it names a FIPS build of the
+BoringSSL-lineage module, not which fork produced it -- the fork itself is still named by
+`BIN_BORINGSSL`'s or `BIN_AWS_LC`'s own strings, unaffected by this rule. It suppresses
+only `BIN_BORINGSSL`: closing the equivalent C-built AWS-LC FIPS gap for `BIN_AWS_LC` is
+left to the "Revisit if" above, since naming it here would explain a decision this entry
+does not make.
+
+**A Go BoringCrypto binary also suppresses `BIN_BORINGSSL` through its own marker.**
+Every Go binary built with the BoringCrypto backend vendors BoringSSL's C source, so it
+carries `BoringSSL` in `.rodata` regardless of whether the integrity-test symbol survives
+stripping -- without this suppression, the stripped Go binary keeps `BIN_BORINGSSL` as
+its only non-approved finding. `BIN_GO_BORING_CRYPTO`'s own strings
+(`crypto/internal/boring`, `GOEXPERIMENT=boringcrypto`, a bare `boringcrypto`
+substring) are absent from the stock `grpcio` object measured above, so this suppression
+did not reach the stock build measured here; the bare substring carries no Go-binary
+gate of its own, so it is not ruled out for every non-BoringCrypto build in general.
+
+**What it costs.** `CONDITIONAL`, the same reasoning as the AWS-LC entry: the module
+being compiled in is not the same as it being in force, and which certificate covers the
+compiled version is not something the wheel states. A stripped static BoringSSL object
+that carries neither the integrity-test symbol nor a Go marker still reads as stock
+`NON_APPROVED_CRYPTO`, the accepted over-flag direction. An unstripped BoringCrypto
+binary keeps `NON_APPROVED_CRYPTO` in `classes` too, and not for an unrelated reason:
+its own primitives (`BIN_CURVE25519`, `BIN_OWN_WEAK_HASH_IMPL`) are left unsuppressed,
+the same call the AWS-LC entry makes for its module's own primitives.
+
+**Revisit if** the ELF strings pass ever reads `.text`, which is where a C-built FIPS
+module's constants move on ELF the same way AWS-LC's do; or an unstripped stock
+BoringSSL object is found carrying `BORINGSSL_integrity_test`, which would mean the
+`#if defined(BORINGSSL_FIPS)` guard this rule relies on no longer holds.
 
 ## Crates are read from every cargo source layout, and a vendored crate has no version
 
