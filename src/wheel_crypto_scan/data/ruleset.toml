@@ -216,7 +216,8 @@ cargo_git_path_regex = '''(?<![A-Za-z0-9_.-])git[/\\]checkouts[/\\](?P<member>[^
 
 # Python hash constructors that a FIPS-enforcing build refuses unless the caller passes
 # usedforsecurity=False.
-weak_hash_algorithms = ["md4", "md5", "md5-sha1", "ripemd160", "sha1", "sm3", "whirlpool"]
+refused_hash_algorithms = ["md4", "md5", "md5-sha1", "ripemd160", "sm3", "whirlpool"]
+restricted_hash_algorithms = ["sha1"]
 
 
 # ---------------------------------------------------------------------------
@@ -2079,7 +2080,7 @@ why = "hashlib.md5() and hashlib.sha1() raise on a FIPS-enforcing host unless th
 [rule.match]
 kind = "py_call"
 targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
-weak_algorithms_only = true
+algorithm_list = "weak"
 usedforsecurity = ["absent", "true"]
 
 [[rule]]
@@ -2095,7 +2096,7 @@ why = "The caller declared this is not a security use, so it will keep working o
 [rule.match]
 kind = "py_call"
 targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
-weak_algorithms_only = true
+algorithm_list = "weak"
 usedforsecurity = "false"
 
 [[rule]]
@@ -2116,7 +2117,7 @@ algorithm = "unresolved"
 [[rule.match]]
 kind = "py_call"
 targets = ["hashlib.md5", "hashlib.sha1", "hashlib.new"]
-weak_algorithms_only = true
+algorithm_list = "weak"
 usedforsecurity = "unresolved"
 
 [[rule]]
