@@ -468,11 +468,17 @@ pre {
 (function () {
   "use strict";
 
+  // Inventory-first, the same order `report.py`'s `_HEADERS` gives the Markdown
+  // summary table: what the wheel carries (families, libraries and their linkage,
+  // the relations that follow from it), then the FIPS compatibility lens's own
+  // summary (the class badge), then review and reasons.
   var COLUMNS = [
     { key: "filename", label: "wheel", help: "The wheel's filename. The primary key for this report." },
     { key: "version", label: "version", help: "The project version declared in the wheel's own metadata." },
-    { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel. See the legend for what each class means." },
-    { key: "openssl", label: "openssl", help: "conditions.openssl_linkage: where the OpenSSL evidence in this wheel's binaries points, when there is any." },
+    { key: "families", label: "families", help: "crypto.families: every kind of primitive a finding in this wheel is evidence of. See the legend for what each family means." },
+    { key: "libraries", label: "libraries", help: "crypto.libraries: every crypto library this wheel carries evidence for, and how it links. See the legend's OpenSSL linkage table for what each linkage value means." },
+    { key: "relations", label: "relations", help: "verdict.relations: what would have to change, for every relation a contributing finding cited. See the legend for what each relation means." },
+    { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel: the FIPS compatibility lens's own summary, not the wheel's identity. See the legend for what each class means." },
     { key: "review", label: "review", help: "Whether a rule flagged this wheel as needing a human look." },
     { key: "reasons", label: "reasons", help: "The rule ids and subjects behind the verdict, in short form. Hover a chip for its full reason." }
   ];
@@ -480,12 +486,18 @@ pre {
   var NO_HELP = "No description; see the output schema.";
 
   var raw = document.getElementById("wcs-data").textContent;
-  var DATA = raw ? JSON.parse(raw) : { records: [], rules: {}, classes: [], class_help: {}, linkage_help: {}, tool: [] };
+  var DATA = raw ? JSON.parse(raw) : {
+    records: [], rules: {}, standards: {}, classes: [],
+    class_help: {}, linkage_help: {}, family_help: {}, relation_help: {}, tool: []
+  };
   DATA.records = DATA.records || [];
   DATA.rules = DATA.rules || {};
+  DATA.standards = DATA.standards || {};
   DATA.classes = DATA.classes || [];
   DATA.class_help = DATA.class_help || {};
   DATA.linkage_help = DATA.linkage_help || {};
+  DATA.family_help = DATA.family_help || {};
+  DATA.relation_help = DATA.relation_help || {};
 
   // DATA.classes already carries every class a record can actually carry, not only
   // the ones named in the ruleset's own precedence: render_html computes that union
@@ -625,9 +637,33 @@ pre {
 
   // --- legend --------------------------------------------------------------
 
+  // A `code value / description` legend grid off a plain `{value: help}` map, sorted
+  // by value: the shape `renderLegend` repeats for families, relations and OpenSSL
+  // linkage alike, once each -- only the classes grid also carries a colour swatch,
+  // so that one is still built inline below.
+  function appendHelpGrid(wrap, heading, help) {
+    var headingEl = document.createElement("h3");
+    headingEl.textContent = heading;
+    wrap.appendChild(headingEl);
+
+    var grid = document.createElement("div");
+    grid.className = "legend-grid";
+    Object.keys(help).sort().forEach(function (value) {
+      var dt = document.createElement("code");
+      dt.textContent = value;
+      var dd = document.createElement("div");
+      dd.textContent = help[value];
+      grid.appendChild(dt);
+      grid.appendChild(dd);
+    });
+    wrap.appendChild(grid);
+  }
+
   function renderLegend() {
     var wrap = els.legendBody;
     wrap.textContent = "";
+
+    appendHelpGrid(wrap, "Families (crypto.families)", DATA.family_help);
 
     var classHeading = document.createElement("h3");
     classHeading.textContent = "Verdict classes";
@@ -651,21 +687,8 @@ pre {
     });
     wrap.appendChild(classGrid);
 
-    var linkageHeading = document.createElement("h3");
-    linkageHeading.textContent = "OpenSSL linkage (conditions.openssl_linkage)";
-    wrap.appendChild(linkageHeading);
-
-    var linkageGrid = document.createElement("div");
-    linkageGrid.className = "legend-grid";
-    Object.keys(DATA.linkage_help).sort().forEach(function (value) {
-      var dt = document.createElement("code");
-      dt.textContent = value;
-      var dd = document.createElement("div");
-      dd.textContent = DATA.linkage_help[value];
-      linkageGrid.appendChild(dt);
-      linkageGrid.appendChild(dd);
-    });
-    wrap.appendChild(linkageGrid);
+    appendHelpGrid(wrap, "FIPS relations (verdict.relations)", DATA.relation_help);
+    appendHelpGrid(wrap, "OpenSSL linkage (conditions.openssl_linkage)", DATA.linkage_help);
 
     var columnHeading = document.createElement("h3");
     columnHeading.textContent = "Columns";
@@ -818,15 +841,20 @@ pre {
   function sortValue(record, key) {
     var wheel = record.wheel || {};
     var verdict = record.verdict || {};
-    var conditions = verdict.conditions || {};
+    var crypto = record.crypto || {};
     switch (key) {
       case "filename": return wheel.filename || "";
       case "version": return wheel.version || "";
+      case "families": return (crypto.families || []).join(", ");
+      case "libraries":
+        return (crypto.libraries || []).map(function (library) {
+          return library.name + ":" + library.linkage;
+        }).join(", ");
+      case "relations": return (verdict.relations || []).join(", ");
       case "class": {
         var idx = DATA.classes.indexOf(verdict.class);
         return idx === -1 ? DATA.classes.length : idx;
       }
-      case "openssl": return conditions.openssl_linkage || "";
       case "review": return verdict.needs_human_review ? 1 : 0;
       case "reasons": return summariseReasons(verdict.reasons || []);
       default: return "";
@@ -869,10 +897,49 @@ pre {
     els.count.textContent = rows.length + " of " + DATA.records.length + " wheels";
   }
 
+  // A chip per library, "name: linkage", the tooltip drawn from the same
+  // `linkage_help` the OpenSSL linkage legend uses: the list view's `libraries`
+  // column and the detail panel's inventory section both read `crypto.libraries`
+  // this same way.
+  function appendLibraryChips(cell, libraries) {
+    if (!libraries.length) {
+      cell.textContent = "-";
+      return;
+    }
+    var list = document.createElement("div");
+    list.className = "reasons-list";
+    libraries.forEach(function (library) {
+      var chip = document.createElement("span");
+      chip.className = "reason-chip";
+      chip.textContent = library.name + ": " + library.linkage;
+      chip.title = DATA.linkage_help[library.linkage] || NO_HELP;
+      list.appendChild(chip);
+    });
+    cell.appendChild(list);
+  }
+
+  // A comma-separated run of values, each with a `title` tooltip drawn from `help`:
+  // the shape the families and relations cells share, using the same dotted-underline
+  // `.linkage-value` cursor the OpenSSL linkage column's own values already use.
+  function appendHelpValues(cell, values, help) {
+    if (!values.length) {
+      cell.textContent = "-";
+      return;
+    }
+    values.forEach(function (value, index) {
+      if (index > 0) cell.appendChild(document.createTextNode(", "));
+      var span = document.createElement("span");
+      span.className = "linkage-value";
+      span.textContent = value;
+      span.title = help[value] || NO_HELP;
+      cell.appendChild(span);
+    });
+  }
+
   function renderRow(record) {
     var wheel = record.wheel || {};
     var verdict = record.verdict || {};
-    var conditions = verdict.conditions || {};
+    var crypto = record.crypto || {};
     var reasons = verdict.reasons || [];
 
     var tr = document.createElement("tr");
@@ -894,6 +961,18 @@ pre {
     versionCell.textContent = wheel.version || "?";
     tr.appendChild(versionCell);
 
+    var familiesCell = document.createElement("td");
+    appendHelpValues(familiesCell, crypto.families || [], DATA.family_help);
+    tr.appendChild(familiesCell);
+
+    var librariesCell = document.createElement("td");
+    appendLibraryChips(librariesCell, crypto.libraries || []);
+    tr.appendChild(librariesCell);
+
+    var relationsCell = document.createElement("td");
+    appendHelpValues(relationsCell, verdict.relations || [], DATA.relation_help);
+    tr.appendChild(relationsCell);
+
     var classCell = document.createElement("td");
     var badge = document.createElement("span");
     badge.className = "badge";
@@ -902,19 +981,6 @@ pre {
     badge.title = DATA.class_help[verdict.class] || NO_HELP;
     classCell.appendChild(badge);
     tr.appendChild(classCell);
-
-    var linkageCell = document.createElement("td");
-    var linkageValue = conditions.openssl_linkage;
-    if (linkageValue) {
-      var linkageSpan = document.createElement("span");
-      linkageSpan.className = "linkage-value";
-      linkageSpan.textContent = linkageValue;
-      linkageSpan.title = DATA.linkage_help[linkageValue] || NO_HELP;
-      linkageCell.appendChild(linkageSpan);
-    } else {
-      linkageCell.textContent = "-";
-    }
-    tr.appendChild(linkageCell);
 
     var reviewCell = document.createElement("td");
     var flag = document.createElement("span");
@@ -1040,10 +1106,167 @@ pre {
     dl.appendChild(dd);
   }
 
-  function renderVerdictSection(record, panel) {
-    var verdict = record.verdict || {};
+  // Shared by both of `renderFindingsTab`'s sections: a rule cell whose tooltip is
+  // the rule's title and why-text, and a locations cell listing every location a
+  // finding names.
+  function appendRuleCell(tr, finding) {
+    var rule = DATA.rules[finding.rule_id];
+    var td = document.createElement("td");
+    td.textContent = finding.rule_id;
+    if (rule) td.title = rule.title + " \u2014 " + rule.why;
+    tr.appendChild(td);
+  }
+
+  function appendLocationsCell(tr, finding) {
+    var td = document.createElement("td");
+    td.className = "wrap";
+    (finding.locations || []).forEach(function (loc) {
+      var div = document.createElement("div");
+      div.textContent = loc.path + (loc.line ? ":" + loc.line : "") + (loc.evidence ? " (" + loc.evidence + ")" : "");
+      td.appendChild(div);
+    });
+    tr.appendChild(td);
+  }
+
+  // One chip per standard id in `finding.basis`, tooltip "title \u00b7 edition \u00b7
+  // status" read off the `standards` payload `report.py` narrows to only the
+  // standards some embedded finding actually cites.
+  function appendBasisCell(tr, finding) {
+    var td = document.createElement("td");
+    var basis = finding.basis || [];
+    if (!basis.length) {
+      td.textContent = "-";
+    } else {
+      var list = document.createElement("div");
+      list.className = "reasons-list";
+      basis.forEach(function (id) {
+        var chip = document.createElement("span");
+        chip.className = "reason-chip";
+        chip.textContent = id;
+        var standard = DATA.standards[id];
+        chip.title = standard
+          ? (standard.title + " \u00b7 " + standard.edition + " \u00b7 " + standard.status)
+          : NO_HELP;
+        list.appendChild(chip);
+      });
+      td.appendChild(list);
+    }
+    tr.appendChild(td);
+  }
+
+  function buildTable(headers, findings, appendRow) {
+    var table = document.createElement("table");
+    var thead = document.createElement("thead");
+    var headRow = document.createElement("tr");
+    headers.forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    var tbody = document.createElement("tbody");
+    findings.forEach(function (finding) {
+      var tr = document.createElement("tr");
+      appendRow(tr, finding);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function buildInventoryTable(findings) {
+    return buildTable(
+      ["rule", "subject", "severity", "occurrences", "locations", "truncated"],
+      findings,
+      function (tr, finding) {
+        appendRuleCell(tr, finding);
+        appendCell(tr, finding.subject);
+        appendCell(tr, finding.severity);
+        appendCell(tr, finding.occurrences);
+        appendLocationsCell(tr, finding);
+        appendCell(tr, finding.truncated ? "yes" : "no");
+      }
+    );
+  }
+
+  function buildCompatibilityTable(findings) {
+    return buildTable(
+      ["rule", "subject", "verdict", "basis", "occurrences"],
+      findings,
+      function (tr, finding) {
+        appendRuleCell(tr, finding);
+        appendCell(tr, finding.subject);
+        appendCell(tr, finding.verdict);
+        appendBasisCell(tr, finding);
+        appendCell(tr, finding.occurrences);
+      }
+    );
+  }
+
+  // "Cryptography in this wheel": libraries and their linkage first, then every
+  // finding grouped by the family of primitive it is evidence of -- the inventory,
+  // presented before anything the FIPS compatibility lens makes of it, and shown
+  // (empty, saying so) even for a wheel with no crypto evidence at all.
+  function renderInventorySection(record, panel) {
+    var crypto = record.crypto || {};
+    // A finding with no `family` is not crypto evidence (an informational rule such
+    // as WHEEL_GENERATOR, say) and does not appear here -- `crypto.families` already
+    // skips it the same way, which is what this section groups by.
+    var findings = (record.findings || []).filter(function (finding) { return finding.family; });
+    var libraries = crypto.libraries || [];
+    var families = crypto.families || [];
+
     var heading = document.createElement("h3");
-    heading.textContent = "Verdict";
+    heading.textContent = "Cryptography in this wheel";
+    panel.appendChild(heading);
+
+    if (!libraries.length && !families.length) {
+      var none = document.createElement("p");
+      none.className = "note";
+      none.textContent = "No cryptography detected in this wheel.";
+      panel.appendChild(none);
+      return;
+    }
+
+    var librariesHeading = document.createElement("h3");
+    librariesHeading.textContent = "Libraries";
+    panel.appendChild(librariesHeading);
+    var librariesLine = document.createElement("p");
+    appendLibraryChips(librariesLine, libraries);
+    panel.appendChild(librariesLine);
+
+    var familiesHeading = document.createElement("h3");
+    familiesHeading.textContent = "Families";
+    panel.appendChild(familiesHeading);
+    var familiesLine = document.createElement("p");
+    appendHelpValues(familiesLine, families, DATA.family_help);
+    panel.appendChild(familiesLine);
+
+    if (!findings.length) return;
+
+    var grouped = {};
+    findings.forEach(function (finding) {
+      (grouped[finding.family] = grouped[finding.family] || []).push(finding);
+    });
+    Object.keys(grouped).sort().forEach(function (family) {
+      var groupHeading = document.createElement("h3");
+      groupHeading.textContent = family;
+      groupHeading.title = DATA.family_help[family] || NO_HELP;
+      panel.appendChild(groupHeading);
+      appendScrollingTable(panel, buildInventoryTable(grouped[family]));
+    });
+  }
+
+  // "FIPS compatibility": the class badge as this section's own summary, the
+  // conditions and reasons that already back it, then every finding that carries a
+  // `relation` grouped by it, in the relation table's remediation wording, with the
+  // standards each one's `basis` cites.
+  function renderCompatibilitySection(record, panel) {
+    var verdict = record.verdict || {};
+
+    var heading = document.createElement("h3");
+    heading.textContent = "FIPS compatibility";
     panel.appendChild(heading);
 
     var classes = verdict.classes || [];
@@ -1093,58 +1316,30 @@ pre {
       });
       panel.appendChild(reasonsList);
     }
+
+    var relations = verdict.relations || [];
+    if (!relations.length) return;
+
+    var byRelation = {};
+    (record.findings || []).forEach(function (finding) {
+      if (!finding.relation) return;
+      (byRelation[finding.relation] = byRelation[finding.relation] || []).push(finding);
+    });
+    relations.forEach(function (relation) {
+      var relHeading = document.createElement("h3");
+      relHeading.textContent = relation;
+      panel.appendChild(relHeading);
+      var relHelp = document.createElement("p");
+      relHelp.className = "note";
+      relHelp.textContent = DATA.relation_help[relation] || NO_HELP;
+      panel.appendChild(relHelp);
+      appendScrollingTable(panel, buildCompatibilityTable(byRelation[relation] || []));
+    });
   }
 
   function renderFindingsTab(record, panel) {
-    renderVerdictSection(record, panel);
-
-    var findingsHeading = document.createElement("h3");
-    findingsHeading.textContent = "Findings";
-    panel.appendChild(findingsHeading);
-
-    var findings = record.findings || [];
-    if (!findings.length) {
-      var p = document.createElement("p");
-      p.className = "note";
-      p.textContent = "No findings for this wheel.";
-      panel.appendChild(p);
-      return;
-    }
-    var table = document.createElement("table");
-    var thead = document.createElement("thead");
-    var headRow = document.createElement("tr");
-    ["rule", "subject", "severity", "verdict", "occurrences", "locations", "truncated"].forEach(function (h) {
-      var th = document.createElement("th");
-      th.textContent = h;
-      headRow.appendChild(th);
-    });
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-    var tbody = document.createElement("tbody");
-    findings.forEach(function (finding) {
-      var tr = document.createElement("tr");
-      var rule = DATA.rules[finding.rule_id];
-      var ruleCell = document.createElement("td");
-      ruleCell.textContent = finding.rule_id;
-      if (rule) ruleCell.title = rule.title + " \u2014 " + rule.why;
-      tr.appendChild(ruleCell);
-      appendCell(tr, finding.subject);
-      appendCell(tr, finding.severity);
-      appendCell(tr, finding.verdict);
-      appendCell(tr, finding.occurrences);
-      var locCell = document.createElement("td");
-      locCell.className = "wrap";
-      (finding.locations || []).forEach(function (loc) {
-        var div = document.createElement("div");
-        div.textContent = loc.path + (loc.line ? ":" + loc.line : "") + (loc.evidence ? " (" + loc.evidence + ")" : "");
-        locCell.appendChild(div);
-      });
-      tr.appendChild(locCell);
-      appendCell(tr, finding.truncated ? "yes" : "no");
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    appendScrollingTable(panel, table);
+    renderInventorySection(record, panel);
+    renderCompatibilitySection(record, panel);
   }
 
   // A detail table sits in its own scroll box, as the wheel table does: a cell that
