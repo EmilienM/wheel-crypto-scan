@@ -3609,6 +3609,51 @@ and `_LINE_LIMIT_EXEMPT` name different modules in either direction, if
 - a listed module's code alone, excluding docstrings and comments, nears the limit, at
   which point it is a split rather than an exemption.
 
+## The cross-rule coherence checks live in `ruleset_coherence.py`
+
+**Accepted, and it changes no record.** No rule, symbol, library or verdict depends on
+which module refuses an incoherent ruleset.
+
+Held beside the shape checks, the unknown-key checks and every other
+`_parse_*`/`_validate_*` helper, these four checks bring `ruleset_loader.py` to pylint's
+default `max-module-lines` (1000) with no room for the next check -- the trigger
+"`Conventions`/`SonameInfo` and their `[conventions]` parser move to `conventions.py`"
+names for its own "Revisit if". They live in a sibling module, `ruleset_coherence.py`,
+public for the same reason `parse_conventions` is, since `parse_ruleset` calls them
+across the module boundary: `check_suppression_can_fire`, `check_suppression_acyclic`,
+`validate_sbom_component_coverage` and
+`validate_sbom_suppression_leaves_linkage_explained`.
+
+**Why these four.** Each refuses a relation *between* rules that no single rule's parse
+can see: a `suppressed_by` that can never fire or closes a cycle, or an SBOM relation
+that would leave a `<name>_linkage` moved with no finding to explain it. Each reads
+`Rule`/`Ruleset` objects the loader has already built, shape-checked and
+reference-resolved, and relies on that last part: every `suppressed_by` and every crate
+owner names a rule that exists, so a lookup that would otherwise raise `KeyError` never
+does. None reads the raw TOML or calls a loader helper, so the module imports only the
+object model and `RulesetError`. The loader imports it and never the reverse, the same
+direction `conventions.py` keeps, so the two cannot import each other.
+
+**What stays in the loader.** Every check that walks a raw table --
+`_validate_match_references`, `_validate_conventions_references`, the unknown-key
+checks, `_parse_linkage_policy`'s coherence check -- because each reads the TOML
+mapping through the helpers that read it. `_check_limits_leave_room_for_every_key`
+stays too, though it reads only built objects: it bounds `[limits]` against how many
+groups and crates the tables hold, a relation between a table and its sizes rather than
+between rules. Measured at the split, `ruleset_loader.py` was 856 lines and
+`ruleset_coherence.py` 171.
+
+**What was rejected.** A module-local `too-many-lines` exemption for
+`ruleset_loader.py`, and a bigger `max-module-lines`, for the reasons the two entries
+above give. Moving the raw-table checks as well: each would need the loader's helpers
+restated or imported, and restating them is a cost `conventions.py` already pays once,
+for `_require` and `_refuse_unknown_keys`, for lines the loader does not need back.
+
+**Revisit if** `ruleset_loader.py` approaches the limit again: the per-table loops
+inline in `parse_ruleset`, one per `[[crypto_library]]`, `[[rust_crate]]`,
+`[[symbol_group]]` and the rest, are where most new checks land and the next concern
+that could stand alone.
+
 ## More than one LC_ID_DYLIB or LC_SYMTAB is ambiguous, not last-wins
 
 **Accepted. The Mach-O counterpart of ELF's `elf_section_type_ambiguous`, and it
@@ -5683,7 +5728,7 @@ refuse, and `unknown` already has the meaning this case needs.
   only ever reorders a table the rule already lists (`engine._sbom_entry` never adds
   `rust_crate` to a rule that never named it), and falls back to the rule's own table
   order for a name the preferred table does not have an entry for.
-- `ruleset_loader._validate_sbom_component_coverage` refuses `suppressed_by` on a
+- `ruleset_coherence.validate_sbom_component_coverage` refuses `suppressed_by` on a
   `sbom_component` rule it relies on for `crypto_library`/`rust_crate` coverage: a
   suppressed finding would leave the field moved with nothing in the record to explain
   it, the same hole a coverage gap opens.

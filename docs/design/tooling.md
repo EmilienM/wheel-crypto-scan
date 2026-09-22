@@ -220,6 +220,28 @@ the limit, at which point it is a split rather than an exemption.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions)
 
+## The cross-rule coherence checks live in `ruleset_coherence.py`
+
+**Accepted, and it changes no record.** Held beside the shape checks, the unknown-key checks and
+every other parsing helper, four checks bring `ruleset_loader.py` to pylint's default module-line
+limit with no room for the next one. They live in a sibling module, `ruleset_coherence.py`,
+public because `parse_ruleset` calls them across the module boundary: the two that refuse a
+`suppressed_by` that can never fire or closes a cycle, and the two that refuse an SBOM relation
+leaving a `<name>_linkage` moved with no finding to explain it.
+
+**Why these four.** Each refuses a relation *between* rules that no single rule's parse can see,
+reading rules the loader has already built, shape-checked and reference-resolved. None reads the
+raw TOML or calls a loader helper, so the module imports only the object model; the loader
+imports it and never the reverse. Every check that walks a raw table stays in the loader, with
+the helpers that read it, and so does the check that bounds `[limits]` against the tables' sizes.
+
+**What was rejected.** A module-local exemption for `ruleset_loader.py`, and a bigger
+`max-module-lines`, for the reasons the two entries above give. Moving the raw-table checks as
+well, which would mean restating the loader's small helpers a second time for lines the loader
+does not need back.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-cross-rule-coherence-checks-live-in-ruleset_coherencepy)
+
 ## `binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader
 
 **Accepted.**

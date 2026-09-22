@@ -802,7 +802,7 @@ def test_an_ownerless_crate_carrying_suppressed_by_is_rejected() -> None:
     `suppressed_by`, not the name it points at, has no owning rule. An ownerless
     crate fires in every `rust_crate` rule (`_owns(..., unowned=True)`), so its
     finding is not the single key a `suppressed_by` relation needs either, and
-    letting it carry the field can close a cycle `_check_suppression_acyclic` never
+    letting it carry the field can close a cycle `check_suppression_acyclic` never
     sees because it skips ownerless crates entirely."""
     data = minimal()
     data["rule"].append(
@@ -1040,7 +1040,7 @@ def test_the_shipped_suppressed_by_relations_all_locate_where_they_can_fire() ->
     """`BIN_AWS_LC` -> `BIN_AWS_LC_FIPS`, `BIN_AWS_LC_RS_CRATE` -> `BIN_AWS_LC_FIPS` and
     `BIN_GO_STOCK_CRYPTO` -> `BIN_GO_BORING_CRYPTO`/`BIN_GO_FIPS140` are all
     object/object; loading the shipped ruleset already proves they pass
-    `_check_suppression_can_fire`, so this just names them."""
+    `check_suppression_can_fire`, so this just names them."""
     ruleset = load_ruleset()
     assert ruleset.rule("BIN_AWS_LC").suppressed_by == ("BIN_AWS_LC_FIPS",)
     assert ruleset.rule("BIN_AWS_LC_RS_CRATE").suppressed_by == ("BIN_AWS_LC_FIPS",)
@@ -2310,7 +2310,7 @@ def test_reads_follows_a_matchers_own_parameter_name_not_the_literal_match(
 
 
 def test_every_matcher_kind_declares_a_location_class() -> None:
-    """`MATCHER_LOCATIONS` is what the loader's `_check_suppression_can_fire` reads;
+    """`MATCHER_LOCATIONS` is what `ruleset_coherence.check_suppression_can_fire` reads;
     a kind added to `MATCHER_KINDS` without a location here would go unchecked
     silently, the same drift the dispatch-function test above holds for `_MATCHERS`.
     """
