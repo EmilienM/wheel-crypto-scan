@@ -18,11 +18,16 @@ There are three ways a wheel can carry its own OpenSSL, and all three are caught
 |---|---|
 | Plain `DT_NEEDED libcrypto.so.3`, OpenSSL symbols imported, and nothing in the wheel resolves it | `system` |
 | A library under `*.libs/` or `.dylibs/`, a dependency on a hash-renamed `libcrypto-3a1f2b4c.so.3`, or an unrenamed dependency (delocate's convention) that still names a file the wheel itself ships | `bundled` |
-| No dependency and no vendor directory, but OpenSSL symbols defined or its version banner in read-only data | `static` |
+| No dependency and no vendor directory, but OpenSSL symbols defined, or its version banner beside its build strings (`OPENSSLDIR:`) in read-only data -- unless the banner is AWS-LC's or BoringSSL's own compatibility text | `static` |
+| OpenSSL-named symbols defined, with no banner, in an object that also carries AWS-LC or BoringSSL, which define the same names, or AWS-LC's or BoringSSL's own compatibility banner with no dependency to weigh it against | `unknown` |
 
-A version banner beside a system dependency is header text rather than a copy when the
-object imports its OpenSSL from that dependency, was read in full, and carries none of
-the build strings (`OPENSSLDIR:`) a compiled-in OpenSSL keeps beside its banner.
+A version banner beside a system dependency, or beside a dependency on the copy the
+wheel bundles, is header text rather than a copy when the object imports its OpenSSL
+from that dependency, was read in full, and carries none of the build strings
+(`OPENSSLDIR:`) a compiled-in OpenSSL keeps beside its banner. On an object with no
+dependency on OpenSSL at all, that same absence makes a banner uncorroborated prose
+rather than a copy -- `openssl_banner` also matches a sentence naming a dotted OpenSSL
+version, such as "enable OpenSSL 3.0 legacy provider" -- and the object reads `unknown`.
 
 The third case is the one that matters most and the one a vendor-directory check alone
 misses. Run against three real builds of `cryptography`:

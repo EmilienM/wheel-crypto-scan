@@ -152,7 +152,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "39"
+    assert ruleset.version == "40"
     assert len(ruleset.rules) > 20
 
 
@@ -1163,6 +1163,87 @@ def test_openssl_names_a_copy_string_group() -> None:
     assert group in ruleset.string_groups
 
 
+def test_a_library_naming_an_unknown_fork_symbol_group_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["fork_symbol_groups"] = ["aws_lc"]
+    with pytest.raises(RulesetError, match="unknown symbol group"):
+        parse_ruleset(data)
+
+
+def test_a_library_naming_an_unknown_fork_string_group_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["string_group"] = "openssl_banner"
+    data["crypto_library"][0]["fork_string_groups"] = ["aws_lc"]
+    with pytest.raises(RulesetError, match="unknown string group"):
+        parse_ruleset(data)
+
+
+def test_a_library_naming_its_own_symbol_group_as_a_fork_is_rejected() -> None:
+    """Every definition would then claim itself as its own fork, and `static` would
+    become unreachable."""
+    data = minimal()
+    data["crypto_library"][0]["symbol_group"] = "openssl"
+    data["crypto_library"][0]["fork_symbol_groups"] = ["openssl"]
+    with pytest.raises(RulesetError, match="own symbol_group"):
+        parse_ruleset(data)
+
+
+def test_a_library_naming_its_own_string_group_as_a_fork_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["symbol_group"] = "openssl"
+    data["crypto_library"][0]["string_group"] = "openssl_banner"
+    data["crypto_library"][0]["fork_string_groups"] = ["openssl_banner"]
+    with pytest.raises(RulesetError, match="own string_group"):
+        parse_ruleset(data)
+
+
+def test_a_library_naming_its_own_copy_string_group_as_a_fork_is_rejected() -> None:
+    """The banner and the copy marker are two different string groups a fork could
+    each be named as; naming either must be refused, not only the banner half."""
+    data = minimal()
+    data["crypto_library"][0]["symbol_group"] = "openssl"
+    data["crypto_library"][0]["string_group"] = "openssl_banner"
+    data["crypto_library"][0]["copy_string_group"] = "go_boring"
+    data["crypto_library"][0]["fork_string_groups"] = ["go_boring"]
+    with pytest.raises(RulesetError, match="own string_group or copy_string_group"):
+        parse_ruleset(data)
+
+
+def test_a_fork_list_on_a_library_with_no_symbol_group_is_rejected() -> None:
+    """The lists only ever reclassify this library's own `symbol_group`
+    definitions, so there is nothing for them to reclassify without one."""
+    data = minimal()
+    data["crypto_library"][0]["fork_symbol_groups"] = ["openssl"]
+    with pytest.raises(RulesetError, match="need a symbol_group"):
+        parse_ruleset(data)
+
+
+def test_a_fork_symbol_groups_value_that_is_not_a_list_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["symbol_group"] = "openssl"
+    data["crypto_library"][0]["fork_symbol_groups"] = "aws_lc"
+    with pytest.raises(RulesetError, match="fork_symbol_groups must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_a_fork_string_groups_value_that_is_not_a_list_is_rejected() -> None:
+    data = minimal()
+    data["crypto_library"][0]["symbol_group"] = "openssl"
+    data["crypto_library"][0]["fork_string_groups"] = "aws_lc"
+    with pytest.raises(RulesetError, match="fork_string_groups must be a list of strings"):
+        parse_ruleset(data)
+
+
+def test_openssl_names_its_forks() -> None:
+    """The shipped ruleset's `openssl` entry lists the libraries that implement its
+    API under its own names, the way `test_openssl_names_a_copy_string_group` pins
+    its copy marker."""
+    ruleset = load_ruleset()
+    library = ruleset.libraries["openssl"]
+    assert set(library.fork_symbol_groups) == {"aws_lc", "aws_lc_fips", "boringssl"}
+    assert set(library.fork_string_groups) == {"aws_lc", "aws_lc_fips", "boringssl"}
+
+
 def test_a_library_naming_a_bare_crate_string_is_rejected() -> None:
     """Not read as a list of one-letter crates."""
     data = minimal()
@@ -1402,6 +1483,32 @@ def test_a_symbol_group_read_only_by_a_crypto_library_is_accepted() -> None:
     data = minimal()
     data["symbol_group"].append(_orphan_group())
     data["crypto_library"][0]["symbol_group"] = "orphan"
+    parse_ruleset(data)
+
+
+def _with_orphan_as_a_fork() -> dict[str, Any]:
+    """`minimal()` with `orphan` named only in the library's `fork_symbol_groups`,
+    which needs the library to name a `symbol_group` of its own first."""
+    data = minimal()
+    data["symbol_group"][0].pop("evidence_only")
+    data["crypto_library"][0]["symbol_group"] = "openssl"
+    data["crypto_library"][0]["fork_symbol_groups"] = ["orphan"]
+    return data
+
+
+def test_a_symbol_group_named_only_in_a_fork_list_is_not_read() -> None:
+    """A fork group only qualifies OpenSSL-named definitions already on the same
+    object; a defined fork name alone raises nothing and reads NO_CRYPTO_DETECTED, the
+    gap the check closes, so a fork list does not count as reading the group."""
+    data = _with_orphan_as_a_fork()
+    data["symbol_group"].append(_orphan_group())
+    with pytest.raises(RulesetError, match="no dynamic_symbol rule or crypto_library reads it"):
+        parse_ruleset(data)
+
+
+def test_a_fork_group_marked_evidence_only_is_accepted() -> None:
+    data = _with_orphan_as_a_fork()
+    data["symbol_group"].append(_orphan_group(evidence_only=True))
     parse_ruleset(data)
 
 

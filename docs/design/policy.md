@@ -19,8 +19,10 @@ check passes, the record is clean.
 
 **Why a digit is still required.** `OpenSSL ` alone also matches prose. That same object
 carries `OpenSSL 3's legacy provider failed to load`, and so does a build that links the
-system library, while a banner is one of the two things that make an object read
-`static`.
+system library. Requiring a digit and a dot rules that undotted string out, but not a
+sentence naming a *dotted* version — "enable OpenSSL 3.0 legacy provider" still matches.
+What keeps that from reading `static` is the copy marker, not the shape of the string:
+see [the entry on an uncorroborated banner](linkage.md#a-version-banner-with-no-dependency-and-no-build-strings-reads-unknown-not-static).
 
 **What all ten digits cost, and what they buy.** Listing 0 through 9 is one line and no
 code. Measured over 18 native wheels off PyPI against the three-major list, exactly one

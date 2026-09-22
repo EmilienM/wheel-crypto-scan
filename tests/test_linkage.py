@@ -750,9 +750,15 @@ def test_openssl_compiled_into_an_extension_is_static(ruleset) -> None:
 
 
 def test_a_banner_alone_is_enough_for_static(ruleset) -> None:
-    """A version script can hide every symbol; the version banner survives it."""
+    """A version script can hide every symbol; the version banner survives it. A
+    real compiled-in copy keeps its build string beside its banner, which is what
+    tells this apart from prose that merely names a version."""
     evidence = wheel(
-        binary("pkg/_ext.abi3.so", needed=("libc.so.6",), matched_strings=(OPENSSL_BANNER,))
+        binary(
+            "pkg/_ext.abi3.so",
+            needed=("libc.so.6",),
+            matched_strings=(OPENSSL_BANNER, OPENSSL_BUILD_INFO),
+        )
     )
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
 
@@ -766,6 +772,227 @@ def test_imported_symbols_without_a_bundled_copy_are_not_static(ruleset) -> None
         )
     )
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+# --- OpenSSL-named definitions beside a fork of OpenSSL's own API -----------
+#
+# AWS-LC and BoringSSL both implement OpenSSL's public API under OpenSSL's own
+# names, so a defined `EVP_*`/`BN_*`/... symbol alone cannot tell which library was
+# actually compiled in when a marker for one of them is present too.
+
+_AWS_LC_FIPS_SYMBOL = SymbolMatch("aws_lc_fips_0_14_2_SHA256_Init", "aws_lc_fips", BINDING_DEFINED)
+_AWS_LC_SYMBOL = SymbolMatch("AWSLC_fips_evp_pkey_methods_init", "aws_lc", BINDING_DEFINED)
+_BORINGSSL_SYMBOL = SymbolMatch("BORINGSSL_self_test", "boringssl", BINDING_DEFINED)
+_AWS_LC_STRING = StringMatch("aws_lc", "/aws-lc/crypto/mem.c")
+_BORINGSSL_STRING = StringMatch("boringssl", "BoringSSL")
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [_AWS_LC_FIPS_SYMBOL, _AWS_LC_SYMBOL, _BORINGSSL_SYMBOL, _AWS_LC_STRING, _BORINGSSL_STRING],
+    ids=[
+        "aws-lc-fips-symbol",
+        "aws-lc-symbol",
+        "boringssl-symbol",
+        "aws-lc-string",
+        "boringssl-string",
+    ],
+)
+def test_openssl_named_definitions_beside_a_fork_are_unknown(ruleset, marker) -> None:
+    """A definition alone says an OpenSSL-API library was compiled in, not which
+    one: this is the awscrt/curl_cffi/aws-lc-rs-fips shape, with no banner."""
+    symbols = (SymbolMatch("BN_from_montgomery_word", "openssl", BINDING_DEFINED),)
+    strings: tuple[StringMatch, ...] = ()
+    if isinstance(marker, SymbolMatch):
+        symbols = symbols + (marker,)
+    else:
+        strings = (marker,)
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so", needed=("libc.so.6",), matched_symbols=symbols, matched_strings=strings
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_fork_symbol_the_object_only_imports_does_not_claim_its_definitions(ruleset) -> None:
+    """An imported fork symbol says the object calls a fork it does not compile in
+    here, so it must not turn a real, locally defined OpenSSL symbol `unknown`."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_symbols=(
+                SymbolMatch("BN_from_montgomery_word", "openssl", BINDING_DEFINED),
+                SymbolMatch("AWSLC_fips_evp_pkey_methods_init", "aws_lc", BINDING_IMPORTED),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
+
+
+def test_a_banner_beside_a_fork_still_reads_static(ruleset) -> None:
+    """A banner match on a printable run distinct from any fork marker -- a real,
+    dotted OpenSSL version with its own build string beside it -- is still real
+    evidence of a copy, whatever else the same object also carries. The fork
+    demotion only excludes a banner match that is itself the fork's own header
+    text (`test_a_banner_that_is_the_forks_own_header_text_is_unknown`, below)."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_symbols=(SymbolMatch("BN_from_montgomery_word", "openssl", BINDING_DEFINED),),
+            matched_strings=(OPENSSL_BANNER, OPENSSL_BUILD_INFO, _AWS_LC_STRING),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
+
+
+@pytest.mark.parametrize(
+    ("fork_group", "banner_text"),
+    [
+        ("aws_lc", "OpenSSL 1.1.1 (compatible; AWS-LC 1.49.0)"),
+        ("boringssl", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+    ],
+    ids=["aws-lc", "boringssl"],
+)
+def test_a_banner_that_is_the_forks_own_header_text_is_unknown(
+    ruleset, fork_group, banner_text
+) -> None:
+    """AWS-LC's and BoringSSL's own public headers define `OPENSSL_VERSION_TEXT` as
+    one string literal, which `openssl_banner` and the fork's own string group both
+    match inside the very same printable run: `match_string_groups` records a
+    match's `value` as the whole run, so the two matches carry the identical value.
+    That banner is the fork's own header macro, not a real OpenSSL copy -- and
+    `OPENSSLDIR: n/a`, both forks' own `OpenSSL_version()`, clears the copy-marker
+    gate the same way a real copy's does, so the copy marker alone cannot tell them
+    apart either."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_symbols=(SymbolMatch("BN_from_montgomery_word", "openssl", BINDING_DEFINED),),
+            matched_strings=(
+                StringMatch("openssl_banner", banner_text),
+                StringMatch("openssl_build_info", "OPENSSLDIR: n/a"),
+                StringMatch(fork_group, banner_text),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_fork_beside_a_system_dependency_stays_mixed(ruleset) -> None:
+    """A confirmed `system` dependency beside a fork-claimed definition is still a
+    real posture disagreement on this one object, the same as any other
+    `system`-beside-`static` shape: the fork demotion only applies once `system` and
+    `bundled` have both already been ruled out."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto.so.3",),
+            matched_symbols=(
+                SymbolMatch("BN_from_montgomery_word", "openssl", BINDING_DEFINED),
+                _AWS_LC_SYMBOL,
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_fork_beside_a_system_dependency_and_its_own_banner_stays_mixed(ruleset) -> None:
+    """A confirmed `system` dependency, beside the fork's own header banner rather
+    than a defined fork symbol, is still `mixed`: the fork demotion only decides
+    which of `static`'s two constituents -- `defined` or `banner` -- corroborates a
+    real, distinct copy once `system` and `bundled` have both already been ruled
+    out, in the `if static:` branch below. It never removes `banner` from `static`
+    itself, so this object's own confirmed `system` dependency and its own banner
+    evidence still disagree the same way `test_a_fork_beside_a_system_dependency_
+    stays_mixed` does for a defined fork symbol."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto.so.3", "libc.so.6"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            matched_strings=(
+                StringMatch("openssl_banner", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+                StringMatch("openssl_build_info", "OPENSSLDIR: n/a"),
+                StringMatch("boringssl", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_fork_beside_a_bundled_dependency_and_its_own_banner_stays_mixed(ruleset) -> None:
+    """The bundled-shaped variant of the guarantee above: a `needed` entry that
+    resolves inside the wheel, beside the fork's own header banner, is still a real
+    posture disagreement on this object rather than `bundled` outright."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto-3a1f2b4c.so.3",),
+            matched_strings=(
+                StringMatch("openssl_banner", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+                StringMatch("openssl_build_info", "OPENSSLDIR: n/a"),
+                StringMatch("boringssl", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_fork_banner_alone_beside_a_copy_marker_is_unknown(ruleset) -> None:
+    """The fork's own header banner, with the copy-marker string beside it and no
+    `needed` entry naming any copy at all, has `static` true from `banner` alone --
+    and that banner is entirely explained by `_banner_is_fork_text`. Nothing here
+    is evidence of a real, distinct OpenSSL copy, only that some OpenSSL-API
+    implementation is compiled in, so this reads `unknown`: real, library-specific
+    evidence that does not say which copy, not `LINKAGE_NONE`."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_strings=(
+                StringMatch("openssl_banner", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+                StringMatch("openssl_build_info", "OPENSSLDIR: n/a"),
+                StringMatch("boringssl", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_real_banner_beside_the_forks_own_banner_still_reads_static(ruleset) -> None:
+    """Two separate `openssl_banner` matches on one object -- a real, dotted OpenSSL
+    version with its own build string, and the fork's own header text on a
+    different run -- are not both fork text: `_banner_is_fork_text` only reads true
+    when every `string_group` match on the object is explained by the fork's own
+    patterns, and the real banner's run is not. The real banner still corroborates
+    a copy, whatever else the same object also carries."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_symbols=(SymbolMatch("BN_from_montgomery_word", "openssl", BINDING_DEFINED),),
+            matched_strings=(
+                OPENSSL_BANNER,
+                OPENSSL_BUILD_INFO,
+                StringMatch("openssl_banner", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+                StringMatch("boringssl", "OpenSSL 1.1.1 (compatible; BoringSSL)"),
+            ),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
+
+
+def test_a_fork_marker_alone_leaves_openssl_none(ruleset) -> None:
+    """A fork marker with no OpenSSL-named evidence at all creates none: it is not
+    itself OpenSSL evidence, only a reason to read OpenSSL evidence differently."""
+    evidence = wheel(
+        binary("pkg/_ext.so", needed=("libc.so.6",), matched_symbols=(_AWS_LC_SYMBOL,))
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
 
 
 # --- a crate says the object uses OpenSSL, not which copy -------------------
@@ -796,7 +1023,7 @@ def test_a_crate_that_does_not_bind_openssl_leaves_it_none(ruleset) -> None:
 @pytest.mark.parametrize(
     ("fields", "posture"),
     [
-        ({"matched_strings": (OPENSSL_BANNER,)}, LINKAGE_STATIC),
+        ({"matched_strings": (OPENSSL_BANNER, OPENSSL_BUILD_INFO)}, LINKAGE_STATIC),
         ({"needed": ("libc.so.6", "libssl.so.3")}, LINKAGE_SYSTEM),
     ],
     ids=["banner", "needed"],
@@ -1216,7 +1443,7 @@ def test_declared_by_sbom_is_true_when_only_a_non_system_object_carries_the_crat
     ("fields", "posture"),
     [
         ({"needed": ("libc.so.6", "libssl.so.3")}, LINKAGE_SYSTEM),
-        ({"matched_strings": (OPENSSL_BANNER,)}, LINKAGE_STATIC),
+        ({"matched_strings": (OPENSSL_BANNER, OPENSSL_BUILD_INFO)}, LINKAGE_STATIC),
     ],
     ids=["needed", "banner"],
 )
@@ -1344,17 +1571,32 @@ def test_a_header_banner_on_a_partially_read_object_stays_mixed(ruleset, reason:
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
 
 
-def test_a_banner_and_imports_without_a_system_dependency_are_still_static(ruleset) -> None:
-    """No `needed` entry resolves to the system library, so gate (a) never holds: the
-    banner is not header text just because the object also happens to import OpenSSL
-    symbols from somewhere. Whatever provides them is outside this wheel, and the
-    banner is still a real, unexplained copy on this object."""
+def test_a_banner_and_imports_without_a_dependency_are_unknown(ruleset) -> None:
+    """No `needed` entry resolves the library at all, so imports alone say "uses,
+    not which copy" -- whatever provides them is outside this wheel -- and the
+    banner, with none of the build strings a real copy keeps beside it, adds no
+    copy either. Neither half of the object's own evidence confirms a copy, so the
+    object reads `unknown` rather than `static`."""
     evidence = wheel(
         binary(
             "pkg/_ext.so",
             needed=("libc.so.6",),
             matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
             matched_strings=(OPENSSL_BANNER,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_banner_with_build_strings_and_imports_without_a_dependency_is_static(ruleset) -> None:
+    """Same shape, but the banner keeps its build string beside it: a real copy, so
+    the imports the object also carries do not demote it below `static`."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            matched_strings=(OPENSSL_BANNER, OPENSSL_BUILD_INFO),
         )
     )
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
@@ -1374,6 +1616,91 @@ def test_a_library_without_a_copy_string_group_always_counts_its_banner(ruleset)
         )
     )
     assert resolve_linkage(ruleset, evidence)["libsodium"] == LINKAGE_MIXED
+
+
+# --- a banner with no dependency and no build strings is uncorroborated prose ----
+#
+# `openssl_banner` matches any sentence naming a dotted OpenSSL version, not only the
+# real banner: "enable OpenSSL 3.0 legacy provider" matches the same way "OpenSSL
+# 3.0.14 4 Jun 2024" does. On an object with no `needed` entry naming the library at
+# all, only the build strings a compiled-in copy keeps beside its banner tell the two
+# apart.
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "OpenSSL 3.0 does not support direct access to RSA key",
+        "enable OpenSSL 3.0 legacy provider",
+        "For OpenSSL 3.0.0 and newer it returns the state of the default provider",
+        "OpenSSL 3.0.14 4 Jun 2024",
+    ],
+    ids=["prose-1", "prose-2", "prose-3", "real-banner-as-header-text"],
+)
+def test_a_banner_without_build_strings_on_an_object_with_no_dependency_is_unknown(
+    ruleset, value: str
+) -> None:
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_strings=(StringMatch("openssl_banner", value),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
+
+
+def test_a_banner_beside_build_strings_on_an_object_with_no_dependency_is_static(ruleset) -> None:
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_strings=(OPENSSL_BANNER, OPENSSL_BUILD_INFO),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [PARTIAL_STRINGS_BYTES_UNREAD, PARTIAL_ELF_GO_BUILDINFO_UNREAD],
+)
+def test_a_banner_without_build_strings_on_a_partially_read_object_stays_static(
+    ruleset, reason: str
+) -> None:
+    """A partial read may have cut the very string that would have proven the
+    banner is a copy, so the gate never opens for an object not read in full."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_strings=(OPENSSL_BANNER,),
+            partial_analysis=True,
+            partial_reasons=(reason,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_STATIC
+
+
+def test_a_library_without_a_copy_string_group_counts_a_banner_alone_as_static(ruleset) -> None:
+    """libsodium names no `copy_string_group`, so it has no way to tell uncorroborated
+    prose from a copy, and a banner with no dependency at all still counts as
+    `static` outright -- the reading `openssl`'s banner would get with no
+    `copy_string_group` to consult either."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libc.so.6",),
+            matched_strings=(StringMatch("libsodium", "libsodium 1.0.18"),),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["libsodium"] == LINKAGE_STATIC
+
+
+# `test_an_uncertain_needed_match_and_a_banner_together_are_mixed`, above, already
+# guards the scope limit here by mutation: dropping `uncertain` from the
+# `not (system or bundled or uncertain)` term would demote that object's confirmed
+# `uncertain`-beside-`banner` disagreement to plain `unknown` instead of `mixed`.
 
 
 def test_a_merged_universal_binary_whose_slices_disagree_is_mixed(ruleset) -> None:
@@ -1619,7 +1946,11 @@ def test_a_bundled_needed_match_and_a_defined_symbol_together_are_mixed(ruleset)
 
 def test_a_bundled_needed_match_and_a_banner_together_are_mixed(ruleset) -> None:
     """The banner-only variant of the same contradiction, matching the `system` and
-    `uncertain` banner variants above."""
+    `uncertain` banner variants above. No imported symbol on this object, so it also
+    guards gate (b) on the bundled side of `_banner_is_header_text`: without a
+    confirmed import from the resolved copy, a banner beside a bundled `needed`
+    match stays a copy rather than becoming header text.
+    """
     evidence = wheel(
         binary(
             "pkg/_ext.so",
@@ -1636,6 +1967,88 @@ def test_a_bundled_needed_match_alone_is_still_bundled(ruleset) -> None:
     """
     evidence = wheel(binary("pkg/_ext.so", needed=("libcrypto-3a1f2b4c.so.3",)))
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+# --- a header banner beside imports from a resolved bundled copy is not a copy --
+#
+# The same header-text reasoning as the system case applies once a `needed` entry
+# resolved the library to a copy the wheel itself ships: auditwheel's own headers
+# supply `OPENSSL_VERSION_TEXT` to the extension it patches, whether or not that
+# extension calls into the copy it now depends on.
+
+
+def test_a_header_banner_beside_imports_from_a_bundled_copy_is_bundled(ruleset) -> None:
+    """The auditwheel shape: the extension NEEDs the hash-renamed vendored copy,
+    imports from it, and carries a header banner with no build strings. The banner
+    is header text, so `static` is false and the object reads plain `bundled`."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto-3a1f2b4c.so.3", "libc.so.6"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            matched_strings=(OPENSSL_BANNER,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_BUNDLED
+
+
+def test_a_bundled_banner_beside_an_openssl_build_string_stays_mixed(ruleset) -> None:
+    """The same object, but the banner is accompanied by the build string only a
+    real compiled-in copy carries beside its banner: the marker means the banner is
+    not header text after all, so the object stays `mixed`."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto-3a1f2b4c.so.3", "libc.so.6"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            matched_strings=(OPENSSL_BANNER, OPENSSL_BUILD_INFO),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_header_banner_beside_a_bundled_copy_on_a_partially_read_object_stays_mixed(
+    ruleset,
+) -> None:
+    """A partial read may have cut the build string that would have proven the
+    banner is a copy, so the gate never opens for an object not read in full."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto-3a1f2b4c.so.3", "libc.so.6"),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            matched_strings=(OPENSSL_BANNER,),
+            partial_analysis=True,
+            partial_reasons=(PARTIAL_STRINGS_BYTES_UNREAD,),
+        )
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
+
+
+def test_a_header_banner_beside_imports_and_an_uncertain_needed_match_stays_mixed(ruleset) -> None:
+    """An `uncertain` `needed` entry does not open the header-text gate: nothing
+    confirmed what it resolves to, so there is no confirmed copy for a header macro
+    to belong to. The object still reads `mixed`, not `unknown`, because the
+    confirmed import and the unconfirmed vendor-shaped entry already disagree
+    without the banner's help."""
+    evidence = wheel(
+        binary(
+            "pkg/_ext.so",
+            needed=("libcrypto.so.3",),
+            runpath=("$ORIGIN/../p.libs",),
+            matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),),
+            matched_strings=(OPENSSL_BANNER,),
+        ),
+        errors=(
+            ScanError(
+                stage=STAGE_BINARY,
+                kind=MEMBER_READ_ERROR,
+                message="could not read member: BadZipFile",
+                path="pkg/some_unrelated.so",
+            ),
+        ),
+    )
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_MIXED
 
 
 def test_a_bundled_needed_match_beside_an_uncertain_one_stays_bundled(ruleset) -> None:
@@ -2141,7 +2554,7 @@ _POSTURE_FIXTURES = [
         id="static-defined",
     ),
     pytest.param(
-        wheel(binary("pkg/_ext.so", matched_strings=(OPENSSL_BANNER,))),
+        wheel(binary("pkg/_ext.so", matched_strings=(OPENSSL_BANNER, OPENSSL_BUILD_INFO))),
         id="static-banner",
     ),
     pytest.param(

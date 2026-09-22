@@ -1771,13 +1771,14 @@ def test_a_non_constant_usedforsecurity_on_a_strong_hash_is_not_flagged(
 
 
 def test_a_statically_linked_openssl_4_is_not_reported_as_clean(context, tmp_path: Path) -> None:
-    """An object whose only OpenSSL evidence is its banner must read `static`.
+    """An object whose only OpenSSL evidence is its banner and build string must
+    read `static`.
 
     `cryptography` 50.0.1's `_rust.abi3.so` compiles OpenSSL 4.0.2 in, declares no
-    dependency on libcrypto, and exports no OpenSSL symbol: the banner is the whole of
-    the evidence. The banner group names every major digit, because a major it did not
-    name would read as `openssl_linkage: none`. `tests/test_ruleset.py` pins that
-    directly.
+    dependency on libcrypto, and exports no OpenSSL symbol: the banner and the build
+    string beside it are the whole of the evidence. The banner group names every
+    major digit, because a major it did not name would read as `openssl_linkage:
+    none`. `tests/test_ruleset.py` pins that directly.
     """
     wheel = build_wheel(
         tmp_path / f"staticssl-1.0-{MANYLINUX}.whl",
@@ -1787,13 +1788,78 @@ def test_a_statically_linked_openssl_4_is_not_reported_as_clean(context, tmp_pat
         files={
             "staticssl/_rust.abi3.so": ElfBuilder(
                 needed=("libc.so.6",),
-                rodata=b"\x00OpenSSL 4.0.2 25 Aug 2026\x00",
+                rodata=(
+                    b"\x00OpenSSL 4.0.2 25 Aug 2026\x00"
+                    b'OPENSSLDIR: "/opt/pyca/cryptography/openssl"\x00'
+                ),
             ).build()
         },
     )
     record = scan(context, wheel)
     assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
     assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+def test_prose_naming_an_openssl_version_is_not_a_static_copy(context, tmp_path: Path) -> None:
+    """`openssl_banner` matches any sentence naming a dotted OpenSSL version, not only
+    the real banner. An object with no dependency on the library, no OpenSSL symbol
+    and none of the build strings a compiled-in copy keeps beside its banner reads
+    `unknown`, not `static`: the sentence is not proof of a copy.
+    """
+    wheel = build_wheel(
+        tmp_path / f"prosessl-1.0-{MANYLINUX}.whl",
+        name="prosessl",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "prosessl/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                rodata=b"\x00enable OpenSSL 3.0 legacy provider\x00",
+            ).build()
+        },
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "unknown"
+    assert "BIN_STATIC_OPENSSL" not in record["verdict"]["rule_ids"]
+    assert any(f["rule_id"] == "BIN_OPENSSL_BANNER" for f in record["findings"])
+    assert record["verdict"]["class"] != "NO_CRYPTO_DETECTED"
+
+
+def test_an_auditwheel_bundled_build_carrying_its_header_banner_is_bundled(
+    context, tmp_path: Path
+) -> None:
+    """The auditwheel shape: the extension NEEDs the hash-renamed vendored copy and
+    imports from it, and both objects were built against OpenSSL's headers, so both
+    carry `OPENSSL_VERSION_TEXT`. Only the vendored copy's own `OpenSSL_version()`
+    keeps the build string beside its banner; the extension's banner is header text,
+    so the wheel reads `bundled`, not `mixed`.
+    """
+    wheel = build_wheel(
+        tmp_path / f"auditssl-1.0-{MANYLINUX}.whl",
+        name="auditssl",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "auditssl/__init__.py": b"from auditssl import _openssl\n",
+            "auditssl/_openssl.abi3.so": extension(
+                needed=("libcrypto-3a1f2b4c.so.3", "libc.so.6"),
+                runpath=("$ORIGIN/../auditssl.libs",),
+                dynsyms=(DynSym(EVP, defined=False),),
+                rodata=OPENSSL_BANNER,
+            ),
+            "auditssl.libs/libcrypto-3a1f2b4c.so.3": ElfBuilder(
+                soname="libcrypto-3a1f2b4c.so.3",
+                needed=("libc.so.6",),
+                dynsyms=(DynSym(EVP, defined=True),),
+                rodata=OPENSSL_BANNER + b'OPENSSLDIR: "/usr/lib/ssl"\x00',
+            ).build(),
+        },
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "bundled"
+    assert "BIN_BUNDLED_OPENSSL" in record["verdict"]["rule_ids"]
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" not in record["verdict"]["rule_ids"]
+    assert any(f["rule_id"] == "BIN_OPENSSL_BANNER" for f in record["findings"])
 
 
 # --------------------------------------------------------------------------
@@ -2619,3 +2685,98 @@ def test_an_unprefixed_aws_lc_fips_object_keeps_its_aws_lc_finding(context, tmp_
     assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
     assert "BIN_BORINGSSL_FIPS_MODULE" in record["verdict"]["rule_ids"]
     assert "BIN_AWS_LC" in record["verdict"]["rule_ids"]
+
+
+def test_an_aws_lc_fips_object_does_not_read_as_a_static_openssl(context, tmp_path: Path) -> None:
+    """The measured shape: a FIPS AWS-LC build's own local `.symtab` definitions
+    include both its FIPS-prefixed names and an unprefixed OpenSSL-API name
+    (`BN_from_montgomery_word`), the same entry point AWS-LC and BoringSSL define
+    under OpenSSL's own names. The OpenSSL-named definition alone must not read
+    `openssl_linkage: static`: it reads `unknown`, and the AWS-LC FIPS finding still
+    fires from its own, unrelated evidence.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslcfipsstatic-1.0-{MANYLINUX}.whl",
+        name="awslcfipsstatic",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcfipsstatic/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                dynsyms=(DynSym("PyInit__ext", defined=True),),
+                with_symtab=True,
+                symtab_syms=(
+                    DynSym("aws_lc_fips_0_14_2_SHA256_Init", defined=True, info=_LOCAL_FUNC),
+                    DynSym("BN_from_montgomery_word", defined=True, info=_LOCAL_FUNC),
+                ),
+                rodata=_AWS_LC_RODATA,
+                text=_AWS_LC_FIPS_TEXT,
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    rule_ids = record["verdict"]["rule_ids"]
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "unknown"
+    assert "BIN_STATIC_OPENSSL" not in rule_ids
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" in rule_ids
+    assert "BIN_AWS_LC_FIPS" in rule_ids
+
+
+def test_an_openssl_named_definition_alone_reads_static(context, tmp_path: Path) -> None:
+    """The control for the test above: the same shape, minus the AWS-LC evidence,
+    reads plain `static`. Without this, the previous test could pass vacuously if
+    the local definition were never read at all.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslcfipscontrol-1.0-{MANYLINUX}.whl",
+        name="awslcfipscontrol",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcfipscontrol/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                dynsyms=(DynSym("PyInit__ext", defined=True),),
+                with_symtab=True,
+                symtab_syms=(DynSym("BN_from_montgomery_word", defined=True, info=_LOCAL_FUNC),),
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
+    assert "BIN_STATIC_OPENSSL" in record["verdict"]["rule_ids"]
+
+
+def test_a_forks_own_banner_reads_unknown_past_a_string_cap_crowded_with_its_paths(
+    context, tmp_path: Path
+) -> None:
+    """The measured shape: `OPENSSL_PUT_ERROR` expands `__FILE__` to one more
+    `aws-lc/crypto/*.c` path run per call site, and a real AWS-LC build carries far
+    more of them than `max_strings_per_binary` (64) keeps. The cap still guarantees
+    one representative of every string group, so the object's own `openssl_banner`
+    match survives regardless of how many `aws_lc` path runs crowd out that group's
+    own representative -- but nothing about the object confirms a real, distinct
+    OpenSSL copy: the banner's own text is entirely the fork's compatibility
+    macro, and it must read `unknown`, not `static`, whether or not a same-object
+    `aws_lc` string match happened to survive the cap alongside it.
+    """
+    paths = b"".join(f"/aws-lc/crypto/f{i:04d}.c\x00".encode("ascii") for i in range(100))
+    rodata = paths + b"OpenSSL 1.1.1 (compatible; AWS-LC 1.66.2)\x00OPENSSLDIR: n/a\x00"
+    wheel = build_wheel(
+        tmp_path / f"awslccrowded-1.0-{MANYLINUX}.whl",
+        name="awslccrowded",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslccrowded/_ext.abi3.so": ElfBuilder(
+                needed=("libc.so.6",),
+                dynsyms=(DynSym("PyInit__ext", defined=True),),
+                rodata=rodata,
+            ).build(),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    rule_ids = record["verdict"]["rule_ids"]
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "unknown"
+    assert "BIN_STATIC_OPENSSL" not in rule_ids
+    assert "BIN_OPENSSL_LINKAGE_UNKNOWN" in rule_ids
+    assert "BIN_AWS_LC" in rule_ids

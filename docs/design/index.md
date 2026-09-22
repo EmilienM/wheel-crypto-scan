@@ -52,6 +52,8 @@ Two habits in that file are worth knowing before you read it:
 | [A `needed` match and a definition inside one object are both true, so the object is `mixed`](linkage.md#a-needed-match-and-a-definition-inside-one-object-are-both-true-so-the-object-is-mixed) | Accepted, and it changes `openssl_linkage` |
 | [An OpenSSL crate with no other evidence reads `unknown`, not `none`](linkage.md#an-openssl-crate-with-no-other-evidence-reads-unknown-not-none) | Accepted, and it changes `openssl_linkage` |
 | [A version banner beside imports from the system library is header text, not a copy](linkage.md#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy) | Accepted, and it changes `openssl_linkage` |
+| [A version banner with no dependency and no build strings reads `unknown`, not `static`](linkage.md#a-version-banner-with-no-dependency-and-no-build-strings-reads-unknown-not-static) | Accepted, and it changes `openssl_linkage` |
+| [OpenSSL-named definitions beside AWS-LC or BoringSSL read `unknown`, not `static`](linkage.md#openssl-named-definitions-beside-aws-lc-or-boringssl-read-unknown-not-static) | Accepted, and it changes `openssl_linkage` |
 | [An object that read `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`](linkage.md#an-object-that-read-unknown-withholds-derived_system_openssl_only-the-field-stays-system) | Accepted, and it changes verdicts |
 | [An SBOM naming an OpenSSL crate reads `unknown`, not `none`](linkage.md#an-sbom-naming-an-openssl-crate-reads-unknown-not-none) | Accepted, and it changes `openssl_linkage` |
 

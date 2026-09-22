@@ -36,7 +36,7 @@ from collections.abc import Mapping
 
 from .conventions import Conventions
 from .evidence import BINDING_DEFINED, BINDING_IMPORTED, STAGE_BINARY, BinaryEvidence, Evidence
-from .ruleset import CryptoLibrary, Ruleset, sbom_crate_key, sbom_library_key
+from .ruleset import CryptoLibrary, Ruleset, StringGroup, sbom_crate_key, sbom_library_key
 
 LINKAGE_SYSTEM = "system"
 LINKAGE_BUNDLED = "bundled"
@@ -211,16 +211,30 @@ def needed_posture(
     return LINKAGE_SYSTEM
 
 
+def _fork_string_groups(ruleset: Ruleset, library: CryptoLibrary) -> tuple[StringGroup, ...]:
+    """The `StringGroup`s `library.fork_string_groups` names, patterns and all.
+
+    `_banner_is_fork_text` tests a banner's own text against these groups' compiled
+    patterns directly, rather than against `binary.matched_strings`: the ruleset
+    loader already guarantees every name here resolves, and only the pattern -- not
+    whatever the strings pass happened to keep past its cap -- says what the fork's
+    own header text looks like.
+    """
+    return tuple(ruleset.string_groups[name] for name in library.fork_string_groups)
+
+
 def _object_postures(
     binaries: tuple[BinaryEvidence, ...],
     library: CryptoLibrary,
     conventions: Conventions,
     counts: Mapping[str, int],
     incomplete: bool,
+    fork_groups: tuple[StringGroup, ...],
 ) -> tuple[str, ...]:
     """`_binary_posture` for each binary, in `evidence.binaries` order."""
     return tuple(
-        _binary_posture(binary, library, conventions, counts, incomplete) for binary in binaries
+        _binary_posture(binary, library, conventions, counts, incomplete, fork_groups)
+        for binary in binaries
     )
 
 
@@ -240,8 +254,14 @@ def object_postures(ruleset: Ruleset, evidence: Evidence, name: str) -> tuple[st
     """
     counts = member_stem_counts(ruleset.conventions, evidence)
     incomplete = wheel_incompletely_read(evidence)
+    library = ruleset.libraries[name]
     return _object_postures(
-        evidence.binaries, ruleset.libraries[name], ruleset.conventions, counts, incomplete
+        evidence.binaries,
+        library,
+        ruleset.conventions,
+        counts,
+        incomplete,
+        _fork_string_groups(ruleset, library),
     )
 
 
@@ -328,7 +348,14 @@ def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
     for name in sorted(ruleset.libraries):
         library = ruleset.libraries[name]
         postures = set(
-            _object_postures(evidence.binaries, library, ruleset.conventions, counts, incomplete)
+            _object_postures(
+                evidence.binaries,
+                library,
+                ruleset.conventions,
+                counts,
+                incomplete,
+                _fork_string_groups(ruleset, library),
+            )
         )
         value = _aggregate(
             postures,
@@ -361,8 +388,9 @@ def _aggregate(postures: set[str], unanswered: bool, declared: bool) -> str:
     matched the system library and the object also defines its own copy or carries a
     banner that is not header text, or a `needed` entry resolved inside the wheel
     (`bundled`) beside a different `needed` entry matching the system library, or
-    beside a definition/banner, on that same object. It is not only this function's
-    own combination of two definite postures from different objects. `mixed` has no
+    beside a definition, or a banner that is not header text, on that same object.
+    It is not only this function's own combination of two definite postures from
+    different objects. `mixed` has no
     finer split than that in the vocabulary, so one object already reading `mixed`
     makes the wheel `mixed` outright, whatever any other object says.
 
@@ -513,6 +541,7 @@ def _binary_posture(
     conventions: Conventions,
     counts: Mapping[str, int],
     incomplete: bool,
+    fork_groups: tuple[StringGroup, ...],
 ) -> str:
     sonames = frozenset(library.sonames)
 
@@ -554,12 +583,41 @@ def _binary_posture(
         system = True
 
     defined = _has_symbol(binary, library.symbol_group, BINDING_DEFINED)
-    # A banner alone is not `static` when it is header text rather than a copy: the
-    # object's `needed` entries already resolved the library from the host, and the
-    # object imports from it, was read in full, and carries none of the strings that
-    # mark a genuine compiled-in copy. See `_banner_is_header_text` for the gates.
-    banner = _has_string(binary, library.string_group) and not (
-        system and _banner_is_header_text(binary, library)
+    # A banner alone is not `static` two different ways. It is header text rather
+    # than a copy when a `needed` entry on this same object already resolved the
+    # library -- from the host or from a copy the wheel ships -- the object imports
+    # from it, was read in full, and carries none of the strings that mark a genuine
+    # compiled-in copy: see `_banner_is_header_text` for those gates. It is
+    # uncorroborated prose, not a copy, when no `needed` entry ties it to any copy at
+    # all and the object carries none of those same build strings: `openssl_banner`
+    # also matches a sentence that names a dotted OpenSSL version without shipping
+    # one, and only the build strings tell that apart from a real copy.
+    #
+    # A third question -- whether the banner is a fork's own header macro rather
+    # than evidence of this library -- is deliberately NOT folded in here. Whether
+    # a `needed` entry resolved the library, and whether the banner is header text
+    # or uncorroborated prose, are all facts about *this object's own dependency
+    # shape*, settled the same way whether or not a fork is anywhere in sight. The
+    # fork question only ever changes which of `static`'s two constituents --
+    # `defined` or `banner` -- is trustworthy enough to call the object `static`
+    # outright rather than `unknown`, which is decided below, in the `if static:`
+    # branch, next to `_carries_fork`. Folding it in here instead would make
+    # `banner` -- and so `static`, and so the `sum(...) > 1` disagreement count and
+    # the `uncertain and static` combination below -- disagree with what a second
+    # object carrying the identical evidence minus the fork marker would read,
+    # which is exactly the "a needed match to the system or a bundled library, or a
+    # combination that already reads mixed, is unaffected" guarantee `DESIGN.md`
+    # and `CryptoLibrary`'s own docstring make.
+    banner_seen = _has_string(binary, library.string_group)
+    uncorroborated = (
+        banner_seen
+        and not (system or bundled or uncertain)
+        and _banner_lacks_copy_marker(binary, library)
+    )
+    banner = (
+        banner_seen
+        and not uncorroborated
+        and not ((system or bundled) and _banner_is_header_text(binary, library))
     )
     static = defined or banner
     if sum((system, bundled, static)) > 1:
@@ -624,7 +682,28 @@ def _binary_posture(
         return LINKAGE_UNKNOWN
 
     if static:
+        distinct_banner = banner and not _banner_is_fork_text(binary, library, fork_groups)
+        if _carries_fork(binary, library) and not distinct_banner:
+            # `static` is true here from `defined`, from `banner`, or both, and a
+            # marker for a library that implements this one's API under its own
+            # names is also present. Neither a defined OpenSSL-named symbol nor a
+            # banner that is itself the fork's own header macro says which
+            # implementation was actually compiled in, so this is reached whenever
+            # nothing left counts as evidence of a real, distinct OpenSSL copy --
+            # not only when there is no banner match at all, and not only when
+            # `defined` is what makes `static` true. A `distinct_banner` -- a
+            # banner match on a printable run the fork's own patterns do not also
+            # match -- outweighs the fork marker on its own, whatever else the
+            # object carries (`test_a_banner_beside_a_fork_still_reads_static`).
+            return LINKAGE_UNKNOWN
         return LINKAGE_STATIC
+    if uncorroborated:
+        # The object carries the library's version banner and none of the build
+        # strings a compiled-in copy keeps beside it, and no `needed` entry ties
+        # it to any copy. This is a library-specific non-answer, not
+        # `LINKAGE_NONE`: the banner is real evidence that the library is in
+        # play, it just does not say which copy.
+        return LINKAGE_UNKNOWN
 
     if _has_symbol(binary, library.symbol_group, BINDING_IMPORTED):
         # It calls a library it neither ships nor declares. Whatever provides those
@@ -664,32 +743,101 @@ def _has_string(binary: BinaryEvidence, group: str | None) -> bool:
     return any(match.group == group for match in binary.matched_strings)
 
 
+def _banner_lacks_copy_marker(binary: BinaryEvidence, library: CryptoLibrary) -> bool:
+    """Does this object's `string_group` banner carry none of the strings a
+    compiled-in copy keeps beside it (`library.copy_string_group`)?
+
+    Assumes the caller has already confirmed a `string_group` match exists on this
+    object (`_has_string(binary, library.string_group)` is true). This function
+    never checks for the banner itself -- it answers "no copy marker", not "no
+    banner" -- so calling it without that precondition already established reads an
+    object with no banner at all the same as one with a banner and no marker, which
+    is a different fact.
+
+    Gate (c), `partial_analysis` being true, means a partial read may have cut the
+    very string that would prove a copy, for any cause, so the gate stays shut
+    rather than reusing `linkage_policy.exclude_reasons`, which answers a different
+    question about a different field. Gate (d), a library with no
+    `copy_string_group`, has no way to tell a header banner or uncorroborated prose
+    from a copy, so `None` never opens it; and gate (d)'s other half, a real
+    compiled-in copy keeping its build strings beside its banner, means finding none
+    of them is what actually says "not a copy", not the absence of anything else.
+    """
+    if library.copy_string_group is None or binary.partial_analysis:
+        return False
+    return not _has_string(binary, library.copy_string_group)
+
+
 def _banner_is_header_text(binary: BinaryEvidence, library: CryptoLibrary) -> bool:
     """Is a `string_group` match on this object header text rather than a copy?
 
     Assumes the caller has already established gate (a): a `needed` entry on this
-    same object resolved the library from the host (`system` is true). Without that
-    precondition, imported symbols beside a banner are the shape of a static copy
-    linked alongside an unresolved dependency, not header text, and this must not be
-    called.
+    same object confirmed where the library comes from, `system` or `bundled`. An
+    `uncertain` entry does not count -- nothing confirmed what it resolves to, so
+    there is no confirmed copy for a header macro to belong to. Without gate (a),
+    imported symbols beside a banner are the shape of a static copy linked alongside
+    an unresolved dependency, not header text, and this must not be called.
 
-    Each remaining gate answers one question: gate (b), imported symbols from the
-    library's own `symbol_group`, means the object actually calls the host copy, not
-    merely that it declares a dependency on one; gate (c), `partial_analysis` being
-    true, means a partial read may have cut the very string that would prove a copy,
-    for any cause, so the gate stays shut rather than reusing
-    `linkage_policy.exclude_reasons`, which answers a different question about a
-    different field; gate (d), a library with no `copy_string_group`, has no way to
-    tell a header banner from a copy, so `None` never opens the gate; and gate (d)'s
-    other half, a real compiled-in copy keeping its build strings beside its banner,
-    means finding none of them is what actually says "header", not the absence of
-    anything else.
+    The remaining gates are `_banner_lacks_copy_marker`'s: gate (b), imported symbols
+    from the library's own `symbol_group`, means the object actually calls the
+    resolved copy, not merely that it declares a dependency on one; gates (c) and
+    (d) are `_banner_lacks_copy_marker`'s own, restated there.
     """
-    if library.copy_string_group is None or binary.partial_analysis:
-        return False
-    return _has_symbol(binary, library.symbol_group, BINDING_IMPORTED) and not _has_string(
-        binary, library.copy_string_group
+    return _banner_lacks_copy_marker(binary, library) and _has_symbol(
+        binary, library.symbol_group, BINDING_IMPORTED
     )
+
+
+def _banner_is_fork_text(
+    binary: BinaryEvidence, library: CryptoLibrary, fork_groups: tuple[StringGroup, ...]
+) -> bool:
+    """Does every `string_group` (banner) match on this object read as one of
+    `fork_groups`' own patterns?
+
+    AWS-LC's and BoringSSL's own public headers spell `OPENSSL_VERSION_TEXT` as one
+    literal, "OpenSSL 1.1.1 (compatible; AWS-LC <version>)" or
+    "OpenSSL 1.1.1 (compatible; BoringSSL)", which `openssl_banner` and the fork's
+    own string group both match. This tests each banner match's own recorded text
+    against the fork groups' compiled patterns directly, rather than looking for a
+    separate `StringMatch` of a `fork_string_groups` name on `binary.matched_strings`:
+    `match_string_groups` caps how many matches of a whole object it keeps, one
+    representative of every group first and then the rest in sort order, and an
+    object that carries far more fork-group runs than the cap -- every
+    `OPENSSL_PUT_ERROR` in a real AWS-LC build expands `__FILE__` to one more
+    `aws-lc/crypto/*.c` path run -- can fill every remaining slot with those paths
+    before the banner's own run ever reaches one, for the fork group specifically.
+    The banner's own `string_group` match still survives regardless (its group has
+    its own reserved representative), so its text is always on hand to test; testing
+    it against the patterns themselves needs nothing that a cap can silently drop.
+
+    An object with no `string_group` match at all is not "every banner is fork
+    text" -- it has none to be fork text -- so this is False rather than
+    vacuously True, and it never opens `uncorroborated` or `_banner_is_header_text`
+    on its own; those still gate on `banner_seen` themselves.
+    """
+    banner_values = {
+        match.value for match in binary.matched_strings if match.group == library.string_group
+    }
+    if not banner_values:
+        return False
+    return all(any(group.pattern.search(value) for group in fork_groups) for value in banner_values)
+
+
+def _carries_fork(binary: BinaryEvidence, library: CryptoLibrary) -> bool:
+    """Does this object carry a marker for a library the ruleset lists as
+    implementing `library`'s API under `library`'s own names
+    (`library.fork_symbol_groups`/`fork_string_groups`)?
+
+    A symbol marker counts only when it is DEFINED in this object: an imported one
+    says the fork is called, not that it was compiled in here, and only a fork
+    actually compiled into this same object explains this object's own
+    `symbol_group` definitions. A string marker counts as matched, the same as any
+    other string group.
+    """
+    return any(
+        symbol.group in library.fork_symbol_groups and symbol.binding == BINDING_DEFINED
+        for symbol in binary.matched_symbols
+    ) or any(match.group in library.fork_string_groups for match in binary.matched_strings)
 
 
 def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
@@ -715,8 +863,11 @@ def _left_unanswered(ruleset: Ruleset, evidence: Evidence) -> bool:
     This is the one place a wheel-wide, library-agnostic non-answer belongs.
     `_binary_posture` may return `LINKAGE_UNKNOWN` only from a condition that depends
     on the specific `library` being asked about (an uncertain `needed` match against
-    `library.sonames`, an imported symbol from `library.symbol_group`, or a crate
-    from `library.crates`) -- never from a fact about the object alone, because that
+    `library.sonames`, an imported symbol from `library.symbol_group`, a crate from
+    `library.crates`, a definition from `library.symbol_group` beside a group in
+    `library.fork_symbol_groups`/`fork_string_groups`, or a banner from
+    `library.string_group` with no copy marker) -- never from a fact about the object
+    alone, because that
     answer is the same for every library in the ruleset and belongs here instead,
     gated through `resolve_linkage` on `library.always_report` rather than reported
     for all thirteen. `is_opaque` is such a fact, and it is answered here and nowhere

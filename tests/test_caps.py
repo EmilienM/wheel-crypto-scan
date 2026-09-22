@@ -40,7 +40,7 @@ from wheel_crypto_scan.ruleset_loader import load_ruleset
 
 RULESET = load_ruleset()
 PATTERNS = RULESET.compile_patterns().binary
-BANNER = b"OpenSSL 3.0.14 4 Jun 2024\x00"
+BANNER = b'OpenSSL 3.0.14 4 Jun 2024\x00OPENSSLDIR: "/usr/lib/ssl"\x00'
 
 
 def _cargo(name: str, version: str) -> bytes:

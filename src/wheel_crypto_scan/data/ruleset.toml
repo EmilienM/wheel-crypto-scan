@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "39"
+ruleset_version = "40"
 
 
 # ---------------------------------------------------------------------------
@@ -427,11 +427,33 @@ sonames = ["libcrypto", "libssl", "libeay32", "ssleay32"]
 symbol_group = "openssl"
 string_group = "openssl_banner"
 # The banner is a header macro: any consumer that includes OpenSSL's headers compiles
-# the current OPENSSL_VERSION_TEXT in, whether or not it links OpenSSL at all. Only
-# OpenSSL's own OpenSSL_version() also returns the "OPENSSLDIR: " string, from the same
-# switch, so a compiled-in copy that keeps its banner keeps this string beside it and a
-# header never does.
+# the current OPENSSL_VERSION_TEXT in, whether or not it links OpenSSL at all -- a
+# dependency the object resolves to the host or to a copy the wheel bundles is enough
+# to raise the question. On an object with no dependency on the library at all,
+# `openssl_banner` also matches prose naming a dotted OpenSSL version, so the same
+# question applies there too: only OpenSSL's own OpenSSL_version() also returns the
+# "OPENSSLDIR: " string, from the same switch, so a compiled-in copy that keeps its
+# banner keeps this string beside it and a header or a sentence never does.
 copy_string_group = "openssl_build_info"
+# AWS-LC and BoringSSL implement OpenSSL's API under OpenSSL's own names. An object
+# carrying either defines EVP_*/BN_*/BIO_new and the rest of the names the "openssl"
+# symbol_group claims, so a definition there says an OpenSSL-API library was compiled
+# in, not that it is OpenSSL. It reads unknown, never none, because an object can
+# carry a real OpenSSL and a fork at once, and lowercase aws-lc also matches the
+# cargo path of aws-lc-rs, a Rust binding rather than a build of AWS-LC itself.
+# Measured: awscrt 0.36.4 (a C AWS-LC build, 58 defined AWSLC_* names), curl_cffi
+# 0.16.3 (BoringSSL, 16 defined BORINGSSL_*/CRYPTO_BUFFER_* names) and the aws-lc-rs
+# 1.18.1 fips cdylib (aws_lc_fips_* names) each read static without these lists, and
+# none of the three carries an openssl_banner match. AWS-LC's and BoringSSL's own
+# public headers do define OPENSSL_VERSION_TEXT as one literal naming the fork, so a
+# banner beside a fork marker is not ruled out on that account -- linkage tells the
+# fork's own header banner apart from a real one by testing the banner's own text
+# against these string groups' own patterns, not by assuming a fork never produces a
+# banner at all.
+fork_symbol_groups = ["aws_lc", "aws_lc_fips", "boringssl"]
+fork_string_groups = ["aws_lc", "aws_lc_fips", "boringssl"]
+# BoringSSL's own FIPS module is not a separate group here: it shares the same
+# "boringssl" symbol and string evidence, so this list already covers it.
 # A Rust crate that binds OpenSSL says the object uses it, not which copy: openssl-sys
 # links the host's or vendors its own on a build feature the object does not record,
 # and OPENSSL_NO_VENDOR sends even a `vendored` build back to the host's. So a listed
@@ -583,14 +605,14 @@ why = "libsodium/NaCl API. Deliberately specific rather than matching every cryp
 name = "boringssl"
 prefixes = ["BORINGSSL_", "CRYPTO_BUFFER_", "bssl_"]
 exact = ["SSL_CTX_set_grease_enabled", "OPENSSL_is_boringssl"]
-why = "BoringSSL is API-similar to OpenSSL but is a separate stack. Google ships a separately validated BoringCrypto build; a wheel bundling BoringSSL is very unlikely to be that build. Recorded as evidence only: no rule reads these symbol names. BIN_BORINGSSL reads the same-named string group instead, which the build writes into read-only data. AWS-LC is a BoringSSL fork and keeps BoringSSL-named symbols (see the aws_lc_fips group below), so a rule over this group would report BoringSSL on an AWS-LC object."
+why = "BoringSSL is API-similar to OpenSSL but is a separate stack. Google ships a separately validated BoringCrypto build; a wheel bundling BoringSSL is very unlikely to be that build. No rule reads these symbol names: BIN_BORINGSSL reads the same-named string group instead, which the build writes into read-only data. AWS-LC is a BoringSSL fork and keeps BoringSSL-named symbols (see the aws_lc_fips group below), so a rule over this group would report BoringSSL on an AWS-LC object. Recorded as evidence only: the openssl library's fork_symbol_groups reads a defined name from this group only to qualify OpenSSL-named definitions beside it, and alone it raises nothing."
 evidence_only = true
 
 [[symbol_group]]
 name = "aws_lc"
 prefixes = ["AWSLC_", "AWS_LC_", "awslc_"]
 exact = ["AWSLC_version_string"]
-why = "AWS-LC. A separate FIPS-validated variant exists (aws-lc-fips), so the presence of AWS-LC alone does not tell you which one this is. Recorded as evidence only: no rule reads these symbol names. BIN_AWS_LC reads the same-named string group instead, which the build writes into read-only data."
+why = "AWS-LC. A separate FIPS-validated variant exists (aws-lc-fips), so the presence of AWS-LC alone does not tell you which one this is. No rule reads these symbol names: BIN_AWS_LC reads the same-named string group instead, which the build writes into read-only data. Recorded as evidence only: the openssl library's fork_symbol_groups reads a defined name from this group only to qualify OpenSSL-named definitions beside it, and alone it raises nothing."
 evidence_only = true
 
 [[symbol_group]]
@@ -649,12 +671,12 @@ why = "Every spelling of an X25519/Ed25519 entry point: the generic lowercase na
 [[string_group]]
 name = "openssl_banner"
 substrings = ["OpenSSL 0.", "OpenSSL 1.", "OpenSSL 2.", "OpenSSL 3.", "OpenSSL 4.", "OpenSSL 5.", "OpenSSL 6.", "OpenSSL 7.", "OpenSSL 8.", "OpenSSL 9."]
-why = "OpenSSL's own version banner. The single most reliable way to tell which OpenSSL a binary carries when the symbols are hidden, which is exactly what a statically linked Rust extension does. Every major digit is listed rather than the shipped ones, because a banner this group does not name is a statically linked copy that reads as no OpenSSL at all, and the list going stale is silent: a list that stops at 3 misses cryptography's own PyPI wheels, which compile OpenSSL 4 in. A digit and a dot are still required -- `OpenSSL ` alone also matches prose such as \"OpenSSL 3's legacy provider failed to load\", which a wheel linking the system library carries too."
+why = "OpenSSL's own version banner. The single most reliable way to tell which OpenSSL a binary carries when the symbols are hidden, which is exactly what a statically linked Rust extension does. Every major digit is listed rather than the shipped ones, because a banner this group does not name is a statically linked copy that reads as no OpenSSL at all, and the list going stale is silent: a list that stops at 3 misses cryptography's own PyPI wheels, which compile OpenSSL 4 in. A digit and a dot are still required to keep undotted prose such as \"OpenSSL 3's legacy provider failed to load\" out of the record, but prose naming a dotted version still matches -- \"enable OpenSSL 3.0 legacy provider\" and \"For OpenSSL 3.0.0 and newer\" both do. Linkage counts a banner as a copy only beside an openssl_build_info string, or on an object not read in full; see `DESIGN.md`."
 
 [[string_group]]
 name = "openssl_build_info"
 substrings = ["OPENSSLDIR: "]
-why = "OpenSSL_version() returns the version banner and this string from the same function, so a compiled-in copy that keeps its banner keeps this string beside it. A header supplies the banner macro and never this string. Measured on Fedora 44: the system libcrypto.so.3 and a static PyPI cryptography build both carry it; 15 system-linked Fedora objects carrying an openssl_banner match carry none. LibreSSL and BoringSSL define the same prefix in their own OpenSSL_version(). It says nothing on its own -- linkage reads it only to tell a header banner from a copy."
+why = "OpenSSL_version() returns the version banner and this string from the same function, so a compiled-in copy that keeps its banner keeps this string beside it. A header supplies the banner macro and never this string, and neither does a sentence that merely names an OpenSSL version. Measured on Fedora 44: the system libcrypto.so.3 and a static PyPI cryptography build both carry it; 15 system-linked Fedora objects carrying an openssl_banner match carry none. cryptography 42.0.5 and 50.0.1 on manylinux, macOS and Windows, and confluent-kafka's bundled librdkafka, all carry it beside their banners too. LibreSSL and BoringSSL define the same prefix in their own OpenSSL_version(). It says nothing on its own -- linkage reads it to tell a header banner or uncorroborated prose from a copy, whether the object imports the library from a dependency it resolved (system or bundled) or has none at all."
 
 [[string_group]]
 name = "openssl_fips_provider"
@@ -1519,7 +1541,7 @@ severity = "medium"
 confidence = "medium"
 needs_human_review = true
 title = "Contains an OpenSSL version banner"
-why = "OpenSSL writes its version string into read-only data. Finding it inside a wheel's own extension is how we catch a statically linked OpenSSL whose symbols were hidden by a version script, which is exactly what a Rust extension built with vendored openssl-sys looks like. A banner in an object that imports its OpenSSL from a system dependency, and carries none of the build strings a compiled copy keeps beside it, is header text, and the linkage posture reads it that way."
+why = "OpenSSL writes its version string into read-only data. Finding it inside a wheel's own extension is how we catch a statically linked OpenSSL whose symbols were hidden by a version script, which is exactly what a Rust extension built with vendored openssl-sys looks like. A banner in an object that imports its OpenSSL from a system dependency or from the bundled copy it depends on, and carries none of the build strings a compiled copy keeps beside it, is header text; on an object with no dependency on the library at all and none of those build strings, the banner is uncorroborated prose rather than a confirmed copy. Either way the linkage posture reads it that way."
 [rule.match]
 kind = "binary_string"
 group = "openssl_banner"
@@ -1548,7 +1570,7 @@ confidence = "high"
 verdict = "CONDITIONAL"
 needs_human_review = true
 title = "All OpenSSL use resolves to the system library"
-why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings. It is withheld in two cases: when some object in the wheel uses OpenSSL without saying which copy (its own posture is unknown: imported symbols with no declared dependency, a Rust crate that binds it and nothing else, or a vendor-shaped dependency the wheel could not confirm), or when the wheel's own SBOM names OpenSSL or a crate that binds it and no system-linked object's own cargo paths already carry that same crate. Either way not every piece of evidence points at the system library, even though the linkage field, where unknown never outvotes a definite posture, still reads system. A system-linked object naming its own openssl-sys is the ordinary shape of a system-linked Rust build, not a second, unaccounted-for copy, so an SBOM component that only restates it does not withhold this finding."
+why = "Every piece of OpenSSL evidence in this wheel points at the system library and none at a bundled or static copy. This is the condition under which a CONDITIONAL wheel is acceptable, so the record states it explicitly rather than leaving it to be inferred from the absence of other findings. It is withheld in two cases: when some object in the wheel uses OpenSSL without saying which copy (its own posture is unknown: imported symbols with no declared dependency, a Rust crate that binds it and nothing else, a vendor-shaped dependency the wheel could not confirm, an OpenSSL-named definition beside AWS-LC or BoringSSL, which define the same names, or an uncorroborated version banner), or when the wheel's own SBOM names OpenSSL or a crate that binds it and no system-linked object's own cargo paths already carry that same crate. Either way not every piece of evidence points at the system library, even though the linkage field, where unknown never outvotes a definite posture, still reads system. A system-linked object naming its own openssl-sys is the ordinary shape of a system-linked Rust build, not a second, unaccounted-for copy, so an SBOM component that only restates it does not withhold this finding."
 [rule.match]
 kind = "linkage"
 name = "openssl"
@@ -1565,7 +1587,7 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "An object uses OpenSSL without saying which copy, beside a system-linked one"
-why = "The wheel's OpenSSL linkage resolved to system from another object, but this object uses OpenSSL -- imported symbols with no declared dependency, a Rust crate that binds it and nothing else, or a vendor-shaped dependency the wheel could not confirm -- and says nothing about which copy. The linkage field still reads system, because unknown never outvotes a definite posture, so this finding is what keeps the record from stating that all OpenSSL use resolves to the system library, and what gives the wheel a class when DERIVED_SYSTEM_OPENSSL_ONLY is withheld. A crate-only object is more likely a static copy than a system one, since a dynamically linked openssl-sys leaves a dependency and imports."
+why = "The wheel's OpenSSL linkage resolved to system from another object, but this object uses OpenSSL -- imported symbols with no declared dependency, a Rust crate that binds it and nothing else, a vendor-shaped dependency the wheel could not confirm, an OpenSSL-named definition beside AWS-LC or BoringSSL, which define the same names, or an uncorroborated version banner -- and says nothing about which copy. The linkage field still reads system, because unknown never outvotes a definite posture, so this finding is what keeps the record from stating that all OpenSSL use resolves to the system library, and what gives the wheel a class when DERIVED_SYSTEM_OPENSSL_ONLY is withheld. A crate-only object is more likely a static copy than a system one, since a dynamically linked openssl-sys leaves a dependency and imports."
 [rule.match]
 kind = "linkage"
 name = "openssl"
@@ -1613,7 +1635,7 @@ confidence = "high"
 verdict = "OPAQUE"
 needs_human_review = true
 title = "OpenSSL is used but the linkage could not be resolved"
-why = "The wheel uses OpenSSL without saying which copy: imported symbols with no declared dependency, a crate that binds it, or the wheel's own SBOM naming it or such a crate, with no object in the wheel answering definitely; or OpenSSL is found both linked and carried, in one object or across objects, which reads `mixed`; or the only evidence came from an object we could not read. This wheel's own record cannot say which copy answers for it, so it is opaque rather than nothing found."
+why = "The wheel uses OpenSSL without saying which copy: imported symbols with no declared dependency, a crate that binds it, or the wheel's own SBOM naming it or such a crate, with no object in the wheel answering definitely; an OpenSSL-named definition in an object that also carries AWS-LC or BoringSSL, which define the same names; an OpenSSL version banner with none of the build strings a compiled-in copy keeps beside it; or OpenSSL is found both linked and carried, in one object or across objects, which reads `mixed`; or the only evidence came from an object we could not read. This wheel's own record cannot say which copy answers for it, so it is opaque rather than nothing found."
 [rule.match]
 kind = "linkage"
 name = "openssl"
