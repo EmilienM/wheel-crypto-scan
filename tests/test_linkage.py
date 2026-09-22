@@ -7,8 +7,16 @@ itself, independently of whether the ELF reader can see a given field.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import itertools
+import sys
+from dataclasses import replace
+
 import pytest
 
+from wheel_crypto_scan import linkage as linkage_module
+from wheel_crypto_scan.engine import apply_rules
 from wheel_crypto_scan.evidence import (
     BINDING_DEFINED,
     BINDING_IMPORTED,
@@ -1906,3 +1914,366 @@ def test_the_result_does_not_depend_on_binary_order(ruleset) -> None:
     assert resolve_linkage(ruleset, wheel(first, second)) == resolve_linkage(
         ruleset, wheel(second, first)
     )
+
+
+# --- every definite OpenSSL posture has a finding on its object -------------
+#
+# `system` and `static` each have an aggregate-level rule (`DERIVED_SYSTEM_OPENSSL_ONLY`,
+# `BIN_STATIC_OPENSSL`) that fires off the wheel's own `openssl_linkage` value, whatever
+# mechanism produced it. `bundled` has no such backstop: only the per-mechanism rules
+# (`BIN_BUNDLED_OPENSSL`, `BIN_NEEDED_MANGLED_CRYPTO`, `BIN_NEEDED_VENDORED_CRYPTO`) do,
+# audited one branch at a time against `_binary_posture`. No aggregate rule stands behind
+# `bundled` the way `DERIVED_SYSTEM_OPENSSL_ONLY` stands behind `system`; the tests below
+# are what would catch a fourth mechanism reaching `LINKAGE_BUNDLED` with no fourth rule
+# to match it.
+#
+# The check below is per object, not per wheel: a wheel-level check ("some finding
+# fired somewhere") passes even when the one object that actually reads a posture
+# carries no finding of its own, because a different object's finding -- the vendored
+# member's own `BIN_BUNDLED_OPENSSL`, say -- satisfies it instead. Each definite
+# posture is mapped to the rule categories that can explain it; the map is this test's
+# own and deliberately coarse -- an object with imported symbols satisfies `system`
+# through `BIN_OPENSSL_SYMBOLS_IMPORTED` as well as `BIN_NEEDED_SYSTEM_OPENSSL`, both
+# `system-crypto-link` -- so the fixtures below stay minimal, carrying only the
+# evidence their own branch needs, so a different rule can never mask the one under
+# test.
+#
+# Scoped to `openssl`: it is the only library the ruleset always reports, and the only
+# field a `CONDITIONAL` verdict turns on. `test_openssl_is_the_only_library_always_reported`
+# pins that scope so a second always-reported library forces its own fixtures rather
+# than silently sharing these.
+
+_DEFINITE_POSTURES = (LINKAGE_SYSTEM, LINKAGE_BUNDLED, LINKAGE_STATIC, LINKAGE_MIXED)
+
+_EXPLAINING_CATEGORIES = {
+    LINKAGE_SYSTEM: frozenset({"system-crypto-link"}),
+    LINKAGE_BUNDLED: frozenset({"bundled-crypto"}),
+    LINKAGE_STATIC: frozenset({"bundled-crypto"}),
+    LINKAGE_MIXED: frozenset({"system-crypto-link", "bundled-crypto"}),
+}
+
+_POSTURE_FIXTURES = [
+    pytest.param(
+        wheel(
+            binary(
+                "demo.libs/libcrypto-3a1f2b4c.so.3",
+                vendored_path=True,
+                soname="libcrypto-3a1f2b4c.so.3",
+            )
+        ),
+        id="vendored-member",
+    ),
+    pytest.param(
+        wheel(binary("pkg/_ext.so", needed=("libcrypto-3a1f2b4c.so.3",))),
+        id="mangled-needed",
+    ),
+    pytest.param(
+        wheel(
+            binary("pkg/_ext.so", needed=("libcrypto.so.3", "libc.so.6"), runpath=("$ORIGIN",)),
+            binary("pkg/libcrypto.so.3", soname="libcrypto.so.3", needed=("libc.so.6",)),
+        ),
+        id="resolves-in-wheel",
+    ),
+    pytest.param(
+        wheel(binary("pkg/_ext.so", needed=("libcrypto.so.3",))),
+        id="system-plain",
+    ),
+    pytest.param(
+        wheel(binary("pkg/_ext.so", needed=("/usr/lib64/libcrypto.so.3",))),
+        id="system-absolute",
+    ),
+    pytest.param(
+        wheel(
+            binary(
+                "cryptography/hazmat/bindings/_rust.abi3.so",
+                needed=("libssl.so.3", "libcrypto.so.3", "libc.so.6"),
+                matched_symbols=(
+                    SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_IMPORTED),
+                    SymbolMatch("SSL_CTX_new", "openssl", BINDING_IMPORTED),
+                ),
+                matched_strings=(OPENSSL_BANNER,),
+            )
+        ),
+        id="system-header-banner",
+    ),
+    pytest.param(
+        wheel(
+            binary(
+                "pkg/_ext.so",
+                matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+            )
+        ),
+        id="static-defined",
+    ),
+    pytest.param(
+        wheel(binary("pkg/_ext.so", matched_strings=(OPENSSL_BANNER,))),
+        id="static-banner",
+    ),
+    pytest.param(
+        wheel(
+            binary(
+                "pkg/_ext.so",
+                needed=("libc.so.6", "libssl.so.3"),
+                matched_symbols=(
+                    SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),
+                    SymbolMatch("SSL_new", "openssl", BINDING_IMPORTED),
+                ),
+            )
+        ),
+        id="mixed-system-defined",
+    ),
+    pytest.param(
+        wheel(
+            binary(
+                "pkg/_ext.so",
+                needed=("libcrypto-3a1f2b4c.so.3", "/usr/lib64/libcrypto.so.3"),
+            )
+        ),
+        id="mixed-bundled-system",
+    ),
+    pytest.param(
+        wheel(
+            binary(
+                "pkg/_ext.so",
+                needed=("libcrypto.so.3",),
+                runpath=("$ORIGIN/../p.libs",),
+                matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+            ),
+            errors=(
+                ScanError(
+                    stage=STAGE_BINARY,
+                    kind=MEMBER_READ_ERROR,
+                    message="could not read member: BadZipFile",
+                    path="pkg/some_unrelated.so",
+                ),
+            ),
+        ),
+        id="mixed-uncertain-static",
+    ),
+    pytest.param(
+        wheel(
+            binary("pkg/_a.so", needed=("libssl.so.3",)),
+            binary(
+                "pkg/_b.so",
+                matched_symbols=(SymbolMatch("EVP_DigestInit_ex", "openssl", BINDING_DEFINED),),
+            ),
+        ),
+        id="mixed-across-objects",
+    ),
+]
+
+
+def _unexplained(ruleset, evidence) -> list[str]:
+    """Every definite `openssl` posture in `evidence` that no finding, on that same
+    object and in a category that fits the posture, explains."""
+    linkage = resolve_linkage(ruleset, evidence)
+    findings = apply_rules(ruleset, evidence, linkage)
+    library = ruleset.libraries["openssl"]
+    identity = {name for name in (library.name, library.symbol_group, library.string_group) if name}
+    postures = object_postures(ruleset, evidence, "openssl")
+
+    problems = []
+    for obj, posture in zip(evidence.binaries, postures, strict=True):
+        if posture not in _DEFINITE_POSTURES:
+            continue
+        wanted = _EXPLAINING_CATEGORIES[posture]
+        explained = any(
+            finding.subject in identity
+            and obj.path in {location.path for location in finding.locations}
+            and finding.category in wanted
+            for finding in findings
+        )
+        if not explained:
+            problems.append(f"{obj.path} reads {posture} with no finding on it")
+
+    if linkage.get("openssl") in _DEFINITE_POSTURES and not any(
+        posture in _DEFINITE_POSTURES for posture in postures
+    ):
+        # A sanity check: `test_aggregate_never_returns_a_definite_posture_without_one`
+        # below holds, exhaustively over `_aggregate`'s own inputs, that a definite
+        # wheel-level value always traces back to at least one object reading a
+        # definite posture of its own, so this branch is not expected to ever fire.
+        problems.append(
+            f"wheel resolves openssl to {linkage['openssl']} with no object posture explaining it"
+        )
+    return problems
+
+
+def test_openssl_is_the_only_library_always_reported(ruleset) -> None:
+    """The fixtures above are written for `openssl`'s own identity (`name`,
+    `symbol_group`, `string_group`) and posture-explaining rules. A second library
+    set `always_report` needs its own fixtures rather than silently reusing these."""
+    assert [name for name, library in ruleset.libraries.items() if library.always_report] == [
+        "openssl"
+    ]
+
+
+@pytest.mark.parametrize("evidence", _POSTURE_FIXTURES)
+def test_every_definite_openssl_posture_has_a_finding_on_its_object(ruleset, evidence) -> None:
+    postures = object_postures(ruleset, evidence, "openssl")
+    assert any(posture in _DEFINITE_POSTURES for posture in postures), (
+        "fixture reads no definite posture at all; it proves nothing"
+    )
+    assert _unexplained(ruleset, evidence) == []
+
+
+@pytest.mark.parametrize(
+    "rule_id",
+    [
+        "BIN_BUNDLED_OPENSSL",
+        "BIN_NEEDED_MANGLED_CRYPTO",
+        "BIN_NEEDED_VENDORED_CRYPTO",
+        "BIN_NEEDED_SYSTEM_OPENSSL",
+        "BIN_OPENSSL_SYMBOLS_DEFINED",
+        "BIN_OPENSSL_BANNER",
+    ],
+)
+def test_dropping_a_mechanism_rule_leaves_a_posture_unexplained(ruleset, rule_id: str) -> None:
+    """Proves the invariant is not vacuous: losing any one mechanism rule leaves at
+    least one fixture above with a posture no finding explains."""
+    stripped = replace(ruleset, rules=tuple(rule for rule in ruleset.rules if rule.id != rule_id))
+    assert any(_unexplained(stripped, param.values[0]) for param in _POSTURE_FIXTURES)
+
+
+def test_dropping_both_system_rules_leaves_the_header_banner_object_unexplained(ruleset) -> None:
+    """`test_dropping_a_mechanism_rule_leaves_a_posture_unexplained` never leaves a
+    right-subject, wrong-category finding behind to test `_unexplained`'s category
+    filter against: dropping one rule at a time always leaves the fixture's other
+    mechanism rule (or no finding at all) on the object under test. Drop both
+    rules that can explain `system` on `system-header-banner` at once: the object
+    still carries its own `BIN_OPENSSL_BANNER` finding (category `bundled-crypto`,
+    since the banner is read as header text rather than a copy), which is on the
+    right object and the right subject but the wrong category. If the category
+    filter were not applied, that finding would be accepted as explaining `system`."""
+    stripped = replace(
+        ruleset,
+        rules=tuple(
+            rule
+            for rule in ruleset.rules
+            if rule.id not in {"BIN_NEEDED_SYSTEM_OPENSSL", "BIN_OPENSSL_SYMBOLS_IMPORTED"}
+        ),
+    )
+    fixture = next(
+        param.values[0] for param in _POSTURE_FIXTURES if param.id == "system-header-banner"
+    )
+    assert _unexplained(stripped, fixture) == [
+        "cryptography/hazmat/bindings/_rust.abi3.so reads system with no finding on it"
+    ]
+
+
+def test_dropping_the_bundled_openssl_rule_leaves_only_a_libsodium_finding(
+    ruleset,
+) -> None:
+    """Mirrors the category case above for the subject filter: an object can carry a
+    same-location, right-category finding for a different library. A `needed` entry
+    that demangles to `libsodium` fires the same `BIN_NEEDED_MANGLED_CRYPTO` rule a
+    mangled `openssl` entry would, at `category = "bundled-crypto"`, on the same
+    object as this wheel's vendored-copy OpenSSL evidence. With `BIN_BUNDLED_OPENSSL`
+    dropped, only that libsodium finding is left on the object; if the subject filter
+    were not applied, it would be accepted as explaining the object's own `bundled`
+    openssl posture."""
+    evidence = wheel(
+        binary(
+            "demo.libs/libcrypto-3a1f2b4c.so.3",
+            vendored_path=True,
+            soname="libcrypto-3a1f2b4c.so.3",
+            needed=("libsodium-a1b2c3d4.so.23",),
+        )
+    )
+    stripped = replace(
+        ruleset, rules=tuple(rule for rule in ruleset.rules if rule.id != "BIN_BUNDLED_OPENSSL")
+    )
+    assert _unexplained(stripped, evidence) == [
+        "demo.libs/libcrypto-3a1f2b4c.so.3 reads bundled with no finding on it"
+    ]
+
+
+def test_every_definite_return_in_the_posture_functions_is_reached_by_a_fixture(ruleset) -> None:
+    """Catches a fourth path to a definite posture that the fixtures above do not
+    restate: every `return` in `_binary_posture` and `needed_posture` that names a
+    `LINKAGE_SYSTEM`/`LINKAGE_BUNDLED`/`LINKAGE_STATIC`/`LINKAGE_MIXED` value must be
+    executed by at least one fixture, or a mechanism could be added to either function
+    with nothing here noticing that no fixture, and so no rule audit, covers it.
+    """
+    if sys.gettrace() is not None:
+        pytest.skip("another tracer is active")
+
+    functions = (linkage_module._binary_posture, linkage_module.needed_posture)
+    definite_names = {"LINKAGE_SYSTEM", "LINKAGE_BUNDLED", "LINKAGE_STATIC", "LINKAGE_MIXED"}
+    definite_lines = set()
+    for fn in functions:
+        offset = fn.__code__.co_firstlineno - 1
+        tree = ast.parse(inspect.getsource(fn))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Return):
+                continue
+            if not isinstance(node.value, ast.Name) or not node.value.id.startswith("LINKAGE_"):
+                raise AssertionError(
+                    f"{fn.__qualname__} has a return at line {node.lineno + offset} this "
+                    "test cannot classify; extend it to cover the new shape"
+                )
+            if node.value.id in definite_names:
+                definite_lines.add((fn.__code__, node.lineno + offset))
+
+    code_objects = {fn.__code__ for fn in functions}
+    reached = set()
+
+    def local_trace(frame, event, _arg):
+        if event == "return":
+            reached.add((frame.f_code, frame.f_lineno))
+        return local_trace
+
+    def global_trace(frame, event, arg):
+        del event, arg
+        return local_trace if frame.f_code in code_objects else None
+
+    sys.settrace(global_trace)
+    try:
+        for param in _POSTURE_FIXTURES:
+            _unexplained(ruleset, param.values[0])
+    finally:
+        sys.settrace(None)
+
+    missing = definite_lines - reached
+    assert not missing, f"definite return(s) never reached by a fixture: {sorted(missing)}"
+
+
+def _aggregate_input_cases():
+    """Every subset of the postures `_binary_posture`/`needed_posture` can produce,
+    crossed with `unanswered` and `declared`: `_aggregate`'s whole input space."""
+    universe = (
+        LINKAGE_SYSTEM,
+        LINKAGE_BUNDLED,
+        LINKAGE_STATIC,
+        LINKAGE_MIXED,
+        LINKAGE_UNKNOWN,
+        LINKAGE_NONE,
+    )
+    for size in range(len(universe) + 1):
+        for combo in itertools.combinations(universe, size):
+            for unanswered in (False, True):
+                for declared in (False, True):
+                    label = ",".join(combo) or "empty"
+                    yield pytest.param(
+                        frozenset(combo),
+                        unanswered,
+                        declared,
+                        id=f"{label}-unanswered={unanswered}-declared={declared}",
+                    )
+
+
+@pytest.mark.parametrize("postures, unanswered, declared", list(_aggregate_input_cases()))
+def test_aggregate_never_returns_a_definite_posture_without_one(
+    postures: frozenset[str], unanswered: bool, declared: bool
+) -> None:
+    """Holds, exhaustively rather than by inspection, what `_unexplained`'s wheel-level
+    sanity check above assumes: `_aggregate` cannot manufacture a definite
+    `openssl_linkage` value out of `unanswered` or `declared` alone. `unanswered` and
+    `declared` only ever promote a wheel to `unknown`; a result in `_DEFINITE_POSTURES`
+    must always trace back to a definite posture already present in `postures`."""
+    result = linkage_module._aggregate(set(postures), unanswered, declared)
+    if result in _DEFINITE_POSTURES:
+        assert postures & set(_DEFINITE_POSTURES), (
+            f"_aggregate({sorted(postures)!r}, unanswered={unanswered}, declared={declared}) "
+            f"= {result!r}, a definite posture, with no definite posture in the input"
+        )
