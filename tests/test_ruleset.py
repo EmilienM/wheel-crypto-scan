@@ -161,7 +161,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "41"
+    assert ruleset.version == "42"
     assert len(ruleset.rules) > 20
 
 
@@ -214,7 +214,7 @@ def test_every_version_anchored_group_names_every_major() -> None:
         ("sha-1", "NON_APPROVED_CRYPTO"),
         ("sha1_smol", "NON_APPROVED_CRYPTO"),
         ("md5", "NON_APPROVED_CRYPTO"),
-        ("sha3", "CONDITIONAL"),
+        ("sha3", "NON_APPROVED_CRYPTO"),
     ],
 )
 def test_the_shipped_crate_table_decides_what_it_says_it_decides(crate: str, verdict: str) -> None:
@@ -228,37 +228,44 @@ def test_the_shipped_crate_table_decides_what_it_says_it_decides(crate: str, ver
 
 
 @pytest.mark.parametrize(
-    "symbol",
+    ("symbol", "group"),
     [
-        pytest.param("ossl_x25519", id="openssl3-provider-ossl_x25519"),
+        pytest.param("ossl_x25519", "x25519", id="openssl3-provider-ossl_x25519"),
         pytest.param(
             "ossl_x25519_public_from_private",
+            "x25519",
             id="openssl3-provider-ossl_x25519_public_from_private",
         ),
-        pytest.param("ossl_ed25519_sign", id="openssl3-provider-ossl_ed25519_sign"),
-        pytest.param("ossl_ed25519_verify", id="openssl3-provider-ossl_ed25519_verify"),
+        pytest.param("ossl_ed25519_sign", "ed25519", id="openssl3-provider-ossl_ed25519_sign"),
+        pytest.param("ossl_ed25519_verify", "ed25519", id="openssl3-provider-ossl_ed25519_verify"),
         pytest.param(
             "ossl_ed25519_public_from_private",
+            "ed25519",
             id="openssl3-provider-ossl_ed25519_public_from_private",
         ),
-        pytest.param("X25519", id="openssl111-X25519"),
-        pytest.param("X25519_public_from_private", id="openssl111-X25519_public_from_private"),
-        pytest.param("ED25519_sign", id="openssl111-ED25519_sign"),
-        pytest.param("ED25519_verify", id="openssl111-ED25519_verify"),
-        pytest.param("ED25519_public_from_private", id="openssl111-ED25519_public_from_private"),
-        pytest.param("x25519_fe51_mul", id="openssl-field-helper-x25519_fe51_mul"),
-        pytest.param("x25519_fe64_mul", id="openssl-field-helper-x25519_fe64_mul"),
+        pytest.param("X25519", "x25519", id="openssl111-X25519"),
+        pytest.param(
+            "X25519_public_from_private", "x25519", id="openssl111-X25519_public_from_private"
+        ),
+        pytest.param("ED25519_sign", "ed25519", id="openssl111-ED25519_sign"),
+        pytest.param("ED25519_verify", "ed25519", id="openssl111-ED25519_verify"),
+        pytest.param(
+            "ED25519_public_from_private", "ed25519", id="openssl111-ED25519_public_from_private"
+        ),
+        pytest.param("x25519_fe51_mul", "x25519", id="openssl-field-helper-x25519_fe51_mul"),
+        pytest.param("x25519_fe64_mul", "x25519", id="openssl-field-helper-x25519_fe64_mul"),
     ],
 )
-def test_the_shipped_curve25519_group_claims_what_the_docs_say(symbol: str) -> None:
-    """The design docs and the `BIN_CURVE25519` `why` tell a reviewer which OpenSSL
-    names reach this rule, so the group has to keep agreeing with them: every spelling
-    OpenSSL itself uses for X25519/Ed25519, on 1.1.1 and on 3.x, and the internal
-    field-arithmetic helpers both versions define on their assembly paths. Changing
-    either side means changing the other.
+def test_the_shipped_curve25519_groups_claim_what_the_docs_say(symbol: str, group: str) -> None:
+    """The design docs and the `BIN_X25519`/`BIN_ED25519` `why` texts tell a reviewer
+    which OpenSSL names reach each rule, so the groups have to keep agreeing with
+    them: every spelling OpenSSL itself uses for X25519 and for Ed25519, on 1.1.1 and
+    on 3.x, and the internal field-arithmetic helpers both versions define on their
+    assembly paths, which sit with X25519. Changing either side means changing the
+    other.
     """
     patterns = load_ruleset().compile_patterns().binary
-    assert patterns.symbol_groups_for(symbol) == ("curve25519",)
+    assert patterns.symbol_groups_for(symbol) == (group,)
 
 
 @pytest.mark.parametrize(
@@ -272,7 +279,7 @@ def test_the_shipped_curve25519_group_claims_what_the_docs_say(symbol: str) -> N
         pytest.param("ossl_x25519x", id="not-a-prefix-match-ossl_x25519x"),
     ],
 )
-def test_the_shipped_curve25519_group_stays_scoped_to_curve25519(symbol: str) -> None:
+def test_the_shipped_curve25519_groups_stay_scoped_to_curve25519(symbol: str) -> None:
     """Pins the scope to Curve25519 and guards against `X25519`/`ossl_x25519` being
     turned into a bare prefix: X448 and Ed448 are a different curve and must not match
     just because their names share a prefix with X25519/Ed25519.

@@ -363,7 +363,7 @@ def test_a_low_severity_group_does_not_starve_a_high_severity_one(ruleset) -> No
     """A flat "referenced objects, then the rest, in path order" pass just moves the
     sorting problem: a finding's `subject` (here, a crate name) sorts exactly as
     arbitrarily with respect to severity as an object's path does. Ten low-severity
-    `getrandom` objects (`CONTEXT_DEPENDENT`, `info`) sort before the one `ring` object
+    `getrandom` objects (`info`, no verdict) sort before the one `ring` object
     (`NON_APPROVED_CRYPTO`, `high`) purely alphabetically, so under a cap of five a
     path-only pass lets getrandom's ten objects crowd ring's one object out entirely --
     getrandom's finding stays fully corroborated while the one finding that actually
@@ -409,7 +409,7 @@ def test_a_low_severity_group_does_not_starve_a_high_severity_one(ruleset) -> No
         for f in record["findings"]
         if f["rule_id"] == "BIN_RUST_CRYPTO_CRATE" and f["subject"] == "getrandom"
     )
-    assert getrandom_finding["verdict"] == "CONTEXT_DEPENDENT"
+    assert getrandom_finding["verdict"] is None
 
 
 # --- artifacts.extensions agrees with binaries[] on the cap ---------------------

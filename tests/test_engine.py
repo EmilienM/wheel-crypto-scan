@@ -1356,8 +1356,10 @@ def test_a_non_constant_usedforsecurity_on_a_strong_hash_is_not_flagged(ruleset)
 def test_an_algorithm_list_of_refused_matches_only_the_refused_list() -> None:
     """`algorithm_list = "refused"` and `"restricted"` name two different lists off
     `conventions`; a rule reading the wrong one would still load and match, just the
-    wrong algorithms. Every shipped `py_call` rule uses `algorithm_list = "weak"`, the
-    union of both, so nothing else exercises either list on its own."""
+    wrong algorithms. `PY_WEAK_HASH_CALL` reads `"refused"` and `PY_RESTRICTED_HASH_CALL`
+    reads `"restricted"` in the shipped ruleset, each against its own list; this test
+    still needs its own rule to exercise `"refused"` in isolation, since the shipped
+    rule's `targets` and match shape differ from what this test wants to hold fixed."""
     data = shipped_data()
     data["rule"].append(
         rule_entry(

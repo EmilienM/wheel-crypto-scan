@@ -318,13 +318,15 @@ def test_a_static_openssls_legacy_primitives_lead_the_headline_and_keep_the_cond
     assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
     assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
     assert "CONDITIONAL" in record["verdict"]["classes"]
+    rule_ids = set(record["verdict"]["rule_ids"])
     assert {
         "BIN_STATIC_OPENSSL",
         "BIN_OPENSSL_SYMBOLS_DEFINED",
         "BIN_BCRYPT_BLOWFISH",
         "BIN_OWN_WEAK_HASH_IMPL",
-        "BIN_CURVE25519",
-    } <= set(record["verdict"]["rule_ids"])
+        "BIN_X25519",
+    } <= rule_ids
+    assert "BIN_ED25519" not in rule_ids
 
 
 @pytest.mark.parametrize(
@@ -342,8 +344,9 @@ def test_a_static_openssls_curve25519_reads_without_the_field_helpers(
 
     Neither symbol set here spells an `x25519_fe*` name: `ossl_x25519`/`ossl_ed25519_*`
     are OpenSSL 3's provider entry points and `X25519`/`ED25519_sign` are 1.1.1's own
-    internal ones, neither exported, both present on every architecture.
-    `BIN_CURVE25519` still has to fire.
+    internal ones, neither exported, both present on every architecture. A static
+    OpenSSL defines both symbol sets, so `BIN_X25519` and `BIN_ED25519` both have to
+    fire.
     """
     wheel = build_wheel(
         subdir(tmp_path, f"static-curve25519-{names[0]}") / f"fakecrypto-43.0.0-{MANYLINUX}.whl",
@@ -371,7 +374,7 @@ def test_a_static_openssls_curve25519_reads_without_the_field_helpers(
     assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
     assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
     assert "CONDITIONAL" in record["verdict"]["classes"]
-    assert {"BIN_STATIC_OPENSSL", "BIN_CURVE25519"} <= set(record["verdict"]["rule_ids"])
+    assert {"BIN_STATIC_OPENSSL", "BIN_X25519", "BIN_ED25519"} <= set(record["verdict"]["rule_ids"])
 
 
 def test_a_private_weak_hash_kept_local_is_still_found_without_openssl(
@@ -457,7 +460,7 @@ def test_a_bundled_openssls_legacy_primitives_lead_the_headline_too(
     text describes is not a static-only cost.
 
     Nothing here spells a Curve25519 name, and none of the exported entry points do
-    either, so `BIN_CURVE25519` does not fire: see the paired
+    either, so neither `BIN_X25519` nor `BIN_ED25519` fires: see the paired
     `test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab` for the
     `.symtab` case that does.
     """
@@ -495,7 +498,7 @@ def test_a_bundled_openssls_legacy_primitives_lead_the_headline_too(
         "BIN_BCRYPT_BLOWFISH",
         "BIN_OWN_WEAK_HASH_IMPL",
     } <= rule_ids
-    assert "BIN_CURVE25519" not in rule_ids
+    assert not {"BIN_X25519", "BIN_ED25519"} & rule_ids
 
 
 def test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab(
@@ -507,7 +510,8 @@ def test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab(
     API, so it is never exported to `.dynsym` at all: it surfaces only while the
     bundled copy keeps its `.symtab`, which is what stripping removes. Give the same
     bundled `libcrypto` a `.symtab` that keeps that helper as a local definition and
-    `BIN_CURVE25519` joins the other two.
+    `BIN_X25519` joins the other two; nothing here spells an Ed25519 name, so
+    `BIN_ED25519` does not.
     """
     wheel = build_wheel(
         subdir(tmp_path, "bundled-legacy-symtab") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",
@@ -548,8 +552,9 @@ def test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab(
         "BIN_BUNDLED_OPENSSL",
         "BIN_BCRYPT_BLOWFISH",
         "BIN_OWN_WEAK_HASH_IMPL",
-        "BIN_CURVE25519",
+        "BIN_X25519",
     } <= rule_ids
+    assert "BIN_ED25519" not in rule_ids
 
 
 def test_a_blowfish_call_into_the_system_libcrypto_is_conditional_not_non_approved(
@@ -2399,7 +2404,8 @@ def test_an_aws_lc_fips_modules_own_md5_and_x25519_keep_non_approved_leading(
     assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
     assert {"NON_APPROVED_CRYPTO", "CONDITIONAL"} <= set(record["verdict"]["classes"])
     rule_ids = record["verdict"]["rule_ids"]
-    assert {"BIN_AWS_LC_FIPS", "BIN_OWN_WEAK_HASH_IMPL", "BIN_CURVE25519"} <= set(rule_ids)
+    assert {"BIN_AWS_LC_FIPS", "BIN_OWN_WEAK_HASH_IMPL", "BIN_X25519"} <= set(rule_ids)
+    assert "BIN_ED25519" not in rule_ids
     assert "BIN_AWS_LC" not in rule_ids
     assert "BIN_AWS_LC_RS_CRATE" not in rule_ids
     weak_hash_finding = next(
@@ -2407,7 +2413,7 @@ def test_an_aws_lc_fips_modules_own_md5_and_x25519_keep_non_approved_leading(
     )
     assert "md5_final" in weak_hash_finding["locations"][0]["evidence"]
     curve25519_finding = next(
-        finding for finding in record["findings"] if finding["rule_id"] == "BIN_CURVE25519"
+        finding for finding in record["findings"] if finding["rule_id"] == "BIN_X25519"
     )
     assert "curve25519_x25519" in curve25519_finding["locations"][0]["evidence"]
 
