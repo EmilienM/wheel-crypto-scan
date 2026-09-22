@@ -13,6 +13,7 @@
     "binaries",
     "findings",
     "verdict",
+    "crypto",
     "errors",
     "errors_truncated"
   ],
@@ -530,6 +531,9 @@
           "layer",
           "confidence",
           "verdict",
+          "relation",
+          "basis",
+          "family",
           "needs_human_review",
           "occurrences",
           "truncated",
@@ -581,6 +585,35 @@
                 "type": "null"
               }
             ]
+          },
+          "relation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/relation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What would have to change for this finding to go away. Null exactly when basis is empty."
+          },
+          "basis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The standards that say so, as ids from the ruleset's [[standard]] table. Empty exactly when relation is null."
+          },
+          "family": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/family"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What kind of primitive this finding is evidence of, independent of the FIPS lens. Null when not applicable."
           },
           "needs_human_review": {
             "type": "boolean"
@@ -635,6 +668,7 @@
       "required": [
         "class",
         "classes",
+        "relations",
         "rule_ids",
         "reasons",
         "conditions",
@@ -651,6 +685,13 @@
             "$ref": "#/$defs/verdictClass"
           },
           "description": "Every class that fired, in precedence order."
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relation"
+          },
+          "description": "Every relation a contributing finding cited, sorted. No precedence order: unlike classes, relations do not rank against each other."
         },
         "rule_ids": {
           "type": "array",
@@ -681,6 +722,49 @@
         },
         "needs_human_review": {
           "type": "boolean"
+        }
+      }
+    },
+    "crypto": {
+      "type": "object",
+      "description": "The crypto inventory, derived from findings and verdict.conditions rather than a separate pass: it can never disagree with either.",
+      "required": [
+        "families",
+        "libraries"
+      ],
+      "properties": {
+        "families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/family"
+          },
+          "description": "Every primitive family a finding was evidence of, sorted and deduplicated."
+        },
+        "libraries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "linkage"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "linkage": {
+                "type": "string",
+                "enum": [
+                  "system",
+                  "bundled",
+                  "static",
+                  "mixed",
+                  "unknown"
+                ]
+              }
+            }
+          },
+          "description": "Every library from verdict.conditions whose linkage resolved to something, i.e. every <library>_linkage key whose value is not none, sorted by name."
         }
       }
     },
@@ -728,6 +812,14 @@
     "verdictClass": {
       "type": "string",
       "description": "There is deliberately no passing class. The tool never emits a passing verdict, under any name. Current values: NON_APPROVED_CRYPTO, FIPS_BREAKING, CONDITIONAL, CONTEXT_DEPENDENT, OPAQUE, NO_CRYPTO_DETECTED. New classes may be added without a schema_version bump; the authoritative list is the ruleset's [verdict] precedence. There is deliberately no passing class."
+    },
+    "relation": {
+      "type": "string",
+      "description": "What would have to change for a finding to go away, the question a consumer of the index actually asks. Current values: not_specified, restricted, outside_module, boundary_unresolved, runtime_refusal, policy_bypass, use_unresolved. New relations may be added without a schema_version bump; the authoritative list is ruleset.RELATIONS."
+    },
+    "family": {
+      "type": "string",
+      "description": "The FIPS-agnostic vocabulary for what a piece of evidence is, as opposed to what it means for FIPS compatibility. Current values: hash, checksum, block_cipher, stream_cipher, aead, mac, kdf, password_hash, signature, key_agreement, kem, drbg, entropy, tls, ssh, trust_store, library. New families may be added without a schema_version bump; the authoritative list is ruleset.FAMILIES."
     }
   }
 }

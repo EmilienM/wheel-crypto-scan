@@ -25,6 +25,9 @@ Every rule and every table entry carries the same vocabulary.
 | `confidence` | How sure we are the match means what we think it means. |
 | `needs_human_review` | Set true whenever a crypto engineer must look at it. When in doubt, set it true. It is never wrong to ask for review. |
 | `why` | Why this is flagged, in plain language. Every rule and every table entry has one. If you disagree with a `why`, change it: it is the part of the file that carries the reasoning. |
+| `relation` | What would have to change for this finding to go away: `not_specified`, `restricted`, `outside_module`, `boundary_unresolved`, `runtime_refusal`, `policy_bypass` or `use_unresolved`. Carried on a rule and on an entry in the four override-bearing tables (`[[crypto_distribution]]`, `[[crypto_library]]`, `[[rust_crate]]`, `[[python_module]]`), always beside a non-empty `basis`: a citation never stands alone, and the loader refuses either one given without the other. |
+| `basis` | The `[[standard]]` ids that say so. Non-empty exactly when `relation` is given. Each id must name a standard whose `status` is `current` or `revision_planned`; the loader refuses one naming a `draft`, `planned` or `withdrawn` standard instead. |
+| `family` | What kind of primitive this is evidence of, independent of the FIPS lens: `hash`, `checksum`, `block_cipher`, `stream_cipher`, `aead`, `mac`, `kdf`, `password_hash`, `signature`, `key_agreement`, `kem`, `drbg`, `entropy`, `tls`, `ssh`, `trust_store` or `library`. Carried on a rule, on an entry in the four override-bearing tables, and on `[[symbol_group]]`/`[[string_group]]` -- which take `family` alone, with no `relation`/`basis` of their own. |
 
 ## The sections
 
@@ -66,7 +69,8 @@ delocate's `.dylibs`), `mangled_soname_regex` (the content hash those tools appe
 `library_suffixes` and the Windows-specific `windows_library_suffixes` /
 `windows_version_suffix_regex` pair, `cargo_path_regex`, `cargo_vendor_path_regex` and
 `cargo_git_path_regex` for the cargo source paths a Rust object embeds, `go_boring_group` /
-`go_stock_group` naming the Go toolchain string groups, and `weak_hash_algorithms`.
+`go_stock_group` naming the Go toolchain string groups, and `refused_hash_algorithms` /
+`restricted_hash_algorithms`, the FIPS-refused and FIPS-restricted Python hash constructors.
 
 The Windows entries matter more than they look. Windows puts a library's version, and often
 its architecture, inside the file name where Unix puts it in a `.so.N` suffix:
@@ -85,18 +89,46 @@ someone decides otherwise, which is the safe direction. One coherence rule is en
 load time rather than left to prose: every cause a verdict-less rule claims must appear here
 too. See [Linkage reads a second split over the same vocabulary](design/opacity.md#linkage-reads-a-second-split-over-the-same-vocabulary).
 
+### `[[standard]]`
+
+The NIST/FIPS publications a `basis` can cite. Each entry carries `id`, `title`,
+`edition`, `status` (`current`, `revision_planned`, `draft`, `planned` or `withdrawn`)
+and a `why`, plus the optional `successor`, `sunset` and `url`.
+
+`edition` and `status` are what make a `basis` a checkable citation rather than a bare
+name. The loader refuses a `basis` naming a standard whose `status` is `draft` or
+`planned` -- not yet in force -- or `withdrawn` -- no longer the text to check against
+-- and accepts only `current` or `revision_planned`. `successor` links a superseded
+standard to the one that replaced it, so a `withdrawn` entry stays in the table as the
+context a citation moved from rather than disappearing and taking that link with it;
+the loader refuses a `successor` naming an id the table does not have, and a
+`successor` chain that cycles back on itself.
+
+Only `id` ever reaches a scan record, in a finding's `basis`. `title`, `edition`,
+`status`, `successor`, `sunset`, `url` and `why` stay in the ruleset: `wheel-crypto-scan
+rules --format json` reads back the full set for display, and the HTML report reads
+back a narrower one -- `title`, `edition`, `status`, `successor` and `url`, with no
+`sunset` and no `why` in its embedded payload -- rather than the scan record
+duplicating any of it into every wheel that cites the standard.
+
+A declared standard that no `basis` cites and that is nobody's `successor` is refused
+at load time too, the same way an unread `[[symbol_group]]` is -- dead data with
+nothing pointing at it -- except a `withdrawn` standard, kept only as the context a
+`successor` link points back from, and a `planned` one, which documents what is coming
+before anything can cite it.
+
 ### The match tables
 
 These are the things a rule can point at. Each is an array of tables.
 
 | Table | What it holds |
 |---|---|
-| `[[crypto_distribution]]` | Distribution names, matched on the canonical PEP 503 name, so `PyNaCl`, `pynacl` and `py_nacl` are the same entry. |
-| `[[crypto_library]]` | A native library: its `sonames`, and optionally the `symbol_group` and `string_group` that let the linkage resolver recognise it compiled straight into an extension, where there is no library file and no dependency to find. Optionally `copy_string_group`, strings only a compiled-in copy carries: on an object that imports the library from a dependency it resolved, whether system or bundled, a `string_group` match that matches nothing in `copy_string_group` is header text and does not count as a copy; on an object with no dependency on the library at all, that same absence makes the banner uncorroborated prose instead. Either way the gate stays shut on an object not read in full, because a partial read may have cut the copy string. Optionally `fork_symbol_groups`/`fork_string_groups`, symbol and string groups that identify a different library implementing this one's API under this one's names: a symbol group counts only when the match is DEFINED in the same object. On an object where one of them matched, this library's own `symbol_group` definitions say some implementation of the API was compiled in, not which one, so definitions alone (no banner) turn `static` into `unknown` rather than asserting the library by name. The loader refuses an unknown group name, the library's own `symbol_group`/`string_group`/`copy_string_group` named as one of its own forks, and a fork list on a library with no `symbol_group` to reclassify. Optionally `crates`, the `[[rust_crate]]` entries that bind it: a crate says an object uses the library, not which copy, so on an object with no other evidence it gives `unknown` rather than `none`. The library's own name or one of its `crates` named in a shipped SBOM gives `unknown` the same way when no object in the wheel answers, compared case-insensitively (SBOM names are folded through `ruleset.sbom_library_key`/`sbom_crate_key`, the same functions `SBOM_CRYPTO_COMPONENT` uses). When the library's own name is *also* a different `[[rust_crate]]` it does not itself list in `crates` -- as for `argon2` and `blake2`, each both a C reference library and an unrelated pure-Rust crate of the same name -- the SBOM component's `purl` decides instead: only a `pkg:cargo/...` purl reads as the crate rather than the library. `openssl` is the one reported unconditionally. Two `[[crypto_library]]` names that differ only in case are refused at load time, the same as for `[[rust_crate]]` below, since the SBOM fold above would otherwise make the lookup ambiguous. |
-| `[[symbol_group]]` | Named groups of dynamic symbols, by `prefixes` and `exact` names. Imported means the wheel calls into a library it does not ship; defined means it carries that code itself. Every group must be read by a `dynamic_symbol` rule or by a `[[crypto_library]]`'s `symbol_group`, or carry `evidence_only = true` (with a `why` saying so, by convention); the loader refuses a group that is neither. |
-| `[[string_group]]` | Named groups of read-only-data substrings. Version banners land here, and for a statically linked extension the banner is often the entire evidence. Substrings must be printable ASCII: an extracted run only ever holds printable ASCII, so anything else could never match, and the one non-printable character a rule author might reach for by mistake is the separator the matcher joins runs with internally. Optionally `in_code` (default `false`): also search ELF executable sections for this group's substrings, against their own read budget, independent of the read-only pass -- Mach-O, PE and the fallback reader already see the whole object regardless of this flag. A group should carry it only when missing it errs toward over-flagging -- the answer being wrong in the direction this tool already accepts -- which is a measured claim about where the substring actually lives, not a default worth reaching for. |
-| `[[rust_crate]]` | Crates inferred from the embedded cargo source paths, each with its own `verdict` and `severity`. An entry can optionally carry its own `suppressed_by`, naming other `[[rust_crate]]` entries. Two entries whose names differ only in case or in `-`/`_` are refused at load time, since crates.io treats them as the same name. |
-| `[[python_module]]` | Module names the AST layer watches for on import. |
+| `[[crypto_distribution]]` | Distribution names, matched on the canonical PEP 503 name, so `PyNaCl`, `pynacl` and `py_nacl` are the same entry. Optionally its own `verdict`, `severity`, `relation`, `basis` and `family`, overriding the rule that names it. |
+| `[[crypto_library]]` | A native library: its `sonames`, and optionally the `symbol_group` and `string_group` that let the linkage resolver recognise it compiled straight into an extension, where there is no library file and no dependency to find. Optionally `copy_string_group`, strings only a compiled-in copy carries: on an object that imports the library from a dependency it resolved, whether system or bundled, a `string_group` match that matches nothing in `copy_string_group` is header text and does not count as a copy; on an object with no dependency on the library at all, that same absence makes the banner uncorroborated prose instead. Either way the gate stays shut on an object not read in full, because a partial read may have cut the copy string. Optionally `fork_symbol_groups`/`fork_string_groups`, symbol and string groups that identify a different library implementing this one's API under this one's names: a symbol group counts only when the match is DEFINED in the same object. On an object where one of them matched, this library's own `symbol_group` definitions say some implementation of the API was compiled in, not which one, so definitions alone (no banner) turn `static` into `unknown` rather than asserting the library by name. The loader refuses an unknown group name, the library's own `symbol_group`/`string_group`/`copy_string_group` named as one of its own forks, and a fork list on a library with no `symbol_group` to reclassify. Optionally `crates`, the `[[rust_crate]]` entries that bind it: a crate says an object uses the library, not which copy, so on an object with no other evidence it gives `unknown` rather than `none`. The library's own name or one of its `crates` named in a shipped SBOM gives `unknown` the same way when no object in the wheel answers, compared case-insensitively (SBOM names are folded through `ruleset.sbom_library_key`/`sbom_crate_key`, the same functions `SBOM_CRYPTO_COMPONENT` uses). When the library's own name is *also* a different `[[rust_crate]]` it does not itself list in `crates` -- as for `argon2` and `blake2`, each both a C reference library and an unrelated pure-Rust crate of the same name -- the SBOM component's `purl` decides instead: only a `pkg:cargo/...` purl reads as the crate rather than the library. `openssl` is the one reported unconditionally. Two `[[crypto_library]]` names that differ only in case are refused at load time, the same as for `[[rust_crate]]` below, since the SBOM fold above would otherwise make the lookup ambiguous. Optionally its own `verdict`, `severity`, `relation`, `basis` and `family`, overriding the rule that names it. |
+| `[[symbol_group]]` | Named groups of dynamic symbols, by `prefixes` and `exact` names. Imported means the wheel calls into a library it does not ship; defined means it carries that code itself. Every group must be read by a `dynamic_symbol` rule or by a `[[crypto_library]]`'s `symbol_group`, or carry `evidence_only = true` (with a `why` saying so, by convention); the loader refuses a group that is neither. Optionally its own `family`, the kind of primitive its symbols belong to -- it carries no `relation`/`basis` and no verdict of its own. |
+| `[[string_group]]` | Named groups of read-only-data substrings. Version banners land here, and for a statically linked extension the banner is often the entire evidence. Substrings must be printable ASCII: an extracted run only ever holds printable ASCII, so anything else could never match, and the one non-printable character a rule author might reach for by mistake is the separator the matcher joins runs with internally. Optionally `in_code` (default `false`): also search ELF executable sections for this group's substrings, against their own read budget, independent of the read-only pass -- Mach-O, PE and the fallback reader already see the whole object regardless of this flag. A group should carry it only when missing it errs toward over-flagging -- the answer being wrong in the direction this tool already accepts -- which is a measured claim about where the substring actually lives, not a default worth reaching for. Optionally its own `family`, the same as `[[symbol_group]]` above. |
+| `[[rust_crate]]` | Crates inferred from the embedded cargo source paths, each with its own `verdict`, `severity`, `relation`, `basis` and `family`. An entry can optionally carry its own `suppressed_by`, naming other `[[rust_crate]]` entries. Two entries whose names differ only in case or in `-`/`_` are refused at load time, since crates.io treats them as the same name. |
+| `[[python_module]]` | Module names the AST layer watches for on import. Optionally its own `verdict`, `severity`, `relation`, `basis` and `family`, overriding the rule that names it. |
 | `[[ctypes_library]]` | Substrings that mean crypto is being reached at runtime by name, which no static dependency graph would show. |
 
 ### `[[rule]]`
@@ -104,6 +136,20 @@ These are the things a rule can point at. Each is an array of tables.
 A rule carries the vocabulary above plus an `id`, a `layer`, a `category`, a `title`, and
 one or more `[rule.match]` tables. Several match tables are alternatives, ORed together:
 one rule id, more than one way of reaching it.
+
+`relation` and `basis` are always given together or not at all, and `RELATION_CLASSES`
+in `ruleset.py` says which verdict classes each `relation` is consistent with: a
+`relation` paired with a `verdict` outside its row says two things about the same
+finding -- what would fix it, and how bad leaving it is -- that disagree with each
+other, and the loader refuses the pair at load time rather than leaving it to a test
+over the shipped ruleset. `restricted` is the one relation with two rows,
+`NON_APPROVED_CRYPTO` when the wheel implements the primitive itself and
+`CONTEXT_DEPENDENT` when it defers to the host module and only the use is in question.
+No relation names `OPAQUE`: unreadability has no standard to cite, so a verdict of
+`OPAQUE` paired with any relation is refused the same way. The check runs on the pair a
+scan would actually emit, not only on a rule's own fields: an entry in one of the four
+override-bearing tables that states a `verdict` but leaves `relation` to an owning rule
+(or the reverse) is checked against what it resolves to at scan time.
 
 `[rule.match]` has a `kind` that selects the matcher, and whatever that matcher needs —
 most often `table`, naming one of the match tables above. The kinds in the shipped ruleset
@@ -145,8 +191,9 @@ matches on, refused if missing or empty: `kind = "py_call"` takes `targets` (dot
 callable names, `*.method` wildcards allowed), plus an optional `usedforsecurity`
 (`"absent"`, `"true"`, `"false"` or `"unresolved"`, scalar or list), an optional
 `algorithm` (any hash name a call might pass — never checked against a closed list, since
-a rule naming a *strong* algorithm on purpose is a real shape), and an optional boolean
-`weak_algorithms_only`. `kind = "py_attr"` takes `attributes`, plus an optional `values`
+a rule naming a *strong* algorithm on purpose is a real shape), and an optional
+`algorithm_list` (`"refused"`, `"restricted"` or `"weak"` -- the two `[conventions]`
+hash lists, or their union). `kind = "py_attr"` takes `attributes`, plus an optional `values`
 list. `kind = "py_constant"` takes `constants`. A `targets`/`attributes`/`constants`/
 `values`/`usedforsecurity` of the wrong shape (not a string or list of strings, or an
 empty list) is refused at load time rather than silently matching nothing or, for

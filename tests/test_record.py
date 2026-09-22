@@ -26,6 +26,7 @@ from wheel_crypto_scan.evidence import (
 )
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.record import build_record, to_json_line
+from wheel_crypto_scan.ruleset import FAMILIES, LINKAGE_VALUES, RELATIONS
 from wheel_crypto_scan.ruleset_loader import load_ruleset
 from wheel_crypto_scan.scan import ScanContext, scan_wheel
 from wheel_crypto_scan.verdict import classify
@@ -242,6 +243,62 @@ def test_every_finding_has_the_same_key_set(ruleset) -> None:
     assert len({tuple(sorted(finding)) for finding in findings}) == 1
 
 
+def test_a_finding_carries_its_relation_basis_and_family(ruleset) -> None:
+    """A bundled OpenSSL resolves through `BIN_BUNDLED_OPENSSL`'s `table = "crypto_library"`
+    match, so the finding takes the `openssl` library's own `relation`/`basis`/`family`
+    rather than the rule's -- the same override `severity`/`verdict` already take."""
+    findings = record_for(ruleset, bundled_cryptography())["findings"]
+    bundled = next(f for f in findings if f["rule_id"] == "BIN_BUNDLED_OPENSSL")
+    library = ruleset.libraries["openssl"]
+    assert bundled["relation"] == library.relation
+    assert bundled["basis"] == sorted(library.basis)
+    assert bundled["family"] == library.family
+
+
+def test_basis_is_sorted(ruleset) -> None:
+    findings = record_for(ruleset, bundled_cryptography())["findings"]
+    for finding in findings:
+        assert finding["basis"] == sorted(finding["basis"])
+
+
+# --- crypto -------------------------------------------------------------------
+
+
+def test_crypto_lists_every_family_a_finding_was_evidence_of(ruleset) -> None:
+    families = record_for(ruleset, bundled_cryptography())["crypto"]["families"]
+    assert families == sorted(set(families))
+    assert families == ["library"]
+
+
+def test_crypto_lists_every_library_whose_linkage_is_not_none(ruleset) -> None:
+    """Derived from `verdict.conditions`, not threaded through separately: the two can
+    never disagree. `openssl` is `always_report = true` and reads `bundled` here, so it
+    is included; nothing else has evidence in this fixture."""
+    record = record_for(ruleset, bundled_cryptography())
+    assert record["crypto"]["libraries"] == [{"name": "openssl", "linkage": "bundled"}]
+    conditions = record["verdict"]["conditions"]
+    expected = sorted(
+        name.removesuffix("_linkage") for name, value in conditions.items() if value != "none"
+    )
+    assert [library["name"] for library in record["crypto"]["libraries"]] == expected
+
+
+def test_a_wheel_with_no_crypto_gets_a_genuinely_empty_crypto_block(ruleset) -> None:
+    """`openssl` is `always_report = true` and reads `none` on a wheel with no crypto
+    evidence at all, so it is correctly excluded rather than listed with `linkage:
+    none` -- this is what gives a `NO_CRYPTO_DETECTED` wheel an empty inventory
+    instead of a missing or null one."""
+    evidence = Evidence(
+        filename="plain-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+    )
+    record = record_for(ruleset, evidence)
+    assert record["verdict"]["class"] == "NO_CRYPTO_DETECTED"
+    assert record["crypto"] == {"families": [], "libraries": []}
+
+
 # --- binaries[] cap: what a finding points at is kept first ---------------------
 #
 # `caps.cap()` handles this shape one layer down for the per-binary string, symbol and
@@ -363,7 +420,7 @@ def test_a_low_severity_group_does_not_starve_a_high_severity_one(ruleset) -> No
     """A flat "referenced objects, then the rest, in path order" pass just moves the
     sorting problem: a finding's `subject` (here, a crate name) sorts exactly as
     arbitrarily with respect to severity as an object's path does. Ten low-severity
-    `getrandom` objects (`CONTEXT_DEPENDENT`, `info`) sort before the one `ring` object
+    `getrandom` objects (`info`, no verdict) sort before the one `ring` object
     (`NON_APPROVED_CRYPTO`, `high`) purely alphabetically, so under a cap of five a
     path-only pass lets getrandom's ten objects crowd ring's one object out entirely --
     getrandom's finding stays fully corroborated while the one finding that actually
@@ -409,7 +466,7 @@ def test_a_low_severity_group_does_not_starve_a_high_severity_one(ruleset) -> No
         for f in record["findings"]
         if f["rule_id"] == "BIN_RUST_CRYPTO_CRATE" and f["subject"] == "getrandom"
     )
-    assert getrandom_finding["verdict"] == "CONTEXT_DEPENDENT"
+    assert getrandom_finding["verdict"] is None
 
 
 # --- artifacts.extensions agrees with binaries[] on the cap ---------------------
@@ -540,6 +597,46 @@ def test_the_schema_forbids_a_passing_class() -> None:
     text = files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
     assert "COMPLIANT" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
     assert "COMPATIBLE" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
+
+
+def _current_values(description: str) -> set[str]:
+    """The token set out of a schema description's "Current values: a, b, c." clause.
+
+    A plain `name in description` substring check has a blind spot a token-set
+    comparison does not: `"hash"` is itself a substring of `"password_hash"`, so
+    dropping the standalone `hash` token from the description would not be caught by
+    substring containment alone, only by comparing the parsed set to the vocabulary.
+    """
+    start = description.index("Current values: ") + len("Current values: ")
+    end = description.index(".", start)
+    return {token.strip() for token in description[start:end].split(",")}
+
+
+def test_the_schema_does_not_close_the_relation_or_family_lists() -> None:
+    """The same argument as `test_the_schema_does_not_close_the_verdict_class_list`,
+    for the two vocabularies this task added: a closed enum turns adding a relation or
+    a family to `ruleset.py` into a silent schema break."""
+    schema = json.loads(
+        files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
+    )
+    assert "enum" not in schema["$defs"]["relation"]
+    assert "enum" not in schema["$defs"]["family"]
+    assert _current_values(schema["$defs"]["relation"]["description"]) == set(RELATIONS)
+    assert _current_values(schema["$defs"]["family"]["description"]) == set(FAMILIES)
+
+
+def test_crypto_library_linkage_enum_matches_the_linkage_vocabulary_minus_none() -> None:
+    """`crypto.libraries[].linkage` can never report `none` -- a library reading that
+    posture is excluded from the array entirely, not listed with it -- so its closed
+    enum is `LINKAGE_VALUES` minus that one value, and a value added to or removed from
+    `LINKAGE_VALUES` must not drift from this copy silently."""
+    schema = json.loads(
+        files("wheel_crypto_scan").joinpath("data/schema.json").read_text(encoding="utf-8")
+    )
+    linkage_enum = schema["properties"]["crypto"]["properties"]["libraries"]["items"]["properties"][
+        "linkage"
+    ]["enum"]
+    assert set(linkage_enum) == LINKAGE_VALUES - {"none"}
 
 
 def test_the_record_says_which_evidence_level_produced_it(tmp_path: Path) -> None:

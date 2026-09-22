@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 import re
 import shutil
@@ -12,10 +13,20 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+from helpers.wheelbuilder import build_wheel
 
-from wheel_crypto_scan.report import CLASS_HELP, LINKAGE_HELP, render_html, render_markdown
-from wheel_crypto_scan.ruleset import LINKAGE_VALUES
+from wheel_crypto_scan import report
+from wheel_crypto_scan.report import (
+    CLASS_HELP,
+    FAMILY_HELP,
+    LINKAGE_HELP,
+    RELATION_HELP,
+    render_html,
+    render_markdown,
+)
+from wheel_crypto_scan.ruleset import FAMILIES, LINKAGE_VALUES, RELATIONS
 from wheel_crypto_scan.ruleset_loader import load_ruleset
+from wheel_crypto_scan.scan import ScanContext, scan_wheel
 
 _DATA_SCRIPT = re.compile(
     r'<script type="application/json" id="wcs-data">(.*?)</script>', re.DOTALL
@@ -103,17 +114,35 @@ def _tab(dom: str, tab: str) -> str:
     return dom[start:end]
 
 
+# A plausible `relation` for a synthetic record's class, mirroring `RELATION_CLASSES`
+# in `ruleset.py`: `OPAQUE` and `NO_CRYPTO_DETECTED` never carry one, every other
+# class here maps to one relation consistent with it.
+_RELATION_FOR_CLASS = {
+    "NON_APPROVED_CRYPTO": "outside_module",
+    "FIPS_BREAKING": "runtime_refusal",
+    "CONDITIONAL": "boundary_unresolved",
+    "CONTEXT_DEPENDENT": "use_unresolved",
+}
+
+
 def record(name: str, klass: str, linkage: str, review: bool = True) -> dict:
+    libraries = [] if linkage == "none" else [{"name": "openssl", "linkage": linkage}]
+    relation = _RELATION_FOR_CLASS.get(klass)
     return {
         "wheel": {"filename": f"{name}-1.0-py3-none-any.whl", "name": name, "version": "1.0"},
         "verdict": {
             "class": klass,
             "classes": [klass],
             "conditions": {"openssl_linkage": linkage},
+            "relations": [relation] if relation else [],
             "needs_human_review": review,
             "reasons": [f"RULE_{klass}: {name}"],
             "rule_ids": [f"RULE_{klass}"],
         },
+        # `families` stays empty here: it is derived from `findings[].family`, and
+        # this bare fixture carries no findings. `html_record` below recomputes it
+        # once it adds one.
+        "crypto": {"families": [], "libraries": libraries},
         "findings": [],
     }
 
@@ -140,6 +169,7 @@ def html_record(
         "analyzer_version": 1,
         "evidence_level": evidence_level,
     }
+    relation = _RELATION_FOR_CLASS.get(klass)
     base["findings"] = [
         {
             "rule_id": rule_id,
@@ -150,12 +180,21 @@ def html_record(
             "layer": "binary",
             "confidence": "high",
             "verdict": klass,
+            "relation": relation,
+            "basis": ["FIPS-140-3"] if relation else [],
+            "family": "library",
             "needs_human_review": review,
             "occurrences": 1,
             "truncated": False,
             "locations": [{"path": f"{name}/_native.so", "line": None, "evidence": name}],
         }
     ]
+    # `crypto.families` is derived from `findings[].family` in a real record; the
+    # bare `record()` fixture above has no findings yet to derive it from, so this
+    # recomputes it now that one exists, the same way `record.py._crypto_block` does.
+    base["crypto"]["families"] = sorted(
+        {finding["family"] for finding in base["findings"] if finding.get("family")}
+    )
     base["artifacts"] = {
         "py_files": 1,
         "pyc_files": 0,
@@ -260,6 +299,115 @@ def test_markdown_never_claims_compliance() -> None:
     assert "compatible" not in table.lower()
 
 
+def test_markdown_shows_the_crypto_inventory_before_the_fips_lens() -> None:
+    """Acceptance criterion 1: each wheel's own detail carries its crypto inventory
+    first, then what the FIPS compatibility lens makes of the same evidence."""
+    rec = html_record("cryptography", "CONDITIONAL", "bundled")
+    table = render_markdown([rec])
+    inventory_index = table.index("### Cryptography in this wheel")
+    compat_index = table.index("### FIPS compatibility")
+    assert inventory_index < compat_index
+    assert "openssl:bundled" in table
+    assert "boundary_unresolved" in table
+    assert "FIPS-140-3" in table
+
+
+def test_markdown_gives_a_no_crypto_wheel_an_explicit_empty_inventory() -> None:
+    """Acceptance criterion 1: a `NO_CRYPTO_DETECTED` wheel still gets an inventory
+    section -- empty, and saying so -- rather than the section disappearing."""
+    table = render_markdown([record("a", "NO_CRYPTO_DETECTED", "none", review=False)])
+    assert "### Cryptography in this wheel" in table
+    assert "No cryptography detected." in table
+
+
+def test_markdown_empty_inventory_survives_an_informational_finding() -> None:
+    """The empty-inventory message must not depend on `findings` being empty, only on
+    `crypto.families`/`crypto.libraries` being empty: a `NO_CRYPTO_DETECTED` wheel
+    that still carries a family-less, verdict-less informational finding (the shape
+    `WHEEL_GENERATOR` takes on every real wheel) must read exactly the same as one
+    with no findings at all, not silently list that finding under a synthetic
+    grouping bucket instead of saying the inventory is empty."""
+    rec = record("a", "NO_CRYPTO_DETECTED", "none", review=False)
+    rec["findings"] = [
+        {
+            "rule_id": "WHEEL_GENERATOR",
+            "subject": "bdist_wheel",
+            "family": None,
+            "relation": None,
+            "basis": [],
+            "severity": "info",
+            "verdict": None,
+            "occurrences": 1,
+        }
+    ]
+    table = render_markdown([rec])
+    assert "No cryptography detected." in table
+
+
+def test_markdown_opaque_wheel_inventory_does_not_claim_no_cryptography() -> None:
+    """An `OPAQUE` wheel also has empty `crypto.families`/`crypto.libraries` --
+    nothing unreadable carries a `family` either -- but "no families, no libraries"
+    means something different for it than for a `NO_CRYPTO_DETECTED` wheel: the tool
+    could not read enough to have an opinion, not that it read the wheel in full and
+    found nothing. `CLASS_HELP["NO_CRYPTO_DETECTED"]`'s own text ("absence of
+    evidence, not evidence of absence") is exactly the distinction this guards."""
+    table = render_markdown([record("a", "OPAQUE", "none")])
+    assert "could not be read well enough" in table
+    assert "No cryptography detected." not in table
+
+
+def test_markdown_shows_family_and_relation_less_findings_as_other_evidence() -> None:
+    """A finding with neither `family` (excluded from the crypto inventory) nor
+    `relation` (excluded from the FIPS compatibility lens) -- coverage and
+    wheel-hygiene evidence such as `WHEEL_GENERATOR` -- is not simply dropped from
+    the wheel's own detail; it shows under a third "Other evidence" section."""
+    rec = record("a", "CONDITIONAL", "bundled")
+    rec["findings"] = [
+        {
+            "rule_id": "WHEEL_GENERATOR",
+            "subject": "bdist_wheel",
+            "family": None,
+            "relation": None,
+            "basis": [],
+            "severity": "info",
+            "verdict": None,
+            "occurrences": 1,
+        }
+    ]
+    table = render_markdown([rec])
+    assert "### Other evidence" in table
+    assert "WHEEL_GENERATOR" in table
+
+
+def test_markdown_shows_dependency_only_crypto_in_the_inventory_not_as_absence(
+    tmp_path: Path,
+) -> None:
+    """A wheel whose only crypto evidence is `Requires-Dist` on crypto packages must
+    not have it both ways: the headline inventory used to say `No cryptography
+    detected.` while `DIST_DEPENDS_ON_CRYPTO` findings for `bcrypt`, `pynacl` and
+    `cryptography` sat in "Other evidence" right below it, naming exactly the
+    cryptography the headline denied. `relation` stays withheld (a dependency edge
+    is not the dependency's own risk), but `family` is descriptive evidence, not a
+    risk statement, so it belongs in "Cryptography in this wheel"."""
+    wheel = build_wheel(
+        tmp_path / "depsonly-1.0-py3-none-any.whl",
+        name="depsonly",
+        version="1.0",
+        requires_dist=("bcrypt", "pynacl", "cryptography"),
+    )
+    ruleset = load_ruleset(None)
+    rec = scan_wheel(wheel, ScanContext.build(ruleset))
+    assert {finding["rule_id"] for finding in rec["findings"]} >= {"DIST_DEPENDS_ON_CRYPTO"}
+    table = render_markdown([rec])
+    assert "No cryptography detected." not in table
+    inventory_start = table.index("### Cryptography in this wheel")
+    compatibility_start = table.index("### FIPS compatibility")
+    inventory = table[inventory_start:compatibility_start]
+    assert ruleset.distributions["bcrypt"].family in inventory
+    assert ruleset.distributions["pynacl"].family in inventory
+    assert ruleset.distributions["cryptography"].family in inventory
+
+
 # --- HTML ---------------------------------------------------------------------------
 
 
@@ -352,6 +500,24 @@ def test_html_never_claims_compliance() -> None:
     assert "absence of evidence" in lowered
 
 
+def test_report_surfaces_never_spell_a_passing_verdict() -> None:
+    """No rendered or source surface of the report module may spell out a passing
+    verdict, in any of the three forms the taxonomy must never acquire: "compliant",
+    "compliance" or "compatible". "compatible" is not a substring of "compatibility",
+    so a wording that only ever discusses FIPS compatibility as a lens, never a status,
+    still passes this check untouched."""
+    forbidden = ("compliant", "compliance", "compatible")
+
+    template = files("wheel_crypto_scan").joinpath("data/report.html").read_text(encoding="utf-8")
+    module_source = inspect.getsource(report)
+    table = render_markdown([record("a", "NO_CRYPTO_DETECTED", "none", review=False)])
+
+    for word in forbidden:
+        assert word not in template.lower(), word
+        assert word not in module_source.lower(), word
+        assert word not in table.lower(), word
+
+
 def test_html_gives_no_class_a_success_colour() -> None:
     """Every precedence class must have a `[data-class=...]` rule, that rule must
     resolve to exactly one of the three named colour tokens (never a bare hex value a
@@ -420,6 +586,16 @@ def test_every_precedence_class_has_help() -> None:
     assert LINKAGE_VALUES <= set(LINKAGE_HELP)
 
 
+def test_every_relation_and_family_has_help() -> None:
+    """`RELATION_HELP` and `FAMILY_HELP` held to `RELATIONS` and `FAMILIES`, the
+    loader's own closed vocabularies, the same way `test_every_precedence_class_has_help`
+    holds `LINKAGE_HELP` to `LINKAGE_VALUES`: a value added to either vocabulary
+    without a matching help entry must fail this, the way a rule naming an unknown
+    relation or family already fails at load time."""
+    assert RELATIONS <= set(RELATION_HELP)
+    assert FAMILIES <= set(FAMILY_HELP)
+
+
 def test_class_help_matches_the_output_schema_verdict_table() -> None:
     """`CLASS_HELP` claims (in its own comment) to be verbatim from SCHEMA.md's
     "Verdict classes" table. Parse that table directly, rather than asserting the
@@ -471,12 +647,55 @@ def test_html_embeds_only_referenced_rules() -> None:
     assert payload["rules"]["BIN_BUNDLED_OPENSSL"]["why"] == ruleset.rule("BIN_BUNDLED_OPENSSL").why
 
 
+def test_html_embeds_only_referenced_standards() -> None:
+    """The `standards` payload narrows to only the standard ids some embedded
+    finding's own `basis` cites, mirroring how `_referenced_rules` narrows to only
+    the rule ids in use, and carries the subset of `Standard` fields the detail
+    panel's basis-chip tooltip reads (title, edition, status, successor, url)."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "CONDITIONAL", "bundled", rule_id="BIN_BUNDLED_OPENSSL")
+    page = render_html([rec], ruleset)
+    payload = _extract_payload(page)
+    assert set(payload["standards"]) == {"FIPS-140-3"}
+    standard = ruleset.standards["FIPS-140-3"]
+    assert payload["standards"]["FIPS-140-3"] == {
+        "title": standard.title,
+        "edition": standard.edition,
+        "status": standard.status,
+        "successor": standard.successor,
+        "url": standard.url,
+    }
+
+
+def test_html_standards_payload_is_empty_with_no_basis_cited() -> None:
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "OPAQUE", "none")
+    rec["findings"][0]["basis"] = []
+    rec["findings"][0]["relation"] = None
+    page = render_html([rec], ruleset)
+    payload = _extract_payload(page)
+    assert payload["standards"] == {}
+
+
 def test_html_handles_an_empty_run() -> None:
     ruleset = load_ruleset(None)
     page = render_html([], ruleset)
     assert "No wheels scanned" in page
     payload = _extract_payload(page)
     assert payload["records"] == []
+
+
+def test_html_unreadable_inventory_note_matches_the_markdown_one() -> None:
+    """`report.py`'s `_UNREADABLE_INVENTORY_NOTE` and `data/report.html`'s
+    `UNREADABLE_INVENTORY_NOTE` are the same sentence written twice, because the HTML
+    report's inventory section is JS, not filled from this Python string. Pins the two
+    copies together so one edited without the other fails here rather than only being
+    noticed by a reader comparing the Markdown and HTML output of the same wheel."""
+    page = render_html([], load_ruleset(None))
+    match = re.search(r'var UNREADABLE_INVENTORY_NOTE = ((?:"[^"]*"\s*\+?\s*)+);', page)
+    assert match is not None
+    js_note = "".join(re.findall(r'"([^"]*)"', match.group(1)))
+    assert js_note == report._UNREADABLE_INVENTORY_NOTE
 
 
 def test_html_is_ascii() -> None:
@@ -571,9 +790,9 @@ def test_html_detail_view_has_a_verdict_section() -> None:
 
 
 def test_browser_detail_view_shows_verdict_section(tmp_path: Path) -> None:
-    """Opening a wheel's detail view renders its Verdict section: the class badge,
-    the openssl_linkage condition, and the reason text -- not just the Findings
-    table below it."""
+    """Opening a wheel's detail view renders its FIPS compatibility section: the
+    class badge, the openssl_linkage condition, and the reason text -- not just the
+    inventory above it."""
     ruleset = load_ruleset(None)
     rec = html_record("a", "FIPS_BREAKING", "static", rule_id="RULE_FIPS")
     page = render_html([rec], ruleset)
@@ -581,10 +800,110 @@ def test_browser_detail_view_shows_verdict_section(tmp_path: Path) -> None:
     dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
     findings_tab = _tab(dom, "findings")
 
-    assert "Verdict" in findings_tab
+    assert "FIPS compatibility" in findings_tab
     assert 'data-class="FIPS_BREAKING"' in findings_tab
     assert "static" in findings_tab
     assert "RULE_FIPS: a" in findings_tab
+
+
+def test_browser_detail_view_shows_inventory_before_compatibility(tmp_path: Path) -> None:
+    """The detail view's crypto inventory -- families and libraries, findings
+    grouped by family -- renders before its FIPS compatibility section -- the class
+    badge as that section's own summary, findings grouped by relation with basis
+    chips -- the same order `report.py`'s `_HEADERS` gives the list view."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "CONDITIONAL", "bundled", rule_id="BIN_BUNDLED_OPENSSL")
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
+    findings_tab = _tab(dom, "findings")
+
+    inventory_index = findings_tab.index("Cryptography in this wheel")
+    compat_index = findings_tab.index("FIPS compatibility")
+    assert inventory_index < compat_index
+    assert "openssl: bundled" in findings_tab
+    assert "boundary_unresolved" in findings_tab
+    assert "FIPS-140-3" in findings_tab
+
+
+def test_browser_no_crypto_wheel_gets_an_explicit_empty_inventory(tmp_path: Path) -> None:
+    """Acceptance criterion 1, rendered: a `NO_CRYPTO_DETECTED` wheel's detail view
+    still shows a crypto inventory section, and it says explicitly that it is
+    empty, rather than the section disappearing."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "NO_CRYPTO_DETECTED", "none", review=False)
+    rec["findings"] = []
+    rec["crypto"] = {"families": [], "libraries": []}
+    rec["verdict"]["relations"] = []
+    rec["verdict"]["reasons"] = []
+    rec["verdict"]["rule_ids"] = []
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
+    findings_tab = _tab(dom, "findings")
+
+    assert "Cryptography in this wheel" in findings_tab
+    assert "No cryptography detected in this wheel." in findings_tab
+
+
+def test_browser_opaque_wheel_inventory_does_not_claim_no_cryptography(tmp_path: Path) -> None:
+    """An `OPAQUE` wheel also has empty `crypto.families`/`crypto.libraries` --
+    nothing unreadable carries a `family` either -- but the inventory section must
+    not say "No cryptography detected" for it: that is the `NO_CRYPTO_DETECTED`
+    claim (read in full, found nothing), and `OPAQUE` means the opposite (could not
+    read enough to have an opinion)."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "OPAQUE", "none", rule_id="WHEEL_UNREADABLE")
+    rec["findings"][0]["family"] = None
+    rec["findings"][0]["relation"] = None
+    rec["findings"][0]["basis"] = []
+    rec["crypto"] = {"families": [], "libraries": []}
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
+    findings_tab = _tab(dom, "findings")
+
+    assert "could not be read well enough" in findings_tab
+    assert "No cryptography detected in this wheel." not in findings_tab
+
+
+def test_browser_detail_view_shows_other_evidence_section(tmp_path: Path) -> None:
+    """A finding with neither `family` (excluded from the crypto inventory) nor
+    `relation` (excluded from the FIPS compatibility lens) -- coverage and
+    wheel-hygiene evidence such as `WHEEL_GENERATOR` -- is not simply invisible
+    outside the Raw JSON tab; it shows under a third "Other evidence" section, after
+    the two named ones."""
+    ruleset = load_ruleset(None)
+    rec = html_record("a", "CONDITIONAL", "bundled", rule_id="BIN_BUNDLED_OPENSSL")
+    rec["findings"].append(
+        {
+            "rule_id": "WHEEL_GENERATOR",
+            "subject": "bdist_wheel",
+            "subject_kind": "generator",
+            "severity": "info",
+            "category": "provenance",
+            "layer": "metadata",
+            "confidence": "high",
+            "verdict": None,
+            "relation": None,
+            "basis": [],
+            "family": None,
+            "needs_human_review": False,
+            "occurrences": 1,
+            "truncated": False,
+            "locations": [],
+        }
+    )
+    page = render_html([rec], ruleset)
+
+    dom = _render_in_browser(tmp_path, page, fragment="wheel=0")
+    findings_tab = _tab(dom, "findings")
+
+    inventory_index = findings_tab.index("Cryptography in this wheel")
+    compat_index = findings_tab.index("FIPS compatibility")
+    other_index = findings_tab.index("Other evidence")
+    assert inventory_index < compat_index < other_index
+    assert "WHEEL_GENERATOR" in findings_tab
 
 
 def test_browser_drilldown_uses_position_not_filename(tmp_path: Path) -> None:
@@ -597,16 +916,20 @@ def test_browser_drilldown_uses_position_not_filename(tmp_path: Path) -> None:
     dup_b = html_record("dup", "OPAQUE", "none", rule_id="RULE_OPAQUE")
     page = render_html([dup_a, dup_b], ruleset)
     payload = _extract_payload(page)
-    assert payload["records"][0]["verdict"]["class"] == "FIPS_BREAKING"
-    assert payload["records"][1]["verdict"]["class"] == "OPAQUE"
+    # Which of the two lands at position 0 is the JSON tiebreak's own business (see
+    # `_html_sort_key`), not this test's: what matters is that the two positions
+    # disagree, and each shows only its own record's evidence.
+    first_class = payload["records"][0]["verdict"]["class"]
+    second_class = payload["records"][1]["verdict"]["class"]
+    assert sorted([first_class, second_class]) == ["FIPS_BREAKING", "OPAQUE"]
 
     first = _tab(_render_in_browser(tmp_path, page, fragment="wheel=0"), "findings")
     second = _tab(_render_in_browser(tmp_path, page, fragment="wheel=1"), "findings")
 
-    assert 'data-class="FIPS_BREAKING"' in first
-    assert 'data-class="OPAQUE"' not in first
-    assert 'data-class="OPAQUE"' in second
-    assert 'data-class="FIPS_BREAKING"' not in second
+    assert f'data-class="{first_class}"' in first
+    assert f'data-class="{second_class}"' not in first
+    assert f'data-class="{second_class}"' in second
+    assert f'data-class="{first_class}"' not in second
 
 
 def test_browser_class_filter_covers_a_class_outside_precedence(tmp_path: Path) -> None:
@@ -695,17 +1018,21 @@ _UNBREAKABLE = "a" * 400
 
 def _detail_layout(tab: str) -> str:
     """JS that records, as JSON in `document.title`, the open detail panel's layout
-    on `tab`: `panel` and `box` are `[scrollWidth, clientWidth]` of the panel and of
-    the tab's table scroll box (null without a table); `wrap` is the narrowest
-    free-text cell's width and `em` its font size (both null without one)."""
+    on `tab`: `panel` is `[scrollWidth, clientWidth]` of the panel; `boxes` is that
+    same pair for **every** `.table-scroll` box on the tab, not just the first --
+    the Findings tab can hold up to three (the inventory table, the compatibility
+    table and, when present, the other-evidence table), and a regression confined to
+    one of the later ones would pass unnoticed if only the first were measured;
+    `wrap` is the narrowest free-text cell's width and `em` its font size (both null
+    without one)."""
     return (
         "var panel = document.getElementById('detail-panel');"
         f"var tabPanel = document.getElementById('tab-{tab}');"
-        "var box = tabPanel.querySelector('.table-scroll');"
+        "var boxes = Array.prototype.slice.call(tabPanel.querySelectorAll('.table-scroll'));"
         "var cells = Array.prototype.slice.call(tabPanel.querySelectorAll('td.wrap'));"
         "document.title = JSON.stringify({"
         " panel: [panel.scrollWidth, panel.clientWidth],"
-        " box: box && [box.scrollWidth, box.clientWidth],"
+        " boxes: boxes.map(function (b) { return [b.scrollWidth, b.clientWidth]; }),"
         " wrap: cells.length ? Math.min.apply(null,"
         "  cells.map(function (cell) { return cell.offsetWidth; })) : null,"
         " em: cells.length ? parseFloat(getComputedStyle(cells[0]).fontSize) : null"
@@ -735,12 +1062,16 @@ def test_browser_detail_view_never_paints_outside_the_panel(tmp_path: Path, tab:
     behind it, whatever length its text runs to. Every free-form field here carries
     an unbreakable token, including the columns of a table that do not wrap, so
     wrapping the free-text columns cannot rescue a table: only its own scroll box
-    keeps it within the panel."""
-    rec = html_record("a", "OPAQUE", "none")
+    keeps it within the panel. `FIPS_BREAKING`, not `OPAQUE`: the class carries a
+    `relation`, so the Findings tab renders its compatibility table -- with an
+    unbreakable basis chip -- alongside the inventory one, stressing both rather
+    than only the first."""
+    rec = html_record("a", "FIPS_BREAKING", "static")
     rec["wheel"]["filename"] = _UNBREAKABLE
     rec["verdict"]["reasons"] = [_UNBREAKABLE]
     rec["findings"][0]["subject"] = _UNBREAKABLE
     rec["findings"][0]["locations"][0]["path"] = _UNBREAKABLE
+    rec["findings"][0]["basis"] = [_UNBREAKABLE]
     rec["binaries"][0]["path"] = _UNBREAKABLE
     rec["binaries"][0]["matched_strings"] = [{"group": "go_fips140", "value": _UNBREAKABLE}]
     rec["artifacts"]["bundled_libs"] = [_UNBREAKABLE]
@@ -760,10 +1091,14 @@ def test_browser_detail_view_never_paints_outside_the_panel(tmp_path: Path, tab:
 
 
 def _long_free_text_record() -> dict:
-    """A record whose finding location, error path and error message are each one
-    unbreakable token: the columns a wheel filename or an object path lands in."""
-    rec = html_record("a", "OPAQUE", "none")
+    """A record whose finding location, finding basis, error path and error message
+    are each one unbreakable token: the columns a wheel filename or an object path
+    lands in. `FIPS_BREAKING`, not `OPAQUE`, so the Findings tab's compatibility
+    table -- and its basis-chip column -- is exercised here too, not only the
+    inventory table."""
+    rec = html_record("a", "FIPS_BREAKING", "static")
     rec["findings"][0]["locations"][0]["path"] = _UNBREAKABLE
+    rec["findings"][0]["basis"] = [_UNBREAKABLE]
     rec["errors"] = [
         {
             "stage": "binary",
@@ -777,13 +1112,15 @@ def _long_free_text_record() -> dict:
 
 @pytest.mark.parametrize("tab", ["findings", "errors"])
 def test_browser_detail_table_wraps_long_paths_to_fit(tmp_path: Path, tab: str) -> None:
-    """On a desktop-width window, a long location, error path or error message wraps
-    within its cell, so the table fits its box without a horizontal scrollbar."""
+    """On a desktop-width window, a long location, basis id, error path or error
+    message wraps within its cell, so every table on the tab fits its own box
+    without a horizontal scrollbar -- checked for each `.table-scroll` box present,
+    not only the first."""
     layout = _measure_detail_view(tmp_path, _long_free_text_record(), tab, window_size="1600,1000")
 
-    assert layout["box"] is not None
-    scroll_width, client_width = layout["box"]
-    assert scroll_width <= client_width
+    assert layout["boxes"], "no .table-scroll box found on this tab"
+    for scroll_width, client_width in layout["boxes"]:
+        assert scroll_width <= client_width
 
 
 @pytest.mark.parametrize("tab", ["findings", "errors"])

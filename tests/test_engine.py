@@ -92,17 +92,48 @@ def test_a_wrapper_distribution_gets_the_conditional_rule_not_the_non_approved_o
     assert "DIST_NON_APPROVED_CRYPTO" not in ids(findings)
 
 
+def test_a_distribution_entry_with_no_own_basis_still_inherits_the_rules(ruleset) -> None:
+    """`cryptography`'s own `[[crypto_distribution]]` entry sets no `relation`/`basis`
+    of its own (checked first so this is not vacuous): the resolved finding must fall
+    back to `DIST_SYSTEM_CRYPTO_WRAPPER`'s own `relation`/`basis` rather than reading
+    an empty `basis` paired with a non-null `relation`, which would break the
+    "always both or neither" pairing invariant `findings.py` documents. This is the
+    inherit-from-rule path `_basis_override` exists for: an entry's `basis` defaults
+    to `()`, not `None`, so passing it through unmodified reads as "explicitly
+    overridden to empty" instead of "not overridden"."""
+    entry = ruleset.distributions["cryptography"]
+    assert entry.relation is None
+    assert entry.basis == ()
+    findings = run(ruleset, wheel(metadata=metadata(name="cryptography", version="42.0.5")))
+    finding = one(findings, "DIST_SYSTEM_CRYPTO_WRAPPER")
+    rule = next(r for r in ruleset.rules if r.id == "DIST_SYSTEM_CRYPTO_WRAPPER")
+    assert finding.relation == rule.relation == "boundary_unresolved"
+    assert finding.basis == rule.basis == ("FIPS-140-3",)
+
+
 def test_an_unlisted_distribution_matches_no_name_rule(ruleset) -> None:
     findings = run(ruleset, wheel(metadata=metadata(name="numpy")))
     assert not ids(findings) & {"DIST_NON_APPROVED_CRYPTO", "DIST_SYSTEM_CRYPTO_WRAPPER"}
 
 
 def test_a_dependency_on_a_crypto_distribution_is_recorded_without_a_verdict(ruleset) -> None:
-    """The dependency carries its own risk in its own record; do not double count it."""
+    """The dependency carries its own risk in its own record; do not double count it.
+    `pynacl`'s own entry sets `relation`, `basis` and `family` (checked below so this
+    assertion is not vacuous), and `relation`/`basis` do not leak onto this finding: a
+    dependency edge is not the dependency's own risk, the same reason `severity` and
+    `verdict` are withheld. `family` is different: it is descriptive evidence, not a
+    risk statement, so it does leak through -- the dependency edge is itself evidence
+    that the library is present."""
+    assert ruleset.distributions["pynacl"].relation is not None
+    assert ruleset.distributions["pynacl"].basis
+    assert ruleset.distributions["pynacl"].family is not None
     findings = run(ruleset, wheel(metadata=metadata(requires_dist_names=("pynacl", "numpy"))))
     finding = one(findings, "DIST_DEPENDS_ON_CRYPTO")
     assert finding.verdict is None
     assert finding.subject == "pynacl"
+    assert finding.relation is None
+    assert finding.basis == ()
+    assert finding.family == ruleset.distributions["pynacl"].family
 
 
 def test_bytecode_without_source_is_flagged_opaque(ruleset) -> None:
@@ -367,10 +398,17 @@ def test_a_vendored_libsodium_uses_the_general_bundled_rule(ruleset) -> None:
 
 
 def test_a_plain_system_dependency_is_informational(ruleset) -> None:
+    """`relation`/`basis` follow the same gate as `severity`/`verdict`: this posture
+    link carries no verdict, so it must not carry a citation for one either. `family`
+    is not verdict-tied and is inherited regardless, so the posture link is still
+    counted in the crypto inventory."""
     evidence = wheel(binaries=(binary("demo/_ext.so", needed=("libcrypto.so.3",)),))
     finding = one(run(ruleset, evidence), "BIN_NEEDED_SYSTEM_OPENSSL")
     assert finding.severity == "info"
     assert finding.verdict is None
+    assert finding.relation is None
+    assert finding.basis == ()
+    assert finding.family == ruleset.libraries["openssl"].family
 
 
 def test_a_hash_renamed_dependency_is_treated_as_vendored(ruleset) -> None:
@@ -378,6 +416,11 @@ def test_a_hash_renamed_dependency_is_treated_as_vendored(ruleset) -> None:
     findings = run(ruleset, evidence)
     assert "BIN_NEEDED_MANGLED_CRYPTO" in ids(findings)
     assert "BIN_NEEDED_SYSTEM_OPENSSL" not in ids(findings)
+    finding = one(findings, "BIN_NEEDED_MANGLED_CRYPTO")
+    library = ruleset.libraries["openssl"]
+    assert finding.relation == library.relation
+    assert finding.basis == library.basis
+    assert finding.family == library.family
 
 
 # --- a needed entry cannot confirm itself: a resolved-but-unmangled one carries
@@ -517,10 +560,17 @@ def test_imported_and_defined_symbols_produce_different_rules(ruleset) -> None:
             ),
         )
     )
-    assert "BIN_OPENSSL_SYMBOLS_IMPORTED" in ids(run(ruleset, imported))
-    assert "BIN_OPENSSL_SYMBOLS_DEFINED" not in ids(run(ruleset, imported))
-    assert "BIN_OPENSSL_SYMBOLS_DEFINED" in ids(run(ruleset, defined))
-    assert "BIN_OPENSSL_SYMBOLS_IMPORTED" not in ids(run(ruleset, defined))
+    imported_findings = run(ruleset, imported)
+    defined_findings = run(ruleset, defined)
+    assert "BIN_OPENSSL_SYMBOLS_IMPORTED" in ids(imported_findings)
+    assert "BIN_OPENSSL_SYMBOLS_DEFINED" not in ids(imported_findings)
+    assert "BIN_OPENSSL_SYMBOLS_DEFINED" in ids(defined_findings)
+    assert "BIN_OPENSSL_SYMBOLS_IMPORTED" not in ids(defined_findings)
+    # `family` comes from the matched symbol group, not from the rule or an entry:
+    # `dynamic_symbol` has no table entry to read it from.
+    assert one(imported_findings, "BIN_OPENSSL_SYMBOLS_IMPORTED").family == (
+        ruleset.symbol_groups["openssl"].family
+    )
 
 
 def test_an_imported_blowfish_call_is_not_a_compiled_in_one(ruleset) -> None:
@@ -590,7 +640,23 @@ def test_a_blake_symbol_alone_is_context_dependent(ruleset, binding) -> None:
         )
     )
     findings = run(ruleset, evidence)
-    assert one(findings, "BIN_NON_CRYPTO_HASH").verdict == "CONTEXT_DEPENDENT"
+    finding = one(findings, "BIN_NON_CRYPTO_HASH")
+    assert finding.verdict == "CONTEXT_DEPENDENT"
+    # `family` comes from the matched symbol group, mirroring `dynamic_symbol`'s
+    # sibling `binary_string` match on the same rule below.
+    assert finding.family == ruleset.symbol_groups["blake"].family
+
+
+def test_a_blake_string_alone_is_context_dependent(ruleset) -> None:
+    evidence = wheel(
+        binaries=(binary("demo/_ext.so", matched_strings=(StringMatch("blake", "BLAKE2b"),)),)
+    )
+    findings = run(ruleset, evidence)
+    finding = one(findings, "BIN_NON_CRYPTO_HASH")
+    assert finding.verdict == "CONTEXT_DEPENDENT"
+    # `family` comes from the matched string group, not from the rule: `binary_string`
+    # has no table entry to read it from either.
+    assert finding.family == ruleset.string_groups["blake"].family
 
 
 def test_a_rust_crate_carries_its_own_verdict(ruleset) -> None:
@@ -873,6 +939,22 @@ def test_the_aws_lc_fips_version_string_suppresses_the_stock_aws_lc_finding(rule
 
 
 # --- linkage-driven rules ---------------------------------------------------
+
+
+def test_a_table_wide_linkage_rule_inherits_the_librarys_own_relation_and_basis(
+    ruleset,
+) -> None:
+    """`BIN_LINKED_CRYPTO_LIBRARY` matches `table = "crypto_library"`, so `inherit`
+    is true and the finding takes libsodium's own `relation`/`basis`/`family`, the
+    same way it already takes libsodium's own `severity`/`verdict` rather than the
+    rule's."""
+    evidence = wheel(binaries=(binary("demo/_ext.so", needed=("libsodium.so.23",)),))
+    finding = one(run(ruleset, evidence), "BIN_LINKED_CRYPTO_LIBRARY")
+    library = ruleset.libraries["libsodium"]
+    assert finding.verdict == library.verdict
+    assert finding.relation == library.relation
+    assert finding.basis == library.basis
+    assert finding.family == library.family
 
 
 def test_system_only_linkage_states_the_condition_explicitly(ruleset) -> None:
@@ -1353,6 +1435,44 @@ def test_a_non_constant_usedforsecurity_on_a_strong_hash_is_not_flagged(ruleset)
     }
 
 
+def test_an_algorithm_list_of_refused_matches_only_the_refused_list() -> None:
+    """`algorithm_list = "refused"` and `"restricted"` name two different lists off
+    `conventions`; a rule reading the wrong one would still load and match, just the
+    wrong algorithms. `PY_WEAK_HASH_CALL` reads `"refused"` and `PY_RESTRICTED_HASH_CALL`
+    reads `"restricted"` in the shipped ruleset, each against its own list; this test
+    still needs its own rule to exercise `"refused"` in isolation, since the shipped
+    rule's `targets` and match shape differ from what this test wants to hold fixed."""
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry(
+            "PY_CALL_REFUSED_TEST",
+            {"kind": "py_call", "targets": ["hashlib.new"], "algorithm_list": "refused"},
+            layer="python",
+        )
+    )
+    ruleset = parse_ruleset(data)
+    refused_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="md5"),))
+    restricted_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="sha1"),))
+    assert "PY_CALL_REFUSED_TEST" in ids(run(ruleset, refused_hit))
+    assert "PY_CALL_REFUSED_TEST" not in ids(run(ruleset, restricted_hit))
+
+
+def test_an_algorithm_list_of_restricted_matches_only_the_restricted_list() -> None:
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry(
+            "PY_CALL_RESTRICTED_TEST",
+            {"kind": "py_call", "targets": ["hashlib.new"], "algorithm_list": "restricted"},
+            layer="python",
+        )
+    )
+    ruleset = parse_ruleset(data)
+    refused_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="md5"),))
+    restricted_hit = wheel(py_sites=(site("py_call", "hashlib.new", algorithm="sha1"),))
+    assert "PY_CALL_RESTRICTED_TEST" not in ids(run(ruleset, refused_hit))
+    assert "PY_CALL_RESTRICTED_TEST" in ids(run(ruleset, restricted_hit))
+
+
 def test_a_method_call_matches_the_wildcard_target(ruleset) -> None:
     assert "PY_TLS_POLICY_OVERRIDE" in ids(
         run(ruleset, wheel(py_sites=(site("py_call", "ctx.set_ciphers"),)))
@@ -1734,3 +1854,41 @@ def test_every_matcher_locates_where_its_declared_location_says(ruleset) -> None
     assert used_kinds_with_a_location <= fired_kinds
     assert object_values_seen
     assert wheel_linkage_seen
+
+
+# --- relation/basis pairing --------------------------------------------------
+
+
+def test_relation_and_basis_are_never_one_without_the_other(ruleset) -> None:
+    """`Finding.relation` and `Finding.basis` are "always both or neither" -- a
+    citation must never stand alone -- across every site this task threads them
+    through, not only the one `test_a_distribution_entry_with_no_own_basis_still_
+    inherits_the_rules` above pins by name. Combines evidence for three different
+    matcher kinds whose matched entry carries no `relation`/`basis` of its own, each
+    relying entirely on its owning rule's: `dist_name` (`cryptography`), `rust_crate`
+    (`aws-lc-fips-sys`, which does carry its own `verdict` but not its own `relation`/
+    `basis`) and `py_import` (`random`, likewise). A regression in any of the nine
+    `Hit`-construction sites that reads an entry's `basis` -- not only the one this
+    fixture happens to hit -- has a good chance of producing a finding whose `basis`
+    is `()` beside a non-`null` `relation`, which this asserts never happens."""
+    crate_entry = ruleset.rust_crates["aws-lc-fips-sys"]
+    assert crate_entry.relation is None
+    module_entry = ruleset.python_modules["random"]
+    assert module_entry.relation is None
+
+    findings = run(
+        ruleset,
+        wheel(
+            metadata=metadata(name="cryptography", version="42.0.5"),
+            binaries=(
+                binary(
+                    "demo/_ext.so",
+                    rust_crates=(RustCrate("aws-lc-fips-sys", "0.14.2"),),
+                ),
+            ),
+            py_sites=(site("py_import", "random"),),
+        ),
+    )
+    assert {"DIST_SYSTEM_CRYPTO_WRAPPER", "BIN_AWS_LC_FIPS", "PY_INSECURE_RNG"} <= ids(findings)
+    for finding in findings:
+        assert (finding.relation is None) == (not finding.basis), finding.rule_id

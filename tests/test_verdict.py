@@ -14,7 +14,9 @@ def ruleset():
     return load_ruleset()
 
 
-def finding(rule_id: str, verdict: str | None, *, review: bool = True, subject=None) -> Finding:
+def finding(
+    rule_id: str, verdict: str | None, *, review: bool = True, subject=None, relation=None
+) -> Finding:
     return Finding(
         rule_id=rule_id,
         severity="high",
@@ -26,6 +28,7 @@ def finding(rule_id: str, verdict: str | None, *, review: bool = True, subject=N
         locations=(Location(path="pkg/_ext.so", evidence="e"),),
         verdict=verdict,
         subject=subject,
+        relation=relation,
     )
 
 
@@ -124,6 +127,30 @@ def test_reasons_and_rule_ids_are_sorted(ruleset) -> None:
     verdict = classify(ruleset, findings, {})
     assert list(verdict.rule_ids) == sorted(verdict.rule_ids)
     assert list(verdict.reasons) == sorted(verdict.reasons)
+
+
+def test_no_findings_means_no_relations(ruleset) -> None:
+    assert classify(ruleset, (), {}).relations == ()
+
+
+def test_relations_are_deduplicated_and_sorted(ruleset) -> None:
+    """Sorted, not precedence-ordered: relations have no precedence the way verdict
+    classes do."""
+    findings = (
+        finding("BIN_LIBSODIUM", "NON_APPROVED_CRYPTO", relation="outside_module"),
+        finding("BIN_AWS_LC", "NON_APPROVED_CRYPTO", relation="not_specified"),
+        finding("BIN_TOMCRYPT", "NON_APPROVED_CRYPTO", relation="outside_module"),
+    )
+    verdict = classify(ruleset, findings, {})
+    assert verdict.relations == ("not_specified", "outside_module")
+
+
+def test_a_finding_with_no_verdict_does_not_contribute_a_relation(ruleset) -> None:
+    """`relation` on an informational finding would be a citation for a verdict this
+    finding does not carry; `classify` only reads `relation` off `contributing`
+    findings, the ones that have a verdict, the same filter `reasons`/`rule_ids` use."""
+    findings = (finding("WHEEL_GENERATOR", None, review=False, relation="not_specified"),)
+    assert classify(ruleset, findings, {}).relations == ()
 
 
 def test_the_verdict_can_never_be_a_pass(ruleset) -> None:

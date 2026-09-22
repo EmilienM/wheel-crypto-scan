@@ -354,9 +354,28 @@ def _run_rules(args: argparse.Namespace) -> int:
                     "needs_human_review": rule.needs_human_review,
                     "title": rule.title,
                     "why": rule.why,
+                    "family": rule.family,
+                    "relation": rule.relation,
+                    "basis": sorted(rule.basis),
                 }
                 for rule in ruleset.rules
             ],
+            # Full `Standard` fields, not the narrowed subset `report.py` embeds in the
+            # HTML page, so a consumer can join on `id` without a second lookup back
+            # into the ruleset for `why` or `sunset`.
+            "standards": {
+                standard.id: {
+                    "id": standard.id,
+                    "title": standard.title,
+                    "edition": standard.edition,
+                    "status": standard.status,
+                    "why": standard.why,
+                    "successor": standard.successor,
+                    "sunset": standard.sunset,
+                    "url": standard.url,
+                }
+                for standard in ruleset.standards.values()
+            },
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
@@ -368,6 +387,8 @@ def _run_rules(args: argparse.Namespace) -> int:
         print(f"- layer: {rule.layer} | category: {rule.category} | severity: {rule.severity}")
         review = "yes" if rule.needs_human_review else "no"
         print(f"- verdict: {rule.verdict or '-'} | review: {review}")
+        basis = ", ".join(sorted(rule.basis)) if rule.basis else "-"
+        print(f"- family: {rule.family or '-'} | relation: {rule.relation or '-'} | basis: {basis}")
         print(f"\n{rule.why}\n")
     return 0
 

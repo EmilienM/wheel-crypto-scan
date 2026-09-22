@@ -909,11 +909,49 @@ def test_rules_prints_the_table_for_review(capsys: pytest.CaptureFixture[str]) -
     assert "wheel ships its own openssl" in printed.lower()
 
 
+def test_rules_markdown_prints_family_relation_and_basis(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["rules"]) == 0
+    printed = capsys.readouterr().out
+    section = printed.split("## PY_INSECURE_RNG", 1)[1].split("\n## ", 1)[0]
+    assert "family: drbg" in section
+    assert "relation: use_unresolved" in section
+    assert "basis: SP-800-90A-r1" in section
+
+
 def test_rules_json_lists_every_rule(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["rules", "--format", "json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert len(payload["rules"]) > 20
     assert all(rule["why"] for rule in payload["rules"])
+
+
+def test_rules_json_carries_family_relation_and_basis_per_rule(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(["rules", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    by_id = {rule["id"]: rule for rule in payload["rules"]}
+    assert by_id["PY_INSECURE_RNG"]["family"] == "drbg"
+    assert by_id["PY_INSECURE_RNG"]["relation"] == "use_unresolved"
+    assert by_id["PY_INSECURE_RNG"]["basis"] == ["SP-800-90A-r1"]
+
+
+def test_rules_json_carries_full_standard_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    """The `standards` block a consumer joins `basis` ids against carries every
+    `Standard` field, not the narrower subset `report.py` embeds in the HTML page."""
+    assert main(["rules", "--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    standard = payload["standards"]["FIPS-140-3"]
+    assert standard["id"] == "FIPS-140-3"
+    assert standard["title"]
+    assert standard["edition"]
+    assert standard["status"]
+    assert "why" in standard
+    assert "successor" in standard
+    assert "sunset" in standard
+    assert "url" in standard
 
 
 def test_schema_prints_valid_json(capsys: pytest.CaptureFixture[str]) -> None:
@@ -950,7 +988,7 @@ def test_the_schema_matches_what_the_scanner_actually_emits(
     record = read_records(out)[0]
 
     assert set(record) == set(schema["required"])
-    for section in ("tool", "wheel", "artifacts", "verdict"):
+    for section in ("tool", "wheel", "artifacts", "verdict", "crypto"):
         assert set(record[section]) == set(schema["properties"][section]["required"]), section
 
     # The arrays too. Checking only the object sections let a key be dropped from
@@ -960,6 +998,12 @@ def test_the_schema_matches_what_the_scanner_actually_emits(
     required = set(schema["properties"]["binaries"]["items"]["required"])
     for binary in binaries:
         assert required <= set(binary)
+
+    findings = [finding for found in read_records(out) for finding in found["findings"]]
+    assert findings, "the corpus must carry a finding or this asserts nothing"
+    required = set(schema["properties"]["findings"]["items"]["required"])
+    for finding in findings:
+        assert required <= set(finding)
 
 
 def test_docs_output_schema_page_lists_every_partial_reason() -> None:

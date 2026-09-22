@@ -1,10 +1,13 @@
 # wheel-crypto-scan
 
-Static analyser that reports crypto-relevant **evidence** inside Python wheels so consumers
-of a package index can see per-wheel FIPS risk. It gathers evidence; it does not decide FIPS
-compatibility. Read `README.md` for what it detects, `SCHEMA.md` for the output contract, and
-`DESIGN.md` for the design calls that cost something, including the holes left open on
-purpose and the measurement behind each one.
+Static analyser that reports crypto-relevant **evidence** inside Python wheels: which
+primitive families and libraries are present, how they are linked, and what the Python
+code does with TLS, hashing and randomness. FIPS compatibility is one lens over that
+evidence, not the whole of it -- whether a FIPS-enforcing host can run the wheel's
+crypto as shipped. It gathers evidence; it does not decide FIPS compatibility. Read
+`README.md` for what it detects, `SCHEMA.md` for the output contract, and `DESIGN.md`
+for the design calls that cost something, including the holes left open on purpose and
+the measurement behind each one.
 
 ## Invariants
 
@@ -57,6 +60,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `ruleset_loader.py` | Parses and validates the TOML into the `Ruleset` object model `ruleset.py` defines |
 | `ruleset_coherence.py` | The load-time checks across parsed rules that no single rule's parse can see: `suppressed_by` relations that can fire and form no cycle, and SBOM coverage that leaves every moved linkage explained |
 | `conventions.py` | `Conventions`/`SonameInfo`, the structural facts about wheel layout, and their `[conventions]` parser |
+| `standards.py` | `Standard`, the NIST/FIPS publication a `basis` cites, and the `[[standard]]` table's own parser: shape, the closed `status` vocabulary, unique ids, and an acyclic `successor` chain |
 | `layers/` | Evidence gathering: wheel metadata, Python AST, binaries, archive inventory |
 | `binfmt/` | ELF, Mach-O, PE, Go and Rust readers, the `ar`-archive container reader, the shared strings pass, the shared symbol-table cross-check, the fallback |
 | `caps.py` | The shared evidence-preserving cap: one representative per key before filling the rest. Top-level, not under `binfmt/`, because `record.py` caps `evidence.errors` with it too, and must not import the whole binary-reader stack to do it |

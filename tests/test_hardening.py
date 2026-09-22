@@ -7,6 +7,7 @@ cache that serves the wrong record.
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import struct
@@ -2176,3 +2177,80 @@ def test_cargo_git_pattern_stays_linear_over_a_run_of_literal_src_directories() 
 
     assert crates == ()
     assert elapsed < 2, f"the git pattern took {elapsed:.2f}s over a run of src/ directories"
+
+
+def _iter_src_modules() -> list[Path]:
+    """Every `.py` file under `src/wheel_crypto_scan/`, sorted for a deterministic walk
+    order and a deterministic failure message.
+    """
+    root = Path(__file__).resolve().parents[1] / "src" / "wheel_crypto_scan"
+    return sorted(root.glob("**/*.py"))
+
+
+def _wall_clock_reads(tree: ast.AST) -> list[str]:
+    """Every import of the `datetime` module and every `time.time()`, `time.localtime()`
+    or `date.today()` call in `tree`, found by walking the parsed AST rather than the
+    source text. `ast.walk` descends into every nested scope on its own, so a `from
+    datetime import ...` inside a function or class body cannot hide, and a string or
+    comment that merely names one of these cannot fake a hit. `import time as t` and
+    `from datetime import date as d` are resolved back to the real module before an
+    attribute call is judged, and `from time import time as t` is tracked separately so
+    the resulting bare `t()` call is judged too -- neither form of aliasing can hide one.
+    """
+    time_names: set[str] = set()
+    date_names: set[str] = set()
+    bare_time_names: set[str] = set()
+    hits: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "datetime":
+                    hits.append(f"line {node.lineno}: import datetime")
+                elif alias.name == "time":
+                    time_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "datetime":
+            hits.append(f"line {node.lineno}: from datetime import ...")
+            for alias in node.names:
+                if alias.name == "date":
+                    date_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "time":
+            for alias in node.names:
+                if alias.name in {"time", "localtime"}:
+                    bare_time_names.add(alias.asname or alias.name)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Attribute):
+            target = node.func.value
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id in time_names and node.func.attr in {"time", "localtime"}:
+                hits.append(f"line {node.lineno}: {target.id}.{node.func.attr}()")
+            elif target.id in date_names and node.func.attr == "today":
+                hits.append(f"line {node.lineno}: {target.id}.{node.func.attr}()")
+        elif isinstance(node.func, ast.Name) and node.func.id in bare_time_names:
+            hits.append(f"line {node.lineno}: {node.func.id}()")
+
+    return hits
+
+
+def test_nothing_under_src_imports_datetime_or_reads_the_wall_clock() -> None:
+    """The deterministic-output invariant rules out `datetime` and the wall-clock corners
+    of `time` anywhere under `src/wheel_crypto_scan/`: a byte-identical scan cannot depend
+    on when it ran. Parsing the AST, rather than grepping, keeps a comment or docstring
+    that merely mentions one of these names from failing the test.
+    """
+    root = Path(__file__).resolve().parents[1]
+    modules = _iter_src_modules()
+    assert modules, "no modules found under src/wheel_crypto_scan/; the glob has gone stale"
+
+    violations: dict[str, list[str]] = {}
+    for path in modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        hits = _wall_clock_reads(tree)
+        if hits:
+            violations[str(path.relative_to(root))] = hits
+
+    assert not violations, f"wall-clock reads found under src/: {violations}"

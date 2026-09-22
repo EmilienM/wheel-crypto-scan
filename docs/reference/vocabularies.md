@@ -1,9 +1,12 @@
 # Vocabularies
 
-These are the fixed token sets the record uses. They live in Python because they describe
-what a reader did; which of them is worth a verdict lives in `ruleset.toml`. A token named
-by a rule is validated at load time, so a typo is a load error rather than a rule that
-silently matches nothing.
+These are the fixed token sets the record uses, with one exception: `[[standard]].status`
+never reaches a record -- it is parsed into the loaded `Ruleset` for the CLI and the HTML
+report to read back on demand, not carried on the finding that cites the standard (see
+"The ruleset cites a standard and the record carries only the pointer" in `DESIGN.md`).
+The rest live in Python because they describe what a reader did; which of them is worth a
+verdict lives in `ruleset.toml`. A token named by a rule is validated at load time, so a
+typo is a load error rather than a rule that silently matches nothing.
 
 They are part of the output contract. Adding a value is not a `schema_version` bump;
 renaming or removing one is.
@@ -160,3 +163,59 @@ change.
 
 - **`imported`** — the code lives elsewhere; the wheel calls into a library it does not ship.
 - **`defined`** — this object carries that code itself.
+
+## `RELATIONS`
+
+`ruleset.py`. What a `relation` names: what would have to change for a finding to go
+away, the question a consumer of the index actually asks. Carried on a rule and on an
+entry in the four override-bearing tables, always beside a non-empty `basis` -- a
+citation must never stand alone.
+`ruleset_coherence.check_relation_matches_verdict` refuses, at load time, a `relation`
+paired with a verdict class outside its row below.
+
+| Value | Consistent verdict classes | Meaning |
+|---|---|---|
+| `not_specified` | `NON_APPROVED_CRYPTO` | No approved standard specifies an equivalent construction: only a protocol or algorithm change removes the finding, not a different module. |
+| `restricted` | `NON_APPROVED_CRYPTO`, `CONTEXT_DEPENDENT` | The primitive is approved only under a stated restriction (SHA-1 for a non-signature, non-collision-resistant use, for instance). `NON_APPROVED_CRYPTO` when the wheel implements it itself, `CONTEXT_DEPENDENT` when it calls into the host module and only the restriction's applicability is in question. |
+| `outside_module` | `NON_APPROVED_CRYPTO` | The algorithm is approved, but this copy of it -- a separate stack, or a definition compiled straight into the object -- is not a validated module reading the system's crypto policy. |
+| `boundary_unresolved` | `CONDITIONAL` | Whether this reaches a validated module cannot be told from the wheel alone; `verdict.conditions` carries the linkage that decides it. |
+| `runtime_refusal` | `FIPS_BREAKING` | Will raise at runtime under FIPS-enforcing mode. |
+| `policy_bypass` | `CONDITIONAL` | Overrides or bypasses a system-level policy control -- a pinned TLS version, disabled certificate verification -- rather than implementing a primitive. |
+| `use_unresolved` | `CONTEXT_DEPENDENT` | Whether this is a security use is not resolvable from the evidence alone: a non-cryptographic hash library, an alternative to `os.urandom`, a declared `usedforsecurity=False`, an ambiguous call. |
+
+No relation names `OPAQUE`: unreadability has no standard to cite, so a verdict of
+`OPAQUE` paired with any relation is refused the same way.
+
+## `FAMILIES`
+
+`ruleset.py`. The FIPS-agnostic vocabulary for what a piece of evidence *is*, as
+opposed to what it means for FIPS compatibility: carried on a rule, on an entry in the
+four override-bearing tables, and on every `[[symbol_group]]`/`[[string_group]]`, so a
+wheel's crypto inventory can be read without going through the FIPS lens at all.
+`category` stays the FIPS-lens vocabulary (`non-approved-impl`, `fips-breaking`,
+`trust-policy` and the rest); `family` sits beside it rather than folding into it,
+since widening `category`'s own values to also answer "what is this" would leave the
+inventory unable to ask that question without reading the FIPS-lens answer too.
+
+```
+hash            checksum        block_cipher    stream_cipher
+aead            mac             kdf             password_hash
+signature       key_agreement   kem             drbg
+entropy         tls             ssh             trust_store
+library
+```
+
+`library` is a general-purpose stack -- OpenSSL, libsodium, pycryptodome -- whose own
+primitives span several of the other families, rather than one itself.
+
+## `[[standard]].status`
+
+`standards.py`. The closed set of states a `[[standard]]` entry's `status` may hold.
+
+| Value | Meaning |
+|---|---|
+| `current` | The standard to cite. A `basis` may name it. |
+| `revision_planned` | Still the current text, on a published schedule to be replaced. A `basis` may still name it. |
+| `draft` | Not yet in force. A `basis` may not name it. |
+| `planned` | Documents what is coming before anything can cite it. A `basis` may not name it. |
+| `withdrawn` | No longer in force. A `basis` may not name it; the entry is kept only as the context a `successor` link points back from. |

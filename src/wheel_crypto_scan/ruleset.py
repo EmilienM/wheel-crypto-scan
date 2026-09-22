@@ -23,6 +23,7 @@ from types import MappingProxyType
 from typing import Any
 
 from .conventions import Conventions
+from .standards import Standard
 
 # What each matcher kind reads off its `[rule.match]` table, plus `kind` itself and,
 # where the loader and `Ruleset.default_rule_for_table` read them, `table`/`default`. A
@@ -66,9 +67,7 @@ MATCH_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
         "partial_binary": frozenset({"kind", "reasons", "exclude_reasons"}),
         "binaries_truncated": frozenset({"kind"}),
         "py_import": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
-        "py_call": frozenset(
-            {"kind", "targets", "usedforsecurity", "algorithm", "weak_algorithms_only"}
-        ),
+        "py_call": frozenset({"kind", "targets", "usedforsecurity", "algorithm", "algorithm_list"}),
         "py_attr": frozenset({"kind", "attributes", "values"}),
         "py_constant": frozenset({"kind", "constants"}),
         "py_ctypes_load": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
@@ -79,7 +78,79 @@ MATCH_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
 # ruleset is rejected rather than quietly skipping the rule.
 MATCHER_KINDS = frozenset(MATCH_KEYS)
 
+# What `algorithm_list` on a `py_call` match names: which of `conventions`'s two hash
+# lists the match filters against, or their union under "weak" -- the same three-way
+# split `Conventions.weak_hash_algorithms` derives. A closed vocabulary for the same
+# reason `RELATIONS`/`FAMILIES` are: a typo here should fail to load rather than
+# silently filter against nothing.
+ALGORITHM_LISTS = frozenset({"refused", "restricted", "weak"})
+
 SEVERITIES = frozenset({"high", "medium", "low", "info"})
+
+# What a `relation` names: what would have to change for the finding to go away, the
+# question a consumer of the index actually asks. Carried on `Rule` and on every entry
+# in the four override-bearing tables, always beside a non-empty `basis` -- a citation
+# must never stand alone -- and validated by the loader the same way `SEVERITIES` is.
+RELATIONS = frozenset(
+    {
+        "not_specified",
+        "restricted",
+        "outside_module",
+        "boundary_unresolved",
+        "runtime_refusal",
+        "policy_bypass",
+        "use_unresolved",
+    }
+)
+
+# Which verdict classes a `relation` is consistent with. A pair outside this table says
+# two things about the same finding -- what would fix it, and how bad leaving it is --
+# that disagree with each other, so `ruleset_coherence.check_relation_matches_verdict`
+# refuses it at load time. `restricted` is the one relation with two answers: the
+# finding is `NON_APPROVED_CRYPTO` when the wheel implements the primitive itself, and
+# `CONTEXT_DEPENDENT` when it defers to the host module and only the use is in
+# question. No relation names `OPAQUE`: unreadability has no standard to cite, so a
+# verdict of `OPAQUE` paired with any relation is refused the same way.
+RELATION_CLASSES: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "not_specified": frozenset({"NON_APPROVED_CRYPTO"}),
+        "restricted": frozenset({"NON_APPROVED_CRYPTO", "CONTEXT_DEPENDENT"}),
+        "outside_module": frozenset({"NON_APPROVED_CRYPTO"}),
+        "boundary_unresolved": frozenset({"CONDITIONAL"}),
+        "runtime_refusal": frozenset({"FIPS_BREAKING"}),
+        "policy_bypass": frozenset({"CONDITIONAL"}),
+        "use_unresolved": frozenset({"CONTEXT_DEPENDENT"}),
+    }
+)
+
+# The FIPS-agnostic vocabulary for what a piece of evidence *is*, as opposed to what it
+# means for FIPS compatibility: carried on every entry in the four override-bearing
+# tables and on every `[[symbol_group]]`/`[[string_group]]`, so crypto inventory (which
+# families a wheel carries) can be read without going through the FIPS lens at all.
+# `library` is a general-purpose stack -- OpenSSL, libsodium, pycryptodome -- whose own
+# primitives span several of the other families.
+FAMILIES = frozenset(
+    {
+        "hash",
+        "checksum",
+        "block_cipher",
+        "stream_cipher",
+        "aead",
+        "mac",
+        "kdf",
+        "password_hash",
+        "signature",
+        "key_agreement",
+        "kem",
+        "drbg",
+        "entropy",
+        "tls",
+        "ssh",
+        "trust_store",
+        "library",
+    }
+)
+
 CONFIDENCES = frozenset({"high", "medium", "low"})
 LAYERS = frozenset({"metadata", "binary", "python", "derived"})
 BINDINGS = frozenset({"imported", "defined", "any"})
@@ -331,6 +402,12 @@ class Rule:
     matches: tuple[Mapping[str, Any], ...]
     verdict: str | None = None
     suppressed_by: tuple[str, ...] = ()
+    # What would have to change for this finding to go away, and the standards that
+    # say so -- see `RELATIONS`/`RELATION_CLASSES`. Always both or neither.
+    relation: str | None = None
+    basis: tuple[str, ...] = ()
+    # What kind of primitive this finding is evidence of -- see `FAMILIES`.
+    family: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +420,9 @@ class Distribution:
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
+    relation: str | None = None
+    basis: tuple[str, ...] = ()
+    family: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,6 +479,9 @@ class CryptoLibrary:
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
+    relation: str | None = None
+    basis: tuple[str, ...] = ()
+    family: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +494,9 @@ class RustCrateEntry:
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
+    relation: str | None = None
+    basis: tuple[str, ...] = ()
+    family: str | None = None
     # Resolved finding keys, (owning rule id, crate name), that suppress this crate's
     # finding on an object where one of them also fired. Filled by the loader, which
     # resolves each named crate to its owning rule through that crate's own routing or
@@ -428,6 +514,9 @@ class PythonModule:
     severity: str | None = None
     verdict: str | None = None
     needs_human_review: bool | None = None
+    relation: str | None = None
+    basis: tuple[str, ...] = ()
+    family: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,6 +526,10 @@ class SymbolGroup:
     name: str
     prefixes: tuple[str, ...]
     exact: frozenset[str]
+    # What kind of primitive this group's symbols belong to -- see `FAMILIES`. Inert to
+    # matching: `SymbolGroup.matches` and the locators built from `prefixes`/`exact`
+    # never read it, only carried through to the finding for the crypto inventory.
+    family: str | None = None
 
     def matches(self, symbol: str) -> bool:
         return symbol in self.exact or symbol.startswith(self.prefixes)
@@ -451,6 +544,9 @@ class StringGroup:
     substrings: tuple[str, ...]
     pattern: re.Pattern[str]
     in_code: bool
+    # What kind of primitive this group's strings belong to -- see `FAMILIES`. Inert to
+    # matching, the same way and for the same reason as `SymbolGroup.family` above.
+    family: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +681,13 @@ class Ruleset:
     symbol_groups: Mapping[str, SymbolGroup]
     string_groups: Mapping[str, StringGroup]
     ctypes_substrings: tuple[str, ...]
+    # Keyed on `Standard.id`. Defaults to empty rather than requiring every direct
+    # `Ruleset(...)` construction in a test to supply one: a ruleset with no `basis`
+    # anywhere is coherent with no standards declared at all. `default_factory`
+    # rather than a bare literal: `MappingProxyType({}).__hash__` is `None` on Python
+    # 3.11, so `dataclasses` reads the literal as a mutable default and refuses to
+    # build the class at all -- a factory sidesteps that check regardless of hashability.
+    standards: Mapping[str, Standard] = field(default_factory=lambda: MappingProxyType({}))
     _by_id: Mapping[str, Rule] = field(repr=False, default_factory=dict)
     _libraries_by_sbom_key: Mapping[str, CryptoLibrary] = field(repr=False, default_factory=dict)
     _crates_by_sbom_key: Mapping[str, RustCrateEntry] = field(repr=False, default_factory=dict)

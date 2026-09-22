@@ -35,7 +35,8 @@ _CONVENTIONS_KEYS = frozenset(
         "cargo_path_regex",
         "cargo_vendor_path_regex",
         "cargo_git_path_regex",
-        "weak_hash_algorithms",
+        "refused_hash_algorithms",
+        "restricted_hash_algorithms",
         "library_suffixes",
         "windows_library_suffixes",
         "go_boring_group",
@@ -98,7 +99,8 @@ class Conventions:
     cargo_path_regex: re.Pattern[str]
     cargo_vendor_path_regex: re.Pattern[str]
     cargo_git_path_regex: re.Pattern[str]
-    weak_hash_algorithms: frozenset[str]
+    refused_hash_algorithms: frozenset[str]
+    restricted_hash_algorithms: frozenset[str]
     # No defaults, and ahead of the defaulted fields for that reason: the loader
     # refuses a ruleset whose go_boring_group/go_stock_group name no string group, and
     # a default here would let a directly built Conventions point at groups that need
@@ -109,6 +111,15 @@ class Conventions:
     go_fips140_group: str
     library_suffixes: tuple[str, ...] = (".so", ".dylib", ".dll", ".pyd")
     windows_library_suffixes: tuple[str, ...] = (".dll", ".pyd")
+
+    @property
+    def weak_hash_algorithms(self) -> frozenset[str]:
+        """The union of `refused_hash_algorithms` and `restricted_hash_algorithms`, for
+        `algorithm_list = "weak"`, the one place that means either list. Derived rather
+        than a third list in the TOML, which could silently disagree with the two it is
+        meant to summarise.
+        """
+        return self.refused_hash_algorithms | self.restricted_hash_algorithms
 
     def is_vendor_path(self, path: str) -> bool:
         """True when any directory component is an auditwheel or delocate vendor dir."""
@@ -202,8 +213,18 @@ def parse_conventions(data: Mapping[str, Any]) -> Conventions:
                 raise RulesetError(f"{where}: pattern {pattern.pattern!r} needs a '{group}' group")
     vendor_dir_globs = _require(data, "vendor_dir_globs", where)
     _check_string_sequence(vendor_dir_globs, "vendor_dir_globs", where)
-    weak_hash_algorithms = _require(data, "weak_hash_algorithms", where)
-    _check_string_sequence(weak_hash_algorithms, "weak_hash_algorithms", where)
+    refused_hash_algorithms = _require(data, "refused_hash_algorithms", where)
+    _check_string_sequence(refused_hash_algorithms, "refused_hash_algorithms", where)
+    restricted_hash_algorithms = _require(data, "restricted_hash_algorithms", where)
+    _check_string_sequence(restricted_hash_algorithms, "restricted_hash_algorithms", where)
+    # A hash cannot be both refused outright and merely restricted to certain uses --
+    # the two answers disagree, so a name in both is a contradiction to refuse, not a
+    # redundancy to allow.
+    overlap = sorted(set(refused_hash_algorithms) & set(restricted_hash_algorithms))
+    if overlap:
+        raise RulesetError(
+            f"{where}: {overlap} in both refused_hash_algorithms and restricted_hash_algorithms"
+        )
     raw_suffixes = _require(data, "library_suffixes", where)
     _check_string_sequence(raw_suffixes, "library_suffixes", where)
     raw_windows_suffixes = _require(data, "windows_library_suffixes", where)
@@ -222,7 +243,8 @@ def parse_conventions(data: Mapping[str, Any]) -> Conventions:
         cargo_path_regex=cargo,
         cargo_vendor_path_regex=cargo_vendor,
         cargo_git_path_regex=cargo_git,
-        weak_hash_algorithms=frozenset(weak_hash_algorithms),
+        refused_hash_algorithms=frozenset(refused_hash_algorithms),
+        restricted_hash_algorithms=frozenset(restricted_hash_algorithms),
         library_suffixes=suffixes,
         windows_library_suffixes=windows_suffixes,
         go_boring_group=str(_require(data, "go_boring_group", where)),

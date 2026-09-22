@@ -79,6 +79,7 @@ def build_record(
         "binaries": [_binary_block(binary, evidence_level) for binary in binaries],
         "findings": [_finding_block(finding) for finding in findings],
         "verdict": _verdict_block(verdict),
+        "crypto": _crypto_block(findings, verdict),
         "errors": [_error_block(error) for error in errors],
         # Set when thousands of errors (typically the same kind repeated across many
         # members) would otherwise produce an unbounded record. `caps.cap`
@@ -416,6 +417,9 @@ def _finding_block(finding: Finding) -> dict[str, Any]:
         "layer": finding.layer,
         "confidence": finding.confidence,
         "verdict": finding.verdict,
+        "relation": finding.relation,
+        "basis": sorted(finding.basis),
+        "family": finding.family,
         "needs_human_review": finding.needs_human_review,
         "occurrences": finding.occurrences,
         "truncated": finding.truncated,
@@ -430,11 +434,29 @@ def _verdict_block(verdict: Verdict) -> dict[str, Any]:
     return {
         "class": verdict.headline,
         "classes": list(verdict.classes),
+        "relations": list(verdict.relations),
         "rule_ids": list(verdict.rule_ids),
         "reasons": list(verdict.reasons),
         "conditions": dict(verdict.conditions),
         "needs_human_review": verdict.needs_human_review,
     }
+
+
+def _crypto_block(findings: Sequence[Finding], verdict: Verdict) -> dict[str, Any]:
+    """The crypto inventory: every primitive family the findings are evidence of, and
+    every library whose linkage resolved to something. `libraries` is derived from
+    `verdict.conditions` rather than threaded through as a second parameter, so this
+    block and the `verdict.conditions` it is derived from can never disagree: a
+    library's posture is `none` exactly when it is left out here, which is what gives a
+    `NO_CRYPTO_DETECTED` wheel a genuinely empty inventory.
+    """
+    families = sorted({finding.family for finding in findings if finding.family is not None})
+    libraries = [
+        {"name": name.removesuffix("_linkage"), "linkage": value}
+        for name, value in sorted(verdict.conditions.items())
+        if value != "none"
+    ]
+    return {"families": families, "libraries": libraries}
 
 
 def _error_block(error: ScanError) -> dict[str, Any]:
