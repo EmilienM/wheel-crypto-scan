@@ -1,10 +1,13 @@
 """Human-readable views of the records. The JSONL contract lives in `record.py`.
 
-Markdown is for reading over someone's shoulder: the summary deliberately leads with
-the verdict class and the OpenSSL linkage, because those are the two columns a
-component team actually triages on. HTML is for browsing and drill-down: one
-self-contained page with the same columns, sortable and filterable, with a detail
-view per wheel. Both are views; the JSONL is the contract.
+Markdown is for reading over someone's shoulder: the summary table leads with the
+crypto inventory -- families, libraries and their linkage, the relations that follow
+from it -- because a wheel's evidence is what a reader needs first, and the class badge
+comes after it as the FIPS compatibility lens's own summary, not the wheel's headline
+identity. HTML is for browsing and drill-down: one self-contained page with the same
+columns, sortable and filterable, with a detail view per wheel that repeats the same
+inventory-first split: "Cryptography in this wheel", then "FIPS compatibility". Both
+are views; the JSONL is the contract.
 """
 
 from __future__ import annotations
@@ -16,7 +19,27 @@ from typing import Any
 
 from .ruleset import Ruleset
 
-_HEADERS = ("wheel", "version", "class", "openssl", "review", "reasons")
+_HEADERS = (
+    "wheel",
+    "version",
+    "families",
+    "libraries",
+    "relations",
+    "class",
+    "review",
+    "reasons",
+)
+
+_FINDING_HEADERS = (
+    "rule",
+    "subject",
+    "family",
+    "relation",
+    "basis",
+    "severity",
+    "verdict",
+    "occurrences",
+)
 
 # Verbatim from SCHEMA.md's "Verdict classes" table. A class with no entry here
 # renders "No description; see the output schema." in the page -- never a blank and
@@ -66,40 +89,136 @@ LINKAGE_HELP: dict[str, str] = {
     ),
 }
 
+# What a `relation` names in remediation terms: what would have to change for a finding
+# carrying it to go away, the question a reader of the FIPS compatibility section
+# actually asks. A test holds this to `RELATIONS`, the loader's own closed vocabulary,
+# the same way `test_every_precedence_class_has_help` holds `LINKAGE_HELP` to
+# `LINKAGE_VALUES` -- a relation added to the vocabulary without a matching entry here
+# must fail that test, the way an unknown relation already fails to load.
+RELATION_HELP: dict[str, str] = {
+    "not_specified": (
+        "No approved standard specifies an equivalent construction: only a protocol "
+        "or algorithm change removes the finding, not a different module."
+    ),
+    "restricted": (
+        "Approved only for a stated restricted use (for example blockchain "
+        "applications); acceptable there, non-approved or context-dependent "
+        "elsewhere."
+    ),
+    "outside_module": (
+        "An approved algorithm, implemented or compiled outside any validated "
+        "module: relinking against a validated module removes the finding."
+    ),
+    "boundary_unresolved": (
+        "Whether this reaches a validated module cannot be told from the wheel "
+        "alone; read conditions for the linkage that decides it."
+    ),
+    "runtime_refusal": (
+        "Raises at runtime under FIPS-enforcing mode; the call itself has to change."
+    ),
+    "policy_bypass": (
+        "Overrides or bypasses the host's TLS or crypto policy: removing the "
+        "override, not the library, is what fixes it."
+    ),
+    "use_unresolved": (
+        "The construction itself is not disapproved; whether this particular use "
+        "is a security use is what remains open."
+    ),
+}
+
+# What a `family` names: the kind of primitive a finding is evidence of, independent of
+# the FIPS lens -- see `FAMILIES` in `ruleset.py`. A closed, static vocabulary shipped
+# in full on every page, the same way `CLASS_HELP`/`LINKAGE_HELP` are: small enough that
+# narrowing it to only the values a given run's records use would save nothing. A test
+# holds this to `FAMILIES` the same way `RELATION_HELP` is held to `RELATIONS`.
+FAMILY_HELP: dict[str, str] = {
+    "hash": "A cryptographic hash function (message digest), independent of any specific use.",
+    "checksum": "A non-cryptographic hash or CRC used for integrity checking, not security.",
+    "block_cipher": "A symmetric block cipher, such as AES or Blowfish.",
+    "stream_cipher": "A symmetric stream cipher, such as ChaCha20 or RC4.",
+    "aead": (
+        "An authenticated-encryption construction that combines confidentiality and "
+        "integrity in one primitive."
+    ),
+    "mac": "A message authentication code, such as HMAC, that authenticates rather than encrypts.",
+    "kdf": "A key derivation function that turns input material into cryptographic key bytes.",
+    "password_hash": (
+        "A password-hashing construction, such as bcrypt or Argon2, built to be slow "
+        "rather than fast."
+    ),
+    "signature": "A digital signature algorithm, such as RSA, ECDSA or EdDSA.",
+    "key_agreement": (
+        "A key-agreement or key-exchange construction, such as Diffie-Hellman or ECDH."
+    ),
+    "kem": "A key encapsulation mechanism, including post-quantum constructions such as ML-KEM.",
+    "drbg": "A deterministic random bit generator that stretches a seed into pseudorandom output.",
+    "entropy": "A source of entropy feeding a DRBG, such as an OS random device.",
+    "tls": (
+        "TLS/SSL protocol handling: version negotiation, cipher suites and certificate "
+        "verification."
+    ),
+    "ssh": "SSH protocol handling.",
+    "trust_store": "A bundled certificate trust store.",
+    "library": (
+        "A general-purpose cryptography library or stack whose own primitives span "
+        "several other families."
+    ),
+}
+
 
 def render_markdown(records: Sequence[dict[str, Any]]) -> str:
-    """A summary table, one row per wheel, sorted by filename."""
+    """A summary table, one row per wheel, sorted by filename, followed by each
+    wheel's own two-section detail: its crypto inventory first, then what the FIPS
+    compatibility lens makes of it. A wheel whose class is `NO_CRYPTO_DETECTED` still
+    gets an inventory section -- it says so explicitly rather than disappearing, the
+    same absence-is-not-evidence rule the class itself states.
+    """
     if not records:
         return "No wheels scanned.\n"
 
-    rows = [_row(record) for record in records]
-    rows.sort(key=lambda row: row[0])
+    ordered = sorted(records, key=lambda record: str(record.get("wheel", {}).get("filename", "")))
+    rows = [_row(record) for record in ordered]
     widths = [
         max(len(header), *(len(row[index]) for row in rows))
         for index, header in enumerate(_HEADERS)
     ]
 
-    lines = [
-        _line(_HEADERS, widths),
-        _line(tuple("-" * width for width in widths), widths),
-        *(_line(row, widths) for row in rows),
-    ]
-    return "\n".join(lines) + "\n"
+    summary = "\n".join(
+        [
+            _line(_HEADERS, widths),
+            _line(tuple("-" * width for width in widths), widths),
+            *(_line(row, widths) for row in rows),
+        ]
+    )
+    blocks = [summary, *(_wheel_section(record) for record in ordered)]
+    return "\n\n".join(blocks) + "\n"
 
 
 def _row(record: dict[str, Any]) -> tuple[str, ...]:
     wheel = record.get("wheel", {})
     verdict = record.get("verdict", {})
-    conditions = verdict.get("conditions", {})
+    crypto = record.get("crypto", {})
     reasons = verdict.get("reasons", [])
     return (
         str(wheel.get("filename", "?")),
         str(wheel.get("version") or "?"),
+        _join(crypto.get("families", [])),
+        _join_libraries(crypto.get("libraries", [])),
+        _join(verdict.get("relations", [])),
         str(verdict.get("class", "?")),
-        str(conditions.get("openssl_linkage", "-")),
         "yes" if verdict.get("needs_human_review") else "no",
         _summarise(reasons),
     )
+
+
+def _join(values: Sequence[str]) -> str:
+    return ", ".join(values) if values else "-"
+
+
+def _join_libraries(libraries: Sequence[dict[str, Any]]) -> str:
+    if not libraries:
+        return "-"
+    return ", ".join(f"{library['name']}:{library['linkage']}" for library in libraries)
 
 
 def _summarise(reasons: Sequence[str], limit: int = 3) -> str:
@@ -114,6 +233,104 @@ def _summarise(reasons: Sequence[str], limit: int = 3) -> str:
 def _line(cells: Sequence[str], widths: Sequence[int]) -> str:
     padded = " | ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=True))
     return f"| {padded} |"
+
+
+def _wheel_section(record: dict[str, Any]) -> str:
+    """One wheel's own two sections: its crypto inventory, then its FIPS
+    compatibility lens over the same evidence."""
+    wheel = record.get("wheel", {})
+    filename = str(wheel.get("filename", "?"))
+    return "\n\n".join(
+        [f"## {filename}", _inventory_section(record), _compatibility_section(record)]
+    )
+
+
+def _inventory_section(record: dict[str, Any]) -> str:
+    """The "Cryptography in this wheel" section: libraries and their linkage first, then every
+    finding grouped by the family of primitive it is evidence of. A finding with no
+    `family` is not crypto evidence (an informational rule such as `WHEEL_GENERATOR`,
+    say) and does not appear here -- `crypto.families` already skips it the same way.
+    Empty and says so explicitly, rather than being left out, when the wheel carries
+    no crypto evidence at all -- what makes acceptance criterion 1 hold for a
+    `NO_CRYPTO_DETECTED` wheel's Markdown output, not only its HTML.
+    """
+    crypto = record.get("crypto", {})
+    families = crypto.get("families", [])
+    libraries = crypto.get("libraries", [])
+    parts = ["### Cryptography in this wheel"]
+    if not families and not libraries:
+        parts.append("No cryptography detected.")
+        return "\n\n".join(parts)
+    parts.append(f"Families: {_join(families)}\n\nLibraries: {_join_libraries(libraries)}")
+    findings = [finding for finding in record.get("findings", []) if finding.get("family")]
+    if findings:
+        parts.append(_findings_by_family(findings))
+    return "\n\n".join(parts)
+
+
+def _findings_by_family(findings: Sequence[dict[str, Any]]) -> str:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for finding in findings:
+        groups.setdefault(str(finding["family"]), []).append(finding)
+    sections = []
+    for family in sorted(groups):
+        sections.append(f"**{family}**\n\n{_findings_table(groups[family])}")
+    return "\n\n".join(sections)
+
+
+def _compatibility_section(record: dict[str, Any]) -> str:
+    """The "FIPS compatibility" section: the class badge as this section's own summary, then
+    every contributing finding grouped by `relation`, in the relation table's
+    remediation wording, with the standards each one cites."""
+    verdict = record.get("verdict", {})
+    cls = str(verdict.get("class", "?"))
+    class_help = CLASS_HELP.get(cls, "No description; see the output schema.")
+    parts = ["### FIPS compatibility", f"Class: {cls} -- {class_help}"]
+
+    findings = [finding for finding in record.get("findings", []) if finding.get("relation")]
+    by_relation: dict[str, list[dict[str, Any]]] = {}
+    for finding in findings:
+        by_relation.setdefault(str(finding["relation"]), []).append(finding)
+
+    for relation in sorted(verdict.get("relations", [])):
+        help_text = RELATION_HELP.get(relation, "No description; see the output schema.")
+        heading = f"**{relation}** -- {help_text}"
+        bullets = "\n".join(
+            f"- {finding.get('rule_id', '?')}: {finding.get('subject') or '-'} "
+            f"(basis: {_join(finding.get('basis', []))})"
+            for finding in by_relation.get(relation, [])
+        )
+        parts.append(f"{heading}\n\n{bullets}" if bullets else heading)
+
+    return "\n\n".join(parts)
+
+
+def _findings_table(findings: Sequence[dict[str, Any]]) -> str:
+    rows = [_finding_row(finding) for finding in findings]
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(_FINDING_HEADERS)
+    ]
+    return "\n".join(
+        [
+            _line(_FINDING_HEADERS, widths),
+            _line(tuple("-" * width for width in widths), widths),
+            *(_line(row, widths) for row in rows),
+        ]
+    )
+
+
+def _finding_row(finding: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        str(finding.get("rule_id", "?")),
+        str(finding.get("subject") or "-"),
+        str(finding.get("family") or "-"),
+        str(finding.get("relation") or "-"),
+        _join(finding.get("basis", [])),
+        str(finding.get("severity", "?")),
+        str(finding.get("verdict") or "-"),
+        str(finding.get("occurrences", 0)),
+    )
 
 
 # --- HTML report --------------------------------------------------------------------
@@ -133,9 +350,12 @@ def render_html(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> str:
     payload = {
         "records": ordered,
         "rules": _referenced_rules(ordered, ruleset),
+        "standards": _referenced_standards(ordered, ruleset),
         "classes": _all_classes(ordered, ruleset),
         "class_help": CLASS_HELP,
         "linkage_help": LINKAGE_HELP,
+        "family_help": FAMILY_HELP,
+        "relation_help": RELATION_HELP,
         "tool": _tool_variants(ordered),
     }
     template = files("wheel_crypto_scan").joinpath("data/report.html").read_text(encoding="utf-8")
@@ -169,9 +389,9 @@ def _all_classes(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> list[st
 
 
 def _referenced_rules(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> dict[str, Any]:
-    """`{rule_id: {title, why, verdict, severity}}` for only the rule ids the embedded
-    records actually name, so the page need not ship the whole ruleset to power its
-    reason and finding tooltips."""
+    """`{rule_id: {title, why, verdict, severity, family, relation, basis}}` for only
+    the rule ids the embedded records actually name, so the page need not ship the
+    whole ruleset to power its reason and finding tooltips."""
     by_id = {rule.id: rule for rule in ruleset.rules}
     wanted: set[str] = set()
     for record in records:
@@ -186,9 +406,34 @@ def _referenced_rules(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> di
             "why": by_id[rule_id].why,
             "verdict": by_id[rule_id].verdict,
             "severity": by_id[rule_id].severity,
+            "family": by_id[rule_id].family,
+            "relation": by_id[rule_id].relation,
+            "basis": sorted(by_id[rule_id].basis),
         }
         for rule_id in wanted
         if rule_id in by_id
+    }
+
+
+def _referenced_standards(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> dict[str, Any]:
+    """`{standard_id: {title, edition, status, successor, url}}` for only the standard
+    ids some embedded record's findings cite in their own `basis`, the same narrowing
+    `_referenced_rules` does for rule ids: the page ships only the citations its own
+    findings actually use, not the ruleset's whole `[[standard]]` table."""
+    wanted: set[str] = set()
+    for record in records:
+        for finding in record.get("findings", ()):
+            wanted.update(finding.get("basis", ()))
+    return {
+        standard_id: {
+            "title": ruleset.standards[standard_id].title,
+            "edition": ruleset.standards[standard_id].edition,
+            "status": ruleset.standards[standard_id].status,
+            "successor": ruleset.standards[standard_id].successor,
+            "url": ruleset.standards[standard_id].url,
+        }
+        for standard_id in wanted
+        if standard_id in ruleset.standards
     }
 
 
