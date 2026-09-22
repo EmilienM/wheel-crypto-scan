@@ -119,9 +119,11 @@ def test_an_unlisted_distribution_matches_no_name_rule(ruleset) -> None:
 def test_a_dependency_on_a_crypto_distribution_is_recorded_without_a_verdict(ruleset) -> None:
     """The dependency carries its own risk in its own record; do not double count it.
     `pynacl`'s own entry sets `relation`, `basis` and `family` (checked below so this
-    assertion is not vacuous), and none of the three leaks onto this finding: a
+    assertion is not vacuous), and `relation`/`basis` do not leak onto this finding: a
     dependency edge is not the dependency's own risk, the same reason `severity` and
-    `verdict` are withheld."""
+    `verdict` are withheld. `family` is different: it is descriptive evidence, not a
+    risk statement, so it does leak through -- the dependency edge is itself evidence
+    that the library is present."""
     assert ruleset.distributions["pynacl"].relation is not None
     assert ruleset.distributions["pynacl"].basis
     assert ruleset.distributions["pynacl"].family is not None
@@ -131,7 +133,7 @@ def test_a_dependency_on_a_crypto_distribution_is_recorded_without_a_verdict(rul
     assert finding.subject == "pynacl"
     assert finding.relation is None
     assert finding.basis == ()
-    assert finding.family is None
+    assert finding.family == ruleset.distributions["pynacl"].family
 
 
 def test_bytecode_without_source_is_flagged_opaque(ruleset) -> None:

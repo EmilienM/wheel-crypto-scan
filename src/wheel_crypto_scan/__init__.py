@@ -1,4 +1,4 @@
-"""Deterministic FIPS-risk evidence inspector for Python wheels.
+"""Deterministic crypto inventory for Python wheels, with FIPS compatibility as one lens over it.
 
 The tool gathers crypto-relevant evidence statically and never decides FIPS compatibility.
 See SCHEMA.md for the output contract and data/ruleset.toml for the rules.
@@ -23,6 +23,6 @@ SCHEMA_VERSION = 2
 # Bumped whenever extraction behaviour changes such that an unchanged wheel would
 # produce a different record. Part of the cache key, so a reader fix can never serve
 # a stale cached record.
-ANALYZER_VERSION = 58
+ANALYZER_VERSION = 59
 
 __all__ = ["ANALYZER_VERSION", "SCHEMA_VERSION", "TOOL_NAME", "__version__"]

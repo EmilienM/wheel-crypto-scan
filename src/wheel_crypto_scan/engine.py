@@ -248,7 +248,8 @@ def _match_requires_dist(rule, match, ruleset, evidence, linkage, index) -> Iter
         # it deliberately does not inherit the entry's severity or verdict -- and
         # `relation`/`basis` follow the same gate, since a relation citing a standard
         # makes no sense on a finding that carries no verdict of its own. `family`
-        # follows it too, for consistency with the rest of the gate.
+        # is not verdict-tied and is always worth recording: even a bare dependency
+        # edge is evidence of the library.
         yield Hit(
             subject_kind="distribution",
             subject=name,
@@ -260,7 +261,7 @@ def _match_requires_dist(rule, match, ruleset, evidence, linkage, index) -> Iter
             verdict=None if any_entry else entry.verdict,
             relation=None if any_entry else entry.relation,
             basis=None if any_entry else _basis_override(entry.basis),
-            family=None if any_entry else entry.family,
+            family=entry.family,
         )
 
 

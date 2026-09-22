@@ -13,6 +13,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+from helpers.wheelbuilder import build_wheel
 
 from wheel_crypto_scan import report
 from wheel_crypto_scan.report import (
@@ -25,6 +26,7 @@ from wheel_crypto_scan.report import (
 )
 from wheel_crypto_scan.ruleset import FAMILIES, LINKAGE_VALUES, RELATIONS
 from wheel_crypto_scan.ruleset_loader import load_ruleset
+from wheel_crypto_scan.scan import ScanContext, scan_wheel
 
 _DATA_SCRIPT = re.compile(
     r'<script type="application/json" id="wcs-data">(.*?)</script>', re.DOTALL
@@ -375,6 +377,35 @@ def test_markdown_shows_family_and_relation_less_findings_as_other_evidence() ->
     table = render_markdown([rec])
     assert "### Other evidence" in table
     assert "WHEEL_GENERATOR" in table
+
+
+def test_markdown_shows_dependency_only_crypto_in_the_inventory_not_as_absence(
+    tmp_path: Path,
+) -> None:
+    """A wheel whose only crypto evidence is `Requires-Dist` on crypto packages must
+    not have it both ways: the headline inventory used to say `No cryptography
+    detected.` while `DIST_DEPENDS_ON_CRYPTO` findings for `bcrypt`, `pynacl` and
+    `cryptography` sat in "Other evidence" right below it, naming exactly the
+    cryptography the headline denied. `relation` stays withheld (a dependency edge
+    is not the dependency's own risk), but `family` is descriptive evidence, not a
+    risk statement, so it belongs in "Cryptography in this wheel"."""
+    wheel = build_wheel(
+        tmp_path / "depsonly-1.0-py3-none-any.whl",
+        name="depsonly",
+        version="1.0",
+        requires_dist=("bcrypt", "pynacl", "cryptography"),
+    )
+    ruleset = load_ruleset(None)
+    rec = scan_wheel(wheel, ScanContext.build(ruleset))
+    assert {finding["rule_id"] for finding in rec["findings"]} >= {"DIST_DEPENDS_ON_CRYPTO"}
+    table = render_markdown([rec])
+    assert "No cryptography detected." not in table
+    inventory_start = table.index("### Cryptography in this wheel")
+    compatibility_start = table.index("### FIPS compatibility")
+    inventory = table[inventory_start:compatibility_start]
+    assert ruleset.distributions["bcrypt"].family in inventory
+    assert ruleset.distributions["pynacl"].family in inventory
+    assert ruleset.distributions["cryptography"].family in inventory
 
 
 # --- HTML ---------------------------------------------------------------------------
