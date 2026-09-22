@@ -23,6 +23,7 @@ from .conventions import parse_conventions
 from .errors import ERROR_KINDS, RulesetError
 from .evidence import PARTIAL_REASONS, PRINTABLE, USED_FOR_SECURITY_VALUES
 from .ruleset import (
+    ALGORITHM_LISTS,
     BINDINGS,
     CONFIDENCES,
     DEFAULTABLE_TABLES,
@@ -496,9 +497,9 @@ def _validate_match_references(
         algorithm = match.get("algorithm")
         if algorithm is not None and not isinstance(algorithm, str):
             raise RulesetError(f"{where}: algorithm must be a string")
-        weak_algorithms_only = match.get("weak_algorithms_only")
-        if weak_algorithms_only is not None and not isinstance(weak_algorithms_only, bool):
-            raise RulesetError(f"{where}: weak_algorithms_only must be a boolean")
+        algorithm_list = match.get("algorithm_list")
+        if algorithm_list is not None:
+            _check(algorithm_list, ALGORITHM_LISTS, "algorithm_list", where)
     elif kind == "py_attr":
         # `attributes` is what a `py_attr` rule matches on; same reasoning as `targets`
         # above. `values`, when given, is a filter on top of it and is refused empty

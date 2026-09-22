@@ -67,9 +67,7 @@ MATCH_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
         "partial_binary": frozenset({"kind", "reasons", "exclude_reasons"}),
         "binaries_truncated": frozenset({"kind"}),
         "py_import": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
-        "py_call": frozenset(
-            {"kind", "targets", "usedforsecurity", "algorithm", "weak_algorithms_only"}
-        ),
+        "py_call": frozenset({"kind", "targets", "usedforsecurity", "algorithm", "algorithm_list"}),
         "py_attr": frozenset({"kind", "attributes", "values"}),
         "py_constant": frozenset({"kind", "constants"}),
         "py_ctypes_load": frozenset({"kind"} | _ENTRY_ROUTING_KEYS),
@@ -79,6 +77,13 @@ MATCH_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
 # Matcher kinds the scanner implements. A rule naming anything else cannot run, so the
 # ruleset is rejected rather than quietly skipping the rule.
 MATCHER_KINDS = frozenset(MATCH_KEYS)
+
+# What `algorithm_list` on a `py_call` match names: which of `conventions`'s two hash
+# lists the match filters against, or their union under "weak" -- the same three-way
+# split `Conventions.weak_hash_algorithms` derives. A closed vocabulary for the same
+# reason `RELATIONS`/`FAMILIES` are: a typo here should fail to load rather than
+# silently filter against nothing.
+ALGORITHM_LISTS = frozenset({"refused", "restricted", "weak"})
 
 SEVERITIES = frozenset({"high", "medium", "low", "info"})
 

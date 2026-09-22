@@ -18,6 +18,7 @@ from wheel_crypto_scan.errors import RulesetError
 from wheel_crypto_scan.evidence import ArtifactInventory, Evidence, PySite
 from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset import (
+    ALGORITHM_LISTS,
     DEFAULTABLE_TABLES,
     ENTRY_TABLES,
     FAMILIES,
@@ -63,7 +64,8 @@ def minimal(**overrides: Any) -> dict[str, Any]:
             "cargo_git_path_regex": (
                 r"git/checkouts/(?P<name>[a-z-]+)-[0-9a-f]{16}/(?P<version>(?!))?"
             ),
-            "weak_hash_algorithms": ["md5", "sha1"],
+            "refused_hash_algorithms": ["md5"],
+            "restricted_hash_algorithms": ["sha1"],
             "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
             "windows_library_suffixes": [".dll", ".pyd"],
             "go_boring_group": "go_boring",
@@ -1946,7 +1948,13 @@ def test_a_non_table_conventions_is_rejected() -> None:
 
 @pytest.mark.parametrize(
     "key",
-    ["vendor_dir_globs", "weak_hash_algorithms", "library_suffixes", "windows_library_suffixes"],
+    [
+        "vendor_dir_globs",
+        "refused_hash_algorithms",
+        "restricted_hash_algorithms",
+        "library_suffixes",
+        "windows_library_suffixes",
+    ],
 )
 def test_a_bare_string_conventions_list_is_rejected(key: str) -> None:
     """A bare string is iterable character by character, so `tuple(...)`/
@@ -1984,6 +1992,28 @@ def test_weak_hash_algorithms_are_available_for_call_matching() -> None:
     conventions = parse_ruleset(minimal()).conventions
     assert "md5" in conventions.weak_hash_algorithms
     assert "sha256" not in conventions.weak_hash_algorithms
+
+
+def test_refused_and_restricted_hash_algorithms_are_read_separately() -> None:
+    """`weak_hash_algorithms` derives from the two lists rather than being read off a
+    third one, so each list must reach `Conventions` on its own name too."""
+    conventions = parse_ruleset(minimal()).conventions
+    assert conventions.refused_hash_algorithms == frozenset({"md5"})
+    assert conventions.restricted_hash_algorithms == frozenset({"sha1"})
+    assert conventions.weak_hash_algorithms == frozenset({"md5", "sha1"})
+
+
+def test_an_algorithm_in_both_refused_and_restricted_lists_is_rejected() -> None:
+    """A hash cannot be both refused outright and merely restricted to certain uses --
+    breaks to prove it: comment out the overlap check in `parse_conventions` and this
+    turns green to red."""
+    data = minimal()
+    data["conventions"]["refused_hash_algorithms"] = ["md5", "sha1"]
+    data["conventions"]["restricted_hash_algorithms"] = ["sha1"]
+    with pytest.raises(
+        RulesetError, match="refused_hash_algorithms and restricted_hash_algorithms"
+    ):
+        parse_ruleset(data)
 
 
 # --- compiled scan patterns -------------------------------------------------
@@ -2787,18 +2817,25 @@ def test_a_strong_algorithm_name_not_in_weak_hash_algorithms_loads_clean() -> No
     assert ruleset.rule("PY_CALL_TEST").matches[0]["algorithm"] == "sha3_256"
 
 
-def test_a_boolean_weak_algorithms_only_loads_clean() -> None:
-    ruleset = parse_ruleset(_with_py_call_rule(weak_algorithms_only=True))
-    assert ruleset.rule("PY_CALL_TEST").matches[0]["weak_algorithms_only"] is True
+@pytest.mark.parametrize("algorithm_list", sorted(ALGORITHM_LISTS))
+def test_a_valid_algorithm_list_loads_clean(algorithm_list: str) -> None:
+    ruleset = parse_ruleset(_with_py_call_rule(algorithm_list=algorithm_list))
+    assert ruleset.rule("PY_CALL_TEST").matches[0]["algorithm_list"] == algorithm_list
 
 
-def test_a_string_weak_algorithms_only_is_rejected() -> None:
-    """The same class of mistake, one field over: `weak_only = bool(match.get(...))`
-    makes `weak_algorithms_only = "false"` evaluate to `True`, the opposite of what a rule
-    author who wrote that string almost certainly meant, with no crash and no error to
-    notice it by."""
-    with pytest.raises(RulesetError, match="weak_algorithms_only must be a boolean"):
-        parse_ruleset(_with_py_call_rule(weak_algorithms_only="false"))
+def test_an_unknown_algorithm_list_is_rejected() -> None:
+    """A typo here should fail to load rather than silently filter against nothing,
+    the same reasoning `RELATIONS`/`FAMILIES` are checked for."""
+    with pytest.raises(RulesetError, match="unknown algorithm_list"):
+        parse_ruleset(_with_py_call_rule(algorithm_list="strong"))
+
+
+def test_a_non_string_algorithm_list_is_rejected() -> None:
+    """`_check`'s type check runs before the membership test, so a list here raises
+    the same `RulesetError` as an unknown token rather than a bare `TypeError` from
+    `value not in allowed`."""
+    with pytest.raises(RulesetError, match="unknown algorithm_list"):
+        parse_ruleset(_with_py_call_rule(algorithm_list=["weak"]))
 
 
 def test_a_py_attr_rule_requires_attributes() -> None:

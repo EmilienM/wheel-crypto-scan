@@ -695,20 +695,29 @@ def _match_py_import(rule, match, ruleset, evidence, linkage, index) -> Iterator
 
 def _match_py_call(rule, match, ruleset, evidence, linkage, index) -> Iterator[Hit]:
     targets = frozenset(match.get("targets", ()))
-    weak_only = bool(match.get("weak_algorithms_only"))
+    # `algorithm_list` names which of `conventions`'s hash lists to filter against, or
+    # their union under "weak"; absent, `algorithms` stays `None` and no list filters.
+    algorithm_list = match.get("algorithm_list")
+    algorithms = None
+    if algorithm_list is not None:
+        conventions = ruleset.conventions
+        algorithms = {
+            "refused": conventions.refused_hash_algorithms,
+            "restricted": conventions.restricted_hash_algorithms,
+            "weak": conventions.weak_hash_algorithms,
+        }[algorithm_list]
     want_used = match.get("usedforsecurity")
     # A single string is the common case; a list lets one match table accept more than
     # one value, the same way `_match_py_attr`'s `values` does for an attribute value.
     if isinstance(want_used, str):
         want_used = (want_used,)
     want_algorithm = match.get("algorithm")
-    weak = ruleset.conventions.weak_hash_algorithms
     for site in evidence.py_sites:
         if site.kind != "py_call" or not _target_matches(site.target, targets):
             continue
         attrs = _attrs(site)
         algorithm = attrs.get("algorithm")
-        if weak_only and (algorithm is None or algorithm not in weak):
+        if algorithms is not None and (algorithm is None or algorithm not in algorithms):
             continue
         if want_algorithm is not None and algorithm != want_algorithm:
             continue

@@ -1225,7 +1225,8 @@ def _mixed_case_collision_ruleset():
                 "cargo_git_path_regex": (
                     r"git/checkouts/(?P<name>[a-z-]+)-[0-9a-f]{16}/(?P<version>(?!))?"
                 ),
-                "weak_hash_algorithms": ["md5", "sha1"],
+                "refused_hash_algorithms": ["md5"],
+                "restricted_hash_algorithms": ["sha1"],
                 "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
                 "windows_library_suffixes": [".dll", ".pyd"],
                 "go_boring_group": "go_boring",
