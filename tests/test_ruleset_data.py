@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from wheel_crypto_scan.errors import ERROR_KINDS
-from wheel_crypto_scan.ruleset import MATCHER_KINDS, RELATIONS
+from wheel_crypto_scan.ruleset import FAMILIES, MATCHER_KINDS, RELATIONS
 from wheel_crypto_scan.standards import STANDARD_STATUSES
 
 SEVERITIES = {"high", "medium", "low", "info"}
@@ -31,6 +31,41 @@ ENTRY_TABLES = (
     "rust_crate",
     "python_module",
     "ctypes_library",
+)
+
+# The tables `family` is carried on. `ctypes_library` is one row of substrings with a
+# single shared `why`, never per-library entries, so there is nothing there to hang a
+# family off of.
+FAMILY_BEARING_TABLES = (
+    "crypto_distribution",
+    "crypto_library",
+    "symbol_group",
+    "string_group",
+    "rust_crate",
+    "python_module",
+)
+
+# Rules whose finding has no entry or group backing it to inherit `family` from -- the
+# rule itself is the only source of one. Every other rule's finding is backed by an
+# entry in one of `FAMILY_BEARING_TABLES` (or, for a `binary_string`/`dynamic_symbol`
+# match, a symbol or string group), which already states its own family.
+FAMILY_BEARING_RULES = frozenset(
+    {
+        "PY_WEAK_HASH_CALL",
+        "PY_WEAK_HASH_CALL_MARKED",
+        "PY_WEAK_HASH_UNRESOLVED",
+        "PY_INSECURE_RNG",
+        "PY_TLS_POLICY_OVERRIDE",
+        "PY_TLS_VERSION_PINNED",
+        "PY_LEGACY_TLS_PROTOCOL",
+        "PY_TLS_VERIFICATION_DISABLED",
+        "PY_TLS_UNVERIFIED_CONTEXT",
+        "PY_CTYPES_CRYPTO_LOAD",
+        "DIST_BUNDLED_TRUST_STORE",
+        "BIN_GO_BORING_CRYPTO",
+        "BIN_GO_FIPS140",
+        "BIN_GO_STOCK_CRYPTO",
+    }
 )
 
 
@@ -87,6 +122,26 @@ def test_every_table_entry_explains_itself(ruleset: dict[str, Any]) -> None:
         for entry in ruleset[table]:
             label = f"{table}:{entry.get('name', '?')}"
             assert len(entry["why"].strip()) >= 20, label
+
+
+def test_every_family_bearing_entry_has_a_family(
+    ruleset: dict[str, Any], rule_ids: set[str]
+) -> None:
+    """`family` is policy-in-data the same way `why` is: every entry in the six tables
+    that carry it states one, and so does every rule whose finding has no entry or
+    group of its own to inherit one from. `rule_ids_seen == FAMILY_BEARING_RULES`
+    guards the list itself -- a rename that drops a rule out of the ruleset silently
+    would otherwise leave this test checking fewer rules than it claims to."""
+    for table in FAMILY_BEARING_TABLES:
+        for entry in ruleset[table]:
+            label = f"{table}:{entry.get('name', '?')}"
+            assert entry.get("family") in FAMILIES, label
+
+    rule_ids_seen = {rid for rid in rule_ids if rid in FAMILY_BEARING_RULES}
+    assert rule_ids_seen == FAMILY_BEARING_RULES
+    for rule in ruleset["rule"]:
+        if rule["id"] in FAMILY_BEARING_RULES:
+            assert rule.get("family") in FAMILIES, rule["id"]
 
 
 def test_rule_verdicts_are_known(ruleset: dict[str, Any]) -> None:
