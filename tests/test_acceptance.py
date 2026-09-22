@@ -406,6 +406,44 @@ def test_a_private_weak_hash_kept_local_is_still_found_without_openssl(
     assert record["verdict"]["conditions"]["openssl_linkage"] == "none"
 
 
+@pytest.mark.parametrize(
+    ("symbol", "rule_id", "verdict_class"),
+    [
+        ("argon2id_hash_raw", "BIN_ARGON2", "NON_APPROVED_CRYPTO"),
+        ("blake2b_init", "BIN_NON_CRYPTO_HASH", "CONTEXT_DEPENDENT"),
+    ],
+)
+def test_a_compiled_in_argon2_or_blake_is_not_no_crypto_detected(
+    context, tmp_path: Path, symbol: str, rule_id: str, verdict_class: str
+) -> None:
+    """Evidence gathered and then ignored by policy is exactly a compiled-in Argon2 or
+    BLAKE implementation reading NO_CRYPTO_DETECTED. Same shape as the weak-hash case
+    above: only a `.symtab` local definition, no banner. That string table is not an
+    allocated section, so the strings pass cannot rescue it either -- only a
+    dynamic_symbol rule over the symbol group can.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, f"private-{rule_id}") / f"fakecrypto-1.0.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="1.0.0",
+        tags=(MANYLINUX,),
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _ext\n",
+            "fakecrypto/_ext.abi3.so": extension(
+                dynsyms=(DynSym("PyInit__ext", defined=True),),
+                with_symtab=True,
+                symtab_syms=(
+                    DynSym(symbol, defined=True, info=(STB_LOCAL << 4) | 2),  # STT_FUNC
+                ),
+            ),
+        },
+    )
+    record = scan(context, wheel)
+    assert rule_id in record["verdict"]["rule_ids"]
+    assert record["verdict"]["class"] == verdict_class
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "none"
+
+
 def test_a_bundled_openssls_legacy_primitives_lead_the_headline_too(
     context, tmp_path: Path
 ) -> None:

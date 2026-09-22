@@ -499,6 +499,26 @@ def test_hostbin_libcrypto_soname_and_evp_digestinit_ex_defined() -> None:
 
 
 @pytest.mark.hostbin
+def test_hostbin_libcrypto_exports_no_argon2_or_blake_name() -> None:
+    """Pins the claim `BIN_ARGON2`'s `why` rests on: the host OpenSSL exports no Argon2
+    or BLAKE entry point, so an *imported* name from either group is never a call into
+    the host FIPS provider -- only a defined one, or one the ruleset does not yet
+    know, could be."""
+    path = "/usr/lib64/libcrypto.so.3"
+    if not os.path.exists(path):
+        pytest.skip("no system libcrypto.so.3 on this host")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    wide_limits = dataclasses.replace(PATTERNS.limits, max_symbols_per_binary=100_000)
+    wide_patterns = dataclasses.replace(PATTERNS, limits=wide_limits)
+    ev, errors = read_elf(io.BytesIO(data), path, wide_patterns, vendored=False)
+    assert errors == ()
+    groups = {match.group for match in ev.matched_symbols}
+    assert "argon2" not in groups
+    assert "blake" not in groups
+
+
+@pytest.mark.hostbin
 def test_hostbin_libcrypto_carries_its_build_string_beside_its_banner() -> None:
     """A real compiled-in copy of OpenSSL keeps `openssl_build_info` beside its own
     `openssl_banner`: `OpenSSL_version()` returns both from the same switch. This

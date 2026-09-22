@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "36"
+ruleset_version = "37"
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +546,11 @@ why = "The secp256k1 curve is not in the approved curve set."
 # this object, so the code lives elsewhere) or defined (the code is in this object).
 # That distinction is what separates "links the system OpenSSL" from "carries its
 # own copy", so keep it in mind when adding a group.
+#
+# Every group here is read by a `dynamic_symbol` rule or by a `[[crypto_library]]`'s
+# `symbol_group`, or it carries `evidence_only = true` and its `why` says so. Evidence
+# gathered and then read by nothing is a compiled-in primitive that reads
+# NO_CRYPTO_DETECTED, and the loader refuses a ruleset that leaves that gap open.
 # ---------------------------------------------------------------------------
 
 [[symbol_group]]
@@ -570,13 +575,15 @@ why = "libsodium/NaCl API. Deliberately specific rather than matching every cryp
 name = "boringssl"
 prefixes = ["BORINGSSL_", "CRYPTO_BUFFER_", "bssl_"]
 exact = ["SSL_CTX_set_grease_enabled", "OPENSSL_is_boringssl"]
-why = "BoringSSL is API-similar to OpenSSL but is a separate stack. Google ships a separately validated BoringCrypto build; a wheel bundling BoringSSL is very unlikely to be that build."
+why = "BoringSSL is API-similar to OpenSSL but is a separate stack. Google ships a separately validated BoringCrypto build; a wheel bundling BoringSSL is very unlikely to be that build. Recorded as evidence only: no rule reads these symbol names. BIN_BORINGSSL reads the same-named string group instead, which the build writes into read-only data. AWS-LC is a BoringSSL fork and keeps BoringSSL-named symbols (see the aws_lc_fips group below), so a rule over this group would report BoringSSL on an AWS-LC object."
+evidence_only = true
 
 [[symbol_group]]
 name = "aws_lc"
 prefixes = ["AWSLC_", "AWS_LC_", "awslc_"]
 exact = ["AWSLC_version_string"]
-why = "AWS-LC. A separate FIPS-validated variant exists (aws-lc-fips), so the presence of AWS-LC alone does not tell you which one this is."
+why = "AWS-LC. A separate FIPS-validated variant exists (aws-lc-fips), so the presence of AWS-LC alone does not tell you which one this is. Recorded as evidence only: no rule reads these symbol names. BIN_AWS_LC reads the same-named string group instead, which the build writes into read-only data."
+evidence_only = true
 
 [[symbol_group]]
 name = "aws_lc_fips"
@@ -600,13 +607,13 @@ why = "Blowfish and the bcrypt password hash built on it. Not approved under any
 name = "blake"
 prefixes = ["blake2b_", "blake2s_", "blake2bp_", "blake3_", "BLAKE2"]
 exact = []
-why = "BLAKE2 and BLAKE3. Not approved, but very often used for checksums, content addressing and caching rather than for security."
+why = "BLAKE2 and BLAKE3. Not approved, but very often used for checksums, content addressing and caching rather than for security. BIN_NON_CRYPTO_HASH reads this group beside the same-named string group: a reference implementation compiled in with no banner string carries only these entry points."
 
 [[symbol_group]]
 name = "argon2"
 prefixes = ["argon2_", "argon2i_", "argon2d_", "argon2id_"]
 exact = []
-why = "Argon2 entry points compiled into the object. Argon2 is not an approved key derivation function."
+why = "Argon2 entry points, defined in or imported by the object. Argon2 is not an approved key derivation function. BIN_ARGON2 reads this group."
 
 [[symbol_group]]
 name = "weak_hash_impl"
@@ -1718,6 +1725,21 @@ group = "bcrypt_blowfish"
 binding = "imported"
 
 [[rule]]
+id = "BIN_ARGON2"
+layer = "binary"
+category = "non-approved-impl"
+severity = "high"
+confidence = "high"
+verdict = "NON_APPROVED_CRYPTO"
+needs_human_review = true
+title = "Argon2 implementation present"
+why = "Defined means an Argon2 implementation is compiled into the object; imported means it calls an Argon2 library at run time. Argon2 is not an approved key derivation function. The host OpenSSL exports no such name -- its own Argon2 is only reachable through EVP_KDF -- so an import here is never a call into the host FIPS provider, unlike a Blowfish import, which the system libcrypto does export. A dependency on libargon2 is also reported by BIN_LINKED_CRYPTO_LIBRARY."
+[rule.match]
+kind = "dynamic_symbol"
+group = "argon2"
+binding = "any"
+
+[[rule]]
 id = "BIN_OWN_WEAK_HASH_IMPL"
 layer = "binary"
 category = "non-approved-impl"
@@ -1769,10 +1791,15 @@ confidence = "medium"
 verdict = "CONTEXT_DEPENDENT"
 needs_human_review = true
 title = "BLAKE family hash present"
-why = "Not approved, but commonly used for content addressing, deduplication and caching rather than for security. Worth a glance, rarely worth a change."
-[rule.match]
+why = "Not approved, but commonly used for content addressing, deduplication and caching rather than for security. Worth a glance, rarely worth a change. Fires on a BLAKE2/BLAKE3 marker in read-only data or on a BLAKE entry point in the object's symbols: a reference implementation compiled in with no marker string carries only its blake2b_init-style names."
+[[rule.match]]
 kind = "binary_string"
 group = "blake"
+
+[[rule.match]]
+kind = "dynamic_symbol"
+group = "blake"
+binding = "any"
 
 [[rule]]
 id = "BIN_CURVE25519"

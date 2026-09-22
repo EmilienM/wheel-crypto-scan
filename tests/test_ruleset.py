@@ -75,7 +75,14 @@ def minimal(**overrides: Any) -> dict[str, Any]:
             }
         ],
         "symbol_group": [
-            {"name": "openssl", "prefixes": ["EVP_"], "exact": ["RAND_bytes"], "why": "api"}
+            # No rule or crypto_library in this minimal ruleset reads this group.
+            {
+                "name": "openssl",
+                "prefixes": ["EVP_"],
+                "exact": ["RAND_bytes"],
+                "why": "api",
+                "evidence_only": True,
+            }
         ],
         # The two Go groups are here because `[conventions]` names them: a ruleset whose
         # go_boring_group/go_stock_group point at nothing is refused at load time.
@@ -144,7 +151,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "36"
+    assert ruleset.version == "37"
     assert len(ruleset.rules) > 20
 
 
@@ -1279,6 +1286,9 @@ def test_a_rule_reference_field_of_the_wrong_shape_is_rejected(
 
     def _with_match(match: dict[str, Any]) -> dict[str, Any]:
         data = minimal()
+        if match["kind"] == "dynamic_symbol":
+            # The rule under test reads `openssl`, which `minimal()` marks unread.
+            del data["symbol_group"][0]["evidence_only"]
         data["rule"].append(
             {
                 "id": "MATCH_SHAPE_TEST",
@@ -1338,6 +1348,74 @@ def test_the_shipped_ruleset_with_a_malformed_entry_is_refused() -> None:
     nameless_crate["rust_crate"].append({"why": "x"})
     with pytest.raises(RulesetError, match="missing required field 'name'"):
         parse_ruleset(nameless_crate)
+
+
+def _orphan_group(**overrides: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {"name": "orphan", "prefixes": ["orphan_"], "exact": [], "why": "x"}
+    data.update(overrides)
+    return data
+
+
+def test_a_symbol_group_no_rule_reads_is_rejected() -> None:
+    """Evidence gathered and then ignored by policy is a compiled-in Argon2 reading
+    NO_CRYPTO_DETECTED, so the loader refuses the ruleset rather than shipping it."""
+    data = minimal()
+    data["symbol_group"].append(_orphan_group())
+    with pytest.raises(RulesetError, match="no dynamic_symbol rule or crypto_library reads it"):
+        parse_ruleset(data)
+
+
+def test_an_evidence_only_symbol_group_is_accepted() -> None:
+    data = minimal()
+    data["symbol_group"].append(_orphan_group(evidence_only=True))
+    parse_ruleset(data)
+
+
+@pytest.mark.parametrize("key", ["group", "groups"])
+def test_a_symbol_group_read_by_a_dynamic_symbol_rule_is_accepted(key: str) -> None:
+    """`data["rule"][0]` stays DIST_NON_APPROVED_CRYPTO, which crypto_distribution routes
+    to and needs its dist_name match to keep; the orphan group gets its own rule instead
+    of stealing that one, so the sbom_component rule stays intact too."""
+    data = minimal()
+    data["symbol_group"].append(_orphan_group())
+    match: dict[str, Any] = {"kind": "dynamic_symbol", "binding": "any"}
+    match[key] = "orphan" if key == "group" else ["orphan"]
+    data["rule"].append(
+        {
+            "id": "BIN_ORPHAN",
+            "layer": "binary",
+            "category": "non-approved-impl",
+            "severity": "high",
+            "confidence": "high",
+            "needs_human_review": True,
+            "title": "t",
+            "why": "w",
+            "match": match,
+        }
+    )
+    parse_ruleset(data)
+
+
+def test_a_symbol_group_read_only_by_a_crypto_library_is_accepted() -> None:
+    data = minimal()
+    data["symbol_group"].append(_orphan_group())
+    data["crypto_library"][0]["symbol_group"] = "orphan"
+    parse_ruleset(data)
+
+
+def test_an_evidence_only_group_something_reads_is_rejected() -> None:
+    data = minimal()
+    data["symbol_group"].append(_orphan_group(evidence_only=True))
+    data["crypto_library"][0]["symbol_group"] = "orphan"
+    with pytest.raises(RulesetError, match="is marked evidence_only but is read"):
+        parse_ruleset(data)
+
+
+def test_evidence_only_must_be_a_boolean() -> None:
+    data = minimal()
+    data["symbol_group"].append(_orphan_group(evidence_only="yes"))
+    with pytest.raises(RulesetError, match="evidence_only must be a boolean"):
+        parse_ruleset(data)
 
 
 def _sbom_component_rule(tables: list[str], rule_id: str = "SBOM_TEST_RULE") -> dict[str, Any]:
@@ -1813,7 +1891,16 @@ def test_symbol_group_ignores_an_unrelated_name() -> None:
 def test_symbol_group_results_are_sorted() -> None:
     """Two groups can claim one symbol; the order must not depend on table order."""
     data = minimal()
-    data["symbol_group"].insert(0, {"name": "zzz", "prefixes": ["EVP_"], "exact": [], "why": "x"})
+    data["symbol_group"].insert(
+        0,
+        {
+            "name": "zzz",
+            "prefixes": ["EVP_"],
+            "exact": [],
+            "why": "x",
+            "evidence_only": True,
+        },
+    )
     patterns = parse_ruleset(data).compile_patterns().binary
     assert patterns.symbol_groups_for("EVP_DigestInit_ex") == ("openssl", "zzz")
 

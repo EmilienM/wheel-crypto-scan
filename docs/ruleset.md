@@ -93,7 +93,7 @@ These are the things a rule can point at. Each is an array of tables.
 |---|---|
 | `[[crypto_distribution]]` | Distribution names, matched on the canonical PEP 503 name, so `PyNaCl`, `pynacl` and `py_nacl` are the same entry. |
 | `[[crypto_library]]` | A native library: its `sonames`, and optionally the `symbol_group` and `string_group` that let the linkage resolver recognise it compiled straight into an extension, where there is no library file and no dependency to find. Optionally `copy_string_group`, strings only a compiled-in copy carries: a `string_group` match on an object that imports the library from a system dependency, was read in full, and matches nothing in it is header text and does not count as a copy. Optionally `crates`, the `[[rust_crate]]` entries that bind it: a crate says an object uses the library, not which copy, so on an object with no other evidence it gives `unknown` rather than `none`. The library's own name or one of its `crates` named in a shipped SBOM gives `unknown` the same way when no object in the wheel answers, compared case-insensitively (SBOM names are folded through `ruleset.sbom_library_key`/`sbom_crate_key`, the same functions `SBOM_CRYPTO_COMPONENT` uses). When the library's own name is *also* a different `[[rust_crate]]` it does not itself list in `crates` -- as for `argon2` and `blake2`, each both a C reference library and an unrelated pure-Rust crate of the same name -- the SBOM component's `purl` decides instead: only a `pkg:cargo/...` purl reads as the crate rather than the library. `openssl` is the one reported unconditionally. Two `[[crypto_library]]` names that differ only in case are refused at load time, the same as for `[[rust_crate]]` below, since the SBOM fold above would otherwise make the lookup ambiguous. |
-| `[[symbol_group]]` | Named groups of dynamic symbols, by `prefixes` and `exact` names. Imported means the wheel calls into a library it does not ship; defined means it carries that code itself. |
+| `[[symbol_group]]` | Named groups of dynamic symbols, by `prefixes` and `exact` names. Imported means the wheel calls into a library it does not ship; defined means it carries that code itself. Every group must be read by a `dynamic_symbol` rule or by a `[[crypto_library]]`'s `symbol_group`, or carry `evidence_only = true` (with a `why` saying so, by convention); the loader refuses a group that is neither. |
 | `[[string_group]]` | Named groups of read-only-data substrings. Version banners land here, and for a statically linked extension the banner is often the entire evidence. Substrings must be printable ASCII: an extracted run only ever holds printable ASCII, so anything else could never match, and the one non-printable character a rule author might reach for by mistake is the separator the matcher joins runs with internally. |
 | `[[rust_crate]]` | Crates inferred from the embedded cargo source paths, each with its own `verdict` and `severity`. An entry can optionally carry its own `suppressed_by`, naming other `[[rust_crate]]` entries. Two entries whose names differ only in case or in `-`/`_` are refused at load time, since crates.io treats them as the same name. |
 | `[[python_module]]` | Module names the AST layer watches for on import. |
@@ -186,9 +186,11 @@ load time.
 `--ruleset PATH` on `scan` and `rules` reads an alternative file. It goes through the same
 loader and the same validation, including the coherence check between a verdict-less
 `partial_binary` rule and `[linkage_policy] exclude_reasons`, the printable-ASCII check
-on every `[[string_group]]` substring, an unknown key on any table, and the shape checks
+on every `[[string_group]]` substring, an unknown key on any table, the shape checks
 on `py_call`/`py_attr`/`py_constant`'s `targets`/`attributes`/`constants`/`values`/
-`usedforsecurity` fields described above -- all load errors rather than a test precisely
-so that `--ruleset` users are inside the guard too. A `[rule.match]` missing its kind's
-required field, or carrying one of the wrong shape, refuses the *whole* file at load time
-rather than silently dropping just that one rule.
+`usedforsecurity` fields described above, and the coverage check on `[[symbol_group]]`
+-- a group no `dynamic_symbol` rule or `[[crypto_library]]` reads, and no group marked
+`evidence_only = true` that something does read -- all load errors rather than a test
+precisely so that `--ruleset` users are inside the guard too. A `[rule.match]` missing
+its kind's required field, or carrying one of the wrong shape, refuses the *whole* file
+at load time rather than silently dropping just that one rule.

@@ -291,3 +291,38 @@ and an unstripped BoringCrypto binary keeps `NON_APPROVED_CRYPTO` in `classes` t
 its own primitives, unsuppressed for the same reason AWS-LC's are.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-boringssl-fips-module-is-told-from-a-stock-build-by-its-integrity-test-not-its-strings)
+
+## Every symbol group is read by a rule, or says it is evidence only
+
+**Accepted, and it changes verdicts.**
+
+A `[[symbol_group]]` the binary readers populate but no rule reads is evidence gathered
+and thrown away: a defined `argon2id_hash_raw`, alone in an object with no other
+evidence, would read `NO_CRYPTO_DETECTED`, because no rule looks at the `argon2` group.
+`blake`'s string-group match alone has the same gap: a reference implementation with no
+banner string carries nothing that arm matches.
+
+Argon2 gets its own rule, `BIN_ARGON2`, `NON_APPROVED_CRYPTO` on either binding: OpenSSL
+exports no `argon2*`/`blake2*`/`blake3*` name (measured with `nm -D --defined-only` on
+Fedora, its own Argon2 reaches only through `EVP_KDF`), so an *imported* name from
+either group can only be a dependency on a library like libargon2, never a call the
+host FIPS provider could answer. `blake` is read by `BIN_NON_CRYPTO_HASH` as a second
+match arm beside its existing string-group one, keeping `CONTEXT_DEPENDENT`; a hit from
+either arm on the same group folds into one finding.
+
+The loader refuses a ruleset where some `[[symbol_group]]` is neither read by a
+`dynamic_symbol` rule or a `[[crypto_library]]`'s `symbol_group`, nor marked
+`evidence_only = true` on the group itself -- and refuses the opposite too, a group
+marked `evidence_only` that something does read. `boringssl` and `aws_lc` take the
+`evidence_only` mark: `BIN_BORINGSSL` and `BIN_AWS_LC` already read the same-named
+string groups instead, and AWS-LC keeps BoringSSL-named symbols, so a rule over the
+`boringssl` symbol group would report BoringSSL on an AWS-LC object.
+
+**What it costs.** A BLAKE-only object reads `CONTEXT_DEPENDENT` instead of
+`NO_CRYPTO_DETECTED`, which outranks both that and `OPAQUE` in `[verdict] precedence`,
+so a partially read object carrying a BLAKE symbol headlines `CONTEXT_DEPENDENT`
+instead of `OPAQUE`. An Argon2-only object moves further, to `NON_APPROVED_CRYPTO`.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#every-symbol-group-is-read-by-a-rule-or-says-it-is-evidence-only),
+including the measurement behind the `any` binding and why a `[[crypto_library]]`
+`symbol_group` on `argon2` was rejected.
