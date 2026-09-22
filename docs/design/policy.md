@@ -404,9 +404,10 @@ that could resolve as the entry's owner at scan time.
 
 **What was rejected.** Enforcing the pair only in `tests/test_ruleset_data.py`'s
 totality checks over the shipped ruleset's own data -- cheaper, but totality (every
-verdict-bearing pair carries a relation) and compatibility (a stated pair does not
-contradict itself) are different questions, and only compatibility needs enforcing for
-every ruleset `--ruleset` can load, not just the one this repository ships.
+verdict-bearing pair carries a relation, except a rule a table routes through, whose
+entries carry it instead) and compatibility (a stated pair does not contradict itself)
+are different questions, and only compatibility needs enforcing for every ruleset
+`--ruleset` can load, not just the one this repository ships.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#relation-and-the-verdict-class-are-checked-against-each-other-at-load-time)
 
@@ -459,10 +460,9 @@ restriction no static call site can answer on its own, so `CONTEXT_DEPENDENT` se
 to a human rather than clearing or refusing it outright.
 
 **The open residual.** Both rules' `why` text cites the provider's source
-registration, not a live measurement: no host running with `fips=1` enforcing and the
-FIPS provider active was available during this work, so `hashlib.sha1()`'s and
-`hashlib.md5()`'s actual behaviour under FIPS enforcement was never run and observed
-directly. Accepted as a documented gap; revisiting it needs nothing more than the host
-this work did not have.
+registration, not a live measurement: `hashlib.sha1()`'s and `hashlib.md5()`'s actual
+behaviour under FIPS enforcement is left unmeasured, read out of the provider's source
+rather than run and observed on a host with `fips=1` enforcing and the FIPS provider
+active. A documented gap; closing it needs nothing more than such a host.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#sha-1-is-restricted-not-refused)

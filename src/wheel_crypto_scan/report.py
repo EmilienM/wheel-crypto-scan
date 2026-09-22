@@ -254,10 +254,13 @@ def _wheel_section(record: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-# Verbatim CLASS_HELP wording for OPAQUE, reused here rather than duplicated, since an
-# empty inventory on an OPAQUE wheel needs to say the same thing that class already
-# says: the tool could not read enough to have an opinion, which is not the same claim
-# as "read fully and found nothing".
+# Its own wording, not CLASS_HELP["OPAQUE"]'s ("Stripped, unreadable or source-free.
+# Cannot determine."): an empty inventory needs a sentence about the inventory being
+# empty, not the class badge's own summary. Duplicated verbatim in
+# data/report.html's `UNREADABLE_INVENTORY_NOTE`, since the HTML report's inventory
+# section is written in JS rather than filled from this string;
+# test_html_unreadable_inventory_note_matches_the_markdown_one pins the two copies
+# together.
 _UNREADABLE_INVENTORY_NOTE = (
     "This wheel could not be read well enough to say what cryptography it carries -- "
     "absence of evidence, not evidence of absence."

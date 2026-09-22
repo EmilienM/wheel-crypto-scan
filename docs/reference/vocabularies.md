@@ -1,9 +1,12 @@
 # Vocabularies
 
-These are the fixed token sets the record uses. They live in Python because they describe
-what a reader did; which of them is worth a verdict lives in `ruleset.toml`. A token named
-by a rule is validated at load time, so a typo is a load error rather than a rule that
-silently matches nothing.
+These are the fixed token sets the record uses, with one exception: `[[standard]].status`
+never reaches a record -- it is parsed into the loaded `Ruleset` for the CLI and the HTML
+report to read back on demand, not carried on the finding that cites the standard (see
+"The ruleset cites a standard and the record carries only the pointer" in `DESIGN.md`).
+The rest live in Python because they describe what a reader did; which of them is worth a
+verdict lives in `ruleset.toml`. A token named by a rule is validated at load time, so a
+typo is a load error rather than a rule that silently matches nothing.
 
 They are part of the output contract. Adding a value is not a `schema_version` bump;
 renaming or removing one is.

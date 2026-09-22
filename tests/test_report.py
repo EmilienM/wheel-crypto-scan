@@ -685,6 +685,19 @@ def test_html_handles_an_empty_run() -> None:
     assert payload["records"] == []
 
 
+def test_html_unreadable_inventory_note_matches_the_markdown_one() -> None:
+    """`report.py`'s `_UNREADABLE_INVENTORY_NOTE` and `data/report.html`'s
+    `UNREADABLE_INVENTORY_NOTE` are the same sentence written twice, because the HTML
+    report's inventory section is JS, not filled from this Python string. Pins the two
+    copies together so one edited without the other fails here rather than only being
+    noticed by a reader comparing the Markdown and HTML output of the same wheel."""
+    page = render_html([], load_ruleset(None))
+    match = re.search(r'var UNREADABLE_INVENTORY_NOTE = ((?:"[^"]*"\s*\+?\s*)+);', page)
+    assert match is not None
+    js_note = "".join(re.findall(r'"([^"]*)"', match.group(1)))
+    assert js_note == report._UNREADABLE_INVENTORY_NOTE
+
+
 def test_html_is_ascii() -> None:
     """`--format html` to a redirected stdout must not crash on a non-UTF-8 locale:
     the template, and therefore every render of it, must stay pure ASCII."""

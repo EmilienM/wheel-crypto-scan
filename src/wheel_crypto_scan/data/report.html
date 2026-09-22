@@ -1224,12 +1224,15 @@ pre {
     );
   }
 
-  // Verbatim CLASS_HELP wording for OPAQUE (see report.py's identical
-  // _UNREADABLE_INVENTORY_NOTE), reused here rather than duplicated: an empty
-  // inventory on an OPAQUE wheel needs to say the tool could not read enough to have
-  // an opinion, not that it read the wheel in full and found nothing -- those are
-  // different claims, and only the first is one "No cryptography detected" is allowed
-  // to make.
+  // Its own wording, not CLASS_HELP.OPAQUE's ("Stripped, unreadable or source-free.
+  // Cannot determine."): an empty inventory on an OPAQUE wheel needs to say the tool
+  // could not read enough to have an opinion, not that it read the wheel in full and
+  // found nothing -- those are different claims, and only the first is one
+  // "No cryptography detected" is allowed to make. Duplicated verbatim in report.py's
+  // `_UNREADABLE_INVENTORY_NOTE`, since this page's inventory section is written in
+  // JS rather than filled from that Python string;
+  // test_html_unreadable_inventory_note_matches_the_markdown_one pins the two copies
+  // together.
   var UNREADABLE_INVENTORY_NOTE = "This wheel could not be read well enough to say " +
     "what cryptography it carries -- absence of evidence, not evidence of absence.";
 

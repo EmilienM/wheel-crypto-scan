@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "wheel-crypto-scan"
 dynamic = ["version"]
-description = "Deterministic FIPS-risk evidence inspector for Python wheels"
+description = "Deterministic crypto inventory for Python wheels, with FIPS compatibility as one lens over it"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Emilien Macchi", email = "emacchi@redhat.com" }]

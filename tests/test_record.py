@@ -599,6 +599,19 @@ def test_the_schema_forbids_a_passing_class() -> None:
     assert "COMPATIBLE" not in json.loads(text)["$defs"]["verdictClass"]["description"].upper()
 
 
+def _current_values(description: str) -> set[str]:
+    """The token set out of a schema description's "Current values: a, b, c." clause.
+
+    A plain `name in description` substring check has a blind spot a token-set
+    comparison does not: `"hash"` is itself a substring of `"password_hash"`, so
+    dropping the standalone `hash` token from the description would not be caught by
+    substring containment alone, only by comparing the parsed set to the vocabulary.
+    """
+    start = description.index("Current values: ") + len("Current values: ")
+    end = description.index(".", start)
+    return {token.strip() for token in description[start:end].split(",")}
+
+
 def test_the_schema_does_not_close_the_relation_or_family_lists() -> None:
     """The same argument as `test_the_schema_does_not_close_the_verdict_class_list`,
     for the two vocabularies this task added: a closed enum turns adding a relation or
@@ -608,10 +621,8 @@ def test_the_schema_does_not_close_the_relation_or_family_lists() -> None:
     )
     assert "enum" not in schema["$defs"]["relation"]
     assert "enum" not in schema["$defs"]["family"]
-    for name in RELATIONS:
-        assert name in schema["$defs"]["relation"]["description"], name
-    for name in FAMILIES:
-        assert name in schema["$defs"]["family"]["description"], name
+    assert _current_values(schema["$defs"]["relation"]["description"]) == set(RELATIONS)
+    assert _current_values(schema["$defs"]["family"]["description"]) == set(FAMILIES)
 
 
 def test_crypto_library_linkage_enum_matches_the_linkage_vocabulary_minus_none() -> None:

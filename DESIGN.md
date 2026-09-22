@@ -6382,7 +6382,9 @@ read an unowned entry -- rather than being skipped for lack of one fixed rule to
 **What was rejected.** Enforcing the pair only in `tests/test_ruleset_data.py`, over
 the shipped ruleset's own data. Cheaper to write, and it is where the *totality*
 requirement lives instead (every verdict-bearing rule and effective entry carries a
-relation and basis) -- but totality and compatibility are different questions, and
+relation and basis, except a rule a table routes through -- `DIST_NON_APPROVED_CRYPTO`
+sets `verdict` with no `relation` of its own, since its `crypto_distribution` entries
+supply one each) -- but totality and compatibility are different questions, and
 only the second is a property `--ruleset` needs enforced for every ruleset, not just
 the one this repository ships.
 
@@ -6464,10 +6466,9 @@ answer on its own, so `CONTEXT_DEPENDENT` sends it to a human rather than cleari
 or refusing it outright.
 
 **The open residual.** The `fips_digests[]` registration is what the `why` text on
-both rules cites, not a live measurement: no host running with `fips=1` enforcing and
-OpenSSL's FIPS provider active was available during this work, so `hashlib.sha1()`'s
-and `hashlib.md5()`'s actual behaviour under FIPS enforcement was never run and
-observed directly, only read out of the provider's own source. This is accepted as a
-documented gap, not papered over by inference: the source registration is the same
-claim a live measurement would confirm, and revisiting it needs nothing more than the
-host this work did not have.
+both rules cites, not a live measurement: `hashlib.sha1()`'s and `hashlib.md5()`'s
+actual behaviour under FIPS enforcement is left unmeasured, read out of the provider's
+own source rather than run and observed on a host with `fips=1` enforcing and
+OpenSSL's FIPS provider active. This is a documented gap, not papered over by
+inference: the source registration is the same claim a live measurement would
+confirm, and closing the gap needs nothing more than such a host.
