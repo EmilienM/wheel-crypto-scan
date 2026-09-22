@@ -112,6 +112,7 @@ Two habits in that file are worth knowing before you read it:
 | [A record produced without reading the wheel is never cached](tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached) | Accepted |
 | [`.exe` is in `_BINARY_SUFFIX`, and `.com`, `.cpl` and `.sys` are not](tooling.md#exe-is-in-_binary_suffix-and-com-cpl-and-sys-are-not) | Accepted |
 | [The loader lives in `ruleset_loader.py`, a sibling module, not a package](tooling.md#the-loader-lives-in-ruleset_loaderpy-a-sibling-module-not-a-package) | Accepted, and it changes no record |
+| [`Conventions`/`SonameInfo` and their `[conventions]` parser move to `conventions.py`](tooling.md#conventionssonameinfo-and-their-conventions-parser-move-to-conventionspy) | Accepted, and it changes no record |
 | [`binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions](tooling.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions) | Accepted |
 | [`binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader](tooling.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader) | Accepted |
 | [The HTML report embeds records and renders them in the browser](tooling.md#the-html-report-embeds-records-and-renders-them-in-the-browser) | Accepted |

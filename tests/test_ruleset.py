@@ -24,6 +24,8 @@ from wheel_crypto_scan.ruleset import (
     MATCHER_KINDS,
     ROUTED_KINDS,
     SymbolGroup,
+    sbom_crate_key,
+    sbom_library_key,
 )
 from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset
 
@@ -1211,6 +1213,49 @@ def test_a_suppressed_sbom_component_rule_covering_only_distribution_is_accepted
     parse_ruleset(data)
 
 
+# --- SBOM name folding -------------------------------------------------------
+
+
+def test_two_rust_crate_names_folding_together_are_rejected() -> None:
+    """`foo-bar` and `foo_bar` are the same crates.io name, so the two entries would
+    make `ruleset.crate_for_sbom_name` ambiguous -- dict order would silently pick a
+    winner. Refused at load time instead."""
+    data = minimal()
+    data["rust_crate"].append({"name": "foo-bar", "severity": "high", "why": "w"})
+    data["rust_crate"].append({"name": "foo_bar", "severity": "high", "why": "w"})
+    with pytest.raises(RulesetError, match="same name to an SBOM"):
+        parse_ruleset(data)
+
+
+def test_two_crypto_library_names_folding_together_are_rejected() -> None:
+    """`Foo` and `foo` fold to the same case-insensitive key, making
+    `ruleset.library_for_sbom_name` ambiguous the same way."""
+    data = minimal()
+    data["crypto_library"].append({"name": "Foo", "sonames": ["libfoo"], "why": "w"})
+    data["crypto_library"].append({"name": "foo", "sonames": ["libfoo2"], "why": "w"})
+    with pytest.raises(RulesetError, match="same name to an SBOM"):
+        parse_ruleset(data)
+
+
+def test_sbom_library_key_does_not_fold_a_non_ascii_character_onto_ascii_case() -> None:
+    """U+212A KELVIN SIGN lowercases to ASCII `k` under Python's own `str.lower()`, but
+    no registry treats it as the same character as `k`. Folding it would make an SBOM
+    component spelled with the Kelvin sign match an ASCII ruleset entry it never
+    actually named, so a non-ASCII name is returned unchanged instead."""
+    kelvin_k = "K"
+    assert sbom_library_key(f"{kelvin_k}256") == f"{kelvin_k}256"
+    assert sbom_library_key(f"{kelvin_k}256") != sbom_library_key("K256")
+
+
+def test_sbom_crate_key_does_not_fold_a_non_ascii_character_onto_ascii_case() -> None:
+    """The same Unicode-folding gap as `sbom_library_key` above, for the `-`/`_` fold
+    `sbom_crate_key` also applies: crates.io names are ASCII-only, so a non-ASCII name
+    is returned unchanged rather than folded onto an ASCII crate it never named."""
+    kelvin_k = "K"
+    assert sbom_crate_key(f"{kelvin_k}256") == f"{kelvin_k}256"
+    assert sbom_crate_key(f"{kelvin_k}256") != sbom_crate_key("K256")
+
+
 def test_unknown_scan_error_kind_is_rejected() -> None:
     data = minimal()
     data["rule"][0]["match"] = {"kind": "scan_error", "error_kinds": ["cosmic_ray"]}
@@ -1380,6 +1425,30 @@ def test_a_windows_suffix_that_is_never_stripped_is_refused() -> None:
     data = minimal()
     data["conventions"]["windows_library_suffixes"] = [".dll", ".exe"]
     with pytest.raises(RulesetError, match="windows_library_suffixes"):
+        parse_ruleset(data)
+
+
+def test_a_non_table_conventions_is_rejected() -> None:
+    """A bare string would otherwise reach `conventions[key]` for the Go group check
+    and crash with a bare `TypeError`, not the `RulesetError` a malformed ruleset
+    should raise."""
+    data = minimal()
+    data["conventions"] = "x"
+    with pytest.raises(RulesetError, match=r"\[conventions\]: must be a table"):
+        parse_ruleset(data)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["vendor_dir_globs", "weak_hash_algorithms", "library_suffixes", "windows_library_suffixes"],
+)
+def test_a_bare_string_conventions_list_is_rejected(key: str) -> None:
+    """A bare string is iterable character by character, so `tuple(...)`/
+    `frozenset(...)` would otherwise turn e.g. `vendor_dir_globs = "abc"` into the
+    three single-character globs `('a', 'b', 'c')` instead of refusing it."""
+    data = minimal()
+    data["conventions"][key] = "abc"
+    with pytest.raises(RulesetError, match=f"{key} must be a list of strings"):
         parse_ruleset(data)
 
 

@@ -55,6 +55,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `data/ruleset.toml` | All policy: packages, symbols, strings, crates, libraries, verdicts, linkage |
 | `engine.py`, `ruleset.py` | Rule dispatch and matchers |
 | `ruleset_loader.py` | Parses and validates the TOML into the `Ruleset` object model `ruleset.py` defines |
+| `conventions.py` | `Conventions`/`SonameInfo`, the structural facts about wheel layout, and their `[conventions]` parser |
 | `layers/` | Evidence gathering: wheel metadata, Python AST, binaries, archive inventory |
 | `binfmt/` | ELF, Mach-O, PE, Go and Rust readers, the `ar`-archive container reader, the shared strings pass, the shared symbol-table cross-check, the fallback |
 | `caps.py` | The shared evidence-preserving cap: one representative per key before filling the rest. Top-level, not under `binfmt/`, because `record.py` caps `evidence.errors` with it too, and must not import the whole binary-reader stack to do it |

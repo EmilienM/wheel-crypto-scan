@@ -418,12 +418,16 @@ where `_left_unanswered` is: after every object's own evidence has been checked 
 of it was definite. Unlike `_left_unanswered`, it is not gated on `always_report`,
 because it is about the specific library named, not about the wheel as a whole. It
 matches an SBOM component whose name equals a library's own name or one of its `crates`
-— the same names `SBOM_CRYPTO_COMPONENT` reports a finding for — and, like a crate, never
-gives a definite posture, only `unknown` in place of `none`. Where the library's own name
-also names an unrelated `[[rust_crate]]` the library does not list in `crates`
-(`argon2`, `blake2`), the component's own `purl` decides instead of the name alone: only
-a `pkg:cargo/...` purl reads as the crate and leaves the C library's field untouched; any
-other purl, or none, moves it.
+— the same names `SBOM_CRYPTO_COMPONENT` reports a finding for — compared
+case-insensitively, and for a crate with `-` and `_` as the same character, the way
+crates.io treats them. It, like a crate, never gives a definite posture, only `unknown`
+in place of `none`. Where the library's own name also names an unrelated
+`[[rust_crate]]` the library does not list in `crates` (`argon2`, `blake2`), the
+component's own `purl` decides instead of the name alone: only a `pkg:cargo/...` purl
+reads as the crate and leaves the C library's field untouched; any other purl, or none,
+moves it. `SBOM_CRYPTO_COMPONENT` reads the same purl to pick which entry rates the
+component: a `pkg:cargo/...` purl is rated by the `[[rust_crate]]` entry, anything else
+by the `[[crypto_library]]` entry.
 
 **What was rejected.** Two simpler alternatives. Matching by name alone, whatever the
 purl, gives a false positive: a component naming the pure-Rust crate under

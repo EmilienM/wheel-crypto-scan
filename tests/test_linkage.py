@@ -47,7 +47,7 @@ from wheel_crypto_scan.linkage import (
     resolve_linkage,
 )
 from wheel_crypto_scan.ruleset import LinkagePolicy
-from wheel_crypto_scan.ruleset_loader import load_ruleset
+from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset
 
 OPENSSL_BANNER = StringMatch(group="openssl_banner", value="OpenSSL 3.0.14 4 Jun 2024")
 OPENSSL_BUILD_INFO = StringMatch(group="openssl_build_info", value='OPENSSLDIR: "/usr/lib/ssl"')
@@ -868,15 +868,15 @@ def test_an_sbom_component_that_does_not_bind_openssl_leaves_it_none(ruleset, na
     assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
 
 
-@pytest.mark.parametrize("name", ["OpenSSL", "OPENSSL-SYS"])
-def test_an_sbom_component_spelled_differently_from_the_ruleset_leaves_openssl_none(
-    ruleset, name
-) -> None:
-    """The comparison is exact and case-sensitive, like `SBOM_CRYPTO_COMPONENT`'s own
-    (`engine._sbom_entry`'s table lookups). A component spelled with different case
-    matches neither, so it must move neither the field nor the finding."""
+@pytest.mark.parametrize("name", ["OpenSSL", "OPENSSL-SYS", "openssl_sys", "OpenSSL_Src"])
+def test_an_sbom_component_spelled_differently_still_names_openssl(ruleset, name) -> None:
+    """The comparison folds through `ruleset.sbom_library_key`/`sbom_crate_key`, like
+    `SBOM_CRYPTO_COMPONENT`'s own (`engine._sbom_entry`'s table lookups): a C library
+    name is only case-folded, and a crate name also treats `-` and `_` as the same
+    character, the way crates.io does. A component spelled with different case, or
+    with `-`/`_` swapped for a crate, still names the same library."""
     evidence = wheel(metadata=sbom(name))
-    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_NONE
+    assert resolve_linkage(ruleset, evidence)["openssl"] == LINKAGE_UNKNOWN
 
 
 @pytest.mark.parametrize("name", ["argon2", "blake2"])
@@ -936,6 +936,137 @@ def test_an_sbom_naming_both_the_crate_and_the_c_library_under_the_colliding_nam
     )
     evidence = wheel(metadata=metadata)
     assert resolve_linkage(ruleset, evidence)[name] == LINKAGE_UNKNOWN
+
+
+@pytest.mark.parametrize("name", ["Argon2", "BLAKE2"])
+def test_the_collision_purl_check_also_folds_case(ruleset, name) -> None:
+    """The same `argon2`/`blake2` collision as above, spelled with different case: the
+    purl check has to run on the folded key, not the SBOM's own spelling, or a case
+    variant of the pure-Rust crate's name would fall through to the C library's own
+    name arm and move a field the cargo purl says it must not."""
+    cargo = wheel(metadata=sbom(name, purl=f"pkg:cargo/{name.lower()}@0.5.3"))
+    assert name.lower() not in resolve_linkage(ruleset, cargo)
+    no_purl = wheel(metadata=sbom(name))
+    assert resolve_linkage(ruleset, no_purl)[name.lower()] == LINKAGE_UNKNOWN
+
+
+def _mixed_case_collision_ruleset():
+    """A ruleset whose colliding `[[crypto_library]]`/`[[rust_crate]]` names are not
+    already lower-case, unlike `argon2`/`blake2` in the shipped ruleset. Pins that
+    `_declared_by_sbom` folds `library.name` itself -- not just the SBOM component's
+    own spelling -- before comparing it: reverting either fold on `library.name` to a
+    raw string compare still passes every collision test run against the shipped
+    ruleset, because its colliding names are already lower-case there.
+
+    Also carries `LibFoo`, a mixed-case `[[crypto_library]]` with no `[[rust_crate]]`
+    of the same name: the non-collision arm of `_declared_by_sbom` folds
+    `library.name` too, and every shipped library name is already lower-case, so a
+    raw compare there would pass every other test in this file as well.
+    """
+    return parse_ruleset(
+        {
+            "ruleset_version": "test",
+            "verdict": {"precedence": ["NON_APPROVED_CRYPTO", "NO_CRYPTO_DETECTED"]},
+            "limits": {
+                "max_locations_per_finding": 10,
+                "max_symbols_per_binary": 64,
+                "max_strings_per_binary": 64,
+                "max_rust_crates_per_binary": 128,
+                "max_evidence_chars": 200,
+                "min_string_length": 4,
+            },
+            "conventions": {
+                "vendor_dir_globs": ["*.libs", ".dylibs"],
+                "mangled_soname_regex": r"^(?P<stem>lib.+)-(?P<hash>[0-9a-f]{6,32})$",
+                "windows_version_suffix_regex": (
+                    r"^(?P<stem>.+?)-(?P<version>[0-9]+(_[0-9]+)?)"
+                    r"(-(?P<decoration>[A-Za-z0-9_]+))?$"
+                ),
+                "cargo_path_regex": (
+                    r"cargo/registry/src/[^/]+/(?P<name>[a-z-]+)-(?P<version>[0-9.]+)/"
+                ),
+                "cargo_vendor_path_regex": r"vendor/(?P<name>[a-z-]+)(?:-(?P<version>[0-9.]+))?/",
+                "weak_hash_algorithms": ["md5", "sha1"],
+                "library_suffixes": [".so", ".dylib", ".dll", ".pyd"],
+                "windows_library_suffixes": [".dll", ".pyd"],
+                "go_boring_group": "go_boring",
+                "go_stock_group": "go_stock_crypto",
+                "go_fips140_group": "go_fips140",
+            },
+            "crypto_distribution": [],
+            "crypto_library": [
+                {
+                    "name": "Argon2",
+                    "sonames": ["libargon2"],
+                    "verdict": "NON_APPROVED_CRYPTO",
+                    "severity": "high",
+                    "why": "the C reference implementation",
+                },
+                {
+                    "name": "LibFoo",
+                    "sonames": ["libfoo"],
+                    "verdict": "NON_APPROVED_CRYPTO",
+                    "severity": "high",
+                    "why": "a mixed-case library with no rust_crate of the same name",
+                },
+            ],
+            "symbol_group": [],
+            "string_group": [
+                {"name": "go_boring", "substrings": ["crypto/internal/boring"], "why": "boring"},
+                {"name": "go_stock_crypto", "substrings": ["crypto/sha256."], "why": "stock"},
+                {"name": "go_fips140", "substrings": ["GOFIPS140="], "why": "fips module"},
+            ],
+            "rust_crate": [
+                {
+                    "name": "argon2",
+                    "verdict": "NON_APPROVED_CRYPTO",
+                    "severity": "medium",
+                    "why": "the pure-Rust RustCrypto crate of the same name",
+                }
+            ],
+            "python_module": [],
+            "ctypes_library": [],
+            "rule": [
+                {
+                    "id": "SBOM_CRYPTO_COMPONENT",
+                    "layer": "metadata",
+                    "category": "bundled-crypto",
+                    "severity": "high",
+                    "confidence": "high",
+                    "needs_human_review": True,
+                    "title": "t",
+                    "why": "w",
+                    "match": {"kind": "sbom_component", "tables": ["crypto_library", "rust_crate"]},
+                }
+            ],
+        }
+    )
+
+
+def test_the_collision_check_folds_the_rulesets_own_library_name_too() -> None:
+    """`argon2` and `blake2` collide with a `[[rust_crate]]` of the same name in the
+    shipped ruleset, but both are already lower-case there, so a mutation comparing
+    `library.name` raw instead of through `sbom_library_key`/`sbom_crate_key` still
+    passes every test run against it. A ruleset whose colliding name is not already
+    lower-case (`Argon2`) pins the fold in both directions: a no-purl SBOM component
+    still moves the field (it could name the C library), and a `pkg:cargo/...` one
+    still does not (it names the unrelated pure-Rust crate instead)."""
+    collision_ruleset = _mixed_case_collision_ruleset()
+    no_purl = wheel(metadata=sbom("Argon2"))
+    assert resolve_linkage(collision_ruleset, no_purl)["Argon2"] == LINKAGE_UNKNOWN
+    cargo = wheel(metadata=sbom("Argon2", purl="pkg:cargo/argon2@0.1.0"))
+    assert "Argon2" not in resolve_linkage(collision_ruleset, cargo)
+
+
+def test_the_non_collision_check_folds_the_rulesets_own_library_name_too() -> None:
+    """`LibFoo` has no `[[rust_crate]]` of the same name, so `_declared_by_sbom` takes
+    the non-collision arm, comparing `library.name` against the SBOM's keys directly.
+    Every shipped library name is already lower-case, so a mutation comparing
+    `library.name` raw instead of through `sbom_library_key` still passes every other
+    test in this file; this one pins the fold with a library name that is not."""
+    collision_ruleset = _mixed_case_collision_ruleset()
+    evidence = wheel(metadata=sbom("libfoo"))
+    assert resolve_linkage(collision_ruleset, evidence)["LibFoo"] == LINKAGE_UNKNOWN
 
 
 @pytest.mark.parametrize(

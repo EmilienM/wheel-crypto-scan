@@ -34,8 +34,9 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping
 
+from .conventions import Conventions
 from .evidence import BINDING_DEFINED, BINDING_IMPORTED, STAGE_BINARY, BinaryEvidence, Evidence
-from .ruleset import Conventions, CryptoLibrary, Ruleset
+from .ruleset import CryptoLibrary, Ruleset, sbom_crate_key, sbom_library_key
 
 LINKAGE_SYSTEM = "system"
 LINKAGE_BUNDLED = "bundled"
@@ -249,9 +250,10 @@ def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
     unanswered = _left_unanswered(ruleset, evidence)
     counts = member_stem_counts(ruleset.conventions, evidence)
     incomplete = wheel_incompletely_read(evidence)
-    sbom_names = _sbom_component_names(evidence)
-    sbom_purls_by_name = _sbom_purls_by_name(evidence)
-    rust_crate_names = frozenset(ruleset.rust_crates)
+    sbom_library_keys = _sbom_library_keys(evidence)
+    sbom_crate_keys = _sbom_crate_keys(evidence)
+    sbom_purls_by_key = _sbom_purls_by_library_key(evidence)
+    rust_crate_keys = frozenset(sbom_crate_key(name) for name in ruleset.rust_crates)
     result: dict[str, str] = {}
     for name in sorted(ruleset.libraries):
         library = ruleset.libraries[name]
@@ -261,7 +263,9 @@ def resolve_linkage(ruleset: Ruleset, evidence: Evidence) -> dict[str, str]:
         value = _aggregate(
             postures,
             unanswered and library.always_report,
-            _declared_by_sbom(library, sbom_names, sbom_purls_by_name, rust_crate_names),
+            _declared_by_sbom(
+                library, sbom_library_keys, sbom_crate_keys, sbom_purls_by_key, rust_crate_keys
+            ),
         )
         if value != LINKAGE_NONE or library.always_report:
             result[name] = value
@@ -321,47 +325,63 @@ def _aggregate(postures: set[str], unanswered: bool, declared: bool) -> str:
     return LINKAGE_NONE
 
 
-def _sbom_component_names(evidence: Evidence) -> frozenset[str]:
+def _sbom_library_keys(evidence: Evidence) -> frozenset[str]:
+    """Every SBOM component name, folded through `ruleset.sbom_library_key`."""
     if evidence.metadata is None:
         return frozenset()
-    return frozenset(component.name for component in evidence.metadata.sbom_components)
+    return frozenset(
+        sbom_library_key(component.name) for component in evidence.metadata.sbom_components
+    )
 
 
-def _sbom_purls_by_name(evidence: Evidence) -> Mapping[str, frozenset[str | None]]:
-    """Every `purl` (including a missing one, as `None`) seen on a component with a
-    given name. `_declared_by_sbom` reads this only for the `argon2`/`blake2` name
-    collision, to tell an SBOM component naming the C reference library apart from
-    one naming the unrelated pure-Rust crate of the same name.
+def _sbom_crate_keys(evidence: Evidence) -> frozenset[str]:
+    """Every SBOM component name, folded through `ruleset.sbom_crate_key`."""
+    if evidence.metadata is None:
+        return frozenset()
+    return frozenset(
+        sbom_crate_key(component.name) for component in evidence.metadata.sbom_components
+    )
+
+
+def _sbom_purls_by_library_key(evidence: Evidence) -> Mapping[str, frozenset[str | None]]:
+    """Every `purl` (including a missing one, as `None`) seen on a component whose name
+    folds to a given `sbom_library_key`. `_declared_by_sbom` reads this only for the
+    `argon2`/`blake2` name collision, to tell an SBOM component naming the C reference
+    library apart from one naming the unrelated pure-Rust crate of the same name.
     """
     if evidence.metadata is None:
         return {}
-    by_name: dict[str, set[str | None]] = {}
+    by_key: dict[str, set[str | None]] = {}
     for component in evidence.metadata.sbom_components:
-        by_name.setdefault(component.name, set()).add(component.purl)
-    return {name: frozenset(purls) for name, purls in by_name.items()}
+        by_key.setdefault(sbom_library_key(component.name), set()).add(component.purl)
+    return {key: frozenset(purls) for key, purls in by_key.items()}
 
 
-def _is_cargo_purl(purl: str | None) -> bool:
+def is_cargo_purl(purl: str | None) -> bool:
     """A `pkg:cargo/...` purl is PEP 770's own way of saying "this component is the
     crates.io crate": `cargo` is the purl `type` PEP 770 reserves for that registry.
     Anything else -- a different purl type, or none at all -- makes no such claim.
+    Public because `engine._sbom_entry` reads the same purl to pick which table rates
+    a component whose name collides between `crypto_library` and `rust_crate`.
     """
     return purl is not None and purl.startswith("pkg:cargo/")
 
 
 def _declared_by_sbom(
     library: CryptoLibrary,
-    names: frozenset[str],
-    purls_by_name: Mapping[str, frozenset[str | None]],
-    rust_crate_names: frozenset[str],
+    library_keys: frozenset[str],
+    crate_keys: frozenset[str],
+    purls_by_library_key: Mapping[str, frozenset[str | None]],
+    rust_crate_keys: frozenset[str],
 ) -> bool:
     """Does the wheel's own SBOM name this library, or a crate that binds it?
 
     Accepts only names `SBOM_CRYPTO_COMPONENT` also reports through its
     `crypto_library` and `rust_crate` tables (`engine._sbom_entry`), and compares them
-    the same way it does: exact and case-sensitive. That keeps this field and that
-    finding from ever disagreeing about the same string -- the field cannot move on a
-    component the record carries no finding for. That agreement holds only because
+    the same way it does: through `ruleset.sbom_library_key`/`sbom_crate_key`, never a
+    raw string. That keeps this field and that finding from ever disagreeing about the
+    same string -- the field cannot move on a component the record carries no finding
+    for. That agreement holds only because
     `ruleset_loader._validate_sbom_component_coverage` refuses to load a ruleset whose
     `sbom_component` rules, taken together, do not cover both tables; this function
     assumes that check already ran.
@@ -392,8 +412,9 @@ def _declared_by_sbom(
     arm whenever the name merely collides, whatever the purl, gives the opposite
     failure: a component that really does name libargon2 or libb2 under a non-cargo
     purl, or none, would not move the field, while `SBOM_CRYPTO_COMPONENT` still fires
-    on that same name (it matches by name, not by purl) -- leaving a finding with no
-    field beside it to say so, the same "reports nothing" shape the invariants resist.
+    on that same name -- the finding fires on the name whatever the purl, the purl
+    only picks which table rates it -- leaving a finding with no field beside it to
+    say so, the same "reports nothing" shape the invariants resist.
     See DESIGN.md, "An SBOM naming an OpenSSL crate reads `unknown`, not `none`".
 
     An SBOM component says the wheel uses the library, not which copy, exactly like a
@@ -402,13 +423,13 @@ def _declared_by_sbom(
     # `library.name not in library.crates` is not checked here: when it does list
     # itself (openssl), the `crates` arm on the return below already matches its own
     # name regardless of purl, so this branch's outcome would be the same either way.
-    name_is_someone_elses_crate = library.name in rust_crate_names
+    name_is_someone_elses_crate = sbom_crate_key(library.name) in rust_crate_keys
     if name_is_someone_elses_crate:
-        purls = purls_by_name.get(library.name, frozenset())
-        name_matches = any(not _is_cargo_purl(purl) for purl in purls)
+        purls = purls_by_library_key.get(sbom_library_key(library.name), frozenset())
+        name_matches = any(not is_cargo_purl(purl) for purl in purls)
     else:
-        name_matches = library.name in names
-    return name_matches or any(crate in names for crate in library.crates)
+        name_matches = sbom_library_key(library.name) in library_keys
+    return name_matches or any(sbom_crate_key(crate) in crate_keys for crate in library.crates)
 
 
 def _binary_posture(

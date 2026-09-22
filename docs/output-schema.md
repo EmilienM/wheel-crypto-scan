@@ -232,13 +232,17 @@ object in the wheel answered definitely, and never outvotes a definite posture e
 A distribution name (`crypto_distribution`, e.g. `cryptography`) is a finding at most
 and never moves this field, and neither does a soname in an SBOM component: this field
 only compares an SBOM component's name against a library's own name and its `crates`,
-the same names `SBOM_CRYPTO_COMPONENT` reports a finding for. When a library's own
+the same names `SBOM_CRYPTO_COMPONENT` reports a finding for, compared
+case-insensitively and, for a crate name, treating `-` and `_` as the same character
+the way crates.io does. When a library's own
 name is *also* a different `rust_crate` it does not itself list in `crates` -- in the
 shipped ruleset, `argon2` and `blake2`, each both a C reference library and an
 unrelated pure-Rust crate of the same name -- the component's `purl` breaks the tie:
 only a `pkg:cargo/...` purl reads as the crate and leaves the C library's field
 untouched, so a component named `argon2`/`blake2` with any other purl, or none,
-moves it.
+moves it. `SBOM_CRYPTO_COMPONENT` reads that same purl to choose the crate's or the
+library's entry for its own severity and verdict: a `pkg:cargo/...` purl is rated by
+the `[[rust_crate]]` entry, any other purl or none by the `[[crypto_library]]` entry.
 
 Other libraries appear as `<name>_linkage` when they have evidence.
 

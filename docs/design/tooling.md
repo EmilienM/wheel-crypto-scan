@@ -168,6 +168,29 @@ from `ruleset_loader`; everything that imports only object-model names imports t
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-loader-lives-in-ruleset_loaderpy-a-sibling-module-not-a-package)
 
+## `Conventions`/`SonameInfo` and their `[conventions]` parser move to `conventions.py`
+
+**Accepted, and it changes no record.** `ruleset_loader.py` reached pylint's default module-line
+limit as SBOM name-folding and the cargo-purl reorder it backs joined a loader that already
+carried the ruleset shape checks and every other parsing helper. `Conventions`/`SonameInfo` (the
+object model) and `_parse_conventions` (the parser that builds one) move together into a new
+sibling module, `conventions.py`, out of `ruleset.py` and `ruleset_loader.py` respectively, and
+the parser drops its leading underscore to become the public `parse_conventions`:
+`ruleset_loader.parse_ruleset` now calls it across the module boundary the underscore marks
+private. `parse_conventions` builds nothing but a `Conventions`, so the model and the function
+that builds it are one concern, not two files sharing a name by coincidence.
+
+**Why the parser has to move too.** `ruleset_loader.py`, not `ruleset.py`, is the file that
+reached the limit, and `_parse_conventions` is the piece of it large enough to matter. Moving
+only the dataclasses would have fixed a limit nothing in `ruleset.py` had broken.
+
+**What was rejected.** A module-local exemption for `ruleset_loader.py` to match
+`binfmt/elf.py` and `binfmt/macho.py` below: those two earn theirs because about half of each is
+docstring, and this module's growth is validation code, not documentation. A bigger
+`max-module-lines`, for the same reason the entry below rejects one.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#conventionssonameinfo-and-their-conventions-parser-move-to-conventionspy)
+
 ## `binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions
 
 **Accepted.** Each of `binfmt/elf.py` and `binfmt/macho.py` carries its own module-local

@@ -24,9 +24,10 @@ import re
 from ..binfmt import read_binary
 from ..binfmt.ar import MAGIC as _AR_MAGIC
 from ..binfmt.ar import read_ar_members
+from ..conventions import Conventions
 from ..evidence import STAGE_BINARY, BinaryEvidence, ScanError
 from ..errors import MEMBER_READ_ERROR
-from ..ruleset import BinaryPatterns, Conventions
+from ..ruleset import BinaryPatterns
 from ..wheelfile import MemberInfo, WheelArchive
 
 # `.so`, `.so.3`, `.3.dylib`, `.pyd`, `.dll`, `.exe`, `.a` and `.lib` (a static

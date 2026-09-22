@@ -21,6 +21,7 @@ from .findings import Finding, Location
 from .linkage import (
     LINKAGE_BUNDLED,
     LINKAGE_SYSTEM,
+    is_cargo_purl,
     member_stem_counts,
     needed_posture,
     object_postures,
@@ -306,7 +307,7 @@ def _match_sbom_component(rule, match, ruleset, evidence, linkage, index) -> Ite
         return
     tables = match.get("tables", [])
     for component in meta.sbom_components:
-        entry = _sbom_entry(ruleset, tables, component.name)
+        entry = _sbom_entry(ruleset, tables, component.name, component.purl)
         if entry is None:
             continue
         version = f" {component.version}" if component.version else ""
@@ -325,12 +326,31 @@ def _match_sbom_component(rule, match, ruleset, evidence, linkage, index) -> Ite
         )
 
 
-def _sbom_entry(ruleset: Ruleset, tables: Sequence[str], name: str):  # type: ignore[no-untyped-def]
+def _sbom_entry(  # type: ignore[no-untyped-def]
+    ruleset: Ruleset, tables: Sequence[str], name: str, purl: str | None
+):
+    """The ruleset entry an SBOM component of this `name`/`purl` reports through.
+
+    Table order is the rule's own, with one purl-driven exception: a `pkg:cargo/...`
+    purl is PEP 770's spelling for "this component is the crates.io crate", so when the
+    rule also lists `rust_crate` that table is tried first, ahead of whatever table the
+    rule lists first. This is how `openssl` -- both a `[[crypto_library]]` and, because
+    the crate really does bind libssl/libcrypto, one of its own `crates` -- is rated by
+    the crate's entry under a cargo purl and by the library's otherwise. Any other purl,
+    or none, changes nothing: it never adds a table the rule does not already list, only
+    reorders among the ones it does.
+    """
+    if is_cargo_purl(purl) and "rust_crate" in tables:
+        tables = ["rust_crate", *(table for table in tables if table != "rust_crate")]
     for table in tables:
-        if table == "crypto_library" and name in ruleset.libraries:
-            return ruleset.libraries[name]
-        if table == "rust_crate" and name in ruleset.rust_crates:
-            return ruleset.rust_crates[name]
+        if table == "crypto_library":
+            entry = ruleset.library_for_sbom_name(name)
+            if entry is not None:
+                return entry
+        if table == "rust_crate":
+            entry = ruleset.crate_for_sbom_name(name)
+            if entry is not None:
+                return entry
         if table == "crypto_distribution":
             entry = ruleset.distributions.get(canonicalize_name(name))
             if entry is not None:
