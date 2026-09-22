@@ -242,6 +242,62 @@ def test_every_finding_has_the_same_key_set(ruleset) -> None:
     assert len({tuple(sorted(finding)) for finding in findings}) == 1
 
 
+def test_a_finding_carries_its_relation_basis_and_family(ruleset) -> None:
+    """A bundled OpenSSL resolves through `BIN_BUNDLED_OPENSSL`'s `table = "crypto_library"`
+    match, so the finding takes the `openssl` library's own `relation`/`basis`/`family`
+    rather than the rule's -- the same override `severity`/`verdict` already take."""
+    findings = record_for(ruleset, bundled_cryptography())["findings"]
+    bundled = next(f for f in findings if f["rule_id"] == "BIN_BUNDLED_OPENSSL")
+    library = ruleset.libraries["openssl"]
+    assert bundled["relation"] == library.relation
+    assert bundled["basis"] == sorted(library.basis)
+    assert bundled["family"] == library.family
+
+
+def test_basis_is_sorted(ruleset) -> None:
+    findings = record_for(ruleset, bundled_cryptography())["findings"]
+    for finding in findings:
+        assert finding["basis"] == sorted(finding["basis"])
+
+
+# --- crypto -------------------------------------------------------------------
+
+
+def test_crypto_lists_every_family_a_finding_was_evidence_of(ruleset) -> None:
+    families = record_for(ruleset, bundled_cryptography())["crypto"]["families"]
+    assert families == sorted(set(families))
+    assert families == ["library"]
+
+
+def test_crypto_lists_every_library_whose_linkage_is_not_none(ruleset) -> None:
+    """Derived from `verdict.conditions`, not threaded through separately: the two can
+    never disagree. `openssl` is `always_report = true` and reads `bundled` here, so it
+    is included; nothing else has evidence in this fixture."""
+    record = record_for(ruleset, bundled_cryptography())
+    assert record["crypto"]["libraries"] == [{"name": "openssl", "linkage": "bundled"}]
+    conditions = record["verdict"]["conditions"]
+    expected = sorted(
+        name.removesuffix("_linkage") for name, value in conditions.items() if value != "none"
+    )
+    assert [library["name"] for library in record["crypto"]["libraries"]] == expected
+
+
+def test_a_wheel_with_no_crypto_gets_a_genuinely_empty_crypto_block(ruleset) -> None:
+    """`openssl` is `always_report = true` and reads `none` on a wheel with no crypto
+    evidence at all, so it is correctly excluded rather than listed with `linkage:
+    none` -- this is what gives a `NO_CRYPTO_DETECTED` wheel an empty inventory
+    instead of a missing or null one."""
+    evidence = Evidence(
+        filename="plain-1.0-py3-none-any.whl",
+        sha256="0" * 64,
+        size_bytes=1,
+        artifacts=ArtifactInventory(),
+    )
+    record = record_for(ruleset, evidence)
+    assert record["verdict"]["class"] == "NO_CRYPTO_DETECTED"
+    assert record["crypto"] == {"families": [], "libraries": []}
+
+
 # --- binaries[] cap: what a finding points at is kept first ---------------------
 #
 # `caps.cap()` handles this shape one layer down for the per-binary string, symbol and

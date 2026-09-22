@@ -56,6 +56,17 @@ class Hit:
     # a relation between two subjects of the same rule -- on the same binary object for
     # `rust_crate`, or on the same SBOM document for `sbom_component`.
     suppressed_by: tuple[tuple[str, str], ...] = ()
+    # What would have to change for this finding to go away, and the standards that
+    # say so. `None` means "not overridden here, fall back to the rule's own value" --
+    # `basis` uses `None` rather than `()` for the same reason, so an override that
+    # deliberately clears the rule's basis is distinguishable from no override at all.
+    relation: str | None = None
+    basis: tuple[str, ...] | None = None
+    # What kind of primitive this hit is evidence of. `None` falls back to the rule's
+    # own family the same way `relation`/`basis` do, but a matched entry's family is
+    # never itself `None` in the shipped ruleset, so `first.family or rule.family` is
+    # enough here without a third sentinel.
+    family: str | None = None
 
 
 def apply_rules(
@@ -106,6 +117,9 @@ def _build_finding(rule: Rule, hits: Sequence[Hit], limits: Limits) -> Finding:
         verdict=first.verdict if first.verdict is not None else rule.verdict,
         subject=first.subject,
         subject_kind=first.subject_kind,
+        relation=first.relation if first.relation is not None else rule.relation,
+        basis=first.basis if first.basis is not None else rule.basis,
+        family=first.family or rule.family,
         occurrences=len(locations),
         locations=tuple(locations[: limits.max_locations_per_finding]),
         truncated=len(locations) > limits.max_locations_per_finding,
@@ -157,6 +171,20 @@ def _attrs(site) -> dict[str, str]:  # type: ignore[no-untyped-def]
     return dict(site.attrs)
 
 
+def _basis_override(basis: tuple[str, ...]) -> tuple[str, ...] | None:
+    """An entry's own `basis`, translated to `Hit`'s "not overridden" sentinel.
+
+    Every override-bearing table defaults `basis` to `()`, not `None`: an entry that
+    never sets its own `relation`/`basis` still has a `basis` to read, just an empty
+    one. The loader guarantees `basis` is non-empty exactly when `relation` is set
+    (`ruleset_loader._parse_relation_fields` refuses one without the other), so an
+    empty `basis` here always means "this entry did not override it" and a non-empty
+    one always means "it did" -- `basis or None` reads that guarantee directly,
+    without a second `relation is not None` check that could drift from it.
+    """
+    return basis or None
+
+
 def _owns(rule: Rule, entry_rule: str | None, default: Rule | None, *, unowned: bool) -> bool:
     """Whether a table entry belongs to this rule.
 
@@ -201,6 +229,9 @@ def _match_dist_name(rule, match, ruleset, evidence, linkage, index) -> Iterator
         severity=entry.severity,
         verdict=entry.verdict,
         needs_human_review=entry.needs_human_review,
+        relation=entry.relation,
+        basis=_basis_override(entry.basis),
+        family=entry.family,
     )
 
 
@@ -214,7 +245,10 @@ def _match_requires_dist(rule, match, ruleset, evidence, linkage, index) -> Iter
         if entry is None or (not any_entry and entry.rule != rule.id):
             continue
         # An `any_entry` rule is a dependency edge, not the dependency's own risk, so
-        # it deliberately does not inherit the entry's severity or verdict.
+        # it deliberately does not inherit the entry's severity or verdict -- and
+        # `relation`/`basis` follow the same gate, since a relation citing a standard
+        # makes no sense on a finding that carries no verdict of its own. `family`
+        # follows it too, for consistency with the rest of the gate.
         yield Hit(
             subject_kind="distribution",
             subject=name,
@@ -224,6 +258,9 @@ def _match_requires_dist(rule, match, ruleset, evidence, linkage, index) -> Iter
             ),
             severity=None if any_entry else entry.severity,
             verdict=None if any_entry else entry.verdict,
+            relation=None if any_entry else entry.relation,
+            basis=None if any_entry else _basis_override(entry.basis),
+            family=None if any_entry else entry.family,
         )
 
 
@@ -342,6 +379,9 @@ def _match_sbom_component(rule, match, ruleset, evidence, linkage, index) -> Ite
             verdict=entry.verdict,
             needs_human_review=entry.needs_human_review,
             suppressed_by=suppressed_by,
+            relation=entry.relation,
+            basis=_basis_override(entry.basis),
+            family=entry.family,
         )
 
 
@@ -410,6 +450,9 @@ def _match_bundled_library(rule, match, ruleset, evidence, linkage, index) -> It
             severity=library.severity,
             verdict=library.verdict,
             needs_human_review=library.needs_human_review,
+            relation=library.relation,
+            basis=_basis_override(library.basis),
+            family=library.family,
         )
 
 
@@ -467,6 +510,14 @@ def _match_dt_needed(rule, match, ruleset, evidence, linkage, index) -> Iterator
                 ),
                 severity=library.severity if (want_mangled or want_resolved) else None,
                 verdict=library.verdict if (want_mangled or want_resolved) else None,
+                # `relation`/`basis` follow the same gate as `severity`/`verdict`
+                # above: a bare posture link (BIN_NEEDED_SYSTEM_OPENSSL) carries no
+                # verdict of its own, so it must not carry a citation for one either.
+                # `family` is not verdict-tied and is always worth recording: even
+                # the informational posture link is evidence of the library.
+                relation=library.relation if (want_mangled or want_resolved) else None,
+                basis=(_basis_override(library.basis) if (want_mangled or want_resolved) else None),
+                family=library.family,
             )
 
 
@@ -489,6 +540,7 @@ def _match_dynamic_symbol(rule, match, ruleset, evidence, linkage, index) -> Ite
                         ruleset.limits.max_evidence_chars,
                     ),
                 ),
+                family=ruleset.symbol_groups[symbol.group].family,
             )
 
 
@@ -505,6 +557,7 @@ def _match_binary_string(rule, match, ruleset, evidence, linkage, index) -> Iter
                     path=binary.path,
                     evidence=_clean(f"string={found.value!r}", ruleset.limits.max_evidence_chars),
                 ),
+                family=ruleset.string_groups[found.group].family,
             )
 
 
@@ -530,6 +583,9 @@ def _match_rust_crate(rule, match, ruleset, evidence, linkage, index) -> Iterato
                 verdict=entry.verdict,
                 needs_human_review=entry.needs_human_review,
                 suppressed_by=entry.suppressed_by,
+                relation=entry.relation,
+                basis=_basis_override(entry.basis),
+                family=entry.family,
             )
 
 
@@ -582,6 +638,9 @@ def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
         severity = library.severity if inherit and library else None
         verdict = library.verdict if inherit and library else None
         needs_human_review = library.needs_human_review if inherit and library else None
+        relation = library.relation if inherit and library else None
+        basis = _basis_override(library.basis) if inherit and library else None
+        family = library.family if inherit and library else None
 
         if object_values is not None:
             wanted = frozenset(object_values)
@@ -601,6 +660,9 @@ def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
                     severity=severity,
                     verdict=verdict,
                     needs_human_review=needs_human_review,
+                    relation=relation,
+                    basis=basis,
+                    family=family,
                 )
             continue
 
@@ -619,6 +681,9 @@ def _match_linkage(rule, match, ruleset, evidence, linkage, index) -> Iterator[H
             severity=severity,
             verdict=verdict,
             needs_human_review=needs_human_review,
+            relation=relation,
+            basis=basis,
+            family=family,
         )
 
 
@@ -690,6 +755,9 @@ def _match_py_import(rule, match, ruleset, evidence, linkage, index) -> Iterator
             severity=entry.severity,
             verdict=entry.verdict,
             needs_human_review=entry.needs_human_review,
+            relation=entry.relation,
+            basis=_basis_override(entry.basis),
+            family=entry.family,
         )
 
 

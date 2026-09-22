@@ -31,6 +31,9 @@ class Verdict:
     reasons: tuple[str, ...]
     needs_human_review: bool
     conditions: Mapping[str, str] = field(default_factory=dict)
+    # Every relation a contributing finding cited, sorted: relations have no
+    # precedence order the way verdict classes do.
+    relations: tuple[str, ...] = ()
 
 
 def classify(ruleset: Ruleset, findings: Sequence[Finding], linkage: Mapping[str, str]) -> Verdict:
@@ -44,6 +47,7 @@ def classify(ruleset: Ruleset, findings: Sequence[Finding], linkage: Mapping[str
 
     reasons = sorted({f"{f.rule_id}: {_subject_of(f)}" for f in contributing})
     rule_ids = sorted({finding.rule_id for finding in contributing})
+    relations = tuple(sorted({f.relation for f in contributing if f.relation}))
 
     return Verdict(
         headline=classes[0],
@@ -55,6 +59,7 @@ def classify(ruleset: Ruleset, findings: Sequence[Finding], linkage: Mapping[str
             or any(finding.needs_human_review for finding in findings)
         ),
         conditions={f"{name}_linkage": value for name, value in sorted(linkage.items())},
+        relations=relations,
     )
 
 

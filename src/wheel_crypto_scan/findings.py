@@ -48,6 +48,13 @@ class Finding:
     verdict: str | None = None
     subject: str | None = None
     subject_kind: str | None = None
+    # What would have to change for this finding to go away, and the standards that
+    # say so. Always both or neither: a citation must never stand alone.
+    relation: str | None = None
+    basis: tuple[str, ...] = ()
+    # What kind of primitive this finding is evidence of, independent of the FIPS
+    # lens: the vocabulary the crypto inventory is built from.
+    family: str | None = None
 
     def sort_key(self) -> tuple[str, str]:
         return (self.rule_id, self.subject or "")
