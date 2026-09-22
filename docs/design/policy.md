@@ -240,11 +240,12 @@ matches the cargo path of either AWS-LC crate, so `BIN_AWS_LC` alone cannot tell
 validated build from the stock one. Built one program two ways on linux/x86_64 with
 `aws-lc-rs` 1.18.1: the FIPS build (`aws-lc-fips-sys` 0.14.2) carries 2118 local
 `aws_lc_fips_0_14_2_*` names in `.symtab` and the stock build (`aws-lc-sys` 0.45.0)
-carries none. The version string is not the answer on ELF: AWS-LC's FIPS build moves its
-constants into `.text` so its integrity hash covers them, and the strings pass reads only
-non-executable sections, so `AWS-LC FIPS 4.2.0` sits somewhere this tool never reads on
-this format. A stripped object loses the symbol prefix too and reads as stock AWS-LC,
-which is the over-flag direction this tool errs in.
+carries none. AWS-LC's FIPS build moves its constants, including the version string,
+into `.text` so its integrity hash covers them: `AWS-LC FIPS 4.2.0` sits at file offset
+`0x8ae5c`. ELF searches executable sections for the one string group that asks to be
+found there, so a stripped object -- the shape a release wheel usually ships as, and the
+one that loses the symbol prefix above -- is still identified by the version string
+alone; every other string group stays read-only-data-only.
 
 The verdict is `CONDITIONAL`, the same reasoning as the Go entry above: the module being
 compiled in is not the same as it being in force, and which certificate covers the
@@ -259,12 +260,13 @@ default crate rule, alongside every crate suppression cannot reach, a FIPS build
 `CONDITIONAL` is reached whenever the FIPS build is identified and the object defines no
 non-approved primitive of its own; the cargo path being the object's sole evidence is one
 way to reach it, not the only one, and an SBOM naming both `aws-lc-rs` and
-`aws-lc-fips-sys` in the same document reads the same way. No real build measured here
-does, though: a stripped object loses the symbol prefix, so `BIN_AWS_LC_FIPS` never fires
-and `BIN_AWS_LC` names it as stock, and an unstripped one fires `BIN_AWS_LC_FIPS`
-correctly but still reads `NON_APPROVED_CRYPTO`, because `curve25519_x25519` and
-`md5_final` are the FIPS module's own primitive implementations, which is exactly what
-that class is defined to catch, condition or not.
+`aws-lc-fips-sys` in the same document reads the same way. A stripped object reaches it in
+full: `.symtab` is gone either way, so `curve25519_x25519` and `md5_final` -- the FIPS
+module's own primitive implementations, defined only there -- were never reachable on a
+stripped object to begin with, and the version string in `.text` is what identifies the
+build once the symbol prefix is gone with it. An unstripped one still fires
+`BIN_AWS_LC_FIPS` but keeps `NON_APPROVED_CRYPTO`, because those two symbols are exactly
+what that class is defined to catch, condition or not.
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix-not-its-name)
 

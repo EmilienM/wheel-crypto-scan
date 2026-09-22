@@ -1,6 +1,6 @@
 # ELF
 
-Four entries about `binfmt/elf.py`. The first covers the widest set of shapes — a
+Five entries about `binfmt/elf.py`. The first covers the widest set of shapes — a
 `.dynamic`/`.dynsym`/`.symtab` lookup has to reject each of them the same way — and the
 pattern behind all of them is worth internalising before reading any: **an
 attacker-controlled label winning a lookup, so the check meant to catch a mismatch never
@@ -324,3 +324,25 @@ What it costs is stated in full in
 [`DESIGN.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md): a
 crafted object can plant names in a table trusted less than `.dynsym`, and the
 consequence is a false *definition*, which over-flags rather than under-flags.
+
+---
+
+## A version banner that lives in code is read from executable sections, for the groups that say so
+
+**Accepted, and it changes verdicts.**
+
+AWS-LC's FIPS build delocates its own version banner into `.text` so its integrity hash
+covers it: `AWS-LC FIPS 4.2.0` sits at file offset `0x8ae5c` on the measured build.
+`_collect_string_bytes` reads only allocated, non-executable sections, on purpose, so
+this is a second, separate read: a `[[string_group]]` entry can set `in_code = true`
+-- today only `aws_lc_fips` does -- and only that group's substrings are searched for
+in executable sections, through one compiled byte regex built the same way
+`symbol_locator` is. A hit is windowed and extracted, not the whole section; overlapping
+or adjacent windows merge into one first, so a section packed with the same repeated
+banner does not multiply into many times its own size. The read spends its own budget,
+independent of the read-only pass's, and an unread or truncated code region records no
+error and no partial reason: the read exists only to tell a validated build from a stock
+one, and missing it leaves the object reading whatever its read-only evidence already
+gives, the same as for every group that carries no `in_code` flag.
+
+[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-version-banner-that-lives-in-code-is-read-from-executable-sections-for-the-groups-that-say-so)

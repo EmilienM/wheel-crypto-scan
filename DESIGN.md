@@ -555,7 +555,11 @@ the fallback the budget is measured against the object, so an object over 64 MiB
 sections, not the file, so a gigabyte `.so` that is mostly `.text` is untouched while a
 smaller one carrying a large `.nv_fatbin` is not. That distinction matters here rather
 than being a footnote: CUDA and PyTorch wheels, which is where the size is, ship
-overwhelmingly as manylinux ELF.
+overwhelmingly as manylinux ELF. Executable sections are read separately, for the
+`[[string_group]]` entries flagged `in_code` (see "A version banner that lives in code
+is read from executable sections, for the groups that say so"), against their own
+budget of the same size -- a second read this same distinction applies to independently,
+never sharing room with the read-only one above.
 
 Either way the honest statement is that these were never objects we had read. The
 threshold is one constant and the verdict one line of `ruleset.toml`, so the lever is
@@ -566,7 +570,10 @@ Revisit if a real wheel is found on the triage list for this and nothing else.
 
 **What it does not cover.** An object inside the budget whose evidence sits in a region
 no reader hands to the strings pass at all -- `binfmt.elf` passes the read-only sections
-rather than the file -- is a different question and not this one.
+rather than the file -- is a different question and not this one. Executable sections are
+a stated exception: a group flagged `in_code` does reach `.text`, on its own separate
+pass and its own budget, while every other group stays exactly where this entry leaves
+it.
 
 ## A cap bounds the record, it does not pick the evidence
 
@@ -5280,20 +5287,24 @@ stripped and unstripped, packaged as a manylinux wheel.
 
 Four things follow from that table.
 
-**The string group cannot reach ELF.** AWS-LC's FIPS build moves the module's constants
-into its own `.text` so the integrity hash covers them, and `_collect_string_bytes` reads
-only allocated, non-executable sections, on purpose. Mach-O, PE and the fallback reader
-read a bounded prefix of the whole object instead, so the group is kept for them; on ELF
-it carries nothing.
+**ELF searches executable sections for this one group.** AWS-LC's FIPS build moves the
+module's constants into its own `.text` so the integrity hash covers them, and every
+`[[string_group]]` entry that flags `in_code` is searched for there too, alongside the
+allocated, non-executable sections every group is searched in already. `aws_lc_fips` is
+the one group that carries the flag: a stripped object loses the symbol prefix below,
+and the version string in `.text` is what still identifies it. See "A version banner
+that lives in code is read from executable sections, for the groups that say so",
+further down, for the read itself, its budget and what it costs.
 
-**What separates the builds on ELF is the symbol prefix `aws-lc-fips-sys` applies:
-`aws_lc_fips_<major>_<minor>_<patch>_`, where the stock build uses
-`aws_lc_<major>_<minor>_<patch>_`.** These are local definitions in `.symtab`, which the
-ELF reader reads when `.dynsym` is present. A stripped object loses them, and then
-nothing outside `.text` separates the two builds; it reads `NON_APPROVED_CRYPTO`, which
-is the over-flag direction this tool errs in. Stripping removes `.symtab` and `.strtab`
-outright, so there is no local name left to read; that evidence is gone, not missing a
-reader.
+**What separates the builds when the version string is absent is the symbol prefix
+`aws-lc-fips-sys` applies: `aws_lc_fips_<major>_<minor>_<patch>_`, where the stock
+build uses `aws_lc_<major>_<minor>_<patch>_`.** These are local definitions in
+`.symtab`, which the ELF reader reads when `.dynsym` is present. A stripped object
+loses them, and then the version string in `.text` is what is left; an unstripped
+object carries both, so the version string there is redundant evidence rather than
+the only signal. Stripping
+removes `.symtab` and `.strtab` outright, so there is no local name left to read; that
+evidence is gone, not missing a reader.
 
 **A bare `AWS-LC FIPS` substring would be wrong**, because `AWS-LC FIPS failure caused
 by:` is compiled from both builds' source -- the measured stock build's linker drops the
@@ -5327,12 +5338,12 @@ it is a bundled static copy rather than the system provider, and which certifica
 covers the compiled version is not something the wheel states. Suppression is per object
 (above): a wheel shipping one FIPS object and one stock AWS-LC object keeps
 `NON_APPROVED_CRYPTO` in `classes` for the stock object's own finding, with the
-condition reported alongside it for the FIPS object rather than in place of it. A
-stripped ELF FIPS object still reads `NON_APPROVED_CRYPTO` for the reason above; an
-unstripped one keeps `NON_APPROVED_CRYPTO` in `classes` too, and not for an unrelated
-reason: `curve25519_x25519` (`BIN_CURVE25519`) and `md5_final`
+condition reported alongside it for the FIPS object rather than in place of it.
+
+**An unstripped FIPS object keeps `NON_APPROVED_CRYPTO` in `classes` too, and not for an
+unrelated reason: `curve25519_x25519` (`BIN_CURVE25519`) and `md5_final`
 (`BIN_OWN_WEAK_HASH_IMPL`) are primitives the object defines, not evidence that happens
-to sit near the FIPS module. AWS-LC's FIPS module links as one monolithic `bcm` object,
+to sit near the FIPS module.** AWS-LC's FIPS module links as one monolithic `bcm` object,
 so every algorithm it implements ships with it; the stock build's `gc-sections` drops
 the ones nothing calls. Measured with `nm` on the same aws-lc-rs 1.18.1 build:
 `curve25519_x25519` (s2n-bignum) and `md5_final` sit right next to
@@ -5341,34 +5352,124 @@ at all in the stock one. Neither is suppressed by `BIN_AWS_LC_FIPS`, and neither
 be: README defines `NON_APPROVED_CRYPTO` as implementing or bundling a non-approved
 primitive, and these are exactly that. Suppressing them because a FIPS module is also
 present in the object would decide the object is fine on balance, which is the
-verdict-making call the taxonomy leaves to a human. So on every real ELF build measured
-so far -- FIPS or stock, stripped or not -- `NON_APPROVED_CRYPTO` is the correct class
-for what the object compiles in. `CONDITIONAL` is reached whenever the FIPS build is
-identified -- by the symbol prefix, the cargo path, or (on a whole-object reader) the
-version string -- and the object defines no non-approved primitive of its own;
-`BIN_AWS_LC_FIPS` replaces `BIN_AWS_LC` and `BIN_AWS_LC_RS_CRATE` among the findings
-behind `NON_APPROVED_CRYPTO` either way, naming the FIPS condition alongside whatever
-primitives keep the class, rather than in place of them. An SBOM naming both `aws-lc-rs`
-and `aws-lc-fips-sys` in the same document reads the same way: the FIPS crate's
-`sbom_component` finding drops the `aws-lc-rs` one on the strength of the same relation
-(see "Suppression is keyed on rule, subject and object" above). A test pins this
-directly: `test_an_aws_lc_fips_modules_own_md5_and_x25519_keep_non_approved_leading`
-extends the measured FIPS fixture with `md5_final` and `curve25519_x25519` as local
-`.symtab` definitions, and the record it produces reads `NON_APPROVED_CRYPTO` with
-`CONDITIONAL` in `classes` and `BIN_AWS_LC_FIPS`, `BIN_OWN_WEAK_HASH_IMPL` and
-`BIN_CURVE25519` all present in `rule_ids`. No real build measured here reaches
-`CONDITIONAL` alone, because every one keeps at least one non-approved primitive; that
-narrower shape, and the combined one above, are each exercised only by synthetic
-fixtures, such as `test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix`'s.
+verdict-making call the taxonomy leaves to a human.
 
-The distinction is ruleset data alone: two groups and two rules, read by readers that
-treat AWS-LC no differently from any other library.
+**A stripped FIPS object is where this asymmetry shows.** `curve25519_x25519` and
+`md5_final` are local definitions in `.symtab`, the same table stripping removes
+outright, so a stripped FIPS object never carries them: that evidence is gone on its
+own, independent of anything read from `.text`. What the code read settles is whether
+the object is *identified* as FIPS at all once those two are gone. Without a version
+string in `.text`, a stripped FIPS object has nothing left to tell it apart from stock
+and reads `NON_APPROVED_CRYPTO` through `BIN_AWS_LC` and `BIN_AWS_LC_RS_CRATE` alone --
+correct in the sense that the taxonomy has no passing class to reach for, but not
+because of any primitive the object is shown to define. With the version string read
+from `.text`, the same stripped object reads `CONDITIONAL` alone: `BIN_AWS_LC_FIPS`
+fires and suppresses both, and nothing else in the object defines a non-approved
+primitive of its own. This is the real-world shape a release wheel ships in -- stripped,
+with the version string as the only surviving evidence. `CONDITIONAL` is reached
+whenever the FIPS build is identified -- by the symbol prefix, the cargo path, or the
+version string, on every format the group is searched in -- and the object defines no
+non-approved primitive of its own; `BIN_AWS_LC_FIPS` replaces `BIN_AWS_LC` and
+`BIN_AWS_LC_RS_CRATE` among the findings behind `NON_APPROVED_CRYPTO` either way, naming
+the FIPS condition alongside whatever primitives keep the class, rather than in place of
+them. An SBOM naming both `aws-lc-rs` and `aws-lc-fips-sys` in the same document reads
+the same way: the FIPS crate's `sbom_component` finding drops the `aws-lc-rs` one on the
+strength of the same relation (see "Suppression is keyed on rule, subject and object"
+above). A test pins the unstripped case directly:
+`test_an_aws_lc_fips_modules_own_md5_and_x25519_keep_non_approved_leading` extends the
+measured FIPS fixture with `md5_final` and `curve25519_x25519` as local `.symtab`
+definitions, and the record it produces reads `NON_APPROVED_CRYPTO` with `CONDITIONAL`
+in `classes` and `BIN_AWS_LC_FIPS`, `BIN_OWN_WEAK_HASH_IMPL` and `BIN_CURVE25519` all
+present in `rule_ids`.
 
-**Revisit if** the ELF strings pass ever reads executable sections; a C build of AWS-LC
-FIPS (unprefixed) shows up in a wheel, since `BIN_AWS_LC` is not suppressed by the
-fork-neutral FIPS-module rule below and such an object still reads `NON_APPROVED_CRYPTO`
-through `BIN_AWS_LC` rather than through the FIPS condition alone; or AWS-LC FIPS ships a
-two-digit major, which this group's dot-anchored digits do not cover.
+The distinction is ruleset data alone: two groups, one of them additionally read from
+executable sections, and two rules, read by readers that treat AWS-LC no differently
+from any other library.
+
+**Revisit if** a C build of AWS-LC FIPS (unprefixed) shows up in a wheel, since
+`BIN_AWS_LC` is not suppressed by the fork-neutral FIPS-module rule below and such an
+object still reads `NON_APPROVED_CRYPTO` through `BIN_AWS_LC` rather than through the
+FIPS condition alone; or AWS-LC FIPS ships a two-digit major, which this group's
+dot-anchored digits do not cover.
+
+## A version banner that lives in code is read from executable sections, for the groups that say so
+
+**Accepted, and it changes verdicts.**
+
+AWS-LC's FIPS build delocates the module's constants -- including its own version
+banner -- into `.text`, so its integrity hash covers them. Measured on the FIPS build
+above (aws-lc-rs 1.18.1 + `fips`, aws-lc-fips-sys 0.14.2, linux/x86_64): `AWS-LC FIPS
+4.2.0` sits at file offset `0x8ae5c`, and `AWS-LC FIPS failure caused by:` at `0xd0888`,
+both inside `.text` (`0x1000`-`0x2ed845`). `_collect_string_bytes` reads only allocated,
+non-executable sections, on purpose (see "Sections are found by type, not by a name
+nobody checks" and the compressed-section entry above): `.rodata`-like data, plus
+`.comment`. Neither string sits there in this build.
+
+**Only the groups that ask are searched for in code.** A `[[string_group]]` entry can
+set `in_code = true`; today only `aws_lc_fips` does. Every other group's evidence model
+stays read-only sections only. The ELF reader skips the code read outright, at zero
+cost, when nothing is flagged --
+`patterns.code_string_locator` is `None` for a ruleset that flags nothing, and
+`_collect_code_regions` is never called.
+
+**The search itself is one compiled byte regex, in C, the same shape
+`BinaryPatterns.symbol_locator` already is.** `_code_string_locator` builds a trie over
+every flagged group's substrings, exactly as `_symbol_locator` does over symbol names,
+sharing the trie-building code between them (`_trie_locator`, parameterised by what can
+separate one matched byte from the next: `_SANITIZED_AWAY` for a name padded with
+control bytes in a string table, nothing at all for a substring read straight out of
+code). A Python loop over a large `.text` is the cost `AGENTS.md` already measures at
+nineteen seconds against 1.2 for the compiled-regex version, over a 2 MiB string table;
+`.text` is routinely far larger than that in a CUDA or PyTorch wheel.
+
+**A hit is turned into a window, not a full extraction of the section.** The locator
+finds byte offsets worth decoding; `binfmt.strings.find_code_strings` extracts and
+matches only a `max_evidence_chars`-wide window around each hit, not the whole section.
+Overlapping windows are merged into one before extraction, so a `.text` full
+of the same banner repeated -- the adversarial case, not a corner one, since a build
+that emits the string at all often emits it from one code path called from several
+places -- collapses to close to the region's own size rather than to one window per
+hit: `tests/test_binfmt_strings.py` measures 10,000 repetitions joining to near the
+region's own size, not the several million bytes one window per hit would cost.
+
+**Code is read against its own budget, independent of the read-only pass's.**
+`_collect_code_regions` spends `max_strings_bytes` again, but separately:
+`_collect_string_bytes` already bounds `.rodata`-like evidence on its own, and a
+`.text`-heavy object reading code must not leave it any less room, nor the reverse.
+Sharing one budget between the two would let whichever section a reader happened to
+visit first starve the other of room regardless of which one actually carried the
+evidence a wheel was scanned for.
+
+**An unread or truncated code region records no error and no partial reason,** unlike
+every other truncation this reader names. The read-only strings pass's own overrun
+names `strings_bytes_unread` because that pass is general evidence -- anything printable
+in read-only data. The code read is not: it exists for one purpose, telling a validated
+build apart from a stock one, and a group is only worth flagging `in_code` when missing
+it errs toward over-flagging -- the direction this tool already accepts (see the
+`in_code` entry in `data/ruleset.toml`'s own `why` for the group, and
+`docs/ruleset.md`). Missing the banner leaves the object reading whatever its read-only
+evidence already gives: usually the stock, over-flag reading, but `NO_CRYPTO_DETECTED`
+for an object with no other AWS-LC evidence at all. Giving
+that a `partial_reasons` token would need every large object with executable code and no
+hit -- which is most of them, and includes every CUDA and PyTorch `.so` in the corpus --
+to carry it, pushing them onto the triage list as `OPAQUE` for a read that was never
+general evidence to begin with, and the "every recordable failure maps to a rule"
+invariant would need a rule for a cause that is not a failure.
+
+**What was rejected.** Reading `.text` into the general read-only strings pass, so every
+group would be searched in code: the evidence model for every group but this one is
+"read-only data", stated as an invariant of `_collect_string_bytes` itself, and widening
+it for every group multiplies the cost measured above by however many groups the
+ruleset carries, for groups with no measured reason to live in code at all.
+BoringCrypto's own integrity-test names (`BORINGSSL_bcm_text_hash`,
+`BORINGSSL_integrity_test`) were considered as a code-independent alternative and
+rejected for the same reason the symbol group excludes them already: AWS-LC's FIPS
+module shares them with BoringSSL's, so they would not separate the two.
+
+**Revisit if** a second group needs the same treatment: `in_code` is already
+general-purpose, a per-group ruleset flag rather than a name hardcoded into the reader,
+so flagging one costs only the measurement that justifies it and a `why` saying missing
+it errs toward over-flagging.
 
 ## A BoringSSL FIPS module is told from a stock build by its integrity test, not its strings
 
@@ -5437,10 +5538,12 @@ binary keeps `NON_APPROVED_CRYPTO` in `classes` too, and not for an unrelated re
 its own primitives (`BIN_CURVE25519`, `BIN_OWN_WEAK_HASH_IMPL`) are left unsuppressed,
 the same call the AWS-LC entry makes for its module's own primitives.
 
-**Revisit if** the ELF strings pass ever reads `.text`, which is where a C-built FIPS
-module's constants move on ELF the same way AWS-LC's do; or an unstripped stock
-BoringSSL object is found carrying `BORINGSSL_integrity_test`, which would mean the
-`#if defined(BORINGSSL_FIPS)` guard this rule relies on no longer holds.
+**Revisit if** a C-built BoringSSL FIPS module is measured carrying a string only its
+FIPS build has, in `.text`, which is where its constants move on ELF the same way
+AWS-LC's do: a group flagged `in_code` would read it there (see "A version banner that
+lives in code is read from executable sections, for the groups that say so" above); or
+an unstripped stock BoringSSL object is found carrying `BORINGSSL_integrity_test`, which
+would mean the `#if defined(BORINGSSL_FIPS)` guard this rule relies on no longer holds.
 
 ## Every symbol group is read by a rule, or says it is evidence only
 

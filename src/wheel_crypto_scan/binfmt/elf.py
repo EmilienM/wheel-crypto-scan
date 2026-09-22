@@ -125,12 +125,12 @@ from elftools.elf.sections import Section
 
 from .. import evidence
 from ..errors import BINARY_TRUNCATED, BINARY_UNKNOWN_FORMAT, ELF_PARSE_ERROR
-from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, SymbolMatch
+from ..evidence import BinaryEvidence, GoBuildInfo, ScanError, StringMatch, SymbolMatch
 from ..ruleset import BinaryPatterns
 from ..caps import cap
 from .fallback import read_strings_only
 from .golang import build_go_info
-from .strings import MAX_STRINGS_BYTES, sanitize, scan_strings
+from .strings import MAX_STRINGS_BYTES, find_code_strings, sanitize, scan_strings
 from .symtab import BoundedNames, holds_a_name_not_read
 
 _SHF_ALLOC = 0x2
@@ -1086,6 +1086,26 @@ def read_elf(
     if sections_truncated:
         reasons.add(evidence.PARTIAL_STRINGS_BYTES_UNREAD)
 
+    # Executable sections are read only for the groups the ruleset flags `in_code` --
+    # `patterns.code_string_locator` is `None` and nothing here touches `.text` at all
+    # unless one is. An unread or truncated code region gets no error and no partial
+    # reason: this read exists to tell a validated build from a stock one, and missing
+    # the banner leaves the object reading whatever its read-only evidence already
+    # gives, the same as without this read -- usually the stock build, the over-flag
+    # direction, but `NO_CRYPTO_DETECTED` for an object with no other AWS-LC evidence
+    # at all. A partial cause here would push every large CUDA/PyTorch object with no
+    # hit in its own `.text` to `OPAQUE` for a read that was never general evidence to
+    # begin with.
+    code_matches: tuple[StringMatch, ...] = ()
+    code_truncated = False
+    if patterns.code_string_locator is not None:
+        code_regions = _collect_code_regions(sections, max_strings_bytes)
+        code_matches, code_truncated = find_code_strings(code_regions, patterns)
+    matched_strings, strings_capped = cap(
+        set(strings_found.matched_strings) | set(code_matches),
+        patterns.limits.max_strings_per_binary,
+    )
+
     buildinfo_section = _find_section(sections, ".go.buildinfo")
     buildinfo_bytes: bytes | None = None
     if buildinfo_section is not None:
@@ -1131,11 +1151,13 @@ def read_elf(
         dynsym_count=dynsym_count,
         symtab_count=symtab_count,
         matched_symbols=matched_symbols,
-        matched_strings=strings_found.matched_strings,
+        matched_strings=matched_strings,
         rust_crates=strings_found.rust_crates,
         go=go,
         symbols_truncated=symbols_truncated,
-        strings_truncated=sections_truncated or strings_found.truncated,
+        strings_truncated=(
+            sections_truncated or strings_found.truncated or code_truncated or strings_capped
+        ),
         partial_analysis=bool(reasons),
         partial_reasons=tuple(sorted(reasons)),
     )
@@ -1151,6 +1173,10 @@ def _collect_string_bytes(
     code (so `.rodata`-like sections, not `.text`), plus `.comment` unconditionally:
     compilers and linkers do not always flag it `SHF_ALLOC`, but it is exactly where
     a static OpenSSL leaves its version banner.
+
+    Executable sections are never read here, and stay that way regardless of what the
+    ruleset flags: `.text` is read separately, by `_collect_code_regions`, against its
+    own budget, and only for the `[[string_group]]` entries that flag `in_code`.
 
     `truncated` is what the caller turns into `strings_bytes_unread`, so it says what
     was actually dropped rather than what was declared. `sh_size` is a field the object
@@ -1243,3 +1269,42 @@ def _collect_string_bytes(
         # so the budget is decided there alone.
         buf.extend(data)
     return bytes(buf), truncated, unread
+
+
+def _collect_code_regions(sections: list[Section], max_bytes: int) -> list[bytes]:
+    """Executable sections' raw bytes, against their own independent budget.
+
+    Called only once the caller has already checked `patterns.code_string_locator is
+    not None`: no `[[string_group]]` is flagged `in_code` means no reader here ever
+    touches `.text` at all.
+
+    `max_bytes` is `max_strings_bytes` again, but spent independently of
+    `_collect_string_bytes`'s own budget of the same size: a `.text`-heavy object must
+    never cost the `.rodata` evidence the read-only pass already bounds on its own, and
+    reading code must never leave that pass less room either.
+
+    A section refused for being over what remains, or one whose read fails outright, is
+    skipped with nothing recorded here -- see the call site in `read_elf` for why an
+    unread or truncated code region carries no error and no partial reason.
+    """
+    regions: list[bytes] = []
+    remaining = max_bytes
+    for section in sections:
+        if remaining <= 0:
+            break
+        eligible = (
+            section["sh_type"] == "SHT_PROGBITS"
+            and (section["sh_flags"] & _SHF_ALLOC)
+            and (section["sh_flags"] & _SHF_EXECINSTR)
+        )
+        if not eligible:
+            continue
+        try:
+            data, _unread = _bounded_section_data(section, remaining, keep_prefix=True)
+        except Exception:
+            continue
+        if not data:
+            continue
+        regions.append(data)
+        remaining -= len(data)
+    return regions

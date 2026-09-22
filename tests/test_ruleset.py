@@ -24,6 +24,7 @@ from wheel_crypto_scan.ruleset import (
     MATCHER_KINDS,
     MATCHER_LOCATIONS,
     ROUTED_KINDS,
+    StringGroup,
     SymbolGroup,
     sbom_crate_key,
     sbom_library_key,
@@ -151,7 +152,7 @@ def rust_crate_ruleset() -> dict[str, Any]:
 
 def test_loads_the_shipped_ruleset() -> None:
     ruleset = load_ruleset()
-    assert ruleset.version == "37"
+    assert ruleset.version == "38"
     assert len(ruleset.rules) > 20
 
 
@@ -1938,6 +1939,89 @@ def test_the_locator_is_told_when_the_symbol_matcher_grows_an_arm() -> None:
     so: the failure is a hidden symbol going unfound, not an error.
     """
     assert {field.name for field in fields(SymbolGroup)} == {"name", "prefixes", "exact"}
+
+
+def _two_string_groups_sharing_a_prefix_in_code() -> dict[str, Any]:
+    """`minimal()` plus two `in_code` string groups whose substrings share a prefix,
+    so the shared trie built for them has to branch for both rather than being
+    exercised by a single group alone.
+    """
+    data = minimal()
+    data["string_group"].append(
+        {"name": "code_one", "substrings": ["XYZCODE-ONE"], "in_code": True, "why": "t"}
+    )
+    data["string_group"].append(
+        {"name": "code_two", "substrings": ["XYZCODE-TWO"], "in_code": True, "why": "t"}
+    )
+    return data
+
+
+def test_code_string_locator_finds_everything_the_matcher_matches() -> None:
+    """The locator is a filter, and one that drops a match loses evidence silently:
+    `binfmt.strings.find_code_strings` only decodes and matches the windows this
+    locator finds, so a substring it misses never reaches `StringGroup.pattern` at
+    all. Checked over the shipped ruleset and a synthetic one with two flagged groups
+    sharing a prefix, so the trie's shared branch is exercised too, not just a single
+    group's own.
+    """
+    for patterns in (
+        load_ruleset().compile_patterns().binary,
+        parse_ruleset(_two_string_groups_sharing_a_prefix_in_code()).compile_patterns().binary,
+    ):
+        assert patterns.code_string_groups
+        assert patterns.code_string_locator is not None
+        for group in patterns.code_string_groups:
+            for substring in group.substrings:
+                assert group.pattern.search(substring)
+                raw = b"\x00" + substring.encode() + b"\x00"
+                assert patterns.code_string_locator.search(raw), substring
+
+
+def test_the_code_locator_is_told_when_the_string_matcher_grows_an_arm() -> None:
+    """`_code_string_locator` is built from `substrings` alone (`ruleset_loader`
+    joins `re.escape(s)` for `s` in `substrings` with `|` to build `pattern`), so it
+    agrees with the matcher only as long as `pattern` never gains a source `substrings`
+    does not cover. A field added to `StringGroup` that a matcher can build a wider
+    `pattern` from -- a raw regex list, say -- would be claimed by `group.pattern` and
+    invisible to `_code_string_locator`'s trie, and nothing else in the suite would
+    say so: the failure is a hidden code hit going unfound, not an error.
+    """
+    assert {field.name for field in fields(StringGroup)} == {
+        "name",
+        "substrings",
+        "pattern",
+        "in_code",
+    }
+    patterns = load_ruleset().compile_patterns().binary
+    for group in patterns.string_groups:
+        assert group.pattern.pattern == "|".join(re.escape(s) for s in group.substrings)
+
+
+def test_code_string_locator_is_none_when_no_group_is_flagged_in_code() -> None:
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
+    assert patterns.code_string_groups == ()
+    assert patterns.code_string_locator is None
+
+
+def test_in_code_must_be_a_boolean() -> None:
+    data = minimal()
+    data["string_group"][0]["in_code"] = "yes"
+    with pytest.raises(RulesetError, match="in_code must be a boolean"):
+        parse_ruleset(data)
+
+
+def test_in_code_omitted_defaults_to_false() -> None:
+    patterns = parse_ruleset(minimal()).compile_patterns().binary
+    assert patterns.string_group("openssl_banner").in_code is False
+
+
+def test_only_aws_lc_fips_is_flagged_in_code_in_the_shipped_ruleset() -> None:
+    """Pins the scope: the code read exists for one measured group, not a general
+    policy switch every string group can reach for.
+    """
+    ruleset = load_ruleset()
+    flagged = {name for name, group in ruleset.string_groups.items() if group.in_code}
+    assert flagged == {"aws_lc_fips"}
 
 
 def test_string_group_exposes_a_compiled_pattern() -> None:

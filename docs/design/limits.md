@@ -59,7 +59,9 @@ fallback the budget is measured against the object, so an object over 64 MiB is 
 For ELF it is measured against the concatenation of eligible read-only sections, so a gigabyte
 `.so` that is mostly `.text` is untouched while a smaller one carrying a large `.nv_fatbin` is
 not. That distinction matters rather than being a footnote: CUDA and PyTorch wheels, which is
-where the size is, ship overwhelmingly as manylinux ELF.
+where the size is, ship overwhelmingly as manylinux ELF. Executable sections are read
+separately, against their own budget of the same size, only for the string groups the ruleset
+flags `in_code` -- see [ELF](elf.md).
 
 [Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-recording-cap-is-not-a-partial-read)
 
