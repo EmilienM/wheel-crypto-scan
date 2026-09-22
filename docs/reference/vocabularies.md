@@ -160,3 +160,59 @@ change.
 
 - **`imported`** — the code lives elsewhere; the wheel calls into a library it does not ship.
 - **`defined`** — this object carries that code itself.
+
+## `RELATIONS`
+
+`ruleset.py`. What a `relation` names: what would have to change for a finding to go
+away, the question a consumer of the index actually asks. Carried on a rule and on an
+entry in the four override-bearing tables, always beside a non-empty `basis` -- a
+citation must never stand alone.
+`ruleset_coherence.check_relation_matches_verdict` refuses, at load time, a `relation`
+paired with a verdict class outside its row below.
+
+| Value | Consistent verdict classes | Meaning |
+|---|---|---|
+| `not_specified` | `NON_APPROVED_CRYPTO` | The wheel implements or bundles the primitive itself; no system-policy path could make it approved. |
+| `restricted` | `NON_APPROVED_CRYPTO`, `CONTEXT_DEPENDENT` | The primitive is approved only under a stated restriction (SHA-1 for a non-signature, non-collision-resistant use, for instance). `NON_APPROVED_CRYPTO` when the wheel implements it itself, `CONTEXT_DEPENDENT` when it calls into the host module and only the restriction's applicability is in question. |
+| `outside_module` | `NON_APPROVED_CRYPTO` | The algorithm is approved, but this copy of it -- a separate stack, or a definition compiled straight into the object -- is not a validated module reading the system's crypto policy. |
+| `boundary_unresolved` | `CONDITIONAL` | The wheel delegates rather than implements; whether that is acceptable depends on what it links against, answered by `verdict.conditions`. |
+| `runtime_refusal` | `FIPS_BREAKING` | Will raise at runtime under FIPS-enforcing mode. |
+| `policy_bypass` | `CONDITIONAL` | Overrides or bypasses a system-level policy control -- a pinned TLS version, disabled certificate verification -- rather than implementing a primitive. |
+| `use_unresolved` | `CONTEXT_DEPENDENT` | Whether this is a security use is not resolvable from the evidence alone: a non-cryptographic hash library, an alternative to `os.urandom`, a declared `usedforsecurity=False`, an ambiguous call. |
+
+No relation names `OPAQUE`: unreadability has no standard to cite, so a verdict of
+`OPAQUE` paired with any relation is refused the same way.
+
+## `FAMILIES`
+
+`ruleset.py`. The FIPS-agnostic vocabulary for what a piece of evidence *is*, as
+opposed to what it means for FIPS compatibility: carried on a rule, on an entry in the
+four override-bearing tables, and on every `[[symbol_group]]`/`[[string_group]]`, so a
+wheel's crypto inventory can be read without going through the FIPS lens at all.
+`category` stays the FIPS-lens vocabulary (`non-approved-impl`, `fips-breaking`,
+`trust-policy` and the rest); `family` was added beside it rather than folded into it,
+since widening `category`'s own values to also answer "what is this" would leave the
+inventory unable to ask that question without reading the FIPS-lens answer too.
+
+```
+hash            checksum        block_cipher    stream_cipher
+aead            mac             kdf             password_hash
+signature       key_agreement   kem             drbg
+entropy         tls             ssh             trust_store
+library
+```
+
+`library` is a general-purpose stack -- OpenSSL, libsodium, pycryptodome -- whose own
+primitives span several of the other families, rather than one itself.
+
+## `[[standard]].status`
+
+`standards.py`. The closed set of states a `[[standard]]` entry's `status` may hold.
+
+| Value | Meaning |
+|---|---|
+| `current` | The standard to cite. A `basis` may name it. |
+| `revision_planned` | Still the current text, on a published schedule to be replaced. A `basis` may still name it. |
+| `draft` | Not yet in force. A `basis` may not name it. |
+| `planned` | Documents what is coming before anything can cite it. A `basis` may not name it. |
+| `withdrawn` | No longer in force. A `basis` may not name it; the entry is kept only as the context a `successor` link points back from. |
