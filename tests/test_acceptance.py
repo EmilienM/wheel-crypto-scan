@@ -278,11 +278,9 @@ def test_a_static_openssls_legacy_primitives_lead_the_headline_and_keep_the_cond
 ) -> None:
     """A version-scripted static OpenSSL defines Blowfish, MD4 and x25519_ alongside EVP.
 
-    `x25519_fe51_mul` is one of OpenSSL 3's own field-arithmetic helpers for Curve25519
-    (assembly on x86_64, `crypto/ec`), not a provider entry point and not the 1.1.1-era
-    `X25519_*` name -- OpenSSL 3 does not define an uppercase `X25519_*`/`Ed25519_*`
-    symbol at all, and its provider entry points are `ossl_x25519`/`ossl_ed25519_*`,
-    which this group does not match either.
+    `x25519_fe51_mul` is one of OpenSSL's own internal field-arithmetic helpers for
+    Curve25519 (`crypto/ec`, on its assembly path), defined by 1.1.1 and 3.x alike,
+    not a provider entry point and not exported.
 
     Those definitions are OpenSSL's own code, not something the wheel's own logic
     wrote, but they are still definitions: the wheel carries them and the host FIPS
@@ -327,6 +325,53 @@ def test_a_static_openssls_legacy_primitives_lead_the_headline_and_keep_the_cond
         "BIN_OWN_WEAK_HASH_IMPL",
         "BIN_CURVE25519",
     } <= set(record["verdict"]["rule_ids"])
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        pytest.param(("ossl_x25519", "ossl_ed25519_sign"), id="openssl3-portable"),
+        pytest.param(("X25519", "ED25519_sign"), id="openssl111"),
+    ],
+)
+def test_a_static_openssls_curve25519_reads_without_the_field_helpers(
+    context, tmp_path: Path, names: tuple[str, str]
+) -> None:
+    """The finding depends on the OpenSSL build carrying Curve25519, not on whether
+    the build includes the assembly path that defines the field helpers.
+
+    Neither symbol set here spells an `x25519_fe*` name: `ossl_x25519`/`ossl_ed25519_*`
+    are OpenSSL 3's provider entry points and `X25519`/`ED25519_sign` are 1.1.1's own
+    internal ones, neither exported, both present on every architecture.
+    `BIN_CURVE25519` still has to fire.
+    """
+    wheel = build_wheel(
+        subdir(tmp_path, f"static-curve25519-{names[0]}") / f"fakecrypto-43.0.0-{MANYLINUX}.whl",
+        name="fakecrypto",
+        version="43.0.0",
+        tags=(MANYLINUX,),
+        generator="maturin (1.7.0)",
+        files={
+            "fakecrypto/__init__.py": b"from fakecrypto import _rust\n",
+            "fakecrypto/_rust.abi3.so": extension(
+                dynsyms=(DynSym("PyInit__rust", defined=True),),
+                with_symtab=True,
+                symtab_syms=(
+                    DynSym("EVP_DigestInit_ex", defined=True),
+                    *[
+                        DynSym(n, defined=True, info=(STB_LOCAL << 4) | 2)  # STT_FUNC
+                        for n in names
+                    ],
+                ),
+                rodata=OPENSSL_BANNER,
+            ),
+        },
+    )
+    record = scan(context, wheel)
+    assert record["verdict"]["conditions"]["openssl_linkage"] == "static"
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert "CONDITIONAL" in record["verdict"]["classes"]
+    assert {"BIN_STATIC_OPENSSL", "BIN_CURVE25519"} <= set(record["verdict"]["rule_ids"])
 
 
 def test_a_private_weak_hash_kept_local_is_still_found_without_openssl(
@@ -421,9 +466,10 @@ def test_a_bundled_openssls_curve25519_helpers_only_surface_with_symtab(
     """The `.symtab` half of the pair above.
 
     `x25519_fe51_mul` is a field-arithmetic helper, not part of `libcrypto`'s public
-    API, so an auditwheel-bundled copy only exports it from `.dynsym` if the packager
-    never strips the library. Give the same bundled `libcrypto` a `.symtab` that keeps
-    that helper as a local definition and `BIN_CURVE25519` joins the other two.
+    API, so it is never exported to `.dynsym` at all: it surfaces only while the
+    bundled copy keeps its `.symtab`, which is what stripping removes. Give the same
+    bundled `libcrypto` a `.symtab` that keeps that helper as a local definition and
+    `BIN_CURVE25519` joins the other two.
     """
     wheel = build_wheel(
         subdir(tmp_path, "bundled-legacy-symtab") / f"fakecrypto-42.0.5-{MANYLINUX}.whl",

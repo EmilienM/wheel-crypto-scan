@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "32"
+ruleset_version = "33"
 
 
 # ---------------------------------------------------------------------------
@@ -610,9 +610,9 @@ why = "MD4, MD5, SHA-1 and RIPEMD-160 entry points. Only meaningful when DEFINED
 
 [[symbol_group]]
 name = "curve25519"
-prefixes = ["curve25519_", "x25519_", "ed25519_", "X25519_", "Ed25519_"]
-exact = []
-why = "Curve25519 family. Status depends on the standard revision and on validation of the specific implementation, so these always need review rather than an automatic answer."
+prefixes = ["curve25519_", "x25519_", "ed25519_", "X25519_", "Ed25519_", "ED25519_", "ossl_x25519_", "ossl_ed25519_"]
+exact = ["X25519", "ossl_x25519"]
+why = "Every spelling of an X25519/Ed25519 entry point: the generic lowercase names, OpenSSL 1.1.1's X25519/ED25519_*, OpenSSL 3's ossl_x25519*/ossl_ed25519_* provider names, and the internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers OpenSSL 1.1.1 and 3 both define on their assembly paths. OpenSSL's own names are listed on purpose, so a static OpenSSL reads the same on every architecture rather than only where the assembly helpers happen to exist, at the cost that its headline leads with NON_APPROVED_CRYPTO the same way the other legacy primitives already do. None of these OpenSSL names is exported by libcrypto, so a bundled copy matches only when it keeps a .symtab. Status otherwise depends on the standard revision and on validation of the specific implementation, so these always need review rather than an automatic answer."
 
 
 # ---------------------------------------------------------------------------
@@ -1749,7 +1749,7 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Curve25519 family implementation present"
-why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here. A statically linked or bundled OpenSSL 3 defines some of these entry points too, through its own x25519_fe51_/x25519_fe64_ field-arithmetic helpers rather than through its provider-level ossl_x25519/ossl_ed25519_ names, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
+why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here. A statically linked or bundled OpenSSL defines some of these entry points too: OpenSSL 3's ossl_x25519/ossl_ed25519_* provider names, 1.1.1's X25519/ED25519_*, and both versions' internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
 [rule.match]
 kind = "dynamic_symbol"
 group = "curve25519"
