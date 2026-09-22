@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 import re
 import shutil
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from wheel_crypto_scan import report
 from wheel_crypto_scan.report import CLASS_HELP, LINKAGE_HELP, render_html, render_markdown
 from wheel_crypto_scan.ruleset import LINKAGE_VALUES
 from wheel_crypto_scan.ruleset_loader import load_ruleset
@@ -350,6 +352,24 @@ def test_html_never_claims_compliance() -> None:
     assert "&check;" not in lowered
     assert "not flagged" in lowered
     assert "absence of evidence" in lowered
+
+
+def test_report_surfaces_never_spell_a_passing_verdict() -> None:
+    """No rendered or source surface of the report module may spell out a passing
+    verdict, in any of the three forms the taxonomy must never acquire: "compliant",
+    "compliance" or "compatible". "compatible" is not a substring of "compatibility",
+    so a wording that only ever discusses FIPS compatibility as a lens, never a status,
+    still passes this check untouched."""
+    forbidden = ("compliant", "compliance", "compatible")
+
+    template = files("wheel_crypto_scan").joinpath("data/report.html").read_text(encoding="utf-8")
+    module_source = inspect.getsource(report)
+    table = render_markdown([record("a", "NO_CRYPTO_DETECTED", "none", review=False)])
+
+    for word in forbidden:
+        assert word not in template.lower(), word
+        assert word not in module_source.lower(), word
+        assert word not in table.lower(), word
 
 
 def test_html_gives_no_class_a_success_colour() -> None:

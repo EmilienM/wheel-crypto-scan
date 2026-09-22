@@ -118,6 +118,18 @@ def test_no_rule_can_emit_a_pass(ruleset: dict[str, Any]) -> None:
     for rule in ruleset["rule"]:
         assert rule.get("verdict") not in forbidden
 
+    # A rule's `title` is prose, not a token, and prose can legitimately carry
+    # "approved" as a substring -- "Distribution implements non-approved
+    # cryptography" is a rule saying the opposite of a pass. Merging that word into
+    # the token set above would flag titles like that one, so this set stays
+    # narrower: only the words that spell a passing verdict outright, checked as a
+    # case-insensitive substring of the full title.
+    forbidden_in_titles = ("compliant", "compliance", "compatible")
+    for rule in ruleset["rule"]:
+        title = rule["title"].lower()
+        for word in forbidden_in_titles:
+            assert word not in title, (rule["id"], word)
+
 
 def test_table_entries_reference_existing_rules(
     ruleset: dict[str, Any], rule_ids: set[str]
