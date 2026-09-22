@@ -152,38 +152,23 @@ in [Invariants](invariants.md#working-rules).
 
 `suppressed_by` drops a rule's finding on an object where one of the named rules also
 fired there: it is per object, never per wheel, and non-cascading, so a suppressor that
-is itself suppressed still suppresses. "Per object" means the same `Location.path`, and
-what a rule locates on follows its matcher *kind*, not its `layer`, and "wheel-scoped"
-is not one path either: a per-object matcher (`bundled_library`, `dt_needed`,
-`dynamic_symbol`, `binary_string`, `rust_crate`, `opaque_binary`, `partial_binary`, the
-`py_*` kinds) locates on the binary or source file it read; `no_source`,
-`binaries_truncated` and most `linkage` matches locate on the wheel's own filename, so
-those share a path with each other. A `linkage` match with `object_values` set is the
-exception: it locates per object instead, one `Hit` per object whose own posture
-matched, at that object's own path -- the same path a per-object binary rule shares.
-`DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM` is the shipped example, so a relation naming
-it against a `dt_needed` or `binary_string` rule on the same object does suppress. And
-`dist_name`, `requires_dist`, `wheel_generator` and `sbom_component` each locate on a
-path of their own -- `<dist-info>`, `<dist-info>/METADATA`, `<dist-info>/WHEEL` (or the
-wheel's own filename for all three when it ships no dist-info directory) and the SBOM
-component's own recorded source, respectively -- shared only with another rule of the
-same kind. `BIN_STATIC_OPENSSL` and `BIN_OPENSSL_LINKAGE_UNKNOWN`, by contrast, are
-`linkage` rules with no `object_values`, located on the wheel's filename, so a
-same-layer relation naming one of *them* against a `dt_needed` or `binary_string` rule
-never suppresses, the same as a cross-layer relation would -- and naming `dist_name`
-against `requires_dist` is just as dead, despite both being wheel-scoped and both
-`layer = "metadata"`. (`scan_error` and `record_mismatch` are the exceptions: their path
-is whichever stage or archive member the error or mismatch concerns, so whether they
-coincide with an object-located rule depends on the specific error, not the kind
-alone.) The loader accepts a relation between rules that can never share a path without
-complaint; check what each side locates on, not which layer or matcher kind alone
-promises. A `[[rust_crate]]` entry can carry the same field,
-naming other `[[rust_crate]]` entries, for a relation between two subjects of one rule
-rather than between two whole rules; entry-level `suppressed_by` is only defined on
-`[[rust_crate]]`, and is refused on any other table. Only the `rust_crate` matcher
-honours it: `kind = "sbom_component"` can also take a verdict from a `[[rust_crate]]`
-entry, but does not read its `suppressed_by`, so an SBOM naming both a crate and its
-suppressor still reports both findings (see [Suppression is keyed on rule, subject and
+is itself suppressed still suppresses. "Per object" means the same `Location.path`.
+Which kind locates where is declared once, as `MATCHER_LOCATIONS` in `ruleset.py`: a
+`linkage` match carrying `object_values` locates per object, one `Hit` per object whose
+own posture matched, `scan_error` and `record_mismatch` locate wherever their error or
+mismatch is and so accept a relation naming either one, and every other kind locates on
+whatever class of path its own declaration says. The loader refuses a relation whose two
+rules can never share a path, so an accepted ruleset is one where every `suppressed_by`
+can fire. A `[[rust_crate]]` entry can carry the same field,
+naming other `[[rust_crate]]` entries, for a relation between two crates that stay on
+one rule rather than between two whole rules; entry-level `suppressed_by` is only
+defined on `[[rust_crate]]`, and is refused on any other table. `kind = "sbom_component"`
+honours it too, keyed on the SBOM document as the object: a crate component in one SBOM
+carries the relations its crate has on a binary object, so an SBOM naming both a crate
+and its suppressor in the same document reports only the suppressing one's finding. SBOM
+and binary evidence never suppress each other, because they never share a path -- an SBOM
+naming a crate beside a *binary* object carrying its suppressor still reports both (see
+[Suppression is keyed on rule, subject and
 object](design/policy.md#suppression-is-keyed-on-rule-subject-and-object) for why
 that is accepted rather than fixed). A rule's own `tables` order is what decides which
 entry rates a `sbom_component` match, except for a `pkg:cargo/...` purl: when the rule
@@ -191,7 +176,9 @@ lists `rust_crate`, that table is tried first for such a component, ahead of whe
 the rule places it, so for a cargo-sourced name, listing `crypto_library` first does
 not make the C library's severity win. An unknown name, a name referring to itself, a
 name no rule owns (or, for a `[[rust_crate]]` entry, a crate with no owner of its own
-naming one), and a `suppressed_by` cycle across rules and crates are all refused at
+naming one), a `suppressed_by` cycle across rules and crates, a relation whose two rules
+can never share a location path, and a crate `suppressed_by` that would leave a
+library's linkage moved from an SBOM with no finding to explain it are all refused at
 load time.
 
 ## Using a different ruleset

@@ -84,6 +84,57 @@ LAYERS = frozenset({"metadata", "binary", "python", "derived"})
 BINDINGS = frozenset({"imported", "defined", "any"})
 LINKAGE_VALUES = frozenset({"system", "bundled", "static", "mixed", "none", "unknown"})
 
+# The class of `Location.path` each matcher kind's hits carry -- `suppressed_by` keys
+# on that path, so `ruleset_loader` uses this table to refuse a relation between two
+# rules whose hits could never land on the same one. `None` means the path depends on
+# the evidence itself and can land anywhere: `scan_error` and `record_mismatch` are
+# wildcards for that reason, and a relation naming either side is always accepted. A
+# `linkage` match locates on the wheel's own filename by default; one that also carries
+# `object_values` locates per object instead, which `match_location` below handles
+# because it depends on the match table, not the kind alone. `dist_name`,
+# `requires_dist` and `wheel_generator` fall back to the wheel's own filename when a
+# wheel ships no dist-info directory at all, but that branch is unreachable from a real
+# scan -- metadata extraction returns no evidence at all in that case -- so it is not
+# modelled as a fourth, wheel-shared class here.
+MATCHER_LOCATIONS: Mapping[str, str | None] = MappingProxyType(
+    {
+        "dist_name": "dist_info",
+        "requires_dist": "metadata_file",
+        "wheel_generator": "wheel_file",
+        "sbom_component": "sbom",
+        "no_source": "wheel",
+        "binaries_truncated": "wheel",
+        "record_mismatch": None,
+        "scan_error": None,
+        "bundled_library": "object",
+        "dt_needed": "object",
+        "dynamic_symbol": "object",
+        "binary_string": "object",
+        "rust_crate": "object",
+        "linkage": "wheel",
+        "opaque_binary": "object",
+        "partial_binary": "object",
+        "py_import": "python_source",
+        "py_call": "python_source",
+        "py_attr": "python_source",
+        "py_constant": "python_source",
+        "py_ctypes_load": "python_source",
+    }
+)
+
+
+def match_location(match: Mapping[str, Any]) -> str | None:
+    """The location class this match table's hits locate on (see `MATCHER_LOCATIONS`).
+
+    A `linkage` match carrying `object_values` locates per object, the one shape whose
+    location class is not decided by its `kind` alone; every other kind reads straight
+    off `MATCHER_LOCATIONS`.
+    """
+    if match["kind"] == "linkage" and "object_values" in match:
+        return "object"
+    return MATCHER_LOCATIONS[match["kind"]]
+
+
 # The open-vocabulary sequence fields `compile_patterns` reads off every match table,
 # regardless of `kind` -- a `py_call`/`py_attr`/`py_constant`-only meaning, but read
 # generically because the alternative is three copies of the same collection loop.
@@ -229,18 +280,12 @@ class Rule:
     whichever was written first and quietly lies about the rest. The engine dispatches
     per table and hands the matcher the one it was dispatched for.
 
-    `suppressed_by` is per object: a hit of this rule is dropped only where a hit of a
-    named rule fired on the same location path, never wheel-wide. A suppressor whose
-    hits are located on a different path never suppresses. What a rule locates on
-    follows its matcher kind, not its `layer`: most binary-layer `linkage` rules locate
-    on the wheel path, not on the object they describe, so a same-layer relation naming
-    one of them against a per-object binary rule never suppresses either. A `linkage`
-    match with `object_values` set is the exception -- it locates per object instead,
-    the same path a per-object binary rule shares. The loader accepts a relation
-    between rules that can never share a path without complaint; it fires, it just
-    never suppresses. It is also non-cascading -- a suppressor that is itself
-    suppressed still suppresses -- so the loader refuses a `suppressed_by` cycle rather
-    than silently dropping every member of one.
+    `suppressed_by` is per object, keyed on the hit's own `Location.path`: a hit of
+    this rule is dropped only where a hit of a named rule fired on that same path,
+    never wheel-wide, and the loader refuses a relation between rules that can never
+    share one (see `MATCHER_LOCATIONS`). It is also non-cascading -- a suppressor that
+    is itself suppressed still suppresses -- so the loader refuses a `suppressed_by`
+    cycle rather than silently dropping every member of one.
     """
 
     id: str
@@ -518,6 +563,36 @@ class Ruleset:
                 if match.get("default") and match.get("table") == table and match["kind"] == kind:
                     return rule
         return None
+
+    def crate_suppressors(self, name: str) -> tuple[str, ...]:
+        """Other `[[rust_crate]]` names whose finding, on the same object, drops `name`'s.
+
+        Mirrors what `engine._apply_suppression` does for the `rust_crate` matcher on
+        one object, restricted to crate evidence: a rule's non-crate matches (such as
+        `BIN_AWS_LC_FIPS`'s symbol and string groups) have nothing to match against in
+        an SBOM, so only relations between crates apply here. Two sources, both keyed
+        on the *owning* rule, the same way `engine._apply_suppression` reads a hit's
+        entry-level `suppressed_by`: the entry's own `suppressed_by` crate names, and
+        every other crate whose owner is named in this crate's own owning rule's
+        `suppressed_by` (the shipped AWS-LC shape, routed through two dedicated
+        rules). Returns `()` for an unknown name or a crate with no owning rule.
+        """
+        entry = self.rust_crates.get(name)
+        if entry is None:
+            return ()
+        default = self.default_rule_for_table("rust_crate", "rust_crate")
+
+        def owner_of(crate: RustCrateEntry) -> str | None:
+            return crate.rule or (default.id if default is not None else None)
+
+        owner = owner_of(entry)
+        names = {other for _, other in entry.suppressed_by}
+        if owner is not None:
+            owner_rule = self.rule(owner)
+            for other_name, other_entry in self.rust_crates.items():
+                if other_name != name and owner_of(other_entry) in owner_rule.suppressed_by:
+                    names.add(other_name)
+        return tuple(sorted(names))
 
     def compile_patterns(self) -> ScanPatterns:
         """Build the extractor-facing view of this ruleset."""

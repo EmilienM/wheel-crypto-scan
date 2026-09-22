@@ -44,6 +44,7 @@ from .ruleset import (
     RustCrateEntry,
     StringGroup,
     SymbolGroup,
+    match_location,
     sbom_crate_key,
     sbom_library_key,
 )
@@ -345,6 +346,22 @@ def _validate_rule_references(
         _validate_match_references(match, ruleset_data, where)
 
 
+def _check_suppression_can_fire(rules: Iterable[Rule]) -> None:
+    """Refuse a `suppressed_by` naming a rule whose hits could never share the
+    `Location.path` `engine._apply_suppression` keys on (`None` is a wildcard)."""
+    by_id = {rule.id: rule for rule in rules}
+    for rule in by_id.values():
+        mine = {match_location(match) for match in rule.matches}
+        for other in rule.suppressed_by:
+            theirs = {match_location(match) for match in by_id[other].matches}
+            if None in mine or None in theirs or mine & theirs:
+                continue
+            raise RulesetError(
+                f"rule {rule.id!r}: suppressed_by names {other!r} ({sorted(theirs)}) but this "
+                f"rule locates on {sorted(mine)}: never share a location path"
+            )
+
+
 def _check_suppression_acyclic(
     rules: Iterable[Rule],
     crates: Mapping[str, RustCrateEntry],
@@ -434,26 +451,16 @@ def _validate_sbom_component_coverage(rules: Iterable[Rule], source: str) -> Non
     rule reports on the same two tables it reads names from, `crypto_library` and
     `rust_crate` -- so the field and the finding never disagree about the same string.
     Checked once over the whole ruleset, as the union of every `sbom_component` rule's
-    own `match["tables"]` (never the singular `table` key, which `MATCH_KEYS` refuses on
-    this kind outright, since `_match_sbom_component` never reads it): covering the two
-    tables across two separate rules, one for `crypto_library` and one for `rust_crate`,
-    is exactly as sound as one rule doing both, and a rule-by-rule version of this check
-    would refuse that split for no reason.
-    It would also miss the case that actually breaks the agreement: no `sbom_component`
-    rule at all, or every one of them narrowed to `crypto_distribution` alone. Without
-    one, `linkage.resolve_linkage` still moves `<name>_linkage` to `unknown` on an SBOM
-    component naming a library or one of its crates, with no finding anywhere in the
-    record to say why -- the same "reports nothing" shape the invariants resist
-    elsewhere, so it is refused here rather than left to a test over the shipped
-    ruleset.
+    own `match["tables"]`: covering the two tables across two separate rules is exactly
+    as sound as one rule doing both, and this also catches the case a rule-by-rule
+    check would miss -- no `sbom_component` rule at all, or every one of them narrowed
+    to `crypto_distribution` alone, which leaves `linkage.resolve_linkage` moving
+    `<name>_linkage` to `unknown` with no finding anywhere to say why.
 
-    Coverage alone is not enough: a `sbom_component` rule that covers `crypto_library`
-    or `rust_crate` and also carries `suppressed_by` can still lose its finding at scan
-    time -- `engine.apply_rules` drops a hit whenever a rule named in its
-    `suppressed_by` also fired -- while `_declared_by_sbom` moved the field regardless,
-    since it reads `evidence.metadata.sbom_components` directly and has no idea any
-    rule was suppressed. That reopens the same "reports nothing" hole a coverage gap
-    does, so a rule contributing to this coverage is refused `suppressed_by` outright.
+    Coverage alone is not enough: a covering rule that also carries `suppressed_by`
+    can still lose its finding at scan time while `_declared_by_sbom` moves the field
+    regardless, since it reads the metadata directly with no idea a rule was
+    suppressed -- the same hole, so such a rule is refused `suppressed_by` outright.
     """
     required = {"crypto_library", "rust_crate"}
     covered: set[str] = set()
@@ -478,6 +485,34 @@ def _validate_sbom_component_coverage(rules: Iterable[Rule], source: str) -> Non
                 f"{source}: rule {rule.id!r} covers sbom_component tables "
                 f"{sorted(required)} and cannot carry suppressed_by -- a suppressed "
                 f"finding would leave linkage moved with no finding to explain it"
+            )
+
+
+def _validate_sbom_suppression_leaves_linkage_explained(ruleset: Ruleset, source: str) -> None:
+    """A crate `linkage._declared_by_sbom` counts towards moving a library's
+    `<name>_linkage` cannot lose its own finding to `Ruleset.crate_suppressors` (the
+    hole `_validate_sbom_component_coverage` refuses at rule level): checked for a
+    library's own name (the `argon2`/`blake2` folded case) and every crate it lists."""
+    default = ruleset.default_rule_for_table("rust_crate", "rust_crate")
+    for library in ruleset.libraries.values():
+        for name in sorted({library.name, *library.crates}):
+            entry = ruleset.rust_crates.get(name)
+            suppressors = ruleset.crate_suppressors(name) if entry is not None else ()
+            if not suppressors:
+                continue
+            if entry.suppressed_by:
+                names = sorted({other for _, other in entry.suppressed_by})
+                relation = f"rust_crate {name!r} names {names} in suppressed_by"
+            else:
+                owner = entry.rule or (default.id if default is not None else None)
+                rule_ids = list(ruleset.rule(owner).suppressed_by) if owner else []
+                relation = (
+                    f"rule {owner!r} names {rule_ids} in suppressed_by, "
+                    f"which owns {list(suppressors)}"
+                )
+            raise RulesetError(
+                f"{source}: rust_crate {name!r} moves {library.name}_linkage from an SBOM "
+                f"and cannot be suppressed there -- {relation}"
             )
 
 
@@ -743,6 +778,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
 
     for rule in rules:
         _validate_rule_references(rule, data, rule_ids)
+    _check_suppression_can_fire(rules)
     _validate_conventions_references(data)
     _validate_sbom_component_coverage(rules, source)
 
@@ -932,7 +968,7 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
     _refuse_unknown_keys(limits_data, _LIMITS_KEYS, "[limits]")
     limits = Limits(**limits_data)
     _check_limits_leave_room_for_every_key(limits, symbol_groups, string_groups, crates)
-    return Ruleset(
+    ruleset = Ruleset(
         version=str(version),
         precedence=precedence,
         limits=limits,
@@ -950,6 +986,8 @@ def parse_ruleset(data: Mapping[str, Any], source: str = "<ruleset>") -> Ruleset
         _libraries_by_sbom_key=MappingProxyType(libraries_by_sbom_key),
         _crates_by_sbom_key=MappingProxyType(crates_by_sbom_key),
     )
+    _validate_sbom_suppression_leaves_linkage_explained(ruleset, source)
+    return ruleset
 
 
 def load_ruleset(path: str | Path | None = None) -> Ruleset:

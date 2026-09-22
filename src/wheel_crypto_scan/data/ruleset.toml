@@ -713,7 +713,8 @@ why = "Stock Go crypto package paths. Go implements its own primitives in Go; th
 #
 # An entry's optional `rule` sends that crate's finding to a rule of its own instead of
 # to the default rust_crate rule. An entry's optional `suppressed_by` names other
-# [[rust_crate]] entries whose finding, on the same object, drops this one.
+# [[rust_crate]] entries whose finding, on the same object, or in the same SBOM
+# document, drops this one.
 # ---------------------------------------------------------------------------
 
 [[rust_crate]]
@@ -747,7 +748,7 @@ rule = "BIN_AWS_LC_RS_CRATE"
 verdict = "NON_APPROVED_CRYPTO"
 severity = "high"
 needs_human_review = true
-why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so this finding does not by itself say which build it compiled against. Its own rule, BIN_AWS_LC_FIPS, names BIN_AWS_LC_RS_CRATE in its rule-level suppressed_by, so an object that also carries aws-lc-fips-sys drops this finding and the FIPS build's CONDITIONAL finding stands; no entry-level relation is needed here. An SBOM naming both crates over sbom_component still reports this finding beside aws-lc-fips-sys's, which over-flags and is accepted for the same reason (see Suppression is keyed on rule, subject and object in DESIGN.md)."
+why = "Rust API over AWS-LC. It compiles against aws-lc-sys by default and against aws-lc-fips-sys with its fips feature, so this finding does not by itself say which build it compiled against. Its own rule, BIN_AWS_LC_RS_CRATE, names BIN_AWS_LC_FIPS in its rule-level suppressed_by, so an object where the FIPS build is identified, whether by symbol prefix, version string or the aws-lc-fips-sys cargo path, drops this finding and the FIPS build's CONDITIONAL finding stands; no entry-level relation is needed here. An SBOM naming aws-lc-fips-sys in the same document drops this component too, through that same rule relation (crate_suppressors in ruleset.py). An SBOM naming aws-lc-rs beside a FIPS binary object, rather than beside aws-lc-fips-sys in its own SBOM document, keeps this finding: SBOM and binary evidence never suppress each other, because they never share a location path (see Suppression is keyed on rule, subject and object in DESIGN.md)."
 
 [[rust_crate]]
 name = "aws-lc-fips-sys"
@@ -1105,17 +1106,13 @@ why = "Any of these names appearing in a ctypes load means crypto is being reach
 #
 # `suppressed_by` drops this rule's finding on an object where one of the named
 # rules also fired, so a more specific finding replaces a broader one. It is per
-# object (location path), never per wheel. A suppressor whose hits are located on
-# a different path never suppresses -- and what a rule locates on follows its
-# matcher kind, not its layer: most binary-layer `linkage` rules (BIN_STATIC_OPENSSL,
-# BIN_LINKED_CRYPTO_LIBRARY, BIN_OPENSSL_LINKAGE_UNKNOWN) locate on the wheel path,
-# not on the object they describe, so a same-layer relation naming one of them
-# against a per-object binary rule (dt_needed, binary_string, rust_crate, ...) is
-# just as dead as a cross-layer one. A `linkage` match with `object_values` set is
-# the exception (DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM is the shipped one): it
-# locates per object instead, the same path a per-object binary rule shares. The
-# loader does not catch any of this, so check what each side locates on, not which
-# layer it is in.
+# object (location path), never per wheel: what a rule locates on follows its matcher
+# kind, not its layer (a `linkage` match with `object_values` set is per object;
+# without it, per wheel). `MATCHER_LOCATIONS` in ruleset.py declares which class of
+# path each kind locates on, and the loader refuses a `suppressed_by` between two
+# rules that can never share one. `scan_error` and `record_mismatch` locate on
+# whatever path the error or mismatch concerns, so they are wildcards and any
+# relation naming one is accepted.
 #
 # A [[rust_crate]] entry can carry its own `suppressed_by`, naming other [[rust_crate]]
 # entries, for a relation between two subjects of the same rule. No other table reads
@@ -1373,7 +1370,7 @@ severity = "high"
 confidence = "high"
 needs_human_review = true
 title = "PEP 770 SBOM declares a bundled crypto component"
-why = "The wheel states in its own SBOM which libraries and crates it carries. This is the highest-confidence bundled-dependency evidence available, because the build tool wrote it rather than us inferring it."
+why = "The wheel states in its own SBOM which libraries and crates it carries. This is the highest-confidence bundled-dependency evidence available, because the build tool wrote it rather than us inferring it. A crate component is dropped beside another component of the same SBOM document whose finding would drop it on a binary object, the same relation the rust_crate matcher reads."
 [rule.match]
 kind = "sbom_component"
 tables = ["crypto_library", "rust_crate", "crypto_distribution"]

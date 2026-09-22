@@ -1978,6 +1978,94 @@ def test_the_aws_lc_fips_sys_crate_alone_reads_as_a_condition(context, tmp_path:
     assert "BIN_AWS_LC" not in record["verdict"]["rule_ids"]
 
 
+def test_an_sbom_naming_aws_lc_rs_and_aws_lc_fips_sys_reads_conditional(
+    context, tmp_path: Path
+) -> None:
+    """An SBOM naming both crates, with no binary evidence at all, drops the
+    `aws-lc-rs` component through the same rule relation a binary object reads,
+    keyed on the SBOM document as the object.
+    """
+    sbom = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {"name": "aws-lc-rs", "version": "1.18.1", "purl": "pkg:cargo/aws-lc-rs@1.18.1"},
+                {
+                    "name": "aws-lc-fips-sys",
+                    "version": "0.14.2",
+                    "purl": "pkg:cargo/aws-lc-fips-sys@0.14.2",
+                },
+            ],
+        }
+    ).encode()
+    wheel = build_wheel(
+        tmp_path / "awslcsbom-1.0-py3-none-any.whl",
+        name="awslcsbom",
+        version="1.0",
+        generator="maturin (1.7.0)",
+        files={"awslcsbom/__init__.py": b"VALUE = 1\n"},
+        sboms={"rust.cdx.json": sbom},
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    subjects = {
+        finding["subject"]
+        for finding in record["findings"]
+        if finding["rule_id"] == "SBOM_CRYPTO_COMPONENT"
+    }
+    assert subjects == {"aws-lc-fips-sys"}
+    assert "BIN_AWS_LC_RS_CRATE" not in record["verdict"]["rule_ids"]
+
+
+def test_an_sbom_beside_a_fips_binary_object_reads_conditional(context, tmp_path: Path) -> None:
+    """The shape a real wheel carries: a FIPS binary object alongside an SBOM naming
+    both crates in the same document. Both sides drop their `aws-lc-rs` finding --
+    the object's own rust_crate hit and the SBOM component both through
+    `BIN_AWS_LC_RS_CRATE suppressed_by BIN_AWS_LC_FIPS` -- and only the FIPS
+    condition and the FIPS SBOM component remain.
+    """
+    sbom = json.dumps(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "components": [
+                {"name": "aws-lc-rs", "version": "1.18.1", "purl": "pkg:cargo/aws-lc-rs@1.18.1"},
+                {
+                    "name": "aws-lc-fips-sys",
+                    "version": "0.14.2",
+                    "purl": "pkg:cargo/aws-lc-fips-sys@0.14.2",
+                },
+            ],
+        }
+    ).encode()
+    wheel = build_wheel(
+        tmp_path / f"awslcsbombin-1.0-{MANYLINUX}.whl",
+        name="awslcsbombin",
+        version="1.0",
+        tags=(MANYLINUX,),
+        generator="maturin (1.7.0)",
+        files={
+            "awslcsbombin/_ext.abi3.so": _aws_lc_binary(
+                symtab_name="aws_lc_fips_0_14_2_SHA256_Init",
+                rodata=_AWS_LC_RODATA,
+                text=_AWS_LC_FIPS_TEXT,
+            ),
+        },
+        sboms={"rust.cdx.json": sbom},
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "CONDITIONAL"
+    assert sorted(record["verdict"]["rule_ids"]) == ["BIN_AWS_LC_FIPS", "SBOM_CRYPTO_COMPONENT"]
+    subjects = {
+        finding["subject"]
+        for finding in record["findings"]
+        if finding["rule_id"] == "SBOM_CRYPTO_COMPONENT"
+    }
+    assert subjects == {"aws-lc-fips-sys"}
+    assert "BIN_AWS_LC_RS_CRATE" not in record["verdict"]["rule_ids"]
+
+
 def test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix(context, tmp_path: Path) -> None:
     """The measured FIPS object. Its version string sits in `.text`, which the ELF
     strings pass does not read, so this test relies on the symbol prefix alone, not on

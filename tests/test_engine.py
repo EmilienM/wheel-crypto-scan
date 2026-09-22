@@ -11,6 +11,7 @@ from importlib.resources import files
 
 import pytest
 
+from wheel_crypto_scan import engine
 from wheel_crypto_scan.engine import _sbom_entry, apply_rules
 from wheel_crypto_scan.errors import MEMBER_READ_ERROR
 from wheel_crypto_scan.evidence import (
@@ -33,7 +34,7 @@ from wheel_crypto_scan.evidence import (
     SymbolMatch,
 )
 from wheel_crypto_scan.linkage import resolve_linkage
-from wheel_crypto_scan.ruleset import CryptoLibrary
+from wheel_crypto_scan.ruleset import CryptoLibrary, match_location
 from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset
 from wheel_crypto_scan.verdict import classify
 
@@ -191,11 +192,137 @@ def test_a_non_cargo_sbom_component_is_rated_by_the_library_entry(ruleset, purl)
 def test_a_cargo_purl_does_not_add_a_table_the_rule_does_not_list(ruleset) -> None:
     """The purl-driven reorder only ever moves `rust_crate` ahead of a table the rule
     already lists; it never adds `rust_crate` to a rule that never named it."""
-    assert (
-        _sbom_entry(ruleset, ["crypto_library"], "openssl", "pkg:cargo/openssl@0.10.66")
-        is ruleset.libraries["openssl"]
+    assert _sbom_entry(ruleset, ["crypto_library"], "openssl", "pkg:cargo/openssl@0.10.66") == (
+        "crypto_library",
+        ruleset.libraries["openssl"],
     )
-    assert _sbom_entry(ruleset, ["rust_crate"], "openssl", None) is ruleset.rust_crates["openssl"]
+    assert _sbom_entry(ruleset, ["rust_crate"], "openssl", None) == (
+        "rust_crate",
+        ruleset.rust_crates["openssl"],
+    )
+
+
+def test_an_sbom_naming_aws_lc_fips_sys_drops_its_aws_lc_rs_component(ruleset) -> None:
+    """An SBOM component's `suppressed_by` is keyed on the SBOM document as the
+    object: two crate components in the same document relate the way two crates on
+    one binary object do, through the same rule-level `BIN_AWS_LC_RS_CRATE
+    suppressed_by BIN_AWS_LC_FIPS` relation `Ruleset.crate_suppressors` derives from."""
+    rs = SbomComponent(
+        name="aws-lc-rs",
+        version="1.18.1",
+        purl="pkg:cargo/aws-lc-rs@1.18.1",
+        source="demo-1.0.dist-info/sboms/rust.cdx.json",
+    )
+    fips = SbomComponent(
+        name="aws-lc-fips-sys",
+        version="0.14.2",
+        purl="pkg:cargo/aws-lc-fips-sys@0.14.2",
+        source="demo-1.0.dist-info/sboms/rust.cdx.json",
+    )
+    findings = run(ruleset, wheel(metadata=metadata(sbom_components=(rs, fips))))
+    finding = one(findings, "SBOM_CRYPTO_COMPONENT")
+    assert finding.subject == "aws-lc-fips-sys"
+    assert finding.verdict == "CONDITIONAL"
+
+
+def test_aws_lc_fips_sys_in_another_sbom_document_does_not_drop_aws_lc_rs(ruleset) -> None:
+    """The per-document key: the same pair split across two SBOM documents shares no
+    `Location.path`, so neither drops the other."""
+    rs = SbomComponent(
+        name="aws-lc-rs",
+        version="1.18.1",
+        purl="pkg:cargo/aws-lc-rs@1.18.1",
+        source="demo-1.0.dist-info/sboms/a.cdx.json",
+    )
+    fips = SbomComponent(
+        name="aws-lc-fips-sys",
+        version="0.14.2",
+        purl="pkg:cargo/aws-lc-fips-sys@0.14.2",
+        source="demo-1.0.dist-info/sboms/b.cdx.json",
+    )
+    findings = run(ruleset, wheel(metadata=metadata(sbom_components=(rs, fips))))
+    subjects = {f.subject for f in findings if f.rule_id == "SBOM_CRYPTO_COMPONENT"}
+    assert subjects == {"aws-lc-rs", "aws-lc-fips-sys"}
+
+
+def test_an_sbom_naming_aws_lc_fips_sys_keeps_aws_lc_sys(ruleset) -> None:
+    """`aws-lc-sys` names the stock build and carries no relation to the FIPS crate,
+    so it survives beside it in the same SBOM document."""
+    stock = SbomComponent(
+        name="aws-lc-sys",
+        version="0.45.0",
+        purl="pkg:cargo/aws-lc-sys@0.45.0",
+        source="demo-1.0.dist-info/sboms/rust.cdx.json",
+    )
+    fips = SbomComponent(
+        name="aws-lc-fips-sys",
+        version="0.14.2",
+        purl="pkg:cargo/aws-lc-fips-sys@0.14.2",
+        source="demo-1.0.dist-info/sboms/rust.cdx.json",
+    )
+    findings = run(ruleset, wheel(metadata=metadata(sbom_components=(stock, fips))))
+    subjects = {f.subject for f in findings if f.rule_id == "SBOM_CRYPTO_COMPONENT"}
+    assert subjects == {"aws-lc-sys", "aws-lc-fips-sys"}
+
+
+def test_an_entry_level_suppressed_by_is_honoured_over_sbom_components_in_one_document() -> None:
+    """`Ruleset.crate_suppressors`' first source, an entry's own `suppressed_by`, is
+    honoured over SBOM components the same way its second, rule-level source, is
+    above. No shipped crate carries an entry-level relation, so this is synthetic."""
+    data = shipped_data()
+    data["rule"].append(
+        rule_entry("TEST_ROUTED_CRATE", {"kind": "rust_crate", "table": "rust_crate"})
+    )
+    data["rust_crate"].append(
+        {
+            "name": "test-fips-crate",
+            "verdict": "CONDITIONAL",
+            "rule": "TEST_ROUTED_CRATE",
+            "why": "w",
+        }
+    )
+    data["rust_crate"].append(
+        {
+            "name": "test-stock-crate",
+            "verdict": "NON_APPROVED_CRYPTO",
+            "why": "w",
+            "suppressed_by": ["test-fips-crate"],
+        }
+    )
+    stock = SbomComponent(
+        name="test-stock-crate",
+        version="1.0.0",
+        purl="pkg:cargo/test-stock-crate@1.0.0",
+        source="a.cdx.json",
+    )
+    fips = SbomComponent(
+        name="test-fips-crate",
+        version="1.0.0",
+        purl="pkg:cargo/test-fips-crate@1.0.0",
+        source="a.cdx.json",
+    )
+    findings = run(parse_ruleset(data), wheel(metadata=metadata(sbom_components=(stock, fips))))
+    subjects = {f.subject for f in findings if f.subject in {"test-stock-crate", "test-fips-crate"}}
+    assert subjects == {"test-fips-crate"}
+
+
+def test_an_sbom_naming_a_crate_beside_a_fips_binary_object_still_reports_it(ruleset) -> None:
+    """SBOM and binary evidence never suppress each other, because they never share a
+    `Location.path`: a FIPS finding on a binary object does not drop the SBOM's own
+    aws-lc-rs component, the accepted cross-source over-flag."""
+    rs = SbomComponent(
+        name="aws-lc-rs",
+        version="1.18.1",
+        purl="pkg:cargo/aws-lc-rs@1.18.1",
+        source="demo-1.0.dist-info/sboms/rust.cdx.json",
+    )
+    evidence = wheel(
+        metadata=metadata(sbom_components=(rs,)),
+        binaries=(binary("demo/_fips.so", rust_crates=(RustCrate("aws-lc-fips-sys", "0.14.2"),)),),
+    )
+    findings = run(ruleset, evidence)
+    assert one(findings, "SBOM_CRYPTO_COMPONENT").subject == "aws-lc-rs"
+    assert one(findings, "BIN_AWS_LC_FIPS").subject == "aws-lc-fips-sys"
 
 
 def test_scan_errors_become_findings(ruleset) -> None:
@@ -482,9 +609,8 @@ def test_an_entry_level_suppressed_by_is_superseded_even_when_routed_to_its_own_
     produces, not whichever rule the suppressed entry belongs to. Routing a crate to
     a rule of its own must not silently break an entry-level `suppressed_by` naming
     it -- which is exactly what a loader that keyed on the suppressed entry's own
-    owner, instead of the named crate's, would do. Built on a synthetic crate pair: the
-    shipped aws-lc-rs and aws-lc-fips-sys entries each have a dedicated rule and relate
-    through a rule-level `suppressed_by` instead."""
+    owner, instead of the named crate's, would do. No shipped crate carries an
+    entry-level `suppressed_by`, so this is built on a synthetic crate pair."""
     data = shipped_data()
     data["rule"].append(
         rule_entry("TEST_ROUTED_CRATE", {"kind": "rust_crate", "table": "rust_crate"})
@@ -568,74 +694,6 @@ def test_suppression_does_not_cascade() -> None:
     assert findings & {"BIN_GO_STOCK_CRYPTO", "BIN_GO_BORING_CRYPTO", "BIN_GO_FIPS140"} == {
         "BIN_GO_FIPS140"
     }
-
-
-def test_a_suppressor_on_a_different_layer_never_fires() -> None:
-    """`suppressed_by` keys on `Location.path`, so a metadata-layer rule and a
-    binary-layer rule, whose hits never land on the same path, cannot suppress each
-    other even when the ruleset names the relation. The loader accepts it (it has no
-    way to know two rules can never share a path); this pins that it stays a no-op
-    documented in `docs/ruleset.md` and `DESIGN.md`, not a silent drop."""
-    data = shipped_data()
-    by_id = {rule["id"]: rule for rule in data["rule"]}
-    by_id["DIST_NON_APPROVED_CRYPTO"]["suppressed_by"] = ["BIN_GO_FIPS140"]
-    evidence = wheel(
-        metadata=metadata(name="PyNaCl", version="1.5.0"),
-        binaries=(
-            binary(
-                "demo/_go.so",
-                matched_strings=(StringMatch("go_fips140", "GOFIPS140=v1.0.0"),),
-            ),
-        ),
-    )
-    findings = ids(run(parse_ruleset(data), evidence))
-    assert {"DIST_NON_APPROVED_CRYPTO", "BIN_GO_FIPS140"} <= findings
-
-
-def test_a_suppressor_locating_on_a_different_matcher_kind_in_the_same_layer_never_fires() -> None:
-    """Same point as the test above, but staying inside one `layer`: keeping a relation
-    within one layer is not enough on its own. `BIN_RUST_CRYPTO_CRATE` (kind
-    `rust_crate`) locates on the binary that carries the crate; `BIN_OPENSSL_LINKAGE_UNKNOWN`
-    (kind `linkage`, also `layer = "binary"`) locates on the wheel path instead. A
-    relation between the two follows "keep `suppressed_by` within one layer" to the
-    letter and is still a no-op, because what decides it is `Location.path`, not
-    `layer`."""
-    data = shipped_data()
-    by_id = {rule["id"]: rule for rule in data["rule"]}
-    by_id["BIN_OPENSSL_LINKAGE_UNKNOWN"]["suppressed_by"] = ["BIN_RUST_CRYPTO_CRATE"]
-    evidence = wheel(
-        binaries=(
-            binary(
-                "demo/_rust.abi3.so",
-                needed=("libc.so.6",),
-                dynsym_count=1,
-                rust_crates=(RustCrate("openssl-sys", "0.9.117"),),
-            ),
-        )
-    )
-    findings = ids(run(parse_ruleset(data), evidence))
-    assert {"BIN_RUST_CRYPTO_CRATE", "BIN_OPENSSL_LINKAGE_UNKNOWN"} <= findings
-
-
-def test_two_wheel_scoped_rules_of_different_kinds_never_share_a_path_either() -> None:
-    """Wheel-scoped is not one path either. `DIST_NON_APPROVED_CRYPTO` (kind
-    `dist_name`) locates on `<dist-info>`; `DIST_DEPENDS_ON_CRYPTO` (kind
-    `requires_dist`) locates on `<dist-info>/METADATA`. Both are metadata-layer and
-    both are wheel-scoped, but naming one in the other's `suppressed_by` is just as
-    dead as a cross-layer relation, because their hits still never share a
-    `Location.path`."""
-    data = shipped_data()
-    by_id = {rule["id"]: rule for rule in data["rule"]}
-    by_id["DIST_DEPENDS_ON_CRYPTO"]["suppressed_by"] = ["DIST_NON_APPROVED_CRYPTO"]
-    evidence = wheel(
-        metadata=metadata(
-            name="PyNaCl",
-            version="1.5.0",
-            requires_dist_names=("cryptography",),
-        )
-    )
-    findings = ids(run(parse_ruleset(data), evidence))
-    assert {"DIST_NON_APPROVED_CRYPTO", "DIST_DEPENDS_ON_CRYPTO"} <= findings
 
 
 def test_a_versionless_rust_crate_has_no_trailing_space_or_none_in_its_evidence(
@@ -964,9 +1022,10 @@ def test_linkage_moves_only_on_an_sbom_component_the_record_reports(ruleset) -> 
                 assert name in subjects, (
                     f"{name} moved {sorted(moved)} with no SBOM_CRYPTO_COMPONENT finding"
                 )
-            entry = _sbom_entry(ruleset, ("crypto_library", "rust_crate"), name, purl)
-            if entry is None:
+            resolved = _sbom_entry(ruleset, ("crypto_library", "rust_crate"), name, purl)
+            if resolved is None:
                 continue
+            _, entry = resolved
             assert name in subjects, f"{name} resolved to {entry.name} but fired no finding"
             if isinstance(entry, CryptoLibrary):
                 bound = {entry.name}
@@ -1343,3 +1402,140 @@ def test_a_module_entry_that_names_its_rule_still_fires_without_a_default() -> N
     findings = run(parse_ruleset(data), wheel(py_sites=(site("py_import", "random"),)))
     assert one(findings, "PY_INSECURE_RNG").subject == "random"
     assert "PY_IMPORT_CRYPTO_MODULE" not in ids(findings)
+
+
+# --- location-class drift ----------------------------------------------------
+
+
+def _location_class(evidence: Evidence, path: str) -> str:
+    """Classify a `Location.path` the same way `MATCHER_LOCATIONS` names it, read
+    back off the evidence that produced it rather than trusted by construction."""
+    meta = evidence.metadata
+    if meta is not None and meta.dist_info_dir:
+        if path == meta.dist_info_dir:
+            return "dist_info"
+        if path == f"{meta.dist_info_dir}/METADATA":
+            return "metadata_file"
+        if path == f"{meta.dist_info_dir}/WHEEL":
+            return "wheel_file"
+        if path.startswith(f"{meta.dist_info_dir}/sboms/"):
+            return "sbom"
+    if path == evidence.filename:
+        return "wheel"
+    if any(b.path == path for b in evidence.binaries):
+        return "object"
+    if any(s.path == path for s in evidence.py_sites):
+        return "python_source"
+    return "unknown"
+
+
+def test_every_matcher_locates_where_its_declared_location_says(ruleset) -> None:
+    """`MATCHER_LOCATIONS`, and `match_location` for a `linkage` match, declare which
+    class of `Location.path` each match table's hits carry. This fires every kind the
+    shipped ruleset uses, through the same dispatch `engine.apply_rules` does but one
+    match table at a time, and checks each hit's own `location.path` against that
+    declaration instead of trusting it by construction.
+    """
+    # pylint: disable=protected-access
+    index = engine._SonameIndex(ruleset)
+
+    dist_info_dir = "PyNaCl-1.5.0.dist-info"
+    metadata_evidence = wheel(
+        metadata=metadata(
+            name="PyNaCl",
+            version="1.5.0",
+            requires_dist_names=("cryptography",),
+            generator_raw="bdist_wheel (0.41.0)",
+            record_mismatches=(f"{dist_info_dir}/extra.txt",),
+            sbom_components=(
+                SbomComponent(
+                    name="openssl",
+                    version="3.0.14",
+                    purl=None,
+                    source=f"{dist_info_dir}/sboms/a.json",
+                ),
+            ),
+        ),
+        artifacts=ArtifactInventory(
+            py_files=0, pyc_files=3, source_available=False, binaries_truncated=True
+        ),
+        errors=(ScanError(stage=STAGE_BINARY, kind="elf_parse_error", message="x", path="bad.so"),),
+    )
+
+    binary_evidence = wheel(
+        binaries=(
+            binary(
+                "demo.libs/libcrypto-3a1f2b4c.so.3",
+                vendored_path=True,
+                soname="libcrypto-3a1f2b4c.so.3",
+                matched_strings=(StringMatch("openssl_banner", "OpenSSL 3.0.14 4 Jun 2024"),),
+            ),
+            binary("demo/_needed.so", needed=("libcrypto-3a1f2b4c.so.3",)),
+            binary(
+                "demo/_symbols.so",
+                matched_symbols=(SymbolMatch("sodium_init", "libsodium", BINDING_IMPORTED),),
+            ),
+            binary("demo/_strings.so", matched_strings=(StringMatch("boringssl", "BoringSSL"),)),
+            binary("demo/_rust.so", rust_crates=(RustCrate("ring", "0.17.8"),)),
+            binary("demo/_opaque.so"),
+            binary("demo/_partial.pyd", format=FORMAT_PE, partial_analysis=True, needed=("a",)),
+        )
+    )
+
+    crate_only = binary(
+        "demo/_crate_only.so",
+        needed=("libc.so.6",),
+        dynsym_count=1,
+        rust_crates=(RustCrate("openssl-sys", "0.9.117"),),
+    )
+    system_sibling = binary("demo/_system.so", needed=("libc.so.6", "libssl.so.3"))
+    linkage_unknown_evidence = wheel(binaries=(crate_only,))
+    linkage_object_values_evidence = wheel(binaries=(system_sibling, crate_only))
+
+    python_evidence = wheel(
+        py_sites=(
+            site("py_import", "nacl"),
+            site("py_call", "hashlib.md5", algorithm="md5", usedforsecurity="absent"),
+            site("py_attr", "minimum_version"),
+            site("py_constant", "ssl.PROTOCOL_TLSv1"),
+            site("py_ctypes_load", "libcrypto", library="libcrypto.so.3"),
+        )
+    )
+
+    fired_kinds: set[str] = set()
+    object_values_seen = False
+    wheel_linkage_seen = False
+
+    for evidence in (
+        metadata_evidence,
+        binary_evidence,
+        linkage_unknown_evidence,
+        linkage_object_values_evidence,
+        python_evidence,
+    ):
+        linkage = resolve_linkage(ruleset, evidence)
+        for rule in ruleset.rules:
+            for match in rule.matches:
+                matcher = engine._MATCHERS[match["kind"]]
+                for hit in matcher(rule, match, ruleset, evidence, linkage, index):
+                    fired_kinds.add(match["kind"])
+                    if match["kind"] == "linkage":
+                        if "object_values" in match:
+                            object_values_seen = True
+                        else:
+                            wheel_linkage_seen = True
+                    expected = match_location(match)
+                    if expected is None:
+                        continue
+                    got = _location_class(evidence, hit.location.path)
+                    assert got == expected, (rule.id, match["kind"], hit.location.path)
+
+    used_kinds_with_a_location = {
+        match["kind"]
+        for rule in ruleset.rules
+        for match in rule.matches
+        if match_location(match) is not None
+    }
+    assert used_kinds_with_a_location <= fired_kinds
+    assert object_values_seen
+    assert wheel_linkage_seen

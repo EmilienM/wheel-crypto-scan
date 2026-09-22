@@ -22,6 +22,7 @@ from wheel_crypto_scan.ruleset import (
     ENTRY_TABLES,
     MATCH_KEYS,
     MATCHER_KINDS,
+    MATCHER_LOCATIONS,
     ROUTED_KINDS,
     SymbolGroup,
     sbom_crate_key,
@@ -874,11 +875,179 @@ def test_crates_and_rules_mixed_together_form_a_cycle() -> None:
 
 
 def test_a_one_directional_relation_between_two_crates_of_the_same_rule_loads_clean() -> None:
-    """The aws-lc-rs / aws-lc-fips-sys shape: both owned by one rule, one direction
-    only. The cycle check must not flag this as a self-rule false positive."""
+    """Two crates owned by one rule, related in one direction only. The cycle check
+    must not flag this as a self-rule false positive."""
     data = rust_crate_ruleset()
     data["rust_crate"][0]["suppressed_by"] = ["boring"]
     parse_ruleset(data)
+
+
+# --- suppressed_by can only fire where the two rules could share a path -----
+
+
+def test_a_cross_layer_suppressed_by_is_rejected() -> None:
+    data = minimal()
+    data["rule"][0]["suppressed_by"] = ["BIN_GO_FIPS140"]
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_GO_FIPS140",
+            layer="binary",
+            suppressed_by=[],
+            match={"kind": "binary_string", "group": "openssl_banner"},
+        )
+    )
+    with pytest.raises(RulesetError, match="never share a location path"):
+        parse_ruleset(data)
+
+
+def test_a_same_layer_linkage_and_rust_crate_relation_is_rejected() -> None:
+    """`linkage` with no `object_values` locates on the wheel's own filename;
+    `rust_crate` locates on the object. Both are `layer = "binary"`, and the relation
+    is still dead, because what decides it is `Location.path`, not `layer`."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_OPENSSL_LINKAGE_UNKNOWN",
+            layer="binary",
+            suppressed_by=["BIN_RUST_CRYPTO_CRATE"],
+            match={"kind": "linkage", "name": "openssl", "value": "unknown"},
+        )
+    )
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_RUST_CRYPTO_CRATE",
+            layer="binary",
+            suppressed_by=[],
+            match={"kind": "rust_crate", "table": "rust_crate", "default": True},
+        )
+    )
+    with pytest.raises(RulesetError, match="never share a location path"):
+        parse_ruleset(data)
+
+
+def test_two_wheel_scoped_rules_of_different_kinds_cannot_relate_either() -> None:
+    """Wheel-scoped is not one path either: `dist_name` locates on `<dist-info>`,
+    `requires_dist` on `<dist-info>/METADATA`. Both metadata-layer and both
+    wheel-scoped is not enough; their hits still never share a `Location.path`."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="DIST_DEPENDS_ON_CRYPTO",
+            suppressed_by=["DIST_NON_APPROVED_CRYPTO"],
+            match={"kind": "requires_dist", "any_entry": True},
+        )
+    )
+    with pytest.raises(RulesetError, match="never share a location path"):
+        parse_ruleset(data)
+
+
+def test_a_linkage_rule_with_object_values_can_suppress_a_per_object_binary_rule() -> None:
+    """A `linkage` match carrying `object_values` locates per object, the same class
+    a per-object binary rule shares, so this relation is accepted."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM",
+            layer="derived",
+            suppressed_by=[],
+            match={
+                "kind": "linkage",
+                "name": "openssl",
+                "value": "unknown",
+                "object_values": ["unknown"],
+            },
+        )
+    )
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_RUST_CRYPTO_CRATE",
+            layer="binary",
+            suppressed_by=["DERIVED_OPENSSL_UNRESOLVED_BESIDE_SYSTEM"],
+            match={"kind": "rust_crate", "table": "rust_crate", "default": True},
+        )
+    )
+    parse_ruleset(data)
+
+
+def test_a_relation_naming_a_scan_error_rule_is_accepted_as_a_wildcard() -> None:
+    """`scan_error` locates on whatever path the error concerns, so it is a wildcard:
+    a relation naming it is always accepted, whatever the other side locates on."""
+    data = minimal()
+    data["rule"][0]["suppressed_by"] = ["BIN_UNPARSEABLE"]
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_UNPARSEABLE",
+            layer="binary",
+            suppressed_by=[],
+            match={"kind": "scan_error", "error_kinds": ["elf_parse_error"]},
+        )
+    )
+    parse_ruleset(data)
+
+
+def test_a_relation_naming_a_record_mismatch_rule_is_accepted_as_a_wildcard() -> None:
+    data = minimal()
+    data["rule"][0]["suppressed_by"] = ["WHEEL_RECORD_MISMATCH"]
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="WHEEL_RECORD_MISMATCH",
+            layer="metadata",
+            suppressed_by=[],
+            match={"kind": "record_mismatch"},
+        )
+    )
+    parse_ruleset(data)
+
+
+def test_only_one_of_two_match_tables_needs_to_share_a_class() -> None:
+    """The check asks whether any pair of match tables across the two rules could
+    meet, not whether every pair does: a rule with one per-object table and one
+    wheel-scoped table is accepted against a per-object suppressor."""
+    data = minimal()
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_EITHER_WAY",
+            layer="binary",
+            suppressed_by=["BIN_RUST_CRYPTO_CRATE"],
+            match=[
+                {"kind": "linkage", "name": "openssl", "value": "unknown"},
+                {"kind": "binary_string", "group": "openssl_banner"},
+            ],
+        )
+    )
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_RUST_CRYPTO_CRATE",
+            layer="binary",
+            suppressed_by=[],
+            match={"kind": "rust_crate", "table": "rust_crate", "default": True},
+        )
+    )
+    parse_ruleset(data)
+
+
+def test_the_shipped_suppressed_by_relations_all_locate_where_they_can_fire() -> None:
+    """`BIN_AWS_LC` -> `BIN_AWS_LC_FIPS`, `BIN_AWS_LC_RS_CRATE` -> `BIN_AWS_LC_FIPS` and
+    `BIN_GO_STOCK_CRYPTO` -> `BIN_GO_BORING_CRYPTO`/`BIN_GO_FIPS140` are all
+    object/object; loading the shipped ruleset already proves they pass
+    `_check_suppression_can_fire`, so this just names them."""
+    ruleset = load_ruleset()
+    assert ruleset.rule("BIN_AWS_LC").suppressed_by == ("BIN_AWS_LC_FIPS",)
+    assert ruleset.rule("BIN_AWS_LC_RS_CRATE").suppressed_by == ("BIN_AWS_LC_FIPS",)
+    assert set(ruleset.rule("BIN_GO_STOCK_CRYPTO").suppressed_by) == {
+        "BIN_GO_BORING_CRYPTO",
+        "BIN_GO_FIPS140",
+    }
 
 
 def test_a_bare_string_suppressed_by_on_a_rule_is_rejected() -> None:
@@ -926,14 +1095,21 @@ def test_suppressed_by_on_a_python_module_entry_is_rejected() -> None:
 
 
 def test_a_crate_entry_suppressed_by_resolves_to_the_owning_rule_and_crate_name() -> None:
-    """No shipped crate carries an entry-level `suppressed_by`: aws-lc-rs and
-    aws-lc-fips-sys are owned by `BIN_AWS_LC_RS_CRATE` and `BIN_AWS_LC_FIPS`, which relate
-    through a rule-level one. The entry-level resolution is pinned against a minimal
+    """An entry-level `suppressed_by` resolves each name to `(owning rule id, crate
+    name)`. No shipped crate carries one, so this is pinned against a minimal
     fixture."""
     data = rust_crate_ruleset()
     data["rust_crate"][0]["suppressed_by"] = ["boring"]
     ruleset = parse_ruleset(data)
     assert ruleset.rust_crates["ring"].suppressed_by == (("BIN_RUST_CRYPTO_CRATE", "boring"),)
+
+
+def test_no_shipped_crate_carries_an_entry_level_suppressed_by() -> None:
+    """DESIGN.md states the entry-level field has no shipped user and that the shipped
+    AWS-LC relation is rule-level. A crate gaining one must update that entry."""
+    ruleset = load_ruleset()
+    assert [name for name, crate in ruleset.rust_crates.items() if crate.suppressed_by] == []
+    assert "BIN_AWS_LC_FIPS" in ruleset.rule("BIN_AWS_LC_RS_CRATE").suppressed_by
 
 
 def test_a_library_naming_a_crate_the_crate_table_lacks_is_rejected() -> None:
@@ -1247,10 +1423,14 @@ def test_a_suppressed_sbom_component_rule_covering_required_tables_is_rejected()
     """A rule reporting `crypto_library`/`rust_crate` coverage that also carries
     `suppressed_by` can still lose its finding at scan time whenever the rule named
     there also fires, while `linkage._declared_by_sbom` moved the field regardless --
-    the same field-moves-with-no-finding hole the coverage check otherwise refuses."""
+    the same field-moves-with-no-finding hole the coverage check otherwise refuses.
+    The suppressor named is itself a `sbom_component` rule, so the relation shares a
+    location and reaches this check rather than being refused earlier for never
+    sharing one."""
     data = _without_sbom_component_rules(minimal())
+    data["rule"].append(_sbom_component_rule(["crypto_distribution"], rule_id="SBOM_OTHER"))
     rule = _sbom_component_rule(["crypto_library", "rust_crate"])
-    rule["suppressed_by"] = ["DIST_NON_APPROVED_CRYPTO"]
+    rule["suppressed_by"] = ["SBOM_OTHER"]
     data["rule"].append(rule)
     with pytest.raises(RulesetError, match="cannot carry suppressed_by"):
         parse_ruleset(data)
@@ -1262,7 +1442,7 @@ def test_a_suppressed_sbom_component_rule_covering_only_distribution_is_accepted
     plays no part in that agreement and is free to carry it."""
     data = minimal()
     rule = _sbom_component_rule(["crypto_distribution"], rule_id="SBOM_DIST_ONLY")
-    rule["suppressed_by"] = ["DIST_NON_APPROVED_CRYPTO"]
+    rule["suppressed_by"] = ["SBOM_CRYPTO_COMPONENT"]
     data["rule"].append(rule)
     parse_ruleset(data)
 
@@ -1308,6 +1488,84 @@ def test_sbom_crate_key_does_not_fold_a_non_ascii_character_onto_ascii_case() ->
     kelvin_k = "K"
     assert sbom_crate_key(f"{kelvin_k}256") == f"{kelvin_k}256"
     assert sbom_crate_key(f"{kelvin_k}256") != sbom_crate_key("K256")
+
+
+# --- SBOM crate suppression --------------------------------------------------------
+
+
+def test_crate_suppressors_on_the_shipped_ruleset() -> None:
+    """`aws-lc-rs` is dropped by `aws-lc-fips-sys` through the rule-level relation
+    `BIN_AWS_LC_RS_CRATE suppressed_by BIN_AWS_LC_FIPS`; nothing else has a shipped
+    relation, including an unknown name."""
+    ruleset = load_ruleset()
+    assert ruleset.crate_suppressors("aws-lc-rs") == ("aws-lc-fips-sys",)
+    for name in ("aws-lc-sys", "rustls", "openssl-sys", "not-a-real-crate"):
+        assert ruleset.crate_suppressors(name) == ()
+
+
+def test_a_crate_that_moves_linkage_from_an_sbom_cannot_be_suppressed_there() -> None:
+    """`ring` is listed in `openssl`'s `crates`, so `linkage._declared_by_sbom` counts
+    an SBOM naming it towards moving `openssl_linkage`. Giving it a suppressor would
+    let an SBOM finding for it disappear while the field still moved, with nothing
+    left in the record to say why. The relation is entry-level -- set on `ring`'s own
+    entry -- so the refusal names the entry, not a rule."""
+    data = rust_crate_ruleset()
+    data["crypto_library"][0]["crates"] = ["ring"]
+    data["rust_crate"][0]["suppressed_by"] = ["boring"]
+    with pytest.raises(
+        RulesetError, match=r"rust_crate 'ring' names \['boring'\] in suppressed_by"
+    ):
+        parse_ruleset(data)
+
+
+def test_a_crate_sharing_a_librarys_name_cannot_be_suppressed_there() -> None:
+    """A `[[rust_crate]]` entry can share a `[[crypto_library]]`'s name without being
+    listed in that library's own `crates`, the way argon2 and blake2 do in the shipped
+    ruleset: both a library name and an unrelated crate's. `_declared_by_sbom` still
+    counts an SBOM naming the crate towards moving the library's `<name>_linkage`, so
+    giving the crate a suppressor would let its SBOM finding disappear while the field
+    still moved, with nothing left in the record to say why. `openssl` here is the
+    library name from `rust_crate_ruleset()`, with no `crates` of its own, so only the
+    library-name arm of the check can be what catches this. The relation is again
+    entry-level, on the `openssl` crate entry itself."""
+    data = rust_crate_ruleset()
+    data["rust_crate"].append(
+        {"name": "openssl", "severity": "high", "why": "crate", "suppressed_by": ["boring"]}
+    )
+    with pytest.raises(
+        RulesetError, match=r"rust_crate 'openssl' names \['boring'\] in suppressed_by"
+    ):
+        parse_ruleset(data)
+
+
+def test_a_suppressor_on_the_default_crate_rule_names_that_rule_in_the_refusal() -> None:
+    """`ring` falls to the default `rust_crate` rule in `rust_crate_ruleset()` and sets
+    nothing on its own entry. Routing `boring` to a rule of its own and naming that rule
+    in the default rule's own `suppressed_by` still reaches `ring` through
+    `Ruleset.crate_suppressors`, since every crate the default rule owns shares its
+    relations -- so the refusal has to name the rule relation that actually caused it,
+    and the crate names that relation resolves to, rather than reading as a problem
+    with `ring`'s own entry or naming a crate where the rule names a rule id."""
+    data = rust_crate_ruleset()
+    data["crypto_library"][0]["crates"] = ["ring"]
+    data["rule"].append(
+        dict(
+            data["rule"][0],
+            id="BIN_BORING_CRATE",
+            layer="binary",
+            match={"kind": "rust_crate", "table": "rust_crate"},
+        )
+    )
+    data["rust_crate"][1]["rule"] = "BIN_BORING_CRATE"  # boring
+    data["rule"][-2]["suppressed_by"] = ["BIN_BORING_CRATE"]  # BIN_RUST_CRYPTO_CRATE
+    with pytest.raises(
+        RulesetError,
+        match=(
+            r"rule 'BIN_RUST_CRYPTO_CRATE' names \['BIN_BORING_CRATE'\] in suppressed_by, "
+            r"which owns \['boring'\]"
+        ),
+    ):
+        parse_ruleset(data)
 
 
 def test_unknown_scan_error_kind_is_rejected() -> None:
@@ -2049,6 +2307,14 @@ def test_reads_follows_a_matchers_own_parameter_name_not_the_literal_match(
     monkeypatch.setitem(_ENGINE_FUNCTIONS, "_match_fake", fake_fn)
 
     assert _reads("_test_fake_kind") == {"strict"}
+
+
+def test_every_matcher_kind_declares_a_location_class() -> None:
+    """`MATCHER_LOCATIONS` is what the loader's `_check_suppression_can_fire` reads;
+    a kind added to `MATCHER_KINDS` without a location here would go unchecked
+    silently, the same drift the dispatch-function test above holds for `_MATCHERS`.
+    """
+    assert set(MATCHER_LOCATIONS) == set(MATCHER_KINDS)
 
 
 # --- py_call match fields ------------------------------------------------------------
