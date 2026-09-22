@@ -23,9 +23,10 @@ Everything below is under `src/wheel_crypto_scan/`.
 | `errors.py` | The `ScanError` kinds, which the ruleset can match on |
 | `report.py`, `data/report.html` | Human views of the records: the Markdown table and the self-contained HTML page |
 
-Beside those: `cli.py` (argument parsing and run orchestration), `scan.py` (per-wheel
-orchestration), `discovery.py` (turning inputs, a file list or an index URL into wheel
-paths), `cache.py` (the record cache), and `linkage.py` (posture resolution).
+Beside those: `cli.py` (argument parsing and run orchestration), `progress.py` (the
+progress view on stderr), `scan.py` (per-wheel orchestration), `discovery.py` (turning
+inputs, a file list or an index URL into wheel paths), `cache.py` (the record cache), and
+`linkage.py` (posture resolution).
 
 ## The path a wheel takes
 
@@ -126,6 +127,11 @@ people actually diff.
 Workers never receive the ruleset over a pickle. Each process loads it once in its
 initializer and keeps it in a module global, which avoids serialising compiled regexes and
 read-only mappings thirty thousand times.
+
+Progress on stderr counts records as they are emitted, in that same submission order, so
+one slow wheel at the head of the queue stalls the counts while the other workers keep
+scanning. The live view's clock keeps moving, redrawn by its own thread, so a stall reads
+as a slow wheel rather than a hung run.
 
 ## Versions in a record
 
