@@ -115,5 +115,6 @@ Two habits in that file are worth knowing before you read it:
 | [The loader lives in `ruleset_loader.py`, a sibling module, not a package](tooling.md#the-loader-lives-in-ruleset_loaderpy-a-sibling-module-not-a-package) | Accepted, and it changes no record |
 | [`Conventions`/`SonameInfo` and their `[conventions]` parser move to `conventions.py`](tooling.md#conventionssonameinfo-and-their-conventions-parser-move-to-conventionspy) | Accepted, and it changes no record |
 | [`binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions](tooling.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions) | Accepted |
+| [The cross-rule coherence checks live in `ruleset_coherence.py`](tooling.md#the-cross-rule-coherence-checks-live-in-ruleset_coherencepy) | Accepted, and it changes no record |
 | [`binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader](tooling.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader) | Accepted |
 | [The HTML report embeds records and renders them in the browser](tooling.md#the-html-report-embeds-records-and-renders-them-in-the-browser) | Accepted |

@@ -382,7 +382,7 @@ def _declared_by_sbom(
     raw string. That keeps this field and that finding from ever disagreeing about the
     same string -- the field cannot move on a component the record carries no finding
     for. That agreement holds only because
-    `ruleset_loader._validate_sbom_component_coverage` refuses to load a ruleset whose
+    `ruleset_coherence.validate_sbom_component_coverage` refuses to load a ruleset whose
     `sbom_component` rules, taken together, do not cover both tables; this function
     assumes that check already ran.
 
