@@ -41,6 +41,7 @@ timestamps, hostnames or user names appear in any field.
 | `binaries` | array | Per-object native evidence. |
 | `findings` | array | Rules that matched. |
 | `verdict` | object | The classification. |
+| `crypto` | object | The library/family inventory, derived from `findings` and `verdict.conditions`. |
 | `errors` | array | Non-fatal failures. **A non-empty array means part of the wheel was not examined.** The converse does not hold: several causes record no error, such as a stripped Mach-O or a single import bound by ordinal, and they set `partial_analysis` and a `partial_reasons` token without recording one. Recording no error is not the same as carrying no verdict: only the latter is marked in the reason table below, and every other cause still makes the wheel `OPAQUE`. |
 | `errors_truncated` | bool | True when the wheel produced more errors than fit in `errors`, so it is capped -- a wheel that hits the same recordable failure on thousands of members cannot produce an unbounded record. One representative error per `(stage, kind)` pair is kept before the rest, so a wheel drowning in one kind of failure cannot crowd a different, rarer one out. |
 
@@ -191,6 +192,9 @@ One entry per **rule and subject**, not per occurrence.
 | `severity` | `high` / `medium` / `low` / `info`. **Strength of the evidence, not a compatibility judgement.** |
 | `category`, `layer`, `confidence` | Classification, source layer, and how sure we are the match means what we think. |
 | `verdict` | The class this finding pushes the wheel into, or `null` for informational findings. |
+| `relation` | What would have to change for this finding to go away: `not_specified`, `restricted`, `outside_module`, `boundary_unresolved`, `runtime_refusal`, `policy_bypass`, `use_unresolved`, or `null` for a finding with no relation -- always paired with an empty `basis`. |
+| `basis` | The standards that say so, as ids from the ruleset's `[[standard]]` table. Empty exactly when `relation` is `null`. |
+| `family` | What kind of primitive this finding is evidence of, independent of the FIPS lens: `hash`, `checksum`, `block_cipher`, `stream_cipher`, `aead`, `mac`, `kdf`, `password_hash`, `signature`, `key_agreement`, `kem`, `drbg`, `entropy`, `tls`, `ssh`, `trust_store`, `library`, or `null` when not applicable. |
 | `occurrences` | Number of **distinct locations**. Two calls on one line count once. |
 | `truncated` | The `locations` list was capped; `occurrences` still holds the full count. |
 | `locations[]` | `{path, line, evidence}`. `line` is `null` for non-source findings. `evidence` is the literal matched text, printable ASCII, capped. A `path` naming a native object is not *guaranteed* to appear in `binaries[]`, though `binaries[]` keeps every object a finding references before it keeps anything else: only when findings alone name more distinct `(rule_id, subject)` groups than `artifacts.binaries_truncated`'s cap allows can one be left out, while the object, and this finding, were still produced from reading it in full. See [`artifacts`](#artifacts) above. |
@@ -201,6 +205,7 @@ One entry per **rule and subject**, not per occurrence.
 |---|---|
 | `class` | The highest-precedence class that fired. Always equals `classes[0]`. |
 | `classes` | **Every** class that fired, in precedence order. A wheel can be more than one thing. |
+| `relations` | Every `relation` a contributing finding cited, sorted -- no precedence order the way `classes` has one. |
 | `rule_ids`, `reasons` | Which rules produced the class, and a one-line reason each. |
 | `conditions` | Resolved conditions, keyed `<library>_linkage`. |
 | `needs_human_review` | `false` only when nothing was found and nothing failed. |
@@ -250,7 +255,7 @@ Other libraries appear as `<name>_linkage` when they have evidence.
 
 | Class | Meaning |
 |---|---|
-| `NON_APPROVED_CRYPTO` | Implements or bundles a non-FIPS-approved primitive. |
+| `NON_APPROVED_CRYPTO` | Implements or bundles cryptography that no validated module provides: a primitive no approved standard specifies, or an approved algorithm outside any validated module. |
 | `FIPS_BREAKING` | Will raise at runtime under FIPS-enforcing mode. |
 | `CONDITIONAL` | Approved only under a stated condition; read `conditions`. |
 | `CONTEXT_DEPENDENT` | Non-approved primitive that may be a non-security use. |
@@ -259,6 +264,19 @@ Other libraries appear as `<name>_linkage` when they have evidence.
 
 Listed in precedence order, which lives in the ruleset's `[verdict] precedence` and can be
 reordered there, except `NO_CRYPTO_DETECTED`, which the loader holds last.
+
+## `crypto`
+
+The library/family inventory: every primitive family a finding was evidence of, and every
+library whose linkage resolved to something. Derived from `findings[].family` and
+`verdict.conditions` rather than a separate pass, so it can never disagree with either -- a
+library's posture is `none` exactly when it is left out of `libraries`, which is what gives a
+`NO_CRYPTO_DETECTED` wheel a genuinely empty inventory.
+
+| Field | Meaning |
+|---|---|
+| `families` | Every `findings[].family`, sorted, deduplicated, with `null` skipped. |
+| `libraries[]` | `{name, linkage}` for every `<library>_linkage` key in `verdict.conditions` whose value is not `none`, sorted by `name`. `linkage` is `system`, `bundled`, `static`, `mixed` or `unknown` -- the same values `conditions.openssl_linkage` takes, minus `none`. |
 
 ## `errors`
 

@@ -950,7 +950,7 @@ def test_the_schema_matches_what_the_scanner_actually_emits(
     record = read_records(out)[0]
 
     assert set(record) == set(schema["required"])
-    for section in ("tool", "wheel", "artifacts", "verdict"):
+    for section in ("tool", "wheel", "artifacts", "verdict", "crypto"):
         assert set(record[section]) == set(schema["properties"][section]["required"]), section
 
     # The arrays too. Checking only the object sections let a key be dropped from
@@ -960,6 +960,12 @@ def test_the_schema_matches_what_the_scanner_actually_emits(
     required = set(schema["properties"]["binaries"]["items"]["required"])
     for binary in binaries:
         assert required <= set(binary)
+
+    findings = [finding for found in read_records(out) for finding in found["findings"]]
+    assert findings, "the corpus must carry a finding or this asserts nothing"
+    required = set(schema["properties"]["findings"]["items"]["required"])
+    for finding in findings:
+        assert required <= set(finding)
 
 
 def test_docs_output_schema_page_lists_every_partial_reason() -> None:
