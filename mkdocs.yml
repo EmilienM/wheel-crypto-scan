@@ -1,8 +1,8 @@
 site_name: wheel-crypto-scan
 site_description: >-
   Deterministic crypto inventory for Python wheels, with FIPS compatibility as one
-  lens over it. It gathers evidence; it does not decide FIPS compatibility.
-site_url: https://emilienm.github.io/wheel-crypto-scan/
+  lens over it. It gathers evidence; it does not decide FIPS compliance.
+site_url: https://my1.fr/wheel-crypto-scan/
 repo_url: https://github.com/EmilienM/wheel-crypto-scan
 repo_name: EmilienM/wheel-crypto-scan
 edit_uri: edit/main/docs/
@@ -69,20 +69,22 @@ nav:
   - Using it:
       - Install and run: usage.md
       - Output schema: output-schema.md
+      - Schema contract (full text): SCHEMA.md
       - The ruleset: ruleset.md
   - Internals:
       - Architecture: architecture.md
       - Invariants: invariants.md
       - Vocabularies: reference/vocabularies.md
   - Design:
-      - Overview: design/index.md
-      - Determinism and the Python layer: design/interpreter.md
-      - Evidence, opacity and verdicts: design/opacity.md
-      - OpenSSL linkage: design/linkage.md
-      - Policy data: design/policy.md
-      - Caps, budgets and record size: design/limits.md
-      - ELF: design/elf.md
-      - Mach-O: design/macho.md
-      - PE: design/pe.md
-      - Scanning, caching and layout: design/tooling.md
+      - Overview: design-summaries/index.md
+      - Full ledger: DESIGN.md
+      - Determinism and the Python layer: design-summaries/interpreter.md
+      - Evidence, opacity and verdicts: design-summaries/opacity.md
+      - OpenSSL linkage: design-summaries/linkage.md
+      - Policy data: design-summaries/policy.md
+      - Caps, budgets and record size: design-summaries/limits.md
+      - ELF: design-summaries/elf.md
+      - Mach-O: design-summaries/macho.md
+      - PE: design-summaries/pe.md
+      - Scanning, caching and layout: design-summaries/tooling.md
   - Contributing: contributing.md

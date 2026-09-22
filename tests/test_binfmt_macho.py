@@ -343,7 +343,7 @@ def test_a_fat_binary_whose_every_slice_read_cleanly_is_not_partial() -> None:
     Reading only the first slice would leave every fat object partial, and a
     universal2 wheel with no crypto in it would come out `OPAQUE` rather than
     `NO_CRYPTO_DETECTED`, putting every crypto-free universal2 wheel in the index on
-    the README's `OPAQUE` triage list.
+    docs/index.md's `OPAQUE` triage list.
     """
     slice_a = MachOBuilder(id_dylib="libfoo.dylib", symbols=(IMPORTED_OPENSSL,)).build()
     slice_b = MachOBuilder(

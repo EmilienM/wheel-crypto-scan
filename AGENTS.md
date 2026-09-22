@@ -4,7 +4,7 @@ Static analyser that reports crypto-relevant **evidence** inside Python wheels: 
 primitive families and libraries are present, how they are linked, and what the Python
 code does with TLS, hashing and randomness. FIPS compatibility is one lens over that
 evidence, not the whole of it -- whether a FIPS-enforcing host can run the wheel's
-crypto as shipped. It gathers evidence; it does not decide FIPS compatibility. Read
+crypto as shipped. It gathers evidence; it does not decide FIPS compliance. Read
 `README.md` for what it detects, `SCHEMA.md` for the output contract, and `DESIGN.md`
 for the design calls that cost something, including the holes left open on purpose and
 the measurement behind each one.
@@ -69,6 +69,8 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `evidence.py` | What extractors may say: the record dataclasses, and the `FORMAT_*`, `STAGE_*`, `BINDING_*` and `PARTIAL_REASONS` vocabularies |
 | `errors.py` | The `ScanError` kinds, which the ruleset can match on |
 | `report.py`, `data/report.html` | Human views of the records: the Markdown table and the self-contained HTML page |
+| `docs/SCHEMA.md` | The output contract: every record field, versioned. `docs/output-schema.md` is its prose rendering on the site |
+| `docs/DESIGN.md` | The append-only design-decision ledger: what was accepted, what was rejected, and why. `docs/design-summaries/` summarises it by subsystem |
 
 ## Working rules
 
@@ -139,7 +141,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 ## Commands
 
 ```bash
-uvx --with tox-uv tox              # py311-py314, ruff lint and format, pylint
+uvx --with tox-uv tox              # py311-py314, ruff lint and format, pylint, docs build
 uvx --with tox-uv tox -e lint      # ruff check --select=E,F,W,PLC0415, then ruff format --check
 uvx --with tox-uv tox -e format    # apply formatting
 uvx --with tox-uv tox -e real      # opt-in, needs real wheels in WCS_CORPUS_DIR

@@ -26,7 +26,7 @@ maps to a rule.
 One carve-out: a `partial_reasons` cause that is a linker convention rather than a failure
 is recorded without a verdict. Today that is one cause, an ordinal import, and only because
 the dependency name survives it — when it is a name the ruleset knows, which
-[the design notes](design/opacity.md#a-routine-cause-is-recorded-but-does-not-make-a-wheel-opaque)
+[the design notes](design-summaries/opacity.md#a-routine-cause-is-recorded-but-does-not-make-a-wheel-opaque)
 measure rather than assume.
 
 An ordinal *export* is not on that list: it loses a definition, and a definition is how

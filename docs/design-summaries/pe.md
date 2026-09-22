@@ -83,4 +83,4 @@ format rules either shape out, so this is a bet made in the direction the eviden
 less: MSVC hot/cold splitting is default-on compiler behaviour for any MSVC-built wrapper, while
 a CPython extension forwarding into a dotted native-shim family is a narrower shape.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-forwarder-resolves-the-dependency-it-forwards-to-not-just-its-own-name)
+[Full entry](../DESIGN.md#a-forwarder-resolves-the-dependency-it-forwards-to-not-just-its-own-name)

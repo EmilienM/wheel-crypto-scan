@@ -60,7 +60,7 @@ found gets written down. `max_locations_per_finding`, `max_symbols_per_binary`,
 Lists are sorted before truncation, so truncation stays deterministic, and the sample is
 chosen so that a cap bounds the record without silencing a kind of evidence. The loader
 refuses limits too small to hold one of every key the ruleset itself declares. See
-[Caps, budgets and record size](design/limits.md).
+[Caps, budgets and record size](design-summaries/limits.md).
 
 ### `[conventions]`
 
@@ -87,7 +87,7 @@ later, makes the wheel's answer `unknown` rather than `none`.
 It excludes rather than includes on purpose: a cause added later costs the answer until
 someone decides otherwise, which is the safe direction. One coherence rule is enforced at
 load time rather than left to prose: every cause a verdict-less rule claims must appear here
-too. See [Linkage reads a second split over the same vocabulary](design/opacity.md#linkage-reads-a-second-split-over-the-same-vocabulary).
+too. See [Linkage reads a second split over the same vocabulary](design-summaries/opacity.md#linkage-reads-a-second-split-over-the-same-vocabulary).
 
 ### `[[standard]]`
 
@@ -223,7 +223,7 @@ and its suppressor in the same document reports only the suppressing one's findi
 and binary evidence never suppress each other, because they never share a path -- an SBOM
 naming a crate beside a *binary* object carrying its suppressor still reports both (see
 [Suppression is keyed on rule, subject and
-object](design/policy.md#suppression-is-keyed-on-rule-subject-and-object) for why
+object](design-summaries/policy.md#suppression-is-keyed-on-rule-subject-and-object) for why
 that is accepted rather than fixed). A rule's own `tables` order is what decides which
 entry rates a `sbom_component` match, except for a `pkg:cargo/...` purl: when the rule
 lists `rust_crate`, that table is tried first for such a component, ahead of wherever

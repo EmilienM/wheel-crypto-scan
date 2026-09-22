@@ -7,7 +7,7 @@ a package index's consumers get, wheel by wheel.
 
 FIPS compatibility is one lens over that account, not its whole purpose: whether a
 FIPS-enforcing host can run the wheel's crypto as shipped, so consuming teams can gauge
-FIPS risk before they ship it. It gathers evidence. It does not decide FIPS compatibility.
+FIPS risk before they ship it. It gathers evidence. It does not decide FIPS compliance.
 
 ## The question the FIPS lens answers
 
@@ -99,7 +99,7 @@ Windows normally binds `WS2_32`. That is recorded in `partial_reasons` but does 
 the wheel `OPAQUE`, because the DLL it names survives in `needed` and is matched there.
 An *export* bound by ordinal is not the same trade and is not carved out: it loses a
 definition, which is how a statically linked copy is recognised, and it names no
-dependency to fall back on. [Evidence, opacity and verdicts](design/opacity.md) says
+dependency to fall back on. [Evidence, opacity and verdicts](design-summaries/opacity.md) says
 what both cost.
 
 ## Determinism
@@ -114,7 +114,7 @@ so a wheel using syntax newer than the scanner's interpreter will not parse. **P
 interpreter** if you need output comparable across hosts. That difference is never
 silently favourable: unparsed files are counted in `artifacts.py_files_unparsed`, and a
 wheel whose every source file failed reports `source_available: false` and comes out
-`OPAQUE`, not clean. [Determinism and the Python layer](design/interpreter.md) records
+`OPAQUE`, not clean. [Determinism and the Python layer](design-summaries/interpreter.md) records
 why this is documented rather than fixed.
 
 ## Performance

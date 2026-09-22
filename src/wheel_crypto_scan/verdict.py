@@ -1,10 +1,12 @@
 """Turns findings into a verdict class, its reasons and its conditions.
 
 Two rules govern this module. It never emits a passing class: the taxonomy has no
-"compliant" and no "compatible", and cannot acquire either, because the tool gathers
-evidence and humans decide FIPS compatibility. And it never throws away a class: a wheel
-that both bundles OpenSSL and calls `hashlib.md5()` reports one headline class and keeps the
-rest in `classes`, so a consumer filtering on a single field is not silently misled.
+"compliant" and no "compatible", and cannot acquire either, because absence of evidence is
+not evidence of absence -- nothing the tool reads rules out crypto it did not see -- and
+FIPS compliance, a human's judgement about a deployment, is out of scope regardless. And it
+never throws away a class: a wheel that both bundles OpenSSL and calls `hashlib.md5()`
+reports one headline class and keeps the rest in `classes`, so a consumer filtering on a
+single field is not silently misled.
 """
 
 from __future__ import annotations

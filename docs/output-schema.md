@@ -91,7 +91,7 @@ reachable only through the one symlink naming it), so one representative per
 the same underlying archive errors for a member-refusal wheel, but capped separately
 and can disagree on how many of those events they still list; `skipped_truncated` and
 `errors_truncated` must both be read to know whether either is complete. See
-[`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix](design/limits.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix).
+[`skipped` and `symlinks` reuse `caps.cap`, not a plain prefix](design-summaries/limits.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix).
 
 `py_files_unparsed` counts source files that would not parse. `binaries_truncated` is
 true when the wheel has more native objects than fit in the `extensions` list above
@@ -112,7 +112,7 @@ either array: only when findings alone name more distinct `(rule_id, subject)` g
 the cap allows, in which case the groups that sort last by `(rule_id, subject)` lose out.
 `findings[]` where `rule_id == "WHEEL_BINARIES_TRUNCATED"` names how many objects were
 evaluated in total when this happens. See
-[`binaries[]` keeps what a finding points at, before filling the rest](design/limits.md#binaries-keeps-what-a-finding-points-at-before-filling-the-rest).
+[`binaries[]` keeps what a finding points at, before filling the rest](design-summaries/limits.md#binaries-keeps-what-a-finding-points-at-before-filling-the-rest).
 
 `source_available` is `false` when the wheel ships no readable Python at all: bytecode
 without source, or source that would not parse. **When it is false, the absence of Python
@@ -128,7 +128,7 @@ For a universal Mach-O that is one entry for the member rather than one per
 architecture, because the slices are merged. `matched_symbols` can therefore carry one
 name as both `imported` and `defined`, which no single slice can be, when the
 architectures disagree; `machine`, `bits` and `endian` describe the first slice alone.
-[A universal binary is one record, and its slices are merged](design/macho.md#a-universal-binary-is-one-record-and-its-slices-are-merged)
+[A universal binary is one record, and its slices are merged](design-summaries/macho.md#a-universal-binary-is-one-record-and-its-slices-are-merged)
 records why they are merged anyway.
 
 | Field | Meaning |

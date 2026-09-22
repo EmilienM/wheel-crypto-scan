@@ -86,7 +86,7 @@ Not every record is cached. A record carrying a failure kind this scanner cannot
 is deterministic for the wheel's own bytes is neither written to the cache nor treated as
 already done by `--resume`, because such a record may reflect a condition (memory pressure,
 a transient I/O error) that is already gone by the time anyone reads it back.
-[A record produced without reading the wheel is never cached](design/tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached)
+[A record produced without reading the wheel is never cached](design-summaries/tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached)
 has the reasoning and the measured cost.
 
 `--resume` reads complete records back out of `--output`. Anything that does not parse, such

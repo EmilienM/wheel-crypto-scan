@@ -1049,7 +1049,7 @@ def test_docs_output_schema_page_tables_match_schema_md() -> None:
     on the page must match SCHEMA.md once its dash and link rendering are normalised
     away. SCHEMA.md is the contract: edit it first, then copy the changed rows."""
     root = Path(__file__).parent.parent
-    schema = _schema_table_rows(root / "SCHEMA.md")
+    schema = _schema_table_rows(root / "docs" / "SCHEMA.md")
     page = _schema_table_rows(root / "docs" / "output-schema.md")
 
     assert any(row.startswith("| `elf_symtab_unread` |") for row in schema)
@@ -1153,7 +1153,7 @@ def test_docs_output_schema_page_prose_matches_schema_md() -> None:
     paragraph to compare against, and the pairs in `_PROSE_ADAPTED_PAIRS`, where
     either side vanishing while the other stays is still a failure."""
     root = Path(__file__).parent.parent
-    schema = _schema_prose_paragraphs(root / "SCHEMA.md")
+    schema = _schema_prose_paragraphs(root / "docs" / "SCHEMA.md")
     page = _schema_prose_paragraphs(root / "docs" / "output-schema.md")
 
     assert any("py_files_unparsed" in paragraph for paragraph in schema)

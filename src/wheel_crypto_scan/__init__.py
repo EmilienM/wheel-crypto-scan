@@ -1,6 +1,6 @@
 """Deterministic crypto inventory for Python wheels, with FIPS compatibility as one lens over it.
 
-The tool gathers crypto-relevant evidence statically and never decides FIPS compatibility.
+The tool gathers crypto-relevant evidence statically and never decides FIPS compliance.
 See SCHEMA.md for the output contract and data/ruleset.toml for the rules.
 """
 

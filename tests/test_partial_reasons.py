@@ -51,6 +51,7 @@ from wheel_crypto_scan.linkage import resolve_linkage
 from wheel_crypto_scan.ruleset_loader import load_ruleset, parse_ruleset, routine_reasons
 
 PATTERNS = load_ruleset().compile_patterns().binary
+SCHEMA_MD = Path(__file__).parent.parent / "docs" / "SCHEMA.md"
 
 
 def _read(data: bytes, path: str = "obj"):
@@ -516,7 +517,7 @@ def test_every_cause_that_records_no_error_says_so_in_the_schema() -> None:
     assert not errors and ev.partial_reasons == (evidence.PARTIAL_STRINGS_BYTES_UNREAD,)
     silent.update(ev.partial_reasons)
     assert silent, "no cause was reached without an error"
-    documented = Path("SCHEMA.md").read_text(encoding="utf-8").splitlines()
+    documented = SCHEMA_MD.read_text(encoding="utf-8").splitlines()
     for token in sorted(silent - noisy):
         row = next(ln for ln in documented if ln.startswith(f"| `{token}` |"))
         assert "records no error" in row, token
@@ -581,7 +582,7 @@ def test_the_schema_documents_every_reason_it_can_emit() -> None:
     for token in sorted(evidence.PARTIAL_REASONS):
         assert token in described, token
 
-    documented = Path("SCHEMA.md").read_text(encoding="utf-8")
+    documented = SCHEMA_MD.read_text(encoding="utf-8")
     for token in sorted(evidence.PARTIAL_REASONS):
         assert f"`{token}`" in documented, token
 
@@ -986,14 +987,14 @@ def test_the_documented_linkage_exemptions_are_the_ones_the_ruleset_claims() -> 
     """
     excluded = load_ruleset().linkage_policy.exclude_reasons
     assert excluded, "the ruleset exempts no cause from costing linkage an answer"
-    documented = Path("SCHEMA.md").read_text(encoding="utf-8").splitlines()
+    documented = SCHEMA_MD.read_text(encoding="utf-8").splitlines()
     for token in sorted(evidence.PARTIAL_REASONS):
         row = next(ln for ln in documented if ln.startswith(f"| `{token}` |"))
         assert ("Does not cost the linkage answer" in row) is (token in excluded), token
 
 
 def test_exactly_one_cause_is_recorded_without_a_verdict() -> None:
-    """`AGENTS.md` and `README.md` both state this count in prose and no test read it.
+    """`AGENTS.md` and `docs/index.md` both state this count in prose and no test read it.
 
     A second routine cause could be added, `SCHEMA.md` updated, the linkage exact-set
     literal updated, and the whole suite stays green while the two files an agent reads
@@ -1005,7 +1006,7 @@ def test_exactly_one_cause_is_recorded_without_a_verdict() -> None:
     """
     routine = routine_reasons(load_ruleset().rules)
     assert routine == frozenset({evidence.PARTIAL_PE_ORDINAL_IMPORT}), (
-        "the carve-out list changed; AGENTS.md's invariant and README.md's "
+        "the carve-out list changed; AGENTS.md's invariant and docs/index.md's "
         "'One carve-out' paragraph both state its membership in prose"
     )
 
@@ -1072,7 +1073,7 @@ def test_the_documented_routine_causes_are_the_ones_the_ruleset_claims() -> None
     ruleset = load_ruleset()
     routine = routine_reasons(ruleset.rules)
     assert routine, "no rule claims any routine cause"
-    documented = Path("SCHEMA.md").read_text(encoding="utf-8").splitlines()
+    documented = SCHEMA_MD.read_text(encoding="utf-8").splitlines()
     for token in sorted(evidence.PARTIAL_REASONS):
         row = next(ln for ln in documented if ln.startswith(f"| `{token}` |"))
         assert ("BIN_PARTIAL_ROUTINE" in row) is (token in routine), token

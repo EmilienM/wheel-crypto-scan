@@ -50,7 +50,7 @@ from ..wheelfile import WheelArchive
 # A note on determinism. `ast.parse` follows the grammar of the interpreter running it,
 # and `feature_version` only gates a subset of it, so a wheel using syntax newer than
 # the running interpreter parses on one version and not another. Pinning the scanner's
-# interpreter is what makes output byte-identical across hosts; see README.
+# interpreter is what makes output byte-identical across hosts; see docs/index.md.
 #
 # What matters more is that the difference is never silently favourable. A file that
 # fails to parse is counted in `artifacts.py_files_unparsed`, and a wheel whose every
