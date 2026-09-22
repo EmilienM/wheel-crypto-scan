@@ -6294,3 +6294,177 @@ binaries for evidence that came from the wheel's SBOM.
   consumer might need for a real investigation is already in the JSONL; leaving any of
   it out of the page would just send the reader back to the JSONL to finish the job the
   report exists to shortcut.
+
+## The ruleset cites a standard and the record carries only the pointer
+
+**Accepted, and it changes records.**
+
+A finding's `basis` is a list of `[[standard]]` ids -- `FIPS-140-3`,
+`SP-800-131A-r2` -- and nothing else. `title`, `edition`, `status`, `successor`,
+`sunset` and `why` never reach a scan record: `standards.py` parses them once, into
+the loaded `Ruleset`, and `wheel-crypto-scan rules --format json` and the HTML and
+Markdown reports read them back out of that same `Ruleset` for display, on demand,
+rather than the scan record duplicating them into every wheel that cites the
+standard.
+
+**Why the pointer, not the citation.** A scan record describes one wheel at one point
+in time; a standard's edition and status describe the state of a NIST/FIPS
+publication, which moves on its own schedule and has nothing to do with when any
+particular wheel was scanned. Carrying `edition`/`status` on the finding would mean
+either re-scanning every already-produced record when a standard's status changes --
+SP 800-131A moving from `current` to `revision_planned`, say -- or letting two records
+for the same wheel, scanned on either side of that change, disagree about a fact that
+has nothing to do with the wheel. An id is stable in a way a status is not, so the
+record holds only the part that is.
+
+**Why a `withdrawn` standard fails the load, not just a lookup.** `basis` naming a
+standard whose `status` is `draft`, `planned` or `withdrawn` is refused by
+`ruleset_coherence.check_basis_targets_a_live_standard` at load time, before any wheel
+is scanned. The alternative -- let the ruleset load and let the citation stand -- would
+mean every finding citing that entry is quietly citing text that no longer governs
+anything, or does not govern anything yet, with nothing in the record itself to say
+so: the id looks exactly as authoritative as a live one. Refusing it at load time makes
+updating a `[[standard]]`'s `status` (when a revision publishes, or a standard is
+formally withdrawn) the trigger that forces every `basis` naming it to be re-pointed
+at its `successor` before the ruleset can load again, rather than a fact that silently
+goes stale in already-shipped rules.
+
+**What was rejected.** Carrying `edition` and `status` on the finding alongside the
+id, so a reader would not need the ruleset to interpret `basis`. Rejected because it
+reintroduces exactly the staleness the pointer design avoids: a record embeds the
+ruleset's state at scan time, and a consumer comparing two records scanned months
+apart would see the same standard described two different ways for reasons that have
+nothing to do with either wheel.
+
+## `relation` and the verdict class are checked against each other at load time
+
+**Accepted.**
+
+`RELATION_CLASSES` in `ruleset.py` is a closed table: each of the seven `relation`
+values names the verdict classes it is consistent with, and
+`ruleset_coherence.check_relation_matches_verdict` refuses, at load time, any rule or
+override-bearing entry whose `(verdict, relation)` pair is not one of those rows.
+`restricted` is the one relation with two rows: `NON_APPROVED_CRYPTO` when the wheel
+implements the primitive itself, `CONTEXT_DEPENDENT` when it defers to the host module
+and only the use is in question -- `BIN_OWN_SHA1_IMPL` and `PY_RESTRICTED_HASH_CALL`
+are the two, differing in exactly that way. No relation names `OPAQUE`, since
+unreadability has no standard to cite, so a verdict of `OPAQUE` paired with any
+relation is refused the same way.
+
+**Why a load error, not a test over the shipped ruleset.** A `(verdict, relation)`
+pair that disagrees with itself is a rule stating two facts about the same finding --
+what would fix it, and how bad leaving it unfixed is -- that contradict each other:
+`runtime_refusal` (raises at runtime) beside `CONDITIONAL` (approved under a stated
+condition) would tell a consumer both that the wheel crashes under FIPS mode and that
+it is fine if some condition holds. `tests/test_ruleset_data.py` already checks the
+*shipped* ruleset's own choices are sound data, but a check that ran only there would
+leave `--ruleset PATH` unguarded: nothing would stop a hand-edited or generated
+alternative ruleset from loading with an internally contradictory rule, since the
+inconsistency is a property of one rule's own two fields, checkable the moment the
+rule is parsed, not something that needs the whole corpus of shipped rules to notice.
+Refusing it in `ruleset_coherence.py` -- run against every `Ruleset` `load_ruleset`
+builds, not only the one shipped in `data/ruleset.toml` -- means every consumer of
+`--ruleset` gets the same guarantee the maintainers do.
+
+**Entries with no owning rule.** A `crypto_distribution`/`crypto_library`/
+`rust_crate`/`python_module` entry can state its own `verdict`/`relation`, fall back
+to an owning rule's, or -- for `crypto_library` today, which no rule names as its
+`bundled_library` default and none names by `rule =` -- have no owner to fall back to
+at all. `check_relation_matches_verdict` still closes the pair for that shape: a
+`relation` with no `verdict` anywhere to check it against is refused outright, since a
+relation names what would fix a finding against some class, and one that can never be
+checked against any class is not a citation of anything. A `verdict` with no
+`relation` of its own is checked against every rule that could resolve as the entry's
+owner at scan time -- `engine._match_bundled_library` lets any `bundled_library` rule
+read an unowned entry -- rather than being skipped for lack of one fixed rule to ask.
+
+**What was rejected.** Enforcing the pair only in `tests/test_ruleset_data.py`, over
+the shipped ruleset's own data. Cheaper to write, and it is where the *totality*
+requirement lives instead (every verdict-bearing rule and effective entry carries a
+relation and basis) -- but totality and compatibility are different questions, and
+only the second is a property `--ruleset` needs enforced for every ruleset, not just
+the one this repository ships.
+
+## `family` is the FIPS-agnostic axis; `category` stays the FIPS one
+
+**Accepted, and it changes records.**
+
+`category` already existed on every rule -- `non-approved-impl`, `fips-breaking`,
+`trust-policy`, `crypto-wrapper` and twenty more -- and reads as a FIPS-lens
+classification of *why* a rule fires: which kind of FIPS concern it is. `family` is a
+second, closed vocabulary (`FAMILIES` in `ruleset.py`): `hash`, `block_cipher`,
+`signature`, `key_agreement`, `library` and the rest, describing what primitive a
+finding is evidence of, with no FIPS content in it at all. It is carried on a rule, on
+an entry in the four override-bearing tables, and on every
+`[[symbol_group]]`/`[[string_group]]` -- the two tables that carry no `category` of
+their own, since a symbol or string group is not itself a rule and states no verdict
+-- so the crypto inventory `crypto.families` derives from can be built without
+touching a FIPS class at all: a `NO_CRYPTO_DETECTED` wheel and an `OPAQUE` one both
+have an empty `families` list for the same reason, not because either was asked a
+FIPS question and answered no.
+
+**Why `category` was not reused.** Widening `category`'s existing values to also
+answer "what kind of primitive is this" was rejected: `category` names a rule's
+*FIPS* story, and a rule that delegates rather than embodying one primitive itself --
+`DIST_SYSTEM_CRYPTO_WRAPPER`'s `crypto-wrapper` category, for a distribution that
+wraps a system crypto library without implementing anything -- carries no `family` at
+all. There is no `hash`-shaped or `block_cipher`-shaped value in `category` to widen
+toward, only a FIPS-lens classification that happens to correlate with a family for
+most rules but is not the same question. Reading the inventory off `category` would
+mean reading the FIPS lens to answer a question that has nothing to do with it, and
+`crypto.families` would inherit `category`'s open-ended, per-rule-author vocabulary
+rather than a small closed one a report's grouping can rely on.
+
+**What it costs.** Every verdict-bearing rule and override-bearing entry carries two
+classification fields that can drift apart if a rule's `family` is filled in
+carelessly: nothing ties one rule's `category` to its `family`, since the two
+vocabularies are independent by design, and the loader has no way to catch a `family`
+that reads wrong for what a rule actually matches. `tests/test_ruleset_data.py` holds
+the shipped ruleset's own choices to a manual review instead of a load-time rule.
+
+## SHA-1 is restricted, not refused
+
+**Accepted, and it changes verdicts.**
+
+`[conventions]` splits Python's weak hash constructors into two lists rather than
+one: `refused_hash_algorithms` (`md4`, `md5`, `md5-sha1`, `ripemd160`, `sm3`,
+`whirlpool`) and `restricted_hash_algorithms` (`sha1` alone), with
+`Conventions.weak_hash_algorithms` deriving their union for the one rule that still
+wants "either list" -- `PY_WEAK_HASH_CALL_MARKED`, which reads `algorithm_list =
+"weak"` because a caller who declared `usedforsecurity=False` gets the same degraded
+severity whichever list their hash came from. A `py_call` match's own `algorithm_list`
+takes `"refused"`, `"restricted"` or `"weak"`. `PY_WEAK_HASH_CALL` matches only the
+refused list and reads `runtime_refusal`/`FIPS_BREAKING`: `hashlib.md5()` and the rest
+raise on a FIPS-enforcing host unless the caller passes `usedforsecurity=False`.
+`PY_RESTRICTED_HASH_CALL` matches `sha1` alone and reads `restricted`/
+`CONTEXT_DEPENDENT` instead: it does not raise. The binary side carries the same
+split -- `BIN_OWN_WEAK_HASH_IMPL` for a private implementation of the refused
+algorithms and `BIN_OWN_SHA1_IMPL` for one of SHA-1 alone, both `NON_APPROVED_CRYPTO`,
+`restricted`'s other row for a wheel that implements the primitive itself rather than
+deferring to a host module.
+
+**Why the split.** SHA-1 and the other five algorithms fail two different ways once
+FIPS mode is enforcing. `providers/fips/fipsprov.c`'s `fips_digests[]` table -- the
+OpenSSL FIPS provider's own list of what it will fetch -- registers `SHA1` with its
+default, approved properties beside SHA-2/SHA-3, while MD4, MD5, the combined
+MD5-SHA1 TLS digest, RIPEMD-160, SM3 and Whirlpool are absent from it entirely. A
+provider fetch for an absent digest fails, which is what makes `hashlib.md5()` raise
+under FIPS mode with no explicit `usedforsecurity=False`; a fetch for `SHA1` succeeds,
+so `hashlib.sha1()` returns a working digest either way. One list reading "refused"
+for all six would have `PY_RESTRICTED_HASH_CALL`'s own algorithm predicting a crash
+that never happens on a real FIPS-enforcing host. SP 800-131A Rev. 2 Table 8 gives the
+second half of why SHA-1 still gets its own class rather than folding into whichever
+list means "fine": it sets SHA-1 acceptable only for a non-digital-signature use that
+does not require collision resistance, disallowed for signature generation, with
+retirement announced for the end of 2030 -- a restriction a static call site cannot
+answer on its own, so `CONTEXT_DEPENDENT` sends it to a human rather than clearing it
+or refusing it outright.
+
+**The open residual.** The `fips_digests[]` registration is what the `why` text on
+both rules cites, not a live measurement: no host running with `fips=1` enforcing and
+OpenSSL's FIPS provider active was available during this work, so `hashlib.sha1()`'s
+and `hashlib.md5()`'s actual behaviour under FIPS enforcement was never run and
+observed directly, only read out of the provider's own source. This is accepted as a
+documented gap, not papered over by inference: the source registration is the same
+claim a live measurement would confirm, and revisiting it needs nothing more than the
+host this work did not have.
