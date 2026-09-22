@@ -436,31 +436,31 @@ why = "BLAKE3 is a fast general-purpose hash. Not FIPS-approved, and frequently 
 [[crypto_distribution]]
 name = "xxhash"
 rule = "DIST_NON_CRYPTO_HASH"
-family = "hash"
+family = "checksum"
 why = "Non-cryptographic hash used for checksums, deduplication and hash tables. Flagged so a human can confirm it is not doing security work."
 
 [[crypto_distribution]]
 name = "murmurhash"
 rule = "DIST_NON_CRYPTO_HASH"
-family = "hash"
+family = "checksum"
 why = "Non-cryptographic hash, common in NLP and ML feature hashing (spaCy pulls it in). Almost never a security use, but confirm."
 
 [[crypto_distribution]]
 name = "mmh3"
 rule = "DIST_NON_CRYPTO_HASH"
-family = "hash"
+family = "checksum"
 why = "MurmurHash3 binding. Same reasoning as murmurhash."
 
 [[crypto_distribution]]
 name = "cityhash"
 rule = "DIST_NON_CRYPTO_HASH"
-family = "hash"
+family = "checksum"
 why = "Non-cryptographic hash for hash tables and sharding."
 
 [[crypto_distribution]]
 name = "farmhash"
 rule = "DIST_NON_CRYPTO_HASH"
-family = "hash"
+family = "checksum"
 why = "Non-cryptographic hash, successor to cityhash."
 
 [[crypto_distribution]]
@@ -1106,14 +1106,14 @@ why = "BLAKE2 in Rust. Not approved, but most often used for checksums and conte
 name = "twox-hash"
 verdict = "CONTEXT_DEPENDENT"
 severity = "low"
-family = "hash"
+family = "checksum"
 why = "xxHash in Rust. A non-cryptographic hash used for checksums and hash tables, with no security claim to evaluate."
 
 [[rust_crate]]
 name = "ahash"
 verdict = "CONTEXT_DEPENDENT"
 severity = "low"
-family = "hash"
+family = "checksum"
 why = "Hash-table hasher. Not a security primitive, listed so it is visible rather than surprising."
 
 [[rust_crate]]
@@ -1249,21 +1249,21 @@ why = "BLAKE3, often a checksum rather than a security hash."
 name = "xxhash"
 severity = "low"
 verdict = "CONTEXT_DEPENDENT"
-family = "hash"
+family = "checksum"
 why = "xxHash from Python. A non-cryptographic hash used for checksums and deduplication, with no security claim to evaluate."
 
 [[python_module]]
 name = "murmurhash"
 severity = "low"
 verdict = "CONTEXT_DEPENDENT"
-family = "hash"
+family = "checksum"
 why = "Non-cryptographic hash, common in ML feature hashing."
 
 [[python_module]]
 name = "mmh3"
 severity = "low"
 verdict = "CONTEXT_DEPENDENT"
-family = "hash"
+family = "checksum"
 why = "MurmurHash3 from Python. Non-cryptographic, and in practice almost always feature hashing or sharding."
 
 
