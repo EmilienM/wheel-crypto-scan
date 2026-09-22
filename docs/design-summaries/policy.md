@@ -148,7 +148,7 @@ claimed, names underneath. A `vendor/` tree inside a git-checkout workspace memb
 unaffected, since `cargo_vendor_path_regex` matches on its own `vendor/` component
 regardless of what layout surrounds it.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#crates-are-read-from-every-cargo-source-layout-and-a-vendored-crate-has-no-version)
+[Full entry](../DESIGN.md#crates-are-read-from-every-cargo-source-layout-and-a-vendored-crate-has-no-version)
 
 ## A Go FIPS build is told from a stock one by its build settings
 
@@ -172,7 +172,7 @@ would make one record say two things — `markers: ["go_stock_crypto"]` beside a
 `BIN_GO_FIPS140`, from the same strings. A test holds the two lists equal.
 
 Full argument, with the measurements and what is deliberately left open:
-[`DESIGN.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md).
+[`DESIGN.md`](../DESIGN.md).
 
 ## A static OpenSSL's legacy primitives lead the headline
 
@@ -222,7 +222,7 @@ carries its own OpenSSL at all -- though not, on its own, which case produced th
 headline when a wheel carries both; the object's own `matched_symbols` is what tells
 them apart.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-static-openssls-legacy-primitives-lead-the-headline-the-linkage-condition-says-why)
+[Full entry](../DESIGN.md#a-static-openssls-legacy-primitives-lead-the-headline-the-linkage-condition-says-why)
 
 ## Suppression is keyed on rule, subject and object
 
@@ -251,7 +251,7 @@ non-cascading, and the loader refuses a `suppressed_by` cycle across rules and c
 including one closed by an ownerless crate, rather than silently dropping every member
 of one.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#suppression-is-keyed-on-rule-subject-and-object),
+[Full entry](../DESIGN.md#suppression-is-keyed-on-rule-subject-and-object),
 including why `aws-lc-sys` and `rustls` are not suppressed, and why the cross-source
 over-flag is accepted.
 
@@ -292,7 +292,7 @@ build once the symbol prefix is gone with it. An unstripped one still fires
 `BIN_AWS_LC_FIPS` but keeps `NON_APPROVED_CRYPTO`, because those two symbols are exactly
 what that class is defined to catch, condition or not.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix-not-its-name)
+[Full entry](../DESIGN.md#an-aws-lc-fips-build-is-told-from-a-stock-one-by-its-symbol-prefix-not-its-name)
 
 ## A BoringSSL FIPS module is told from a stock build by its integrity test
 
@@ -316,7 +316,7 @@ static object that carries neither marker still reads as stock `NON_APPROVED_CRY
 and an unstripped BoringCrypto binary keeps `NON_APPROVED_CRYPTO` in `classes` through
 its own primitives, unsuppressed for the same reason AWS-LC's are.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-boringssl-fips-module-is-told-from-a-stock-build-by-its-integrity-test-not-its-strings)
+[Full entry](../DESIGN.md#a-boringssl-fips-module-is-told-from-a-stock-build-by-its-integrity-test-not-its-strings)
 
 ## Every symbol group is read by a rule, or says it is evidence only
 
@@ -349,7 +349,7 @@ string groups instead, and AWS-LC keeps BoringSSL-named symbols, so a rule over 
 so a partially read object carrying a BLAKE symbol headlines `CONTEXT_DEPENDENT`
 instead of `OPAQUE`. An Argon2-only object moves further, to `NON_APPROVED_CRYPTO`.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#every-symbol-group-is-read-by-a-rule-or-says-it-is-evidence-only),
+[Full entry](../DESIGN.md#every-symbol-group-is-read-by-a-rule-or-says-it-is-evidence-only),
 including the measurement behind the `any` binding and why a `[[crypto_library]]`
 `symbol_group` on `argon2` was rejected.
 
@@ -378,7 +378,7 @@ reintroduces the staleness the pointer avoids: two records for the same wheel, s
 months apart, would describe the same standard two different ways for reasons that
 have nothing to do with either wheel.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-ruleset-cites-a-standard-and-the-record-carries-only-the-pointer)
+[Full entry](../DESIGN.md#the-ruleset-cites-a-standard-and-the-record-carries-only-the-pointer)
 
 ## `relation` and the verdict class are checked against each other at load time
 
@@ -409,7 +409,7 @@ entries carry it instead) and compatibility (a stated pair does not contradict i
 are different questions, and only compatibility needs enforcing for every ruleset
 `--ruleset` can load, not just the one this repository ships.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#relation-and-the-verdict-class-are-checked-against-each-other-at-load-time)
+[Full entry](../DESIGN.md#relation-and-the-verdict-class-are-checked-against-each-other-at-load-time)
 
 ## `family` is the FIPS-agnostic axis; `category` stays the FIPS one
 
@@ -434,7 +434,7 @@ FIPS lens to answer a question that has nothing to do with it -- the inventory w
 inherit `category`'s open, per-rule-author vocabulary rather than a small closed one a
 report's grouping can rely on.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#family-is-the-fips-agnostic-axis-category-stays-the-fips-one)
+[Full entry](../DESIGN.md#family-is-the-fips-agnostic-axis-category-stays-the-fips-one)
 
 ## SHA-1 is restricted, not refused
 
@@ -465,4 +465,4 @@ behaviour under FIPS enforcement is left unmeasured, read out of the provider's 
 rather than run and observed on a host with `fips=1` enforcing and the FIPS provider
 active. A documented gap; closing it needs nothing more than such a host.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#sha-1-is-restricted-not-refused)
+[Full entry](../DESIGN.md#sha-1-is-restricted-not-refused)

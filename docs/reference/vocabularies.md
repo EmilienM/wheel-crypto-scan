@@ -81,7 +81,7 @@ python_recursion_limit_exceeded
 over zip metadata already fully in hand, with no I/O and no broad catch anywhere on the path
 that records it, so the same wheel's bytes always produce the same one and caching it is
 safe. See
-[A record produced without reading the wheel is never cached](../design/tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached).
+[A record produced without reading the wheel is never cached](../design-summaries/tooling.md#a-record-produced-without-reading-the-wheel-is-never-cached).
 
 ## `PARTIAL_REASONS`
 
@@ -128,7 +128,7 @@ into memory and each one can run short.
 
     `strings_truncated` and `symbols_truncated` are fields, not causes. The object *was*
     read; what was capped is what got written down. A cause means bytes nobody looked at.
-    See [A recording cap is not a partial read](../design/limits.md#a-recording-cap-is-not-a-partial-read).
+    See [A recording cap is not a partial read](../design-summaries/limits.md#a-recording-cap-is-not-a-partial-read).
 
 ### The two splits over this vocabulary
 

@@ -3,9 +3,9 @@
 AGENTS.md's "Write down the current design, not its history" is a rule about prose, and
 prose fails nothing when it breaks it. These tests hold the parts of it a machine can
 check: no issue or PR citation and no review framing in code, tests, the ruleset or the
-docs, every `DESIGN.md` heading that something quotes or links to still exists, no
+docs, every `DESIGN.md` heading that something quotes still exists, no
 Markdown heading wraps onto a second source line, and the design index lists every
-entry of every `docs/design/` page, in page order.
+entry of every `docs/design-summaries/` page, in page order.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DESIGN = ROOT / "DESIGN.md"
+DESIGN = ROOT / "docs" / "DESIGN.md"
 
 # The modules allowed a module-local `too-many-lines` disable. DESIGN.md's
 # "`binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions"
@@ -29,8 +29,7 @@ _LINE_LIMIT_EXEMPT = {
 _LINE_LIMIT_DISABLE = re.compile(r"#\s*pylint:\s*disable\s*=[^\n]*\b(?:too-many-lines|C0302)\b")
 
 # Every tracked text file a reader of the design reads: code, tests, the ruleset and
-# schema, and the Markdown. This file is left out because it spells the patterns, and a
-# symlink (`CLAUDE.md` is one to `AGENTS.md`) because its target is already read.
+# schema, and the Markdown. This file is left out because it spells the patterns.
 _SOURCES = sorted(
     path
     for pattern in (
@@ -44,9 +43,7 @@ _SOURCES = sorted(
         "mkdocs.yml",
     )
     for path in ROOT.glob(pattern)
-    if not path.is_symlink()
-    and path.resolve() != Path(__file__).resolve()
-    and "__pycache__" not in path.parts
+    if path.resolve() != Path(__file__).resolve() and "__pycache__" not in path.parts
 )
 
 # A citation is `#` and digits standing alone: after whitespace, an opening bracket or
@@ -100,9 +97,9 @@ def _hits(pattern: re.Pattern[str]) -> list[str]:
 def test_the_sources_are_found() -> None:
     """A glob that silently matched nothing would make every test below pass."""
     names = {path.relative_to(ROOT).as_posix() for path in _SOURCES}
-    assert {"DESIGN.md", "AGENTS.md", "src/wheel_crypto_scan/linkage.py"} <= names
+    assert {"docs/DESIGN.md", "AGENTS.md", "src/wheel_crypto_scan/linkage.py"} <= names
     assert "src/wheel_crypto_scan/data/ruleset.toml" in names
-    assert any(name.startswith("docs/design/") for name in names)
+    assert any(name.startswith("docs/design-summaries/") for name in names)
     assert any(name.startswith("tests/") for name in names)
 
 
@@ -146,10 +143,6 @@ def _normalise(title: str) -> str:
     return " ".join(title.split())
 
 
-def _github_slug(title: str) -> str:
-    return re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
-
-
 def _unwrapped(path: Path) -> str:
     """The file with its line breaks, and the comment marker that starts each wrapped
     comment line, folded into single spaces, so a quote wrapped across lines reads as
@@ -186,21 +179,6 @@ def test_every_quoted_design_heading_exists() -> None:
     assert [(path, title) for path, title in quoted if title not in headings] == []
 
 
-def test_every_design_anchor_link_exists() -> None:
-    """`docs/design/` links each summary to its full entry by GitHub's heading anchor,
-    which `mkdocs build --strict` cannot check because the target is outside the site."""
-    slugs = {_github_slug(title) for title in _headings()}
-    links = [
-        (path.relative_to(ROOT).as_posix(), match.group(1))
-        for path in _SOURCES
-        for match in re.finditer(
-            r"blob/main/DESIGN\.md#([\w\-]+)", path.read_text(encoding="utf-8")
-        )
-    ]
-    assert links, "no DESIGN.md anchor links found; the pattern has gone stale"
-    assert [(path, slug) for path, slug in links if slug not in slugs] == []
-
-
 def test_no_markdown_heading_wraps_onto_a_second_line() -> None:
     """A heading wrapped in the source renders cut short, and a quote of its full
     title or a link to its full anchor resolves to nothing."""
@@ -233,7 +211,60 @@ def test_the_heading_check_tells_a_wrapped_heading_from_a_fenced_comment(
     assert _wrapped_headings(text) == wrapped
 
 
-DESIGN_PAGES = ROOT / "docs" / "design"
+# A code span whose content opens a closing tag and never closes it: Python-Markdown's
+# HTML tokenizer treats `</tag` as the start of real markup even inside a code span, and
+# silently drops everything in the rendered page from that point to EOF. `docs/DESIGN.md`
+# hit this with `` `</script` ``, a code span describing the literal bytes rather than
+# real markup, and lost its last four entries with no build warning. `[^`>]*` stops at
+# either delimiter: a `>` before the closing backtick closes the tag and clears the span.
+_UNCLOSED_TAG_IN_CODE_SPAN = re.compile(r"`</[A-Za-z][^`>]*`")
+
+
+def _unclosed_tags_in_code_spans(text: str) -> list[int]:
+    """1-based line numbers of a code span that opens a closing tag it never closes,
+    outside fenced code."""
+    hits = []
+    fenced = False
+    for number, line in enumerate(text.split("\n"), start=1):
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if not fenced and _UNCLOSED_TAG_IN_CODE_SPAN.search(line):
+            hits.append(number)
+    return hits
+
+
+def test_no_code_span_opens_an_html_tag_it_never_closes() -> None:
+    """Close the tag (`` `</script>` ``) or drop the code span for raw HTML with an
+    entity (`<code>&lt;/script</code>`) instead -- either survives markdown-to-HTML
+    conversion; a bare `` `</script` `` does not, and `mkdocs build --strict` does not
+    catch it, since nothing about the loss breaks a link or an anchor."""
+    markdown = [path for path in _SOURCES if path.suffix == ".md"]
+    hits = [
+        f"{path.relative_to(ROOT)}:{number}"
+        for path in markdown
+        for number in _unclosed_tags_in_code_spans(path.read_text(encoding="utf-8"))
+    ]
+    assert hits == []
+
+
+@pytest.mark.parametrize(
+    ("text", "hit"),
+    [
+        ("the literal bytes `</script`, never for character references", True),
+        ("the literal bytes `</script>` closes cleanly", False),
+        ("`<script>` opens a tag, not a closing one", False),
+        ("no code span here at all", False),
+        ("```text\nthe literal bytes `</script`\n```\n", False),
+    ],
+)
+def test_the_unclosed_tag_check_tells_the_bug_from_a_closed_or_fenced_span(
+    text: str, hit: bool
+) -> None:
+    assert bool(_unclosed_tags_in_code_spans(text)) is hit
+
+
+DESIGN_PAGES = ROOT / "docs" / "design-summaries"
 
 
 def _mkdocs_slug(title: str) -> str:
@@ -335,7 +366,7 @@ def test_the_stated_entry_count_reader_only_matches_a_leading_number_word(
 
 
 def test_the_design_index_lists_every_entry_in_page_order() -> None:
-    """`docs/design/index.md` is the table of contents for the design pages. An entry
+    """`docs/design-summaries/index.md` is the table of contents for the design pages. An entry
     added to a page without a row is invisible to anyone reading the index, and nothing
     else fails: `mkdocs build --strict` checks that an anchor exists, not that every
     heading has a link."""

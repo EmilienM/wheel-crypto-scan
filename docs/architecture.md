@@ -105,7 +105,7 @@ object or across two, is `mixed`. `object_postures` exposes the per-object answe
 wheel's answer drops. Per library, a shipped SBOM naming it, or a crate the ruleset
 lists for it, also makes an otherwise unanswered library read `unknown` -- a wheel-level
 input, not a per-object one, so it never appears in `object_postures`. The whole
-subsystem's reasoning is in [OpenSSL linkage](design/linkage.md).
+subsystem's reasoning is in [OpenSSL linkage](design-summaries/linkage.md).
 
 ### 5. The record
 

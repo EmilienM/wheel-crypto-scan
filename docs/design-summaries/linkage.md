@@ -54,7 +54,7 @@ the actual search path, a meaningfully bigger mechanism. Recorded rather than cl
 because the failure direction — reading `system` as `bundled` — is the safe one for a
 FIPS-risk tool.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-needed-entry-is-bundled-by-what-it-resolves-to-not-by-whether-its-name-was-renamed)
+[Full entry](../DESIGN.md#a-needed-entry-is-bundled-by-what-it-resolves-to-not-by-whether-its-name-was-renamed)
 
 ### What resolving by basename does not prove
 
@@ -153,7 +153,7 @@ for a relative-but-non-wheel-resolvable shape like `../../hostlib/libcrypto.so.3
 Mach-O `@executable_path/...` entry, neither of which this check covers even though the same
 argument applies to them.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-absolute-needed-entry-is-never-resolved-by-basename)
+[Full entry](../DESIGN.md#an-absolute-needed-entry-is-never-resolved-by-basename)
 
 ---
 
@@ -192,7 +192,7 @@ came from an object we could not read" — describes neither: here the dependenc
 and the object *was* read in full. Left as is rather than reworded, because rewording it
 correctly means splitting what are two different reasons `mixed` can fire.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-needed-match-and-a-definition-inside-one-object-are-both-true-so-the-object-is-mixed)
+[Full entry](../DESIGN.md#a-needed-match-and-a-definition-inside-one-object-are-both-true-so-the-object-is-mixed)
 
 ### An `uncertain` needed match beside a definition is `mixed`
 
@@ -224,7 +224,7 @@ with one object reading `bundled` and a second reading `mixed` aggregates to `mi
 rather than `bundled`, dropping out of the `IN("bundled","static")` triage recipe. The
 direction stays conservative — the wheel gains `OPAQUE` rather than losing anything silently.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-uncertain-needed-match-beside-a-definition-is-mixed)
+[Full entry](../DESIGN.md#an-uncertain-needed-match-beside-a-definition-is-mixed)
 
 ### A bundled needed match beside `system` or `static` is `mixed`
 
@@ -275,7 +275,7 @@ cost: the extra checks are cheap, the early return is a genuinely different code
 folding it in would extend an already-large precedence mechanism further than this entry's
 own reproductions ask for.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-bundled-needed-match-beside-system-or-static-is-mixed)
+[Full entry](../DESIGN.md#a-bundled-needed-match-beside-system-or-static-is-mixed)
 
 ---
 
@@ -330,7 +330,7 @@ some, when `unknown` already means what this case needs.
 - A build whose cargo paths use a layout the reader does not recognise, such as a git
   dependency checkout, carries no crate, so the crate check never fires on it.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-openssl-crate-with-no-other-evidence-reads-unknown-not-none)
+[Full entry](../DESIGN.md#an-openssl-crate-with-no-other-evidence-reads-unknown-not-none)
 
 ---
 
@@ -378,7 +378,7 @@ banner reads `system` whatever the banner rule does. A library naming no marker 
 every banner it finds as a copy. An object that is not read in full, for any cause,
 keeps `mixed`.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy)
+[Full entry](../DESIGN.md#a-version-banner-beside-imports-from-the-system-library-is-header-text-not-a-copy)
 
 ---
 
@@ -396,7 +396,7 @@ Without them the banner is uncorroborated prose, and the object reads `unknown`,
 The gate stays shut on an object not read in full, for the same reason the header-text
 gate does.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-version-banner-with-no-dependency-and-no-build-strings-reads-unknown-not-static)
+[Full entry](../DESIGN.md#a-version-banner-with-no-dependency-and-no-build-strings-reads-unknown-not-static)
 
 ---
 
@@ -418,7 +418,7 @@ object — is not the fork's own text and still corroborates a real copy. It rea
 `unknown`, never `none`, because an object can carry a real OpenSSL and a fork marker at
 once.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#openssl-named-definitions-beside-aws-lc-or-boringssl-read-unknown-not-static)
+[Full entry](../DESIGN.md#openssl-named-definitions-beside-aws-lc-or-boringssl-read-unknown-not-static)
 
 ---
 
@@ -476,7 +476,7 @@ itself never moves in any of these shapes. A system-linked object naming its own
 `openssl-sys` in the wheel's SBOM costs nothing beyond what its own posture already
 costs: `DERIVED_SYSTEM_OPENSSL_ONLY` still fires.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-object-that-read-unknown-withholds-derived_system_openssl_only-the-field-stays-system)
+[Full entry](../DESIGN.md#an-object-that-read-unknown-withholds-derived_system_openssl_only-the-field-stays-system)
 
 ---
 
@@ -520,4 +520,4 @@ finding.
 `DERIVED_SYSTEM_OPENSSL_ONLY` through `sbom_declared` on its match: see "An object that
 read `unknown` withholds `DERIVED_SYSTEM_OPENSSL_ONLY`; the field stays `system`" above.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-sbom-naming-an-openssl-crate-reads-unknown-not-none)
+[Full entry](../DESIGN.md#an-sbom-naming-an-openssl-crate-reads-unknown-not-none)

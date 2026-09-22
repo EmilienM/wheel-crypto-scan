@@ -39,7 +39,7 @@ Python layer shows up as a test failure before it ships.
 **Revisit** if a version-independent parser lands in the standard library, or if a wheel in
 the real corpus is found whose headline verdict flips on interpreter version alone.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-python-parser-follows-the-interpreter-running-the-scan)
+[Full entry](../DESIGN.md#the-python-parser-follows-the-interpreter-running-the-scan)
 
 ## An explicit usedforsecurity=True, and a non-constant flag, are not `NO_CRYPTO_DETECTED`
 
@@ -74,4 +74,4 @@ at any class.** `hashlib.new("sha256", usedforsecurity=flag)` fires nothing: sha
 FIPS-approved regardless of what the flag turns out to be at runtime, so the uncertainty a
 human would be asked to resolve does not exist.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-explicit-usedforsecuritytrue-and-a-non-constant-flag-are-not-no_crypto_detected)
+[Full entry](../DESIGN.md#an-explicit-usedforsecuritytrue-and-a-non-constant-flag-are-not-no_crypto_detected)

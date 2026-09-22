@@ -601,7 +601,7 @@ def test_class_help_matches_the_output_schema_verdict_table() -> None:
     "Verdict classes" table. Parse that table directly, rather than asserting the
     claim only in prose, so the two cannot drift apart silently the way `record.py`
     and `data/schema.json` are already held to."""
-    schema = Path(__file__).parent.parent / "SCHEMA.md"
+    schema = Path(__file__).parent.parent / "docs" / "SCHEMA.md"
     text = schema.read_text(encoding="utf-8")
     section = text.split("### Verdict classes", 1)[1].split("\n## ", 1)[0]
     rows = re.findall(r"\|\s*`(\w+)`\s*\|\s*(.+?)\s*\|\s*\n", section)
@@ -619,7 +619,7 @@ def test_linkage_help_follows_the_output_schema_linkage_table() -> None:
     its binaries. Parse the table directly and check each value's short form names the
     SBOM exactly when its SCHEMA.md row does, the same drift-detection approach as
     `test_class_help_matches_the_output_schema_verdict_table` above."""
-    schema = Path(__file__).parent.parent / "SCHEMA.md"
+    schema = Path(__file__).parent.parent / "docs" / "SCHEMA.md"
     text = schema.read_text(encoding="utf-8")
     section = text.split("### `conditions.openssl_linkage`", 1)[1].split("\n### ", 1)[0]
     rows = re.findall(r"^\|\s*`(\w+)`\s*\|\s*(.+)\s*\|\s*$", section, re.MULTILINE)

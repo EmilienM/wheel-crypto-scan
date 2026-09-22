@@ -63,7 +63,7 @@ where the size is, ship overwhelmingly as manylinux ELF. Executable sections are
 separately, against their own budget of the same size, only for the string groups the ruleset
 flags `in_code` -- see [ELF](elf.md).
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-recording-cap-is-not-a-partial-read)
+[Full entry](../DESIGN.md#a-recording-cap-is-not-a-partial-read)
 
 ---
 
@@ -123,7 +123,7 @@ carve-out list — go and find a crypto object that reads clean because of it �
 as well as on a list, and this entry's own reproduction is that test applied to the previous
 entry's claim.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-cap-bounds-the-record-it-does-not-pick-the-evidence)
+[Full entry](../DESIGN.md#a-cap-bounds-the-record-it-does-not-pick-the-evidence)
 
 ---
 
@@ -165,7 +165,7 @@ the whole wheel, and treating an ordinary side effect of a display cap as someth
 must act on would put every large Rust or CUDA wheel on a triage list for a reason that has
 nothing to do with crypto.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-cap-bounds-the-record-not-the-evaluation)
+[Full entry](../DESIGN.md#a-cap-bounds-the-record-not-the-evaluation)
 
 ---
 
@@ -226,7 +226,7 @@ count itself exceeds the cap, the groups that lose are whichever sort last — d
 otherwise arbitrary. `binaries_truncated` and `WHEEL_BINARIES_TRUNCATED` still fire, so it is
 never silent.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#binaries-keeps-what-a-finding-points-at-before-filling-the-rest)
+[Full entry](../DESIGN.md#binaries-keeps-what-a-finding-points-at-before-filling-the-rest)
 
 ---
 
@@ -273,7 +273,7 @@ function signature, does not hold: every row in a reproduction is free to be `N_
 arity does not change at all; the alias branch calls the resolver in scope. 200 alias rows
 against one 2 MiB target cost 30.4s without it.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-symbol-name-is-capped-the-way-pes-are)
+[Full entry](../DESIGN.md#a-symbol-name-is-capped-the-way-pes-are)
 
 ---
 
@@ -299,7 +299,7 @@ exhaustive sweep over small inputs (583,238 cases) and 20,000 randomised trials 
 larger `n`, alongside `tests/test_caps.py`'s behavioural pins. The cap's output is the same
 either way; only how it gets there differs.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#capscap-scans-ordered-again-instead-of-materialising-pinnedrestleftovers)
+[Full entry](../DESIGN.md#capscap-scans-ordered-again-instead-of-materialising-pinnedrestleftovers)
 
 ---
 
@@ -337,7 +337,7 @@ context field or CLI flag of their own.
 refused members produces a correctly capped `errors: 256` beside an uncapped
 `artifacts.skipped: 3003`. They are decided in the next entry.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#bundled_libs-and-errors-get-their-own-caps-not-binaries_truncateds)
+[Full entry](../DESIGN.md#bundled_libs-and-errors-get-their-own-caps-not-binaries_truncateds)
 
 ---
 
@@ -364,4 +364,4 @@ on its own, so `record.py` wraps each pair in a small local frozen dataclass at 
 unwraps the result — `ArtifactInventory.skipped`/`.symlinks` themselves stay plain tuples
 everywhere else.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix)
+[Full entry](../DESIGN.md#skipped-and-symlinks-reuse-capscap-not-a-plain-prefix)

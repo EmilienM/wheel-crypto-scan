@@ -146,7 +146,7 @@ information this reader gets from section headers in the common case.
     next real gap in this family is answered by program-header-based translation as a whole,
     not by another field.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#sections-are-found-by-type-not-by-a-name-nobody-checks)
+[Full entry](../DESIGN.md#sections-are-found-by-type-not-by-a-name-nobody-checks)
 
 ---
 
@@ -234,7 +234,7 @@ past a truncated string table as into it. The honest way to bound a symbol table
 rows to that ambiguity exists in the Mach-O reader; bringing it here is a real change, and a
 different, larger one.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-compressed-section-is-checked-before-it-is-inflated)
+[Full entry](../DESIGN.md#a-compressed-section-is-checked-before-it-is-inflated)
 
 ---
 
@@ -285,7 +285,7 @@ symbol table at all.
 answer, since `.symtab` feeds the imported/defined split: see
 [Linkage reads a second split over the same vocabulary](opacity.md#linkage-reads-a-second-split-over-the-same-vocabulary).
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#symtab-is-matched-for-crypto-symbols-when-dynsym-is-genuinely-absent)
+[Full entry](../DESIGN.md#symtab-is-matched-for-crypto-symbols-when-dynsym-is-genuinely-absent)
 
 ## `.symtab` local definitions are read when `.dynsym` is present
 
@@ -321,7 +321,7 @@ NULs, where every row "resolves" to the empty name. It is fed the names both tab
 so an imported name `.dynsym` accounted for does not read as one the object hid.
 
 What it costs is stated in full in
-[`DESIGN.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md): a
+[`DESIGN.md`](../DESIGN.md): a
 crafted object can plant names in a table trusted less than `.dynsym`, and the
 consequence is a false *definition*, which over-flags rather than under-flags.
 
@@ -345,4 +345,4 @@ error and no partial reason: the read exists only to tell a validated build from
 one, and missing it leaves the object reading whatever its read-only evidence already
 gives, the same as for every group that carries no `in_code` flag.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-version-banner-that-lives-in-code-is-read-from-executable-sections-for-the-groups-that-say-so)
+[Full entry](../DESIGN.md#a-version-banner-that-lives-in-code-is-read-from-executable-sections-for-the-groups-that-say-so)

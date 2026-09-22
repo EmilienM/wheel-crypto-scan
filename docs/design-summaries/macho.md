@@ -40,7 +40,7 @@ macOS wheels in an index. It is recorded because nothing in the output says a re
 merged, so a reader of `matched_symbols` carrying one name as both `imported` and `defined`
 should know why that is representable at all.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-universal-binary-is-one-record-and-its-slices-are-merged)
+[Full entry](../DESIGN.md#a-universal-binary-is-one-record-and-its-slices-are-merged)
 
 ---
 
@@ -95,7 +95,7 @@ clobbered as a longer, wrong string with `partial_analysis: false`; the in-heade
 above; and `LC_RPATH` carrying the same silent-drop shape as the dylib family, which is not
 cosmetic because `_looks_vendored` reads `rpath` directly.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#every-dylib-loading-command-reaches-needed-not-just-lc_load_dylib)
+[Full entry](../DESIGN.md#every-dylib-loading-command-reaches-needed-not-just-lc_load_dylib)
 
 ---
 
@@ -171,7 +171,7 @@ strings chosen — measured with 4-byte padding, 34 of 111 Mach-O tests, and 42 
 suite, fail the alignment check. The padding is fixed at the source rather than by loosening the
 check.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-unparseable-load-command-header-flags-the-walk-it-does-not-end-it-in-silence)
+[Full entry](../DESIGN.md#an-unparseable-load-command-header-flags-the-walk-it-does-not-end-it-in-silence)
 
 ---
 
@@ -225,7 +225,7 @@ preserves the specific error *message* needs its own test too: deleting it leave
 green if nothing asserts on the text, since the reason token and the error kind are the same
 either way.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#sizeofcmds-and-the-symbol-table-are-capped-not-just-clamped-to-the-member)
+[Full entry](../DESIGN.md#sizeofcmds-and-the-symbol-table-are-capped-not-just-clamped-to-the-member)
 
 ---
 
@@ -282,6 +282,6 @@ error-emitting loop reaches them. `read_macho` emits up to two distinct messages
 `partial_reasons` adds `macho_load_command_ambiguous` exactly once, computed as the OR of both —
 one token, backed by up to two messages, consistent with what "One token, not two" argues for.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-error-message-names-which-command-was-ambiguous-the-token-does-not)
+[Full entry](../DESIGN.md#the-error-message-names-which-command-was-ambiguous-the-token-does-not)
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#more-than-one-lc_id_dylib-or-lc_symtab-is-ambiguous-not-last-wins)
+[Full entry](../DESIGN.md#more-than-one-lc_id_dylib-or-lc_symtab-is-ambiguous-not-last-wins)

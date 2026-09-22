@@ -89,7 +89,7 @@ re-scans every ordinary, permanent syntax error on every run, for no benefit.
 `except RecursionError:` sites in `layers/python_ast.py`, and it is in `SCAN_ABORTED_KINDS`
 on its own; `python_syntax_error` keeps its two genuinely deterministic causes and stays out.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-record-produced-without-reading-the-wheel-is-never-cached)
+[Full entry](../DESIGN.md#a-record-produced-without-reading-the-wheel-is-never-cached)
 
 ---
 
@@ -126,7 +126,7 @@ rather than a measured, real case is exactly the kind of unmeasured addition the
 extension". A member the scanner does not sniff stays invisible, which is no worse for being
 left out.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#exe-is-in-_binary_suffix-and-com-cpl-and-sys-are-not)
+[Full entry](../DESIGN.md#exe-is-in-_binary_suffix-and-com-cpl-and-sys-are-not)
 
 ---
 
@@ -166,7 +166,7 @@ validator is what manufactures the cycle, not the split itself.**
 from `ruleset_loader`; everything that imports only object-model names imports them from
 `ruleset`.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-loader-lives-in-ruleset_loaderpy-a-sibling-module-not-a-package)
+[Full entry](../DESIGN.md#the-loader-lives-in-ruleset_loaderpy-a-sibling-module-not-a-package)
 
 ## `Conventions`/`SonameInfo` and their `[conventions]` parser move to `conventions.py`
 
@@ -189,7 +189,7 @@ only the dataclasses would have fixed a limit nothing in `ruleset.py` had broken
 docstring, and this module's growth is validation code, not documentation. A bigger
 `max-module-lines`, for the same reason the entry below rejects one.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#conventionssonameinfo-and-their-conventions-parser-move-to-conventionspy)
+[Full entry](../DESIGN.md#conventionssonameinfo-and-their-conventions-parser-move-to-conventionspy)
 
 ## `binfmt/elf.py` and `binfmt/macho.py` carry module-local line-count exemptions
 
@@ -218,7 +218,7 @@ different modules in either direction, if `pyproject.toml` sets `max-module-line
 is worth re-measuring, or a listed module's code alone, excluding docstrings and comments, nears
 the limit, at which point it is a split rather than an exemption.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions)
+[Full entry](../DESIGN.md#binfmtelfpy-and-binfmtmachopy-carry-module-local-line-count-exemptions)
 
 ## The cross-rule coherence checks live in `ruleset_coherence.py`
 
@@ -240,7 +240,7 @@ the helpers that read it, and so does the check that bounds `[limits]` against t
 well, which would mean restating the loader's small helpers a second time for lines the loader
 does not need back.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-cross-rule-coherence-checks-live-in-ruleset_coherencepy)
+[Full entry](../DESIGN.md#the-cross-rule-coherence-checks-live-in-ruleset_coherencepy)
 
 ## `binfmt.ar` reads `.a`/`.lib` static archives as a container, not a reader
 
@@ -274,7 +274,7 @@ carries `.symtab` and no `.dynsym`, and `binfmt.elf` matches `.symtab` whenever 
 genuinely absent (see the [ELF](elf.md) page); `binfmt.ar` calls `read_binary` per member, so
 it gets that from `binfmt.elf` directly.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader)
+[Full entry](../DESIGN.md#binfmtar-reads-alib-static-archives-as-a-container-not-a-reader)
 
 ## The HTML report embeds records and renders them in the browser
 
@@ -302,4 +302,4 @@ The class and linkage help text shown in the page lives in `report.py` as plain
 constants, next to a test that fails when a class in the ruleset's precedence has no
 entry.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#the-html-report-embeds-records-and-renders-them-in-the-browser)
+[Full entry](../DESIGN.md#the-html-report-embeds-records-and-renders-them-in-the-browser)

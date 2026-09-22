@@ -6237,7 +6237,7 @@ to its output, not only to the scan itself.
 string and piece of evidence a wheel carries is untrusted, and a wheel author controls
 all of it. The JSON payload is escaped by replacing `<`, `>` and `&` with their JSON `\u`
 escapes rather than HTML entities: `<script>` is an HTML "raw text" element, so its
-content is scanned only for the literal bytes `</script`, never for character references,
+content is scanned only for the literal bytes <code>&lt;/script</code>, never for character references,
 and `.textContent` hands JavaScript back an HTML entity completely unchanged --
 corrupting exactly the string it was meant to protect. A `\u` escape has no literal `<`
 and round-trips through `JSON.parse` like any other escape in a JSON string. Verified

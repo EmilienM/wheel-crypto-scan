@@ -49,7 +49,7 @@ list, so it would report nothing at all. Excluding means a new token is serious 
 decides otherwise, and a test asserts every token the strict rule excludes is claimed by name
 somewhere else.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-routine-cause-is-recorded-but-does-not-make-a-wheel-opaque)
+[Full entry](../DESIGN.md#a-routine-cause-is-recorded-but-does-not-make-a-wheel-opaque)
 
 ### An ordinal export is a failure to read, not a convention
 
@@ -88,7 +88,7 @@ ordinal on every Windows extension that touches sockets, so the cost of making i
 such wheel, and the DLL name really does survive in `needed`. The residual there is narrower
 and is pinned by a test rather than assumed away.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#an-ordinal-export-is-a-failure-to-read-not-a-convention)
+[Full entry](../DESIGN.md#an-ordinal-export-is-a-failure-to-read-not-a-convention)
 
 ### A carve-out list is a claim, and claims get tested
 
@@ -181,7 +181,7 @@ that cause, so the object comes out `OPAQUE` with `openssl_linkage: unknown` rat
 field saying we could not read it and another saying there is no OpenSSL here. That is the
 next entry.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#a-symbol-table-is-checked-against-the-string-table-not-taken-at-its-word)
+[Full entry](../DESIGN.md#a-symbol-table-is-checked-against-the-string-table-not-taken-at-its-word)
 
 ---
 
@@ -268,4 +268,4 @@ sets `LINKAGE_UNKNOWN` directly: an opaque object's `unknown` posture is set onl
 object costs only `openssl`, the one library with `always_report = true`, not all
 thirteen shipped libraries.
 
-[Full entry](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md#linkage-reads-a-second-split-over-the-same-vocabulary)
+[Full entry](../DESIGN.md#linkage-reads-a-second-split-over-the-same-vocabulary)

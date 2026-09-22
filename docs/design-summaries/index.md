@@ -5,11 +5,9 @@ re-litigated every time someone new reads it. [Invariants](../invariants.md) car
 rules; this section carries the reasoning behind the ones that cost something, including the
 holes left open on purpose and the measurement behind each one.
 
-The canonical text is
-[`DESIGN.md`](https://github.com/EmilienM/wheel-crypto-scan/blob/main/DESIGN.md) in the
-repository. What follows is the same set of entries, grouped by the subsystem they are
-about, each summarising the call, what it cost, and what was rejected, with a link to the
-full argument.
+The canonical text is [`DESIGN.md`](../DESIGN.md). What follows is the same set of
+entries, grouped by the subsystem they are about, each summarising the call, what it
+cost, and what was rejected, with a link to the full argument.
 
 ## How to read an entry
 

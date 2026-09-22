@@ -6,7 +6,7 @@ comment is written down there.
 ## Commands
 
 ```bash
-uvx --with tox-uv tox              # py311-py314, ruff lint and format, pylint
+uvx --with tox-uv tox              # py311-py314, ruff lint and format, pylint, docs build
 uvx --with tox-uv tox -e lint      # ruff check --select=E,F,W,PLC0415, then ruff format --check
 uvx --with tox-uv tox -e format    # apply formatting
 uvx --with tox-uv tox -e pylint    # pylint the package
@@ -59,7 +59,7 @@ paragraph between the two.
 A design call that cost something goes in `DESIGN.md`: what the code does, what it costs,
 what was rejected and why, what was measured rather than assumed, what is left open, and
 what would make it worth revisiting. This site renders those entries under
-[Design](design/index.md).
+[Design](design-summaries/index.md).
 
 The house style there is worth matching. Claims are measured, not asserted, and an entry
 says what it leaves open as plainly as what it closes.
