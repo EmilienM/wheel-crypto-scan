@@ -33,7 +33,7 @@
 # Bump `ruleset_version` on every substantive change. It is part of the scan cache key,
 # so bumping it is what makes previously scanned wheels get re-evaluated.
 
-ruleset_version = "34"
+ruleset_version = "35"
 
 
 # ---------------------------------------------------------------------------
@@ -1704,7 +1704,7 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Ships its own MD4/MD5/SHA-1 implementation"
-why = "Defined, not imported, so the wheel carries the code itself. That matters more than it first appears: a private implementation of a broken hash cannot be refused by FIPS mode the way hashlib can, so it will keep working silently on a FIPS-enforcing host. A statically linked or bundled OpenSSL defines these entry points too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy-provider code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
+why = "Defined, not imported, so the wheel carries the code itself. That matters more than it first appears: a private implementation of a broken hash cannot be refused by FIPS mode the way hashlib can, so it will keep working silently on a FIPS-enforcing host. A statically linked or bundled OpenSSL defines these entry points too, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own legacy-provider code: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. A statically linked AWS-LC defines them too, its FIPS build included: the FIPS module links as one monolithic object, so an unstripped FIPS build defines md5_final beside its aws_lc_fips_-prefixed entry points. BIN_AWS_LC_FIPS does not suppress this finding, because the module still offers the primitive and does not refuse it, and deciding the object is acceptable on balance is a reviewer's call; its CONDITIONAL stays in verdict.classes alongside."
 [rule.match]
 kind = "dynamic_symbol"
 group = "weak_hash_impl"
@@ -1761,7 +1761,7 @@ confidence = "medium"
 verdict = "NON_APPROVED_CRYPTO"
 needs_human_review = true
 title = "Curve25519 family implementation present"
-why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here. A statically linked or bundled OpenSSL defines some of these entry points too: OpenSSL 3's ossl_x25519/ossl_ed25519_* provider names, 1.1.1's X25519/ED25519_*, and both versions' internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart."
+why = "X25519 and Ed25519 entry points compiled in. Their standing depends on the standard revision and on validation of the specific implementation, so this always goes to a human rather than being answered here. A statically linked or bundled OpenSSL defines some of these entry points too: OpenSSL 3's ossl_x25519/ossl_ed25519_* provider names, 1.1.1's X25519/ED25519_*, and both versions' internal x25519_fe51_/x25519_fe64_ field-arithmetic helpers, so beside BIN_STATIC_OPENSSL and BIN_BUNDLED_OPENSSL this can be OpenSSL's own internal code rather than something the wheel wrote: still carried by the wheel and still out of reach of the host FIPS provider. verdict.conditions.openssl_linkage says whether the wheel carries its own OpenSSL at all, not which case this is, and not when a wheel carries both -- the object's own matched_symbols is what tells them apart. A statically linked AWS-LC defines curve25519_x25519 too, its FIPS build included: s2n-bignum's X25519 implementation compiles into the FIPS module, so an unstripped FIPS build defines it beside the module's aws_lc_fips_-prefixed entry points. BIN_AWS_LC_FIPS does not suppress this finding either, for the same reason: the module still offers the primitive and does not refuse it, and deciding the object is acceptable on balance is a reviewer's call."
 [rule.match]
 kind = "dynamic_symbol"
 group = "curve25519"

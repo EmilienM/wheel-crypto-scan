@@ -2004,12 +2004,17 @@ _AWS_LC_FIPS_TEXT = b"\x00AWS-LC FIPS 4.2.0\x00AWS-LC FIPS failure caused by:\n\
 _AWS_LC_STOCK_RODATA = _AWS_LC_RODATA + b"AWS-LC FIPS failure caused by:\n\x00"
 
 
-def _aws_lc_binary(*, symtab_name: str, rodata: bytes, text: bytes = b"") -> bytes:
+def _aws_lc_binary(
+    *, symtab_name: str, rodata: bytes, text: bytes = b"", extra_symtab: tuple[str, ...] = ()
+) -> bytes:
     return ElfBuilder(
         needed=("libc.so.6",),
         dynsyms=(DynSym("PyInit__ext", defined=True),),
         with_symtab=True,
-        symtab_syms=(DynSym(symtab_name, defined=True, info=_LOCAL_FUNC),),
+        symtab_syms=(
+            DynSym(symtab_name, defined=True, info=_LOCAL_FUNC),
+            *(DynSym(name, defined=True, info=_LOCAL_FUNC) for name in extra_symtab),
+        ),
         rodata=rodata,
         text=text,
     ).build()
@@ -2149,6 +2154,48 @@ def test_an_aws_lc_fips_build_is_told_apart_by_its_symbol_prefix(context, tmp_pa
     assert "BIN_AWS_LC_FIPS" in record["verdict"]["rule_ids"]
     assert "BIN_AWS_LC" not in record["verdict"]["rule_ids"]
     assert "BIN_AWS_LC_RS_CRATE" not in record["verdict"]["rule_ids"]
+
+
+def test_an_aws_lc_fips_modules_own_md5_and_x25519_keep_non_approved_leading(
+    context, tmp_path: Path
+) -> None:
+    """AWS-LC's FIPS module links as one monolithic bcm object, so an unstripped FIPS
+    build defines the module's own MD5 and X25519 (s2n-bignum's) local .symtab
+    functions beside its aws_lc_fips_-prefixed entry points. Both are non-approved
+    primitives the object carries in their own right, not evidence that happens to sit
+    near the FIPS module, so they lead the headline and BIN_AWS_LC_FIPS's condition is
+    reported alongside them, not instead of them: see "An AWS-LC FIPS build is told
+    from a stock one by its symbol prefix, not its name" in DESIGN.md.
+    """
+    wheel = build_wheel(
+        tmp_path / f"awslcfipsown-1.0-{MANYLINUX}.whl",
+        name="awslcfipsown",
+        version="1.0",
+        tags=(MANYLINUX,),
+        files={
+            "awslcfipsown/_ext.abi3.so": _aws_lc_binary(
+                symtab_name="aws_lc_fips_0_14_2_SHA256_Init",
+                rodata=_AWS_LC_RODATA,
+                text=_AWS_LC_FIPS_TEXT,
+                extra_symtab=("md5_final", "curve25519_x25519"),
+            ),
+        },
+    )
+    record = scan_wheel(wheel, context)
+    assert record["verdict"]["class"] == "NON_APPROVED_CRYPTO"
+    assert {"NON_APPROVED_CRYPTO", "CONDITIONAL"} <= set(record["verdict"]["classes"])
+    rule_ids = record["verdict"]["rule_ids"]
+    assert {"BIN_AWS_LC_FIPS", "BIN_OWN_WEAK_HASH_IMPL", "BIN_CURVE25519"} <= set(rule_ids)
+    assert "BIN_AWS_LC" not in rule_ids
+    assert "BIN_AWS_LC_RS_CRATE" not in rule_ids
+    weak_hash_finding = next(
+        finding for finding in record["findings"] if finding["rule_id"] == "BIN_OWN_WEAK_HASH_IMPL"
+    )
+    assert "md5_final" in weak_hash_finding["locations"][0]["evidence"]
+    curve25519_finding = next(
+        finding for finding in record["findings"] if finding["rule_id"] == "BIN_CURVE25519"
+    )
+    assert "curve25519_x25519" in curve25519_finding["locations"][0]["evidence"]
 
 
 def test_a_stock_aws_lc_build_is_non_approved(context, tmp_path: Path) -> None:
