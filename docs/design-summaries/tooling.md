@@ -280,10 +280,12 @@ it gets that from `binfmt.elf` directly.
 
 **Accepted.**
 
-`--format html` writes one self-contained page: no new dependency, and no external
-asset — no CDN script, no stylesheet link, nothing the page loads over the network.
-Python renders a static shell and embeds the records as one JSON block; the page's own
-JavaScript builds the table and the drill-down views from that data at load time.
+`--format html` writes one page: no new runtime dependency, and one external asset --
+one pinned, integrity-checked CDN script (DataTables 3.1.1), loaded `defer`, falling
+back to a native table when it cannot be reached or verified. Python renders a static
+shell and embeds the records as one JSON block; the page's own JavaScript builds the
+table and the drill-down views from that data at load time, then hands both tables to
+DataTables for sorting, searching and paging.
 
 The embedded JSON is escaped so no wheel-controlled string — a filename, a matched
 string, a piece of evidence — can close the `<script>` element it sits in, and the JS
@@ -319,10 +321,14 @@ table's `reasons` column matches the record's full reasons list rather than only
 chips a cell displays, so a reason hidden behind "+N more" still matches. A column that
 already has an exact filter of its own on the toolbar -- the Wheels table's `class`,
 `review` and `openssl` -- gets no column filter, so every field keeps exactly one hash
-parameter. An always-visible class legend between the toolbar and the table lists every
-verdict class present in the current run with its own help text, and the Wheels table
-carries an `openssl` column showing `conditions.openssl_linkage` for the wheel as a
-whole, including `none` — evidence the Markdown table leaves out.
+parameter. DataTables runs the sort, the global search and every column filter through
+these same predicates, never its own, so the enhanced page and its native fallback
+cannot disagree about what belongs on screen. An always-visible class legend between
+the toolbar and the table lists every verdict class present in the current run, each a
+badge beside its own help text, laid out as a horizontal row that wraps at the
+viewport's edge rather than one class per line. The Wheels table carries an `openssl`
+column showing `conditions.openssl_linkage` for the wheel as a whole, including `none`
+— evidence the Markdown table leaves out.
 
 No verdict class gets a favourable colour. The two classes that mean "nothing was
 decided" share one neutral token; every other class is a warning or a danger token, and

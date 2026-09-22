@@ -6226,12 +6226,17 @@ refuse, and `unknown` already has the meaning this case needs.
 
 **Accepted.**
 
-`--format html` writes one self-contained page: Python renders a static shell and embeds
-every scanned record as one JSON block; the page's own JavaScript builds the table, the
-filters and the drill-down views from that data at load time. No new dependency and no
-external asset -- no CDN script, no stylesheet link, no font, nothing the page loads over
-the network -- so the invariant that this tool makes no network access at runtime extends
-to its output, not only to the scan itself.
+`--format html` writes one page: Python renders a static shell and embeds every scanned
+record as one JSON block; the page's own JavaScript builds the table, the filters and
+the drill-down views from that data at load time. The page's own JS is complete by
+itself -- every filter, sort, drill-down and hash-routed link above works with no
+network at all. Its one external asset is DataTables core 3.1.1 from cdn.jsdelivr.net,
+pinned to that exact version, verified with a Subresource Integrity hash, loaded with
+`crossorigin="anonymous"` and `referrerpolicy="no-referrer"`, and `defer`red so it never
+blocks the page's own script from running first. The scan and the render make no network
+access of their own; opening the page fetches that one script, and the invariant that
+this tool makes no network access at runtime is scoped to the scan and the render, not
+to a page a human later opens in a browser that reaches the wider internet.
 
 **The embedding is the security boundary.** Every filename, matched symbol, matched
 string and piece of evidence a wheel carries is untrusted, and a wheel author controls
@@ -6243,13 +6248,61 @@ corrupting exactly the string it was meant to protect. A `\u` escape has no lite
 and round-trips through `JSON.parse` like any other escape in a JSON string. Verified
 against a real browser, not only reasoned from the two specs. The JS that reads the
 payload back never uses `innerHTML`: every value reaches the DOM through `textContent` or
-an element property such as `.value`.
+an element property such as `.value`. DataTables is never handed record text either: no
+`data-search`/`data-order` attribute carries one, and every search it runs is a function
+closed over `DATA.records`, never a string built from a cell -- see "DataTables owns
+sorting, searching and paging" below for what that closes off.
 
 Two embedded records can share a filename -- a cpu and a cuda build of the same wheel
 name, for instance -- so the drill-down is keyed on a record's position in the embedded,
 sorted list, never on the filename: a filename-keyed lookup would let one record's row
 silently open the other's evidence on a collision, with no way from the table to reach
 the one that lost.
+
+**DataTables owns sorting, searching and paging; the page owns the rules.** Once its
+pinned script has loaded, DataTables runs the sort, the global search, the per-column
+search and the paging on both the Wheels and the Rules table. It never runs its own
+comparison or its own text match to do it: every one is the page's own `sortValue`/
+`ruleSortValue`, `columnText`/`ruleColumnText`, `matchesQuery` and `matchesToolbar`,
+handed to DataTables as `ext.order` functions and `search`/`search.fixed`/
+`column().search()` functions, over the same rows `renderRow`/`renderRuleRow` already
+built. A DataTables row index equals a record's position in `DATA.records` (a rule row's
+position in the array `ruleRows()` returns, for the Rules table): rows are added once,
+in that order, and never cleared or re-added, so the index one predicate reads back a
+record by is the same index the other table-building path already uses. A page opened
+with the script reachable and one opened without it therefore cannot disagree about
+what belongs on screen by design -- only by a bug -- and a `network`-marked test drives
+both through the same script of clicks and keystrokes and diffs the two transcripts.
+The hash grammar is unchanged: sort, page and page length stay out of it exactly as they
+already did natively. DataTables never writes a cell: no `render`, `data`, `createdCell`
+or `title` option, no `row().data()`/`cell().data()`/`invalidate()` call, an explicit
+`type` on every column, and `searchable: false` on every column, which keeps its own
+per-cell search-text cache -- the one place 3.1.1 decodes a `&` in cell text through a
+detached element's `innerHTML` -- from ever running over a wheel-controlled string.
+Init replaces the table's own `<colgroup>`; the page re-adopts whatever it leaves in
+place immediately afterward, so the resize handles, `recomputeTableMinWidth` and Reset
+columns keep working exactly as before. No DataTables stylesheet is loaded: its
+default CSS both fights this page's own theming and blocks rendering while it loads,
+and every layout rule DataTables' init actually needs -- the header's wrapped title and
+order-indicator divs, the paging buttons, the empty-table row -- is small enough to
+carry inline, next to the rest of the page's own CSS, once instead of loading a second
+stylesheet just to override it.
+
+**The cost, and the fallback.** Opening a report now contacts cdn.jsdelivr.net, which
+sees the client's IP address, the time of the request and its user agent; `no-referrer`
+keeps the report's own address off that request, and the pin plus the integrity hash
+mean the script that runs is exactly the one this project tested against, never
+whatever jsdelivr serves next. A report served from behind a CSP has to allow that one
+origin for `script-src`. Offline, blocked or served with a body that fails the
+integrity check, the browser never executes the script at all -- `typeof window.DataTable`
+stays `"undefined"` -- and the page falls back to the table it already rendered
+natively, filter-row inputs and all; a later exception during either table's own setup
+is caught the same way and that one table's native rendering restored. The test suite
+that exercises the enhanced path is marked `network` and deselected by default, the same
+way a `real`-marked test needs a wheel corpus few hosts carry; the tests that exercise
+the fallback stub `window.DataTable` or block DNS resolution in Chrome
+(`--host-resolver-rules=MAP * ~NOTFOUND`) and run unmarked, since neither needs a real
+network to prove the fallback works.
 
 **The `openssl` column and the class legend.** The Wheels table carries an `openssl`
 column, after `libraries`, showing `conditions.openssl_linkage` -- the wheel's overall
@@ -6372,13 +6425,30 @@ binaries for evidence that came from the wheel's SBOM.
 - *HTML-entity escaping for the embedded JSON.* Survives `.textContent` as extra literal
   characters inside the string it is meant to protect, corrupting the data it carries.
   The `\u`-escape approach above has no literal `<` and avoids that.
-- *A table library such as DataTables for sorting and per-column filtering.* It needs
-  either a CDN script -- an external asset the page's own no-network invariant refuses --
-  or vendoring third-party JS into the template, a dependency this project does not carry
-  anywhere else. The one feature actually wanted from it, per-column filtering, is a small
-  extension of the filter/`state`/hash machinery the page already has for its toolbar
-  filters, and both tables share it through one `renderFilterRow` helper, the way their
-  headers share `renderSortableHeader`.
+- *Vendoring DataTables into the template.* Copies third-party JS into a project that
+  carries none anywhere else, and a vendored copy drifts from the pin silently -- nothing
+  would catch a hand-edit or a stale copy the way the SRI hash on a CDN reference already
+  does. `tests/helpers/binfmt/` synthesises every other test fixture this project ships
+  rather than committing one; a minified library is not a fixture, but the same reasoning
+  against a committed binary applies to it.
+- *DataTables' own stylesheet.* Fights this page's own theming and blocks rendering while
+  it loads; the few layout rules its init actually needs are cheap enough to carry inline.
+- *`data-search`/`data-order` attributes holding record text.* `filterData` decodes a `&`
+  in that text through a detached element's `innerHTML` -- an XSS path a wheel-controlled
+  filename or matched string would reach directly. It would also mean a second copy of
+  `columnText`/`sortValue`'s own logic stored as DOM text, one more place the two could
+  drift apart.
+- *DataTables' own string and "smart" search, and its own search box and column-search UI.*
+  The built-in search splits words, ANDs them, strips diacritics and matches every column;
+  none of that is `matchesQuery`'s exact-rule-id mode or its plain substring mode, so `#q=`
+  would mean two different things online and offline. Its own search box and per-column
+  UI would vanish in the offline fallback and double up what `#search` and the filter-row
+  inputs already are when DataTables is present, so neither is placed in `layout`.
+- *Feeding DataTables only the rows that pass the toolbar filters.* `rows.add`/`rows.remove`
+  on every filter change would break the row-index-equals-record-index mapping this design
+  relies on, rebuild every row's DOM node, and force DataTables to recompute its own
+  caches on every keystroke; a `search.fixed` predicate that runs over the full row set
+  costs none of that.
 - *Trimming the embedded record, or a size warning past some threshold.* Every field a
   consumer might need for a real investigation is already in the JSONL; leaving any of
   it out of the page would just send the reader back to the JSONL to finish the job the

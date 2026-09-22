@@ -125,7 +125,30 @@ button:hover { border-color: var(--accent); }
   align-items: start;
 }
 
-.class-legend { font-size: 12px; margin: 0 0 12px; }
+/* The always-visible class legend: one row per present verdict class when it wraps
+   a `.legend-grid` (the Help dialog's own use, untouched), and here instead a
+   horizontal row of badge-plus-text pairs that wraps at the viewport's edge rather
+   than stacking one class per line, so a narrow window costs width, not height. */
+.class-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: flex-start;
+  font-size: 12px;
+  margin: 0 0 12px;
+  color: var(--fg-muted);
+}
+
+.class-legend-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 0 1 auto;
+  max-width: min(28em, 100%);
+  min-width: 0;
+}
+
+.class-legend-text { min-width: 0; overflow-wrap: anywhere; }
 
 .swatch {
   display: inline-block;
@@ -564,6 +587,56 @@ dialog#intro p { margin: 10px 0; }
 
 [hidden] { display: none !important; }
 
+/* DataTables coexistence: the page's own header markup and layout survive its init
+   unchanged, so this only styles what init itself adds or what it leaves the header
+   looking like -- see enhanceTables' own comment for what it never does. */
+
+/* Init wraps every header cell's children -- filter-row inputs included -- in
+   `div.dt-column-header > div.dt-column-title`, and appends `div.dt-column-order`
+   as that wrapper's sibling: `display: contents` on both keeps the wrap invisible to
+   layout, so a `th`'s sort button and help button sit exactly where the native
+   header already puts them. */
+.dt-column-header, .dt-column-title { display: contents; }
+.dt-column-order { display: none; }
+
+/* `ordering: { indicators: true }` toggles these classes on the title `th` itself,
+   never the native page's own arrow text (suppressed once enhanced -- see
+   `renderSortableHeader`), so the sort arrow is drawn from CSS instead once
+   DataTables owns the click. `\2191`/`\2193` are the same up/down arrows the native
+   arrow suffix already used, written as ASCII CSS escapes to keep the template pure
+   ASCII. */
+th.dt-ordering-asc .sort-btn::after { content: " \2191"; }
+th.dt-ordering-desc .sort-btn::after { content: " \2193"; }
+
+/* The length-menu and paging rows init lays out at the foot of each table: flexed
+   and wrapping like the toolbar above, not the table row layout DataTables' own
+   `dt-layout-table` row carries (the table itself, left untouched). */
+.dt-container .dt-layout-row:not(.dt-layout-table) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  position: sticky;
+  left: 0;
+}
+
+.dt-paging-button { margin: 0 2px; }
+
+.dt-paging-button.current {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.dt-paging-button.disabled { opacity: 0.5; cursor: default; }
+
+/* The "no rows match" / "no rows at all" placeholder row init draws in the enhanced
+   tbody, replacing the native #empty/note-row text this page draws itself when
+   DataTables is not in charge. */
+td.dt-empty { cursor: default; color: var(--fg-muted); }
+
 @media (max-width: 640px) {
   #toolbar { flex-direction: column; align-items: stretch; }
   #count { margin-left: 0; }
@@ -572,6 +645,7 @@ dialog#intro p { margin: 10px 0; }
   #detail-nav { flex-wrap: wrap; }
 }
 </style>
+<script defer src="https://cdn.jsdelivr.net/npm/datatables.net@3.1.1/js/dataTables.min.js" integrity="sha384-/wQNllndKch2PNTMgHZy0PXZ1xsX1Ejnxbd3ocKUwe1HhGlbbmtCI8c4Saz2wXqF" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
 <body>
 <header>
@@ -614,7 +688,7 @@ dialog#intro p { margin: 10px 0; }
     <span id="count"></span>
   </section>
 
-  <div id="class-legend" class="legend-grid class-legend" role="group" aria-label="Verdict classes in this report"></div>
+  <div id="class-legend" class="class-legend" role="group" aria-label="Verdict classes in this report"></div>
 
   <div class="table-scroll">
     <table id="wheel-table">
@@ -861,10 +935,15 @@ dialog#intro p { margin: 10px 0; }
     // Per-column "contains" filters, keyed by COLUMNS' own column key: a key is
     // present only while its filter text is non-empty, so
     // `Object.keys(state.columnFilters).length` alone says whether any is active.
-    columnFilters: {}
+    columnFilters: {},
+    // Set once `enhanceWheelTable` hands this table to DataTables: guards
+    // `renderSortableHeader`'s own click handler and arrow text, which must step
+    // aside once DataTables' own listener and its `dt-ordering-asc`/`-desc` CSS own
+    // the same button (see `enhanceTables`' own comment).
+    enhanced: false
   };
 
-  var rulesState = { sortKey: "count", sortDir: "desc", columnFilters: {} };
+  var rulesState = { sortKey: "count", sortDir: "desc", columnFilters: {}, enhanced: false };
 
   // The record position currently open in the detail panel, or null: the single
   // source of truth the hash is written from, never read back out of the hash on
@@ -877,6 +956,14 @@ dialog#intro p { margin: 10px 0; }
   var currentView = "wheels";
   var introTab = "intro";
   var columnWidths = {};
+
+  // The wheel table's and the Rules table's own DataTable instance, or null while
+  // native: set once by `enhanceWheelTable`/`enhanceRulesTable` and never reset
+  // back to null except by their own `catch` in `enhanceTables`, since enhancement
+  // runs once, at boot, and never retries. `visibleRecords`, `renderTable` and
+  // `renderRulesTable` all branch on these.
+  var dt = null;
+  var rulesDt = null;
 
   var els = {
     themeToggle: document.getElementById("theme-toggle"),
@@ -902,6 +989,7 @@ dialog#intro p { margin: 10px 0; }
     viewTabRules: document.getElementById("view-tab-rules"),
     viewWheels: document.getElementById("view-wheels"),
     viewRules: document.getElementById("view-rules"),
+    rulesTable: document.getElementById("rules-table"),
     rulesHeaderRow: document.getElementById("rules-header-row"),
     rulesFilterRow: document.getElementById("rules-filter-row"),
     rulesRows: document.getElementById("rules-rows"),
@@ -1377,11 +1465,17 @@ dialog#intro p { margin: 10px 0; }
       btn.type = "button";
       btn.className = "sort-btn";
       var arrow = "";
-      if (sortState.sortKey === column.key) {
+      if (!sortState.enhanced && sortState.sortKey === column.key) {
         arrow = sortState.sortDir === "asc" ? " \u2191" : " \u2193";
       }
       btn.textContent = column.label + arrow;
       btn.addEventListener("click", function () {
+        // Once DataTables owns this table, its own listener -- bound to this same
+        // button by `dt.order.listener` in `enhanceWheelTable`/`enhanceRulesTable`,
+        // never a clone of it -- is what sorts it; this handler stays attached
+        // throughout (init moves a button's children, never the button itself), so
+        // it has to step aside rather than run its own sort beside DataTables' own.
+        if (sortState.enhanced) return;
         if (sortState.sortKey === column.key) {
           sortState.sortDir = sortState.sortDir === "asc" ? "desc" : "asc";
         } else {
@@ -1501,29 +1595,34 @@ dialog#intro p { margin: 10px 0; }
   });
 
   // The class legend between the toolbar and the table: always visible (not
-  // tucked behind the Help dialog), one badge per verdict class actually
-  // present in this run -- DATA.classes, in precedence order, filtered to
-  // CLASS_COUNTS > 0 -- each with its own CLASS_HELP text and no wording of its
-  // own. Built once at boot: the set of classes present in the whole run never
-  // changes as the toolbar's filters are applied, so nothing here needs to be
-  // re-rendered on every `renderTable`. A run with no records leaves `present`
-  // empty, which hides the legend the same way an empty run already hides the
-  // toolbar and the table.
+  // tucked behind the Help dialog), one `.class-legend-item` per verdict class
+  // actually present in this run -- DATA.classes, in precedence order, filtered to
+  // CLASS_COUNTS > 0 -- each a badge beside its own CLASS_HELP text, laid out as a
+  // horizontal row that wraps (see the `.class-legend` CSS) rather than the Help
+  // dialog's own two-column grid. Built once at boot: the set of classes present in
+  // the whole run never changes as the toolbar's filters are applied, so nothing
+  // here needs to be re-rendered on every `renderTable`. A run with no records
+  // leaves `present` empty, which hides the legend the same way an empty run
+  // already hides the toolbar and the table.
   function renderClassLegend() {
     var wrap = els.classLegend;
     wrap.textContent = "";
     var present = DATA.classes.filter(function (cls) { return (CLASS_COUNTS[cls] || 0) > 0; });
     wrap.hidden = present.length === 0;
     present.forEach(function (cls) {
+      var item = document.createElement("span");
+      item.className = "class-legend-item";
       var badge = document.createElement("span");
       badge.className = "badge";
       badge.setAttribute("data-class", cls);
       badge.textContent = cls;
       badge.title = DATA.class_help[cls] || NO_HELP;
-      wrap.appendChild(badge);
-      var dd = document.createElement("div");
-      dd.textContent = DATA.class_help[cls] || NO_HELP;
-      wrap.appendChild(dd);
+      item.appendChild(badge);
+      var text = document.createElement("span");
+      text.className = "class-legend-text";
+      text.textContent = DATA.class_help[cls] || NO_HELP;
+      item.appendChild(text);
+      wrap.appendChild(item);
     });
   }
 
@@ -1596,30 +1695,42 @@ dialog#intro p { margin: 10px 0; }
     return text || "-";
   }
 
-  // `index` is DATA.records.filter's own second callback argument, `record`'s
-  // position in DATA.records, the same array RECORD_RULE_IDS is built from in
-  // lockstep -- every caller here is DATA.records.filter(matchesFilters), never a
-  // filter of some other, unrelated array, so the two stay aligned.
-  function matchesFilters(record, index) {
-    var wheel = record.wheel || {};
-    var verdict = record.verdict || {};
-    var conditions = verdict.conditions || {};
-    var reasons = verdict.reasons || [];
-
+  // `index` is DATA.records.filter's own second callback argument -- and, once
+  // DataTables owns the table, its own row index, which equals a record's position
+  // in DATA.records (`enhanceWheelTable` never adds a row any other way) -- so
+  // either caller stays aligned with RECORD_RULE_IDS, built from DATA.records in
+  // the same order. Split from the toolbar's own exact filters (`matchesToolbar`,
+  // below) so DataTables can run this one as the page's own global search
+  // (`dt.search(...)`, see `enhanceWheelTable`) while `#search` stays the one box
+  // that drives it either way.
+  function matchesQuery(record, index) {
     if (state.ruleId) {
       // A rule click's own filter: exact membership in the rule-id set this
       // record actually fired, not a substring match against reason text, which
       // a real rule-id pair such as BIN_AWS_LC / BIN_AWS_LC_FIPS would satisfy
       // for the wrong rule.
-      if (!RECORD_RULE_IDS[index].has(state.ruleId)) return false;
-    } else if (state.search) {
-      var haystack = ((wheel.filename || "") + " " + reasons.join(" ")).toLowerCase();
-      if (haystack.indexOf(state.search.toLowerCase()) === -1) return false;
+      return RECORD_RULE_IDS[index].has(state.ruleId);
     }
+    if (state.search) {
+      var wheel = record.wheel || {};
+      var reasons = (record.verdict || {}).reasons || [];
+      var haystack = ((wheel.filename || "") + " " + reasons.join(" ")).toLowerCase();
+      return haystack.indexOf(state.search.toLowerCase()) !== -1;
+    }
+    return true;
+  }
+
+  // The toolbar's own exact-match filters: class, OpenSSL linkage and "needs
+  // review only". Split out so DataTables can run it as its own table-scoped fixed
+  // search (`dt.search.fixed("toolbar", ...)`, see `enhanceWheelTable`), separate
+  // from the global search box `matchesQuery` answers to and from any per-column
+  // filter `columnFilterMatches` answers to.
+  function matchesToolbar(record) {
+    var verdict = record.verdict || {};
+    var conditions = verdict.conditions || {};
     if (!state.classes.has(verdict.class)) return false;
     if (state.linkage && conditions.openssl_linkage !== state.linkage) return false;
     if (state.reviewOnly && !verdict.needs_human_review) return false;
-    if (!matchesColumnFilters(state.columnFilters, columnText, record)) return false;
     return true;
   }
 
@@ -1656,21 +1767,44 @@ dialog#intro p { margin: 10px 0; }
     }
   }
 
-  // True when every active filter in `filters` (keyed by column) is found,
-  // case-insensitively and not trimmed -- matching how the toolbar's own search
-  // box (`state.search`) already behaves -- in `textFor(item, key)`. Shared by the
-  // wheel table (`filters` is `state.columnFilters`, `textFor` is `columnText`) and
-  // the Rules table (`rulesState.columnFilters`, `ruleColumnText`). Assumes
-  // `textFor` returns a string for every key `filters` can hold, never `undefined`
-  // (`.toLowerCase` would throw): `filters` is only ever populated with a real
-  // COLUMNS/RULES_COLUMNS key whose column has no `filter: false`, by
-  // `renderFilterRow`'s own `data-key` attributes and by `applyHashParams`'s
-  // `COLUMNS.forEach` read, so `textFor`'s own `default: ""` arm is unreachable,
-  // not a case this function itself has to guard.
+  // One column filter's own "contains" match, case-insensitive and not trimmed --
+  // matching how the toolbar's own search box (`state.search`) already behaves.
+  // `filters` is `state.columnFilters` or `rulesState.columnFilters`, `textFor` is
+  // `columnText` or `ruleColumnText`; assumes `filters[key]` is set and `textFor`
+  // returns a string for `key`, never `undefined` (`.toLowerCase` would throw) --
+  // true of every caller here, see `matchesColumnFilters`' own comment. The
+  // single-key shape both tables' filter-row inputs share: the native path folds
+  // it over every active key below; DataTables owns the enhanced path and calls it
+  // once per column, through `column(i).search(fn)` (see
+  // `enhanceWheelTable`/`enhanceRulesTable`), so the two can never disagree about
+  // what one column filter matches.
+  function columnFilterMatches(filters, textFor, item, key) {
+    return textFor(item, key).toLowerCase().indexOf(filters[key].toLowerCase()) !== -1;
+  }
+
+  // True when every active filter in `filters` (keyed by column) matches, folding
+  // `columnFilterMatches` over every key `filters` holds. Shared by the wheel table
+  // (`filters` is `state.columnFilters`, `textFor` is `columnText`) and the Rules
+  // table (`rulesState.columnFilters`, `ruleColumnText`). `filters` is only ever
+  // populated with a real COLUMNS/RULES_COLUMNS key whose column has no
+  // `filter: false`, by `renderFilterRow`'s own `data-key` attributes and by
+  // `applyHashParams`'s `COLUMNS.forEach` read, so `textFor`'s own `default: ""`
+  // arm is unreachable, not a case this function itself has to guard.
   function matchesColumnFilters(filters, textFor, item) {
     return Object.keys(filters).every(function (key) {
-      return textFor(item, key).toLowerCase().indexOf(filters[key].toLowerCase()) !== -1;
+      return columnFilterMatches(filters, textFor, item, key);
     });
+  }
+
+  // The native path's own filter conjunction: query, toolbar and every column
+  // filter together, folded left to right. DataTables, once it owns a table, never
+  // calls this -- it runs `matchesQuery`, `matchesToolbar` and
+  // `columnFilterMatches` itself, through its own search pipeline (see
+  // `enhanceWheelTable`) -- so the two paths share every predicate and can only
+  // ever disagree by a bug, never by design.
+  function matchesFilters(record, index) {
+    return matchesQuery(record, index) && matchesToolbar(record) &&
+      matchesColumnFilters(state.columnFilters, columnText, record);
   }
 
   function sortValue(record, key) {
@@ -1698,7 +1832,20 @@ dialog#intro p { margin: 10px 0; }
     }
   }
 
+  // The currently filtered and sorted rows, across every page: DataTables owns
+  // both once enhanced, so this reads its applied search and order back rather
+  // than running the native filter/sort below -- `dt.rows(...).indexes()` gives
+  // DataTables row indexes, which equal positions in DATA.records (see
+  // `matchesQuery`'s own comment), so mapping them back needs no lookup of its
+  // own. `"applied"` on both leaves paging out of it deliberately: Previous/Next
+  // and the open detail panel step through the whole filtered, sorted set, not
+  // only the page currently on screen.
   function visibleRecords() {
+    if (dt) {
+      return dt.rows({ search: "applied", order: "applied" }).indexes().toArray().map(
+        function (index) { return DATA.records[index]; }
+      );
+    }
     var rows = DATA.records.filter(matchesFilters);
     var key = state.sortKey;
     var sign = state.sortDir === "desc" ? -1 : 1;
@@ -1868,6 +2015,15 @@ dialog#intro p { margin: 10px 0; }
       document.getElementById("toolbar").hidden = true;
       els.empty.hidden = false;
       els.count.textContent = "";
+      return;
+    }
+
+    // Once enhanced, DataTables owns the redraw: its own `drawCallback` (see
+    // `enhanceWheelTable`) sets `#count` and the detail nav after it runs its own
+    // search and sort, over the same rows and predicates the branch below would
+    // have used natively.
+    if (dt) {
+      dt.draw();
       return;
     }
 
@@ -2124,6 +2280,15 @@ dialog#intro p { margin: 10px 0; }
   }
 
   function renderRulesTable() {
+    // Once enhanced, DataTables owns the redraw and its own `language.emptyTable`/
+    // `zeroRecords` strings stand in for the native note row below: that row's own
+    // `colSpan` would misstate DataTables' column count if it ever reached an
+    // enhanced tbody, so this must return before building one.
+    if (rulesDt) {
+      rulesDt.draw();
+      return;
+    }
+
     var rows = sortedRuleRows();
     els.rulesRows.textContent = "";
     if (!rows.length) {
@@ -2188,6 +2353,13 @@ dialog#intro p { margin: 10px 0; }
     if (pos === -1) return;
     var next = pos + delta;
     if (next < 0 || next >= rows.length) return;
+    // Once DataTables owns paging, stepping onto a row on another page turns that
+    // page too, so the row Previous/Next just opened is the one on screen -- a
+    // page length of -1 ("All") never has a second page to turn to.
+    if (dt) {
+      var pageLength = dt.page.len();
+      if (pageLength !== -1) dt.page(Math.floor(next / pageLength)).draw("page");
+    }
     goToWheel(DATA.records.indexOf(rows[next]));
   }
 
@@ -2854,6 +3026,256 @@ dialog#intro p { margin: 10px 0; }
     else if (activeTab === "raw") renderRawTab(record, activePanel);
   }
 
+  // --- DataTables enhancement -------------------------------------------------
+
+  // Hands both tables to DataTables once its one pinned, integrity-checked script
+  // has loaded, so sorting, searching and paging run through its own tested
+  // machinery instead of this page's own native loops -- over the very same rows
+  // and predicates, so the two can never disagree about what belongs on screen
+  // (see `matchesQuery`/`matchesToolbar`/`columnFilterMatches`/`sortValue`/
+  // `ruleSortValue`, and `enhanceWheelTable`/`enhanceRulesTable` below).
+  //
+  // Never handed record text, so nothing here can execute what a wheel controls:
+  //   - never `render`, `data`, `createdCell`, `title`, `row().data()`,
+  //     `cell().data()` or `invalidate()` -- every cell stays the node
+  //     `renderRow`/`renderRuleRow` already built, so DataTables' own cell-write
+  //     path (which uses `innerHTML`) never runs over one;
+  //   - `searchable: false` on every column, so DataTables' per-cell search-text
+  //     cache -- which decodes a `&` in that text through a detached `innerHTML`
+  //     write -- is never populated from a cell's own text at all;
+  //   - every search DataTables runs is a function (`dt.search`, `search.fixed`,
+  //     `column().search()`), never a string, so nothing here depends on its
+  //     built-in string or "smart" search parsing wheel-controlled text;
+  //   - no `data-*` attribute ever carries record text for DataTables to read.
+  //
+  // Runs once, at boot, and never retries: `typeof window.DataTable !== "function"`
+  // covers both an unreachable CDN and an SRI mismatch (the browser never executes
+  // a script whose hash does not match), and a later exception during either
+  // table's own setup is caught and that one table's native rendering restored,
+  // so a page that cannot reach or verify the script -- or a browser too old for
+  // this build -- still works exactly as it did before DataTables existed.
+  function enhanceTables() {
+    if (typeof window.DataTable !== "function") return;
+    var DT = window.DataTable;
+    // The default, `"alert"`, would pop a dialog and swallow the exception this
+    // page's own `try`/`catch` below needs to see in order to fall back.
+    DT.ext.errMode = "throw";
+    // Registered once, for both tables, before either is constructed (a `type`
+    // naming an unregistered `ext.order` entry at construction time is itself an
+    // error DataTables would throw): each returns the whole column's sort values,
+    // indexed by DataTables row index, computed from this page's own `sortValue`/
+    // `ruleSortValue` over `DATA.records`/`ruleRows()` -- never read off a cell --
+    // so a comparison DataTables makes and one `visibleRecords`'s native branch
+    // would have made are the same comparison.
+    DT.ext.order["wcs-wheels"] = function (settings, columnIndex) {
+      var key = COLUMNS[columnIndex].key;
+      return DATA.records.map(function (record) { return sortValue(record, key); });
+    };
+    DT.ext.order["wcs-rules"] = function (settings, columnIndex) {
+      var key = RULES_COLUMNS[columnIndex].key;
+      return ruleRows().map(function (row) { return ruleSortValue(row, key); });
+    };
+    if (DATA.records.length) {
+      try {
+        enhanceWheelTable(DT);
+      } catch (err) {
+        dt = null;
+        state.enhanced = false;
+        restoreNativeColgroup();
+        renderHeader();
+        renderTable();
+      }
+    }
+    try {
+      enhanceRulesTable(DT);
+    } catch (err) {
+      rulesDt = null;
+      rulesState.enhanced = false;
+      renderRulesHeader();
+      renderRulesTable();
+    }
+  }
+
+  // Only for a table DataTables' own init got far enough to touch before throwing
+  // (fact: init replaces the table's `<colgroup>` with its own): a `catch` that
+  // finds the original still in place leaves it exactly alone, since `els.colgroup`
+  // already points at it and nothing about it needs rebuilding.
+  function restoreNativeColgroup() {
+    if (els.table.querySelector("colgroup")) return;
+    var colgroup = document.createElement("colgroup");
+    colgroup.id = "wheel-colgroup";
+    els.table.insertBefore(colgroup, els.table.firstChild);
+    els.colgroup = colgroup;
+    buildColgroup();
+  }
+
+  // Every column, `type: "wcs"` (unregistered, so DataTables compares the
+  // `ext.order` values above with plain `<`/`>`, exactly what the native
+  // `visibleRecords` already does) and `orderDataType: "wcs-wheels"`/
+  // `"wcs-rules"`. `orderSequence: ["asc", "desc"]` keeps every column two-state,
+  // like the native click-to-toggle header already is -- the default
+  // `["asc", "desc", ""]` would add a third, "unsorted" click state native does
+  // not have. Shared by both tables' `columns` option.
+  function orderColumnOptions(orderDataType, orderSequence) {
+    return { type: "wcs", orderDataType: orderDataType, orderSequence: orderSequence, searchable: false };
+  }
+
+  function enhanceWheelTable(DT) {
+    var focused = document.activeElement;
+    els.rows.textContent = "";
+    els.filterRow.setAttribute("data-dt-order", "disable");
+
+    dt = new DT(els.table, {
+      searching: true,
+      // `handler: false` stops DataTables binding its own click on the whole
+      // header cell -- it still toggles `dt-ordering-asc`/`-desc` and
+      // `aria-sort` for `indicators: true` to draw from -- so only the node
+      // `dt.order.listener` is bound to below (this page's own `.sort-btn`)
+      // triggers a sort, matching what the native header already limits itself
+      // to. `titleRow: 0` confines all of it to the label row, not the filter
+      // row beneath it.
+      ordering: { handler: false, indicators: true },
+      titleRow: 0,
+      // The default reverses a tie on a descending sort; the native tiebreak
+      // (filename, ascending) must not flip with it.
+      orderDescReverse: false,
+      order: [[COLUMNS.findIndex(function (column) { return column.key === state.sortKey; }), state.sortDir]],
+      info: false,
+      autoWidth: false,
+      processing: false,
+      stateSave: false,
+      paging: true,
+      pageLength: 50,
+      lengthMenu: [25, 50, 100, { label: "All", value: -1 }],
+      layout: { topStart: null, topEnd: null, bottomStart: "pageLength", bottomEnd: "paging" },
+      columns: COLUMNS.map(function () { return orderColumnOptions("wcs-wheels", ["asc", "desc"]); }),
+      language: {
+        emptyTable: "No wheels scanned.",
+        zeroRecords: "No wheels match the current filters.",
+        lengthMenu: "_MENU_ wheels per page"
+      },
+      drawCallback: function () {
+        if (!dt) return;
+        els.count.textContent = dt.rows({ search: "applied" }).count() + " of " + DATA.records.length + " wheels";
+        if (currentWheel !== null && !els.detail.hidden) {
+          updateDetailNav(DATA.records[currentWheel]);
+        }
+      }
+    });
+
+    dt.rows.add(DATA.records.map(renderRow));
+
+    // The toolbar's own filters, as one table-scoped fixed search -- distinct from
+    // the global search box below, and from any other DataTable this page might
+    // ever hold, unlike `DT.ext.search`, which is global to the whole page.
+    dt.search.fixed("toolbar", function (searchText, rowData, rowIndex) {
+      return matchesToolbar(DATA.records[rowIndex]);
+    });
+    // `#search`'s own exact-rule-id-or-substring query. Not DataTables' own search
+    // box -- never placed in `layout` above -- since its built-in string search
+    // can only ever mean something different from `matchesQuery`: it splits words,
+    // ANDs them, strips diacritics and matches every column, none of which
+    // `matchesQuery`'s exact rule-id mode or plain substring mode does.
+    dt.search(function (searchText, rowData, rowIndex) {
+      return matchesQuery(DATA.records[rowIndex], rowIndex);
+    });
+    // One `column(i).search(fn)` per filter-row input, reading `state.columnFilters`
+    // live: the input's own `input` handler (`renderFilterRow`) only has to call
+    // `renderTable()`, which calls `dt.draw()` in enhanced mode, for a keystroke to
+    // reach this. DataTables calls every column's own predicate on every draw,
+    // active filter or not -- unlike the native `matchesColumnFilters`, which only
+    // ever calls `columnFilterMatches` for a key already present in `filters` --
+    // so this checks that first: `columnFilterMatches` itself assumes its `key`
+    // argument names a value already there.
+    COLUMNS.forEach(function (column, index) {
+      if (column.filter === false) return;
+      dt.column(index).search(function (searchText, rowData, rowIndex) {
+        if (!(column.key in state.columnFilters)) return true;
+        return columnFilterMatches(state.columnFilters, columnText, DATA.records[rowIndex], column.key);
+      });
+    });
+
+    var sortButtons = els.headerRow.querySelectorAll(".sort-btn");
+    Array.prototype.forEach.call(sortButtons, function (button, index) {
+      dt.order.listener(button, index);
+    });
+
+    state.enhanced = true;
+    // The header was already rendered natively, possibly with an arrow (a sort
+    // clicked before this script answered): strip it now that DataTables' own CSS
+    // (`th.dt-ordering-asc`/`-desc`) draws the same arrow from the class its own
+    // `order()` call above already set.
+    Array.prototype.forEach.call(sortButtons, function (button, index) {
+      button.textContent = COLUMNS[index].label;
+    });
+    var colgroup = els.table.querySelector("colgroup");
+    colgroup.id = "wheel-colgroup";
+    els.colgroup = colgroup;
+    buildColgroup();
+    els.table.setAttribute("data-enhanced", "datatables");
+    if (document.activeElement !== focused) focused.focus();
+    dt.draw();
+  }
+
+  function enhanceRulesTable(DT) {
+    var focused = document.activeElement;
+    els.rulesRows.textContent = "";
+    els.rulesFilterRow.setAttribute("data-dt-order", "disable");
+
+    var rows = ruleRows();
+    var initialOrderIndex = RULES_COLUMNS.findIndex(function (column) {
+      return column.key === rulesState.sortKey;
+    });
+
+    rulesDt = new DT(els.rulesTable, {
+      searching: true,
+      ordering: { handler: false, indicators: true },
+      titleRow: 0,
+      orderDescReverse: false,
+      order: [[initialOrderIndex, rulesState.sortDir]],
+      info: false,
+      autoWidth: false,
+      processing: false,
+      stateSave: false,
+      paging: false,
+      layout: { topStart: null, topEnd: null, bottomStart: null, bottomEnd: null },
+      columns: RULES_COLUMNS.map(function (column) {
+        // `count`'s own default direction is descending (most-matched rule
+        // first); its two-state cycle starts there, matching what a first click
+        // on it already does natively (`column.defaultDir` in
+        // `renderSortableHeader`).
+        var sequence = column.key === "count" ? ["desc", "asc"] : ["asc", "desc"];
+        return orderColumnOptions("wcs-rules", sequence);
+      }),
+      language: {
+        emptyTable: "No rules referenced by any scanned wheel.",
+        zeroRecords: "No rules match the column filters."
+      }
+    });
+
+    rulesDt.rows.add(rows.map(renderRuleRow));
+
+    RULES_COLUMNS.forEach(function (column, index) {
+      rulesDt.column(index).search(function (searchText, rowData, rowIndex) {
+        if (!(column.key in rulesState.columnFilters)) return true;
+        return columnFilterMatches(rulesState.columnFilters, ruleColumnText, rows[rowIndex], column.key);
+      });
+    });
+
+    var sortButtons = els.rulesHeaderRow.querySelectorAll(".sort-btn");
+    Array.prototype.forEach.call(sortButtons, function (button, index) {
+      rulesDt.order.listener(button, index);
+    });
+
+    rulesState.enhanced = true;
+    Array.prototype.forEach.call(sortButtons, function (button, index) {
+      button.textContent = RULES_COLUMNS[index].label;
+    });
+    els.rulesTable.setAttribute("data-enhanced", "datatables");
+    if (document.activeElement !== focused) focused.focus();
+    rulesDt.draw();
+  }
+
   // --- boot ------------------------------------------------------------------
 
   function shouldAutoShowIntro(initialParams) {
@@ -2910,6 +3332,11 @@ dialog#intro p { margin: 10px 0; }
   if (currentWheel !== null) showDetail(currentWheel);
   if (shouldAutoShowIntro(initialParams)) openIntro("intro");
   window.addEventListener("hashchange", applyHashAndRender);
+  // Runs after the native page above has already rendered both tables in full, so
+  // a browser that never reaches or verifies the pinned script (offline, blocked,
+  // an SRI mismatch) or fires no `DOMContentLoaded` before `--dump-dom` reads the
+  // page back is left with a page that already worked without it.
+  document.addEventListener("DOMContentLoaded", enhanceTables);
 })();
 </script>
 </body>
