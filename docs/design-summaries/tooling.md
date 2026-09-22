@@ -301,13 +301,25 @@ unavailable or corrupt storage renders the same page with every preference at it
 default.
 
 The URL hash carries the open wheel (`wheel=<index>`), the top-level view (`view=rules`,
-omitted for its default), and the toolbar's filters (`class=`, `linkage=`, `review=`,
-`q=`), joined by `&` and written with `history.replaceState` rather than `pushState` so
-filtering does not spam browser history. Reading is total: applying a hash always sets
-every recognised field, from the hash or back to its default, so a plain link never
-inherits a filter left active from whatever was open before. Opening a wheel merges into
-the existing filter params instead of overwriting them, and a link carrying any of these
-reproduces the same filtered view on load.
+omitted for its default), the toolbar's filters (`class=`, `linkage=`, `review=`,
+`q=`), and the Wheels table's own per-column filters (`f.<column>=`, one pair per active
+column, written in column order), joined by `&` and written with `history.replaceState`
+rather than `pushState` so filtering does not spam browser history. Reading is total:
+applying a hash always sets every recognised field, from the hash or back to its default,
+so a plain link never inherits a filter left active from whatever was open before.
+Opening a wheel merges into the existing filter params instead of overwriting them, and a
+link carrying any of these reproduces the same filtered view on load. The grammar's scope
+is the Wheels view's own state; the Rules table sits outside that scope entirely, the same
+way its sort already does, so neither its sort nor its own per-column filters are part of
+the hash.
+
+Both tables carry a per-column "contains" filter beside the sortable header, matching
+case-insensitively against the text each cell already shows; the Wheels table's `reasons`
+column matches the record's full reasons list rather than only the chips a cell displays,
+so a reason hidden behind "+N more" still matches. An always-visible class legend beside
+the toolbar lists every verdict class present in the current run with its own help text,
+and the Wheels table carries an `openssl` column showing `conditions.openssl_linkage` for
+the wheel as a whole, including `none` — evidence the Markdown table leaves out.
 
 No verdict class gets a favourable colour. The two classes that mean "nothing was
 decided" share one neutral token; every other class is a warning or a danger token, and
