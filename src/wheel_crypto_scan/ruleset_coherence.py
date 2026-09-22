@@ -189,11 +189,11 @@ def validate_sbom_suppression_leaves_linkage_explained(ruleset: Ruleset, source:
             )
 
 
-# The four tables `_OVERRIDES` (`ruleset_loader.py`) covers, each entry labelled with
-# where it came from for an error message. Shared by every check below that walks
-# `basis`/`relation` across a rule and every override-bearing entry, so the four tables
-# are named in one place rather than once per check.
 def _entries_by_table(ruleset: Ruleset) -> Iterable[tuple[str, str, _OverrideEntry]]:
+    """Every entry of the four tables `_OVERRIDES` (`ruleset_loader.py`) covers, each
+    labelled with the table it came from for an error message. Shared by every check
+    below that walks `basis`/`relation` across a rule and every override-bearing
+    entry, so the four tables are named in one place rather than once per check."""
     for table, entries in (
         ("crypto_distribution", ruleset.distributions),
         ("crypto_library", ruleset.libraries),
@@ -263,6 +263,11 @@ def check_every_standard_is_reachable(ruleset: Ruleset, source: str) -> None:
         )
 
 
+def _rules_of_kind(ruleset: Ruleset, kind: str) -> Iterable[Rule]:
+    """Every rule carrying at least one `[rule.match]` table of matcher kind `kind`."""
+    return (rule for rule in ruleset.rules if any(match["kind"] == kind for match in rule.matches))
+
+
 def check_relation_matches_verdict(ruleset: Ruleset, source: str) -> None:
     """Refuse a (verdict, relation) pair `RELATION_CLASSES` does not allow.
 
@@ -274,15 +279,34 @@ def check_relation_matches_verdict(ruleset: Ruleset, source: str) -> None:
     `_match_py_import` resolve the rule an unrouted entry belongs to: the entry's own
     explicit `rule`, else the table's default rule for the one matcher kind
     `ROUTED_KINDS` routes that table through, else no owner at all (`crypto_distribution`
-    always names its own rule and has no default). A `crypto_library`/`dt_needed`/
-    `linkage` match reads the same table without routing on `rule`, but still inherits
-    the entry's own verdict at scan time, so the routed owner is the right proxy for
-    what a finding through that entry would carry even though more than one rule kind
-    can produce it. Only a pair where both sides are resolved and non-`None` is
-    checked: `OPAQUE` has no row in `RELATION_CLASSES`, so a verdict of `OPAQUE` paired
-    with any relation is refused here, and a verdict with no relation (or the reverse)
-    never reaches this function -- the loader's own co-location check
-    (`ruleset_loader._parse_relation_fields`) refuses that at parse time.
+    always names its own rule and has no default -- every entry there names one).
+    Only a pair where both sides are resolved and non-`None` is checked: `OPAQUE` has
+    no row in `RELATION_CLASSES`, so a verdict of `OPAQUE` paired with any relation is
+    refused, and a verdict with no relation (or the reverse) on a rule, or on an entry
+    with an owner, never reaches the check -- the loader's own co-location check
+    (`ruleset_loader._parse_relation_fields`) already refuses that pairing at parse
+    time for anything that carries both fields together.
+
+    An entry with **no** owner at all -- every shipped `[[crypto_library]]` entry
+    today: no rule declares itself `bundled_library`'s default, and none names
+    `rule=` -- is not covered by that fallback, so it gets its own two rules, neither
+    of which is "treat the missing half as absent and skip the pair," because that
+    would let the shipped shape's actual scan-time behaviour go unchecked:
+
+    * `relation` with no resolvable `verdict` (not on the entry, and no owner to ask)
+      is refused outright. A relation names what would fix a finding against some
+      verdict class; one that can never be checked against any class is not a citation
+      of anything, in any ruleset, at any point in this project's data being filled in.
+    * `verdict` with no `relation` of its own is *not* refused the same way -- it is
+      every shipped entry's shape today, and the totality rule ("a verdict-bearing
+      pair carries a relation") is deliberately not yet enforced across the whole
+      ruleset (see the totality tests `tests/test_ruleset_data.py` defers). But at
+      scan time `_match_bundled_library` lets *any* `bundled_library` rule read an
+      unowned entry (`engine._owns` returns its `unowned` argument, `True`, when
+      there is no owner to compare against), each supplying its own `relation`
+      fallback for whichever object it matches, so the entry's `verdict` is checked
+      here against every such rule's own `relation`, not skipped for lack of one
+      fixed rule to ask.
     """
     for rule in ruleset.rules:
         _check_relation_against_verdict(rule.verdict, rule.relation, f"rule {rule.id!r}", source)
@@ -296,6 +320,19 @@ def check_relation_matches_verdict(ruleset: Ruleset, source: str) -> None:
         verdict = entry.verdict if entry.verdict is not None else (owner and owner.verdict)
         relation = entry.relation if entry.relation is not None else (owner and owner.relation)
         _check_relation_against_verdict(verdict, relation, f"{table} {name!r}", source)
+        if owner is not None:
+            continue
+        if relation is not None and verdict is None:
+            raise RulesetError(
+                f"{source}: {table} {name!r} states relation {relation!r} with no "
+                "verdict anywhere to check it against"
+            )
+        if verdict is not None and relation is None:
+            (kind,) = ROUTED_KINDS[table]
+            for candidate in _rules_of_kind(ruleset, kind):
+                if candidate.relation is not None:
+                    where = f"{table} {name!r} via rule {candidate.id!r}"
+                    _check_relation_against_verdict(verdict, candidate.relation, where, source)
 
 
 def _check_relation_against_verdict(

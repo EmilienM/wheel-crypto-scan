@@ -3175,6 +3175,123 @@ def test_an_incompatible_relation_verdict_pair_on_an_entry_is_rejected() -> None
         parse_ruleset(data)
 
 
+@pytest.mark.parametrize("relation", sorted(RELATIONS))
+def test_opaque_verdict_paired_with_any_relation_is_rejected(relation: str) -> None:
+    """`OPAQUE` has no row in `RELATION_CLASSES`: unreadability has no standard to
+    cite, so a verdict of `OPAQUE` paired with any relation is refused, whichever
+    relation it is -- the issue's "unreadability has no standard" rule, enforced at
+    load time rather than left to a test over the shipped ruleset."""
+    data = _with_standard()
+    data["rule"][0]["verdict"] = "OPAQUE"
+    data["rule"][0]["relation"] = relation
+    data["rule"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="pairs verdict"):
+        parse_ruleset(data)
+
+
+def _bundled_library_ruleset(**rule_overrides: Any) -> dict[str, Any]:
+    """`minimal()` plus one `bundled_library` rule, unrouted -- the shape every
+    shipped `[[crypto_library]]` entry is actually in: `crypto_library` is the one
+    entry table with no rule ever declared its default and no entry ever naming
+    `rule=` (`_check_relation_against_verdict`'s `crypto_library`-shaped tests below
+    rely on this having no owner)."""
+    data = minimal(
+        verdict={"precedence": list(_ALL_VERDICT_CLASSES)},
+        standard=[dict(_TEST_STANDARD)],
+    )
+    data["rule"].append(
+        {
+            "id": "BIN_BUNDLED_OPENSSL",
+            "layer": "binary",
+            "category": "bundled-crypto",
+            "severity": "high",
+            "confidence": "high",
+            "needs_human_review": True,
+            "title": "t",
+            "why": "w",
+            "match": {"kind": "bundled_library"},
+            **rule_overrides,
+        }
+    )
+    return data
+
+
+def test_an_unowned_entrys_relation_with_no_resolvable_verdict_is_rejected() -> None:
+    """`crypto_library` has no owning rule for any entry in the shipped ruleset (see
+    `_bundled_library_ruleset`'s docstring), so stating `relation` alone there, with
+    no `verdict` on the entry and none reachable from any rule either, is refused
+    outright: a relation names what would fix a finding against some verdict class,
+    and one that can never be checked against any class is not a citation of
+    anything."""
+    data = minimal(standard=[dict(_TEST_STANDARD)])
+    del data["crypto_library"][0]["verdict"]
+    data["crypto_library"][0]["relation"] = "outside_module"
+    data["crypto_library"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="no verdict anywhere"):
+        parse_ruleset(data)
+
+
+def test_an_unowned_entrys_verdict_alone_loads_clean_when_no_rule_states_a_relation() -> None:
+    """Today's actual shipped shape, reproduced synthetically: every `[[crypto_
+    library]]` entry carries a `verdict` and no `relation`, and no `bundled_library`
+    rule states one either. The totality rule ("a verdict-bearing pair carries a
+    relation") is deliberately not yet enforced across the whole ruleset --
+    `tests/test_ruleset_data.py`'s totality checks are deferred to the task that
+    populates the data -- so this must keep loading clean, not regress into a refusal
+    the moment an owner-tracking check is added."""
+    parse_ruleset(minimal())
+
+
+def test_an_unowned_entrys_verdict_is_checked_against_every_candidate_rules_relation() -> None:
+    """No `[[crypto_library]]` entry routes to a specific `bundled_library` rule, so
+    *any* such rule can read one at scan time (`engine._owns` returns its `unowned`
+    argument, `True` for `bundled_library`, when there is no owner to compare
+    against). `BIN_BUNDLED_OPENSSL` here states `relation = "boundary_unresolved"`,
+    which only fits `CONDITIONAL` -- incompatible with `openssl`'s own `verdict =
+    "NON_APPROVED_CRYPTO"` (from `minimal()`), so the cross pair a scan could actually
+    produce is refused, not silently skipped for lack of one single owning rule to
+    ask.
+
+    Breaks to prove it: delete the `verdict is not None and relation is None` branch
+    of `check_relation_matches_verdict` (the one that loops `_rules_of_kind`) and this
+    turns green to red.
+    """
+    data = _bundled_library_ruleset(
+        verdict="CONDITIONAL", relation="boundary_unresolved", basis=["TEST-STD"]
+    )
+    with pytest.raises(RulesetError, match="pairs verdict"):
+        parse_ruleset(data)
+
+
+def test_an_unowned_entrys_verdict_against_a_compatible_candidate_relation_loads_clean() -> None:
+    data = _bundled_library_ruleset(
+        verdict="NON_APPROVED_CRYPTO", relation="outside_module", basis=["TEST-STD"]
+    )
+    parse_ruleset(data)
+
+
+def test_an_owned_entrys_relation_is_checked_against_the_owning_rules_verdict() -> None:
+    """`test_an_entry_with_no_own_verdict_inherits_the_owning_rules_verdict_for_the_
+    pair_check` below only asserts the ruleset *loads*, which stays true even if the
+    inheritance line (`owner and owner.verdict`) is deleted, since both sides then
+    read `None` and `_check_relation_against_verdict` skips a pair with either side
+    unset. This pins the same fallback from the other direction: `crypto_
+    distribution` entries always name their own rule (`minimal()`'s `PyNaCl` names
+    `DIST_NON_APPROVED_CRYPTO`, whose `verdict` is `NON_APPROVED_CRYPTO`), so an entry
+    that states only its own `relation` is checked against the owning rule's verdict,
+    not skipped.
+
+    Breaks to prove it: change `owner and owner.verdict` to `None` in
+    `check_relation_matches_verdict` and this turns green to red, while the positive
+    case beside it stays green either way.
+    """
+    data = _with_standard()
+    data["crypto_distribution"][0]["relation"] = "runtime_refusal"
+    data["crypto_distribution"][0]["basis"] = ["TEST-STD"]
+    with pytest.raises(RulesetError, match="pairs verdict"):
+        parse_ruleset(data)
+
+
 @pytest.mark.parametrize("verdict", sorted(RELATION_CLASSES["restricted"]))
 def test_restricted_relation_accepts_both_its_classes(verdict: str) -> None:
     data = _with_standard()
