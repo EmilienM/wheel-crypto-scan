@@ -56,8 +56,9 @@ directory is empty, nothing is declared, and the symbols are hidden by a version
 - **No container images, no RPMs, no sdists.** Wheels only.
 - **No network** in the scan or the render, except an explicitly requested `--index-url`
   download of the wheels. Opening the HTML report fetches DataTables' pinned,
-  integrity-checked script and stylesheet from a CDN, falling back to a native table
-  without them.
+  integrity-checked script and stylesheet from a CDN. Without the script it falls back
+  to a native table; without only the stylesheet, the enhanced table keeps the page's
+  own styling.
 
 ## Quick start
 

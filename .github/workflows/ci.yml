@@ -42,7 +42,7 @@ jobs:
         run: uvx --with tox-uv tox -e py$(echo '${{ matrix.python-version }}' | tr -d .)
 
   network:
-    name: network (DataTables against the pinned CDN script)
+    name: network (DataTables against the pinned CDN script and stylesheet)
     runs-on: ubuntu-latest
     env:
       WCS_REQUIRE_NETWORK: "1"

@@ -302,8 +302,12 @@ th button.sort-btn:hover { text-decoration: underline; }
 
 tbody tr { cursor: pointer; }
 /* DataTables' `display` class draws its own hover as an inset shadow; a background
-   here as well would stack a second tint under it. */
-table:not(.dataTable) > tbody > tr:hover { background: var(--row-hover); }
+   here as well would stack a second tint under it. So an enhanced table takes this
+   one only while `wcs-dt-styled` is absent from `<html>`, which the stylesheet's own
+   load event sets (`loadDataTablesStylesheet`): one that never arrives, or fails its
+   integrity check, leaves the page's own hover in place. */
+table:not(.dataTable) > tbody > tr:hover,
+:root:not(.wcs-dt-styled) table.dataTable > tbody > tr:hover { background: var(--row-hover); }
 
 /* A free-text cell -- a location, an error path or message -- breaks inside a token
    when no normal break point fits, so an unbreakable wheel filename or object path
@@ -589,9 +593,10 @@ dialog#intro p { margin: 10px 0; }
 
 /* DataTables styling. Its default stylesheet (`dataTables.dataTables.min.css`) is
    linked from the page's own script, never from a static link element, so a CDN that
-   hangs never holds up the page's first render; every selector in it is scoped to
-   `table.dataTable` or `div.dt-container`, both of which exist only once
-   `enhanceTables` has run, so the native table never picks any of it up. The link
+   hangs never holds up the page's first render. Its `:root` blocks set only `--dt-*`
+   custom properties, and every other selector in it matches only what DataTables'
+   own init creates (`table.dataTable`, `div.dt-container` and what sits inside it),
+   so the native table never picks any of it up. The link
    is inserted ahead of this `<style>`, so a rule here wins every specificity tie
    against DataTables' own. The rules below only fit that stylesheet to this page:
    the page's colour tokens for its inputs and rules, and the page's own header
@@ -650,11 +655,15 @@ table.dataTable thead > tr > th.dt-orderable-desc:hover {
 /* DataTables draws the faint up/down pair on every sortable column only for a
    header cell it binds its own click to; this page binds the button and the
    indicator instead (`bindSortControls`), so the pair is drawn here from
-   DataTables' own arrow variables. Kept less specific than DataTables' own
-   `th.dt-ordering-asc`/`-desc` rules, which darken the active arrow over it. */
+   DataTables' own arrow variables, and the sorted column's arrow is darkened by the
+   `th.dt-ordering-asc`/`-desc` rule below, the same values DataTables' own rules
+   for those classes set. Every variable carries DataTables' own default as its
+   fallback, the arrow colour the header's own text colour: the variables are
+   defined only by the stylesheet, so without it the arrows and the sorted column
+   still show. */
 table.dataTable thead th .dt-column-order {
   position: relative;
-  width: var(--dt-order-arrow-width);
+  width: var(--dt-order-arrow-width, 8px);
   align-self: stretch;
   cursor: pointer;
 }
@@ -667,19 +676,25 @@ table.dataTable thead th .dt-column-order::after {
   height: 0;
   width: 0;
   left: 0;
-  border-left: calc(var(--dt-order-arrow-width) / 2) solid transparent;
-  border-right: calc(var(--dt-order-arrow-width) / 2) solid transparent;
-  opacity: var(--dt-order-arrow_opacity);
+  border-left: calc(var(--dt-order-arrow-width, 8px) / 2) solid transparent;
+  border-right: calc(var(--dt-order-arrow-width, 8px) / 2) solid transparent;
+  opacity: var(--dt-order-arrow_opacity, 0.125);
 }
 
 table.dataTable thead th .dt-column-order::before {
-  bottom: calc(50% + var(--dt-order-arrow-gap));
-  border-bottom: var(--dt-order-arrow-height) solid var(--dt-order-arrow_color);
+  bottom: calc(50% + var(--dt-order-arrow-gap, 1px));
+  border-bottom: var(--dt-order-arrow-height, 7px) solid
+    var(--dt-order-arrow_color, currentColor);
 }
 
 table.dataTable thead th .dt-column-order::after {
   top: calc(50% + 1px);
-  border-top: var(--dt-order-arrow-height) solid var(--dt-order-arrow_color);
+  border-top: var(--dt-order-arrow-height, 7px) solid var(--dt-order-arrow_color, currentColor);
+}
+
+table.dataTable thead th.dt-ordering-asc .dt-column-order::before,
+table.dataTable thead th.dt-ordering-desc .dt-column-order::after {
+  opacity: var(--dt-order-arrow_opacity-current, 0.65);
 }
 
 /* The filter row never sorts, so its empty order-indicator slot takes no room. */
@@ -702,6 +717,20 @@ div.dt-container .dt-search input { width: 18em; max-width: 100%; }
 }
 
 td.dt-empty { cursor: default; color: var(--fg-muted); }
+
+/* The paging buttons are plain `<button>`s, which the page's own button rule already
+   styles; without the stylesheet (see the hover rule above), these mark which page
+   is on screen and which buttons do nothing, as DataTables' own rules would. */
+:root:not(.wcs-dt-styled) .dt-paging-button.current {
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+:root:not(.wcs-dt-styled) .dt-paging-button.disabled {
+  color: var(--fg-muted);
+  cursor: default;
+  border-color: var(--border);
+}
 
 @media (max-width: 640px) {
   #toolbar { flex-direction: column; align-items: stretch; }
@@ -860,25 +889,28 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
   // `reasons` carries no `width`, since it is the flex column that takes whatever
   // space the others do not claim -- `min` still bounds how far it can be squeezed.
   // The eight fixed columns' `width` plus `reasons`' own `min` is the table's
-  // default rendered width: kept at or under 1332px so a common 1366px-wide
-  // laptop window (less the page's 16px gutters and the scroll box's border)
-  // shows the table with no horizontal scrollbar before any user resizing. Each
-  // width comes from a render of real content: `filename` wide enough for a
-  // typical platform wheel name in two or three lines, `class` for the widest
-  // badge (NON_APPROVED_CRYPTO), and every narrow column for its own header
-  // label, "?" button and sort arrows, which outgrow a version string or an
-  // OpenSSL linkage value. `reasons` takes what is left, its chips wrapping. `filter: false` marks a column that already has an exact toolbar
-  // filter of its own (`class`'s chips, `review`'s checkbox, `openssl`'s linkage
-  // dropdown): `renderFilterRow` leaves its filter-row cell empty rather than
-  // offering a second, looser "contains" filter over the same field, so each
-  // field keeps exactly one hash parameter.
+  // default rendered width: kept at or under 1310px so a common 1366px-wide
+  // laptop window, less the page's 16px gutters, a classic vertical scrollbar
+  // (about 15px, there as soon as the table has more rows than the window) and,
+  // on the native table only, the scroll box's own border, shows the table with
+  // no horizontal scrollbar before any user resizing. Each width comes from a
+  // render of real content: `filename` wide enough for a typical platform wheel
+  // name in two or three lines, `class` for the widest badge
+  // (NON_APPROVED_CRYPTO), and every narrow column for its own header label, "?"
+  // button and sort arrows, which outgrow a version string or an OpenSSL linkage
+  // value. `reasons` takes what is left, its chips wrapping. `filter: false`
+  // marks a column that already has an exact toolbar filter of its own
+  // (`class`'s chips, `review`'s checkbox, `openssl`'s linkage dropdown):
+  // `renderFilterRow` leaves its filter-row cell empty rather than offering a
+  // second, looser "contains" filter over the same field, so each field keeps
+  // exactly one hash parameter.
   var COLUMNS = [
     { key: "filename", label: "wheel", help: "The wheel's filename. The primary key for this report.", width: 280, min: 160 },
     { key: "version", label: "version", help: "The project version declared in the wheel's own metadata.", width: 90, min: 70 },
-    { key: "families", label: "families", help: "crypto.families: every kind of primitive a finding in this wheel is evidence of. See the Help dialog's Reference tab for what each family means.", width: 125, min: 90 },
-    { key: "libraries", label: "libraries", help: "crypto.libraries: every crypto library this wheel carries evidence for, and how it links. See the Help dialog's Reference tab for its OpenSSL linkage table.", width: 135, min: 100 },
+    { key: "families", label: "families", help: "crypto.families: every kind of primitive a finding in this wheel is evidence of. See the Help dialog's Reference tab for what each family means.", width: 118, min: 90 },
+    { key: "libraries", label: "libraries", help: "crypto.libraries: every crypto library this wheel carries evidence for, and how it links. See the Help dialog's Reference tab for its OpenSSL linkage table.", width: 129, min: 100 },
     { key: "openssl", label: "openssl", help: "verdict.conditions.openssl_linkage: how this wheel as a whole gets OpenSSL, including none. Hover a value for its meaning; the Help dialog's Reference tab has the full table.", width: 95, min: 80, filter: false },
-    { key: "relations", label: "relations", help: "verdict.relations: what would have to change, for every relation a contributing finding cited. See the Help dialog's Reference tab for what each relation means.", width: 140, min: 100 },
+    { key: "relations", label: "relations", help: "verdict.relations: what would have to change, for every relation a contributing finding cited. See the Help dialog's Reference tab for what each relation means.", width: 133, min: 100 },
     { key: "class", label: "class", help: "The highest-precedence verdict class that fired for this wheel: the FIPS compatibility lens's own summary, not the wheel's identity. See the Help dialog's Reference tab for what each class means.", width: 200, min: 175, filter: false },
     { key: "review", label: "review", help: "Whether a rule flagged this wheel as needing a human look.", width: 110, min: 105, filter: false },
     { key: "reasons", label: "reasons", help: "The rule ids and subjects behind the verdict, in short form. Hover a chip for its full reason. A column filter on this one matches the full reasons list, not only the chips shown.", min: 155 }
@@ -1107,9 +1139,12 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
 
   // --- theme -------------------------------------------------------------
 
+  // Anything stored that is not "light" or "dark" reads as "system", so the page's
+  // own tokens, DataTables' `dark` class and the toggle's label all agree on it.
   function readThemePref() {
     try {
-      return window.localStorage.getItem("wcs-theme") || "system";
+      var pref = window.localStorage.getItem("wcs-theme");
+      return pref === "light" || pref === "dark" ? pref : "system";
     } catch (err) {
       return "system";
     }
@@ -1136,7 +1171,10 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
   // has no such rule: its dark palette hangs off a `dark` class on `<html>`, so
   // this sets that class from the same answer the page's own CSS reaches, the
   // explicit choice or else the OS preference, and `DARK_QUERY`'s own change
-  // listener below re-runs it when the OS preference flips under "system".
+  // listener below re-runs it when the OS preference flips under "system". Its
+  // arrow colours have a second path too: they also key on `:root[data-theme=dark]`,
+  // which an explicit "dark" here sets directly; the class is what carries the
+  // rest of its palette, and "system", to it.
   function applyTheme(pref) {
     if (pref === "light" || pref === "dark") {
       document.documentElement.setAttribute("data-theme", pref);
@@ -1162,8 +1200,13 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
   }
 
   els.themeToggle.addEventListener("click", cycleTheme);
+  // `addListener` is the same subscription under its older name, for a browser
+  // whose `MediaQueryList` predates `addEventListener`.
+  function onSystemThemeChange() { applyTheme(themePref); }
   if (DARK_QUERY !== null && typeof DARK_QUERY.addEventListener === "function") {
-    DARK_QUERY.addEventListener("change", function () { applyTheme(themePref); });
+    DARK_QUERY.addEventListener("change", onSystemThemeChange);
+  } else if (DARK_QUERY !== null && typeof DARK_QUERY.addListener === "function") {
+    DARK_QUERY.addListener(onSystemThemeChange);
   }
   applyTheme(themePref);
 
@@ -3151,12 +3194,17 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
   // in `<head>`: a stylesheet the parser meets there blocks the first render until
   // it arrives, so a CDN that hangs would hold up a page that needs nothing from
   // it, while one inserted by script never blocks rendering. It styles nothing
-  // before enhancement either way: every selector in it is scoped to
-  // `table.dataTable` or `div.dt-container`, which only `enhanceTables` creates.
-  // Inserted ahead of the page's own `<style>`, so the page's own rules win every
-  // specificity tie against it. A stylesheet that never arrives, or fails its
-  // integrity check, leaves an enhanced table on the page's own CSS alone: plainer,
-  // and still complete.
+  // before enhancement either way: its `:root` blocks set only `--dt-*` custom
+  // properties, which nothing on the native page reads, and every other selector
+  // in it matches only elements or classes DataTables' own init creates
+  // (`table.dataTable`, `div.dt-container` and what sits inside it). Inserted ahead
+  // of the page's own `<style>`, so the page's own rules win every specificity tie
+  // against it. Its load event sets `wcs-dt-styled` on `<html>`, which switches off
+  // the page's own stand-ins for the hover and the paging buttons' states. A
+  // stylesheet that never arrives, or fails its integrity check, never fires it,
+  // and leaves an enhanced table on the page's own CSS: plainer (no stripes, no
+  // sorted-column tint, the control rows stacked), and still complete, its sort
+  // arrows drawn from the fallbacks the page's own arrow rules carry.
   var DT_STYLESHEET_URL =
     "https://cdn.jsdelivr.net/npm/datatables.net-dt@3.1.1/css/dataTables.dataTables.min.css";
   var DT_STYLESHEET_INTEGRITY =
@@ -3170,6 +3218,9 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
     link.integrity = DT_STYLESHEET_INTEGRITY;
     link.crossOrigin = "anonymous";
     link.referrerPolicy = "no-referrer";
+    link.addEventListener("load", function () {
+      document.documentElement.classList.add("wcs-dt-styled");
+    });
     document.head.insertBefore(link, document.head.querySelector("style"));
   }
 
@@ -3192,15 +3243,16 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
     return slot;
   }
 
-  // Undoes `searchSlot`, the hidden `#count` and the `display` class for a wheel
-  // table that fell back to native: the search box goes back to the head of the
-  // toolbar and the count shows again, since the info line that stood in for it
-  // went with DataTables.
+  // Undoes `searchSlot`, the hidden `#count`, the `display` class and the
+  // `data-enhanced` marker for a wheel table that fell back to native: the search
+  // box goes back to the head of the toolbar and the count shows again, since the
+  // info line that stood in for it went with DataTables.
   function restoreNativeChrome() {
     els.search.classList.remove("dt-input");
     els.toolbar.insertBefore(els.search, els.toolbar.firstChild);
     els.count.hidden = false;
     els.table.classList.remove("display");
+    els.table.removeAttribute("data-enhanced");
   }
 
   // Hands both tables to DataTables once its one pinned, integrity-checked script
@@ -3321,6 +3373,7 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
       rulesRows = null;
       rulesState.enhanced = false;
       els.rulesTable.classList.remove("display");
+      els.rulesTable.removeAttribute("data-enhanced");
       renderRulesHeader();
       renderRulesTable();
     }
@@ -3423,8 +3476,8 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
       // `aria-sort` for `indicators: true` to draw from -- so only the nodes
       // `bindSortControls` binds below (this page's own `.sort-btn` and the
       // order indicator beside it) trigger a sort, matching what the native
-      // header already limits itself to. `titleRow: 0` confines all of it to the label row, not the filter
-      // row beneath it.
+      // header already limits itself to. `titleRow: 0` confines all of it to
+      // the label row, not the filter row beneath it.
       ordering: { handler: false, indicators: true },
       // Native has no multi-column sort: one click always replaces the active
       // sort, never adds to it. Without this, a Shift-click would let DataTables

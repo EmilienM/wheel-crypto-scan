@@ -434,10 +434,10 @@ def test_markdown_shows_dependency_only_crypto_in_the_inventory_not_as_absence(
     tmp_path: Path,
 ) -> None:
     """A wheel whose only crypto evidence is `Requires-Dist` on crypto packages must
-    not have it both ways: the headline inventory used to say `No cryptography
-    detected.` while `DIST_DEPENDS_ON_CRYPTO` findings for `bcrypt`, `pynacl` and
-    `cryptography` sat in "Other evidence" right below it, naming exactly the
-    cryptography the headline denied. `relation` stays withheld (a dependency edge
+    not have it both ways: a headline inventory saying `No cryptography detected.`
+    while `DIST_DEPENDS_ON_CRYPTO` findings for `bcrypt`, `pynacl` and
+    `cryptography` sit in "Other evidence" right below it would name exactly the
+    cryptography the headline denies. `relation` stays withheld (a dependency edge
     is not the dependency's own risk), but `family` is descriptive evidence, not a
     risk statement, so it belongs in "Cryptography in this wheel"."""
     wheel = build_wheel(
@@ -1267,14 +1267,13 @@ def test_browser_theme_toggle_cycles_without_storage(tmp_path: Path) -> None:
 # The OS preference as `window.matchMedia` reports it, stubbed ahead of the page's
 # own script: `matches` starts as `__DARK__` and `window.__flipScheme(value)` changes
 # it and fires the page's own "change" listener, the way the OS flipping the scheme
-# under an open page would.
+# under an open page would. `__METHOD__` is the one subscription method the stub
+# offers: `addEventListener`, or `addListener`, its older name.
 _MATCH_MEDIA_STUB = """
 (function () {
   var listeners = [];
-  var query = {
-    matches: __DARK__,
-    addEventListener: function (type, fn) { listeners.push(fn); }
-  };
+  var query = { matches: __DARK__ };
+  query.__METHOD__ = function () { listeners.push(arguments[arguments.length - 1]); };
   window.matchMedia = function () { return query; };
   window.__flipScheme = function (value) {
     query.matches = value;
@@ -1291,6 +1290,7 @@ _MATCH_MEDIA_STUB = """
         ("light", True, False),
         ("system", True, True),
         ("system", False, False),
+        ("bogus", True, True),
     ],
 )
 def test_browser_theme_sets_the_dark_class_datatables_styles_from(
@@ -1299,11 +1299,14 @@ def test_browser_theme_sets_the_dark_class_datatables_styles_from(
     """DataTables' stylesheet keys its dark palette off a `dark` class on `<html>`,
     with no `prefers-color-scheme` rule of its own, so the page sets that class
     from the same answer its own CSS reaches: the explicit choice, or under
-    "system" the OS preference."""
+    "system" the OS preference. A stored value that is neither "light" nor
+    "dark" is "system", as it already is for the page's own tokens."""
     ruleset = load_ruleset(None)
     page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
     seed = (
-        _MATCH_MEDIA_STUB.replace("__DARK__", "true" if os_dark else "false")
+        _MATCH_MEDIA_STUB.replace("__DARK__", "true" if os_dark else "false").replace(
+            "__METHOD__", "addEventListener"
+        )
         + f"window.localStorage.setItem('wcs-theme', '{stored}');"
     )
     script = "document.title = String(document.documentElement.classList.contains('dark'));"
@@ -1311,13 +1314,17 @@ def test_browser_theme_sets_the_dark_class_datatables_styles_from(
     assert _title(dom) == str(expected).lower()
 
 
-def test_browser_dark_class_follows_the_os_scheme_flipping_under_system(tmp_path: Path) -> None:
+@pytest.mark.parametrize("method", ["addEventListener", "addListener"])
+def test_browser_dark_class_follows_the_os_scheme_flipping_under_system(
+    tmp_path: Path, method: str
+) -> None:
     """Under "system", an OS scheme change while the page is open moves the
     `dark` class with it, the way the page's own `prefers-color-scheme` CSS
-    already follows it with no reload."""
+    already follows it with no reload, through `addListener` in a browser whose
+    `MediaQueryList` has no `addEventListener`."""
     ruleset = load_ruleset(None)
     page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
-    seed = _MATCH_MEDIA_STUB.replace("__DARK__", "false") + (
+    seed = _MATCH_MEDIA_STUB.replace("__DARK__", "false").replace("__METHOD__", method) + (
         "window.localStorage.setItem('wcs-theme', 'system');"
     )
     script = (
@@ -1445,10 +1452,10 @@ def _finding(
 # --- onboarding dialog ---------------------------------------------------------
 
 
-def test_html_has_intro_dialog_and_no_legacy_legend_accordion() -> None:
+def test_html_has_intro_dialog_and_no_legend_accordion() -> None:
     """The onboarding dialog sits in the static markup, covered by the same
     ASCII/no-compliance-language scans that already cover the whole page, and the
-    accordion it replaces is gone rather than left as dead markup beside it."""
+    page carries no `<details>` accordion of legend and column help beside it."""
     ruleset = load_ruleset(None)
     page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
     assert '<dialog id="intro" aria-labelledby="intro-title">' in page
@@ -1648,8 +1655,8 @@ def test_browser_intro_backdrop_click_still_closes_the_dialog(tmp_path: Path) ->
 
 
 def test_browser_reference_tab_carries_the_legend_content(tmp_path: Path) -> None:
-    """The Reference tab is the legend's new home: it lists the verdict classes and
-    the columns the accordion used to, now inside the Help dialog."""
+    """The Reference tab, inside the Help dialog, carries the legend: it lists the
+    verdict classes and the columns."""
     ruleset = load_ruleset(None)
     page = render_html([html_record("a", "CONDITIONAL", "bundled")], ruleset)
     dom = _render_in_browser(
@@ -1762,15 +1769,29 @@ def test_browser_wheel_table_min_width_matches_the_columns_default_widths(
     assert _title(dom) == f"{expected}px"
 
 
+_FITS_1366_SCRIPT = """
+window.addEventListener('load', function () {
+  var scroll = document.querySelector(__SELECTOR__);
+  document.title = JSON.stringify({
+    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced'),
+    verticalScrollbar: window.innerWidth - document.documentElement.clientWidth,
+    scrollWidth: scroll.scrollWidth,
+    clientWidth: scroll.clientWidth
+  });
+});
+"""
+
+
 def test_browser_wheel_table_fits_a_1366px_wide_window_with_no_horizontal_scroll(
     tmp_path: Path,
 ) -> None:
     """A common 1366px-wide laptop window shows the table with no horizontal
-    scrollbar before any user resizing. The bound is 1366 rather than 1280
-    because nine columns sized for what they hold (a filename in two or three
-    lines, the widest class badge, a header label with its "?" button and sort
-    arrows) need about 1330px; at 1280 the table scrolls inside its own box
-    instead, and the page itself still never does.
+    scrollbar before any user resizing, with enough rows that the page's own
+    vertical scrollbar takes its share of the width too. The bound is 1366
+    rather than 1280 because nine columns sized for what they hold (a filename
+    in two or three lines, the widest class badge, a header label with its "?"
+    button and sort arrows) need about 1310px; at 1280 the table scrolls inside
+    its own box instead, and the page itself still never does.
 
     Measured against `.table-scroll`, the element the wheel table's own
     horizontal scrollbar appears on, not `document.documentElement`:
@@ -1778,20 +1799,16 @@ def test_browser_wheel_table_fits_a_1366px_wide_window_with_no_horizontal_scroll
     contained there and never widens the outer page, which reads
     `scrollWidth == clientWidth` whether the table fits or not."""
     ruleset = load_ruleset(None)
-    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    page = render_html(_many_records(60), ruleset)
     dom = _render_in_browser(
         tmp_path,
         page,
         window_size="1366,900",
-        extra_script=(
-            "var scroll = document.querySelector('.table-scroll');"
-            "document.title = JSON.stringify({"
-            " scrollWidth: scroll.scrollWidth,"
-            " clientWidth: scroll.clientWidth"
-            "});"
-        ),
+        extra_script=_FITS_1366_SCRIPT.replace("__SELECTOR__", json.dumps(".table-scroll")),
     )
     out = json.loads(_title(dom))
+    assert out["enhanced"] is False
+    assert out["verticalScrollbar"] > 0
     assert out["scrollWidth"] <= out["clientWidth"]
 
 
@@ -3239,10 +3256,11 @@ def test_browser_uses_the_native_table_when_datatables_is_unreachable(tmp_path: 
 # `id`) so the wheel table's and the Rules table's own options, `search.fixed` calls
 # and `order.listener` calls -- both tables carry nine columns -- are never confused
 # with each other. Every property access or call the page makes beyond the ones this
-# stub names explicitly (`search`, `search.fixed`, `order.listener`, `column().search`,
-# `rows.add`, `draw`, `page.len`) resolves to the same self-returning proxy, so an
-# unnamed chain this stub was not told about returns something chainable instead of
-# throwing `undefined is not a function`.
+# stub names explicitly (`search`, `search.fixed`, `order.listener`, `draw`) resolves
+# to the same self-returning proxy, so an unnamed chain this stub was not told about
+# returns something chainable instead of throwing `undefined is not a function`.
+# `draw` throws for each table whose id a test lists in `window.__dtThrowOnDraw`: the
+# last call either table's setup makes, after construction and every other step.
 _DT_STUB_PREAMBLE = """
 window.__dtLog = { constructions: [] };
 (function () {
@@ -3276,7 +3294,11 @@ window.__dtLog = { constructions: [] };
       record.orderListenerCalls.push(index);
       return instance;
     } };
-    instance = makeProxy({ search: searchFn, order: order });
+    var draw = function () {
+      if ((window.__dtThrowOnDraw || []).indexOf(el.id) !== -1) throw new Error('boom-draw');
+      return instance;
+    };
+    instance = makeProxy({ search: searchFn, order: order, draw: draw });
     return instance;
   }
   StubDataTable.ext = { order: {} };
@@ -3416,6 +3438,52 @@ def test_browser_datatables_constructor_exception_falls_back_to_the_native_table
     assert out["countHidden"] is False
     assert out["wheelDisplay"] is False
     assert out["rulesDisplay"] is False
+
+
+def test_browser_datatables_draw_exception_after_setup_restores_the_native_chrome(
+    tmp_path: Path,
+) -> None:
+    """A failure at the very end of `enhanceWheelTable` -- its own `dt.draw()`,
+    after `#count` has already been hidden behind the info line and the search
+    box moved into DataTables' slot -- still leaves the native page as it ships:
+    the count shown again, the search box back in the toolbar, the plain table
+    with no `data-enhanced` marker, and every row. The Rules table's own last
+    step fails the same way and is restored the same way. A constructor that
+    throws never gets as far as hiding the count, so only a failure this late
+    tells the count's restore apart from never having hidden it."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(5), ruleset)
+    script = (
+        "window.__dtThrowOnDraw = ['wheel-table', 'rules-table'];"
+        + _DT_STUB_PREAMBLE
+        + "window.addEventListener('load', function () {"
+        "  var toolbar = document.getElementById('toolbar');"
+        "  document.title = JSON.stringify({"
+        "    constructed: window.__dtLog.constructions.some(function (c) {"
+        "      return c.el === 'wheel-table';"
+        "    }),"
+        "    rows: document.querySelectorAll('#wheel-rows tr').length,"
+        "    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced'),"
+        "    countHidden: document.getElementById('count').hidden,"
+        "    count: document.getElementById('count').textContent,"
+        "    searchInToolbar: toolbar.firstElementChild === document.getElementById('search'),"
+        "    wheelDisplay: document.getElementById('wheel-table').classList.contains('display'),"
+        "    rulesEnhanced: document.getElementById('rules-table').hasAttribute('data-enhanced'),"
+        "    rulesDisplay: document.getElementById('rules-table').classList.contains('display')"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["constructed"] is True
+    assert out["rulesEnhanced"] is False
+    assert out["rulesDisplay"] is False
+    assert out["rows"] == 5
+    assert out["enhanced"] is False
+    assert out["countHidden"] is False
+    assert out["count"] == "5 of 5 wheels"
+    assert out["searchInToolbar"] is True
+    assert out["wheelDisplay"] is False
 
 
 def test_browser_datatables_constructor_exception_after_registration_still_destroys(
@@ -4035,6 +4103,177 @@ def test_network_datatables_default_chrome_with_one_search_box(tmp_path: Path) -
     assert out["infoSearched"] == "Showing 1 to 10 of 10 wheels (filtered from 60 total wheels)"
     assert out["infoRuleClick"] == "Showing 1 to 1 of 1 wheels (filtered from 60 total wheels)"
     assert out["searchAfterRuleClick"] == "BIN_AWS_LC"
+
+
+@pytest.mark.network
+def test_network_datatables_wheel_table_fits_a_1366px_wide_window(tmp_path: Path) -> None:
+    """The enhanced twin of
+    `test_browser_wheel_table_fits_a_1366px_wide_window_with_no_horizontal_scroll`:
+    once DataTables owns the table, its horizontal scroll sits on DataTables' own
+    table cell (`div.dt-layout-table > .dt-layout-cell`), and that cell still
+    fits the table at 1366px with the page's vertical scrollbar showing."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    _require_cdn(_datatables_url(page))
+
+    selector = "div.dt-layout-table > .dt-layout-cell"
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        window_size="1366,900",
+        extra_script=_FITS_1366_SCRIPT.replace("__SELECTOR__", json.dumps(selector)),
+        allow_network=True,
+        virtual_time_budget=5000,
+    )
+    out = json.loads(_title(dom))
+    assert out["enhanced"] is True
+    assert out["verticalScrollbar"] > 0
+    assert out["scrollWidth"] <= out["clientWidth"]
+
+
+def _with_stylesheet_integrity(page: str, integrity: str) -> str:
+    """`page` with the stylesheet's pinned `integrity` swapped for `integrity`, so
+    the browser fetches the real file and then refuses to apply it."""
+    return re.sub(
+        r'(DT_STYLESHEET_INTEGRITY =\s*")[^"]+"', lambda m: m.group(1) + integrity + '"', page
+    )
+
+
+_STYLESHEET_STATE_SCRIPT = """
+window.addEventListener('load', function () {
+  var out = {};
+  out.enhanced = document.getElementById('wheel-table').hasAttribute('data-enhanced');
+  out.styled = document.documentElement.classList.contains('wcs-dt-styled');
+  var ths = document.querySelectorAll('#header-row th');
+  function arrows(th) {
+    var indicator = th.querySelector('.dt-column-order');
+    var up = getComputedStyle(indicator, '::before');
+    var down = getComputedStyle(indicator, '::after');
+    return {
+      width: indicator.getBoundingClientRect().width,
+      upWidth: parseFloat(up.borderLeftWidth) + parseFloat(up.borderRightWidth),
+      upHeight: parseFloat(up.borderBottomWidth),
+      upOpacity: parseFloat(up.opacity),
+      downHeight: parseFloat(down.borderTopWidth),
+      downOpacity: parseFloat(down.opacity)
+    };
+  }
+  out.sortedClass = ths[0].className;
+  out.sorted = arrows(ths[0]);
+  out.unsorted = arrows(ths[1]);
+  var hoverRule = Array.prototype.filter.call(
+    document.head.querySelector('style').sheet.cssRules,
+    function (r) { return r.selectorText && r.selectorText.indexOf('wcs-dt-styled') !== -1 &&
+      r.selectorText.indexOf('tr:hover') !== -1; }
+  )[0];
+  var enhancedHover = hoverRule.selectorText.split(',').filter(function (sel) {
+    return sel.indexOf('wcs-dt-styled') !== -1;
+  })[0].replace(':hover', '');
+  out.pageHoverApplies = document.querySelector('#wheel-rows tr').matches(enhancedHover);
+  var current = document.querySelector('.dt-paging-button.current');
+  var other = document.querySelector('.dt-paging-button:not(.current):not(.disabled)');
+  out.currentMarked = getComputedStyle(current).borderColor !==
+    getComputedStyle(other).borderColor;
+  document.title = JSON.stringify(out);
+});
+"""
+
+
+@pytest.mark.network
+def test_network_datatables_without_its_stylesheet_keeps_sort_arrows_and_hover(
+    tmp_path: Path,
+) -> None:
+    """With the real script loaded but the stylesheet refused -- its `integrity`
+    deliberately wrong, so the browser fetches it and never applies it -- the
+    enhanced table is plainer but still complete: the sorted column's arrow is
+    drawn, wider than nothing and darker than the faint pair on every other
+    column, from the fallbacks the page's own arrow rules carry for DataTables'
+    variables; the page's own row hover applies, since the stylesheet's load
+    event never set `wcs-dt-styled`; and the current page's button still stands
+    out from the others. With the stylesheet intact, the class is set and the
+    page's own hover steps aside for DataTables' own."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    _require_cdn(_datatables_url(page))
+    _require_cdn(_datatables_stylesheet(page)[0])
+    wrong = "sha384-" + base64.b64encode(hashlib.sha384(b"not the stylesheet").digest()).decode()
+
+    results = {}
+    for name, candidate in (
+        ("blocked", _with_stylesheet_integrity(page, wrong)),
+        ("styled", page),
+    ):
+        out_dir = tmp_path / name
+        out_dir.mkdir()
+        dom = _render_in_browser(
+            out_dir,
+            candidate,
+            extra_script=_STYLESHEET_STATE_SCRIPT,
+            allow_network=True,
+            virtual_time_budget=5000,
+        )
+        results[name] = json.loads(_title(dom))
+
+    for name, out in results.items():
+        assert out["enhanced"] is True, name
+        assert "dt-ordering-asc" in out["sortedClass"], name
+        assert out["sorted"]["width"] > 0, name
+        assert out["sorted"]["upWidth"] > 0, name
+        assert out["sorted"]["upHeight"] > 0, name
+        assert out["sorted"]["downHeight"] > 0, name
+        assert out["sorted"]["upOpacity"] > out["sorted"]["downOpacity"], name
+        assert out["sorted"]["upOpacity"] > out["unsorted"]["upOpacity"], name
+        assert out["currentMarked"] is True, name
+    assert results["blocked"]["styled"] is False
+    assert results["blocked"]["pageHoverApplies"] is True
+    assert results["styled"]["styled"] is True
+    assert results["styled"]["pageHoverApplies"] is False
+
+
+@pytest.mark.network
+def test_network_datatables_order_indicator_sorts_and_names_its_column(tmp_path: Path) -> None:
+    """The order indicator DataTables draws beside each header's own sort button is
+    bound to the same sort (`bindSortControls`), by click and by keyboard, and
+    carries an `aria-label` naming its column by label alone (`ariaTitle`), not the
+    whole header cell's text with its "?" button."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(5), ruleset)
+    _require_cdn(_datatables_url(page))
+
+    script = (
+        "window.addEventListener('load', async function () {"
+        "  var out = {};"
+        "  function actAndWaitDraw(act) {"
+        "    return new Promise(function (resolve) {"
+        "      new DataTable('#wheel-table').one('draw', resolve);"
+        "      act();"
+        "    });"
+        "  }"
+        "  var ths = document.querySelectorAll('#header-row th');"
+        "  var versionIndicator = ths[1].querySelector('.dt-column-order');"
+        "  out.labels = [ths[0], ths[1]].map(function (th) {"
+        "    return th.querySelector('.dt-column-order').getAttribute('aria-label');"
+        "  });"
+        "  await actAndWaitDraw(function () { versionIndicator.click(); });"
+        "  out.afterClick = ths[1].className;"
+        "  versionIndicator.focus();"
+        "  await actAndWaitDraw(function () {"
+        "    versionIndicator.dispatchEvent(new KeyboardEvent('keypress', {"
+        "      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,"
+        "      bubbles: true, cancelable: true"
+        "    }));"
+        "  });"
+        "  out.afterEnter = ths[1].className;"
+        "  document.title = JSON.stringify(out);"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["labels"] == ["wheel: Activate to invert sorting", "version: Activate to sort"]
+    assert "dt-ordering-asc" in out["afterClick"]
+    assert "dt-ordering-desc" in out["afterEnter"]
 
 
 @pytest.mark.network

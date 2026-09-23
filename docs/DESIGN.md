@@ -6295,14 +6295,23 @@ DataTables' own sort arrows in the header. Two concerns come with a third-party
 stylesheet, and each has its own answer. *Render blocking:* a `<link>` the parser meets
 in `<head>` holds the first render until the file arrives, so a CDN that hangs would
 blank a page that needs nothing from it; the page's own script creates the link element
-instead, which never blocks rendering. It also styles nothing before enhancement, since
-every selector in it is scoped to `table.dataTable` or `div.dt-container`, which only
-DataTables' own init creates, and a stylesheet that never arrives or fails its integrity
-check leaves an enhanced table on the page's own CSS: plainer, still complete. *Theme:*
+instead, which never blocks rendering. It also styles nothing before enhancement: its
+`:root` blocks set only `--dt-*` custom properties, which nothing on the native page
+reads, and every other selector in it matches only what DataTables' own init creates
+(`table.dataTable`, `div.dt-container` and what sits inside it). A stylesheet that never
+arrives or fails its integrity check leaves an enhanced table on the page's own CSS:
+plainer, still complete. It loses the stripes, the sorted-column tint and the side by
+side control rows, and keeps what a reader needs to use the table. The page's own arrow
+rules give every DataTables variable they read its default as a fallback, so the sort
+arrows and the sorted column still show; the stylesheet's load event sets
+`wcs-dt-styled` on `<html>`, and until it does, the page's own row hover and its marks
+for the current and disabled paging buttons stay in place. *Theme:*
 the stylesheet has no `prefers-color-scheme` rule; its dark palette hangs off a `dark`
 class on `<html>`, so the theme toggle sets that class from the same answer the page's
 own CSS reaches (the explicit choice, or under "system" the OS preference, followed live
-through a `matchMedia` change listener). The link is inserted ahead of the page's own
+through a `matchMedia` change listener); a stored preference that is neither "light" nor
+"dark" reads as "system" for both. Its arrow colours also key on `:root[data-theme=dark]`,
+which the page's explicit "dark" sets directly. The link is inserted ahead of the page's own
 `<style>`, so the page's rules win every specificity tie, and the handful of DataTables
 custom properties that carry a colour of their own (input borders and background, the
 header and row rules) are set on `.dt-container` from the page's tokens, since
@@ -6324,8 +6333,12 @@ Column widths are set for what each column holds, measured from a real render: t
 filename wide enough for a typical platform wheel name in two or three lines (breaking
 at "-" and at the dots of its platform tag, never inside the version or the ".whl"
 suffix), the class column for the widest badge, and each narrow column for its own
-label, "?" button and sort arrows. Together they need about 1330px, so a 1366px-wide
-window shows the whole table and a 1280px one scrolls it inside its own box.
+label, "?" button and sort arrows. Together they need about 1310px: a 1366px-wide
+window, less the page's gutters, a classic 15px vertical scrollbar (there as soon as the
+table has more rows than the window) and, on the native table only, the scroll box's own
+border, shows the whole table, and a 1280px one scrolls it inside its own box. Both
+tables are measured that way, the native one offline and the enhanced one in a `network`
+test, each with enough rows to bring the vertical scrollbar up.
 
 **A tiebreak DataTables never computes.** `ext.order` hands DataTables one sort value
 per row, the same `sortValue`/`ruleSortValue` result the native path compares, with no
@@ -6350,11 +6363,13 @@ its primary value, the two no longer being separate comparisons once joined.
 
 **The cost, and the fallback.** Opening a report contacts cdn.jsdelivr.net, which
 sees the client's IP address, the time of the request and its user agent; `no-referrer`
-keeps the report's own address off that request, and the pin plus the integrity hash
-mean the script that runs is exactly the one this project tested against, never
-whatever jsdelivr serves next. A report served from behind a CSP has to allow that one
-origin for `script-src`. Offline, blocked or served with a body that fails the
-integrity check, the browser never executes the script at all -- `typeof window.DataTable`
+keeps the report's own address off that request, and the pins plus the integrity hashes
+mean the script and stylesheet that apply are exactly the ones this project tested
+against, never whatever jsdelivr serves next. A report served from behind a CSP has to
+allow that one origin, `https://cdn.jsdelivr.net`, for both `script-src` (the script)
+and `style-src` (the stylesheet); allowing only the first leaves the plainer table
+described above. Offline, blocked or served with a body that fails the integrity check,
+the browser never executes the script at all -- `typeof window.DataTable`
 stays `"undefined"` -- and the page falls back to the table it already rendered
 natively, filter-row inputs and all; a later exception during either table's own setup
 is caught the same way and that one table's native rendering restored. The test suite
@@ -6486,20 +6501,28 @@ binaries for evidence that came from the wheel's SBOM.
   characters inside the string it is meant to protect, corrupting the data it carries.
   The `\u`-escape approach above has no literal `<` and avoids that.
 - *Vendoring DataTables into the template.* Every report this tool renders would carry
-  the library's ~120 KiB minified body inline, not the one `<script src>` tag a CDN
-  reference costs regardless of how many reports get written; the project would carry
-  third-party JS and its MIT licence notice as files of its own, the only vendored
-  dependency it ships anywhere; and a version bump would mean re-generating and pasting
-  in the whole minified blob rather than the two-line diff (the URL, the SRI hash) a
-  pinned CDN reference already costs. `tests/helpers/binfmt/` synthesises every other
-  test fixture this project ships rather than committing one; a minified library is not
-  a fixture, but the same reasoning against a committed binary applies to it.
+  the library's ~120 KiB minified script and its stylesheet inline, not the two short
+  references (a `<script src>` tag, a stylesheet URL) a CDN costs regardless of how many
+  reports get written; the project would carry third-party JS and CSS and their MIT
+  licence notice as files of its own, the only vendored dependency it ships anywhere;
+  and a version bump would mean re-generating and pasting in both minified blobs rather
+  than the small diff (two URLs, two SRI hashes) the pinned CDN references already cost.
+  `tests/helpers/binfmt/` synthesises every other test fixture this project ships rather
+  than committing one; a minified library is not a fixture, but the same reasoning
+  against a committed binary applies to it.
 - *A static `<link>` for DataTables' stylesheet.* Blocks the first render until the file
   arrives, so a hung CDN would hold up a page that renders completely without it.
 - *Only the layout rules DataTables' init needs, carried inline, with no stylesheet.*
-  Keeps the table looking like the plain page rather than DataTables' default styling,
-  and re-states by hand the stripes, hover, sort arrows and paging buttons the pinned
-  stylesheet already draws.
+  Re-states by hand, for every reader, the stripes, hover, sort arrows and paging buttons
+  the pinned stylesheet already draws, where the page carries only the few it needs as a
+  fallback for a stylesheet that fails; and it still leaves the table looking like the
+  plain page rather than DataTables' default styling.
+- *Keeping the 1280px width budget with narrower columns.* Every narrow column is already
+  about as wide as its own header label, "?" button and sort arrows, so the remaining
+  50px would come out of the filename, which then wraps a typical platform wheel name
+  onto a fourth line, or out of the class column, which then wraps its widest badge. A
+  1280px window scrolling a readable table inside its own box costs less than every
+  window reading a cramped one.
 - *`data-search`/`data-order` attributes holding record text.* `filterData` decodes a `&`
   in that text through a detached element's `innerHTML` -- an XSS path a wheel-controlled
   filename or matched string would reach directly. It would also mean a second copy of
