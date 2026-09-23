@@ -6340,6 +6340,22 @@ border, shows the whole table, and a 1280px one scrolls it inside its own box. B
 tables are measured that way, the native one offline and the enhanced one in a `network`
 test, each with enough rows to bring the vertical scrollbar up.
 
+A header holds its label, "?" button and order indicator on one line at the default
+widths, and stays inside its own cell at every width a resize allows. DataTables'
+header is a flex row whose order indicator shrinks like any other item, while its
+arrows are absolutely positioned and keep their width, so a squeezed indicator draws
+them over the next column. The page keeps the indicator at full width and, in the
+wheel table, lets a header narrower than one line wrap its "?" button under the label;
+each column's `min`, its resize floor, fits that wrapped header. It also restates
+DataTables' own header layout (label left, indicator right, 4px gap), so a header
+looks the same with the stylesheet blocked. The version and OpenSSL columns take the
+14px each needs for one line from families, libraries and relations, each still wide
+enough for its own header and values. Shrinking the arrows, the "?" button or the header padding instead was
+rejected: each moves the page away from DataTables' default look, and together they
+free only a few pixels. Both tables' headers are measured at the default widths, and
+the wheel table's at every `min`, native offline and enhanced, styled and blocked, in
+a `network` test.
+
 **A tiebreak DataTables never computes.** `ext.order` hands DataTables one sort value
 per row, the same `sortValue`/`ruleSortValue` result the native path compares, with no
 tiebreak of its own: DataTables' own sort, like the native one, is stable, so a tie's

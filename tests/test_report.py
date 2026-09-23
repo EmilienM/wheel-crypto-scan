@@ -1812,6 +1812,109 @@ def test_browser_wheel_table_fits_a_1366px_wide_window_with_no_horizontal_scroll
     assert out["scrollWidth"] <= out["clientWidth"]
 
 
+# Measures every label-row header cell of both tables: the right edge of its sort
+# button, "?" button and, once enhanced, DataTables' order indicator, against the
+# right edge of the cell's content box. The indicator's arrows are absolutely
+# positioned pseudo-elements that keep their width however far the indicator itself
+# is squeezed, so its edge is the wider of the two. The resize handle straddles the
+# column boundary on purpose and is not measured. At the default widths it also
+# lists every cell whose "?" button wrapped under its label, and every order
+# indicator that does not sit to the right of the "?" button. `__MINS__` is null, or the wheel
+# table's per-column `min` (null for the flex column) to narrow every `<col>` to
+# first. The Rules view is unhidden so its table lays out beside the Wheels one.
+_HEADER_FIT_SCRIPT = """
+window.addEventListener('load', function () {
+  var mins = __MINS__;
+  if (mins) {
+    document.querySelectorAll('#wheel-table col').forEach(function (col, i) {
+      if (mins[i] !== null) col.style.width = mins[i] + 'px';
+    });
+  }
+  document.getElementById('view-rules').hidden = false;
+  var out = {
+    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced'),
+    styled: document.documentElement.classList.contains('wcs-dt-styled'),
+    cells: 0,
+    overflows: [],
+    wrapped: [],
+    misplaced: []
+  };
+  ['header-row', 'rules-header-row'].forEach(function (rowId) {
+    document.querySelectorAll('#' + rowId + ' > th').forEach(function (th) {
+      out.cells += 1;
+      var box = th.getBoundingClientRect();
+      var style = getComputedStyle(th);
+      var limit = box.right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+      var help = th.querySelector('.help-btn').getBoundingClientRect();
+      var parts = [th.querySelector('.sort-btn'), th.querySelector('.help-btn')];
+      var order = th.querySelector('.dt-column-order');
+      if (order) parts.push(order);
+      parts.forEach(function (el) {
+        var rect = el.getBoundingClientRect();
+        var right = rect.right;
+        if (el === order) {
+          var arrow = getComputedStyle(el, '::before');
+          right = Math.max(right, rect.left + parseFloat(arrow.borderLeftWidth) +
+            parseFloat(arrow.borderRightWidth));
+        }
+        if (right > limit + 0.5) {
+          out.overflows.push(rowId + ' ' + th.querySelector('.sort-btn').textContent + ' ' +
+            el.className + ' by ' + (right - limit).toFixed(1) + 'px');
+        }
+      });
+      var label = rowId + ' ' + th.querySelector('.sort-btn').textContent;
+      if (!mins && help.top >= th.querySelector('.sort-btn').getBoundingClientRect().bottom) {
+        out.wrapped.push(label);
+      }
+      if (order && !mins && order.getBoundingClientRect().left < help.right) {
+        out.misplaced.push(label);
+      }
+    });
+  });
+  document.title = JSON.stringify(out);
+});
+"""
+
+
+def _header_fit_script(page: str, *, at_min: bool) -> str:
+    mins = None
+    if at_min:
+        mins = [c["min"] if c["width"] is not None else None for c in _parse_columns(page)]
+    return _HEADER_FIT_SCRIPT.replace("__MINS__", json.dumps(mins))
+
+
+def _header_cell_count(page: str) -> int:
+    """How many label-row header cells the two tables carry: one per COLUMNS entry
+    and one per RULES_COLUMNS entry, read from the page's own script."""
+    match = re.search(r"var RULES_COLUMNS = \[(.*?)\];", _js(page), re.DOTALL)
+    assert match is not None
+    return len(_parse_columns(page)) + len(re.findall(r"\bkey:", match.group(1)))
+
+
+@pytest.mark.parametrize("at_min", [False, True], ids=["default", "min"])
+def test_browser_every_header_fits_its_cell(tmp_path: Path, at_min: bool) -> None:
+    """Every header cell of both tables holds its label, "?" button and native sort
+    arrow inside its own content box, at the wheel table's default column widths and
+    at every column's `min`, its resize floor: a narrow wheel-table header wraps the
+    "?" button under the label rather than running into the next column. At the
+    default widths nothing wraps: each column is wide enough for its header on one
+    line. The enhanced twin is
+    `test_network_datatables_every_header_fits_its_cell_styled_or_not`."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        window_size="1366,900",
+        extra_script=_header_fit_script(page, at_min=at_min),
+    )
+    out = json.loads(_title(dom))
+    assert out["enhanced"] is False
+    assert out["cells"] == _header_cell_count(page)
+    assert out["overflows"] == []
+    assert out["wrapped"] == []
+
+
 def test_browser_column_resize_via_pointer_updates_the_col_width(tmp_path: Path) -> None:
     """A pointer drag on the filename column's resize handle updates that column's
     `<col>` width live, by the pointer's movement from the drag's start, and shows
@@ -1848,10 +1951,13 @@ def test_browser_column_resize_via_pointer_updates_the_col_width(tmp_path: Path)
 def test_browser_column_resize_via_keyboard_respects_the_minimum(tmp_path: Path) -> None:
     """Shift+ArrowLeft resizes by 64px per press without any pointer at all, and
     clamps at the column's own minimum rather than going negative: the version
-    column defaults to 90px with a 70px floor, so two presses (90 - 64, then
-    70 - 64) both land on 70."""
+    column's default less 64px is already below its floor, so two presses both
+    land on the floor."""
     ruleset = load_ruleset(None)
     page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    version = _parse_columns(page)[1]
+    assert version["key"] == "version"
+    assert version["width"] - 64 < version["min"]
     script = (
         "var handle = document.querySelectorAll('.col-resize-handle')[1];"
         "handle.focus();"
@@ -1864,7 +1970,7 @@ def test_browser_column_resize_via_keyboard_respects_the_minimum(tmp_path: Path)
         "document.title = document.getElementById('wheel-colgroup').children[1].style.width;"
     )
     dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
-    assert _title(dom) == "70px"
+    assert _title(dom) == f"{version['min']}px"
 
 
 def test_browser_column_resize_clamps_at_the_ceiling_and_survives_a_reload(
@@ -1930,7 +2036,7 @@ def test_browser_column_width_restored_from_storage_at_boot(tmp_path: Path) -> N
         ),
     )
     widths = json.loads(_title(dom))
-    assert widths == ["400px", "90px"]
+    assert widths == ["400px", f"{_parse_columns(page)[1]['width']}px"]
 
 
 def test_browser_column_widths_garbage_storage_does_not_throw(tmp_path: Path) -> None:
@@ -4129,6 +4235,48 @@ def test_network_datatables_wheel_table_fits_a_1366px_wide_window(tmp_path: Path
     assert out["enhanced"] is True
     assert out["verticalScrollbar"] > 0
     assert out["scrollWidth"] <= out["clientWidth"]
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("at_min", [False, True], ids=["default", "min"])
+def test_network_datatables_every_header_fits_its_cell_styled_or_not(
+    tmp_path: Path, at_min: bool
+) -> None:
+    """The enhanced twin of `test_browser_every_header_fits_its_cell`: once
+    DataTables owns both tables, every header cell holds its label, "?" button and
+    DataTables' order indicator inside its own content box, at the wheel table's
+    default column widths and at every column's `min`, both with DataTables'
+    stylesheet applied and with it blocked (its `integrity` deliberately wrong). At
+    the default widths each header is on one line, the indicator beside the "?"
+    button rather than under the label, in both states: the page restates
+    DataTables' header layout for the blocked one."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    _require_cdn(_datatables_url(page))
+    _require_cdn(_datatables_stylesheet(page)[0])
+    wrong = "sha384-" + base64.b64encode(hashlib.sha384(b"not the stylesheet").digest()).decode()
+
+    for name, candidate in (
+        ("styled", page),
+        ("blocked", _with_stylesheet_integrity(page, wrong)),
+    ):
+        out_dir = tmp_path / name
+        out_dir.mkdir()
+        dom = _render_in_browser(
+            out_dir,
+            candidate,
+            window_size="1366,900",
+            extra_script=_header_fit_script(candidate, at_min=at_min),
+            allow_network=True,
+            virtual_time_budget=5000,
+        )
+        out = json.loads(_title(dom))
+        assert out["enhanced"] is True, name
+        assert out["styled"] is (name == "styled"), name
+        assert out["cells"] == _header_cell_count(page), name
+        assert out["overflows"] == [], name
+        assert out["wrapped"] == [], name
+        assert out["misplaced"] == [], name
 
 
 def _with_stylesheet_integrity(page: str, integrity: str) -> str:
