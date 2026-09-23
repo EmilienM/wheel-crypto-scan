@@ -6340,6 +6340,20 @@ border, shows the whole table, and a 1280px one scrolls it inside its own box. B
 tables are measured that way, the native one offline and the enhanced one in a `network`
 test, each with enough rows to bring the vertical scrollbar up.
 
+A header holds its label, "?" button and order indicator on one line at the default
+widths, and stays inside its own cell there and at every `min`. DataTables' header is a
+flex row whose order indicator shrinks like any other item, while its arrows are
+absolutely positioned and keep their width, so a squeezed indicator draws them over the
+next column. The page keeps the indicator at full width and, in the wheel table, lets a
+header narrower than one line wrap its "?" button under the label; each column's `min`,
+its resize floor, fits that wrapped header beside the indicator. For a blocked
+stylesheet the page restates DataTables' own header layout (label left, indicator right,
+4px gap), so a header looks the same either way. The version and OpenSSL columns are 2px
+wider than their one-line headers need, with the room taken from the filename, families,
+libraries and relations, each still wide enough for its own header and values. Both
+tables' headers are measured at the default widths, and the wheel table's at every
+`min`, native offline and enhanced, styled and blocked, in a `network` test.
+
 **A tiebreak DataTables never computes.** `ext.order` hands DataTables one sort value
 per row, the same `sortValue`/`ruleSortValue` result the native path compares, with no
 tiebreak of its own: DataTables' own sort, like the native one, is stable, so a tie's
@@ -6517,6 +6531,9 @@ binaries for evidence that came from the wheel's SBOM.
   the pinned stylesheet already draws, where the page carries only the few it needs as a
   fallback for a stylesheet that fails; and it still leaves the table looking like the
   plain page rather than DataTables' default styling.
+- *Shrinking the order arrows, the "?" button or the header padding to fit a narrow
+  header.* Each moves the page away from DataTables' default look, and together they
+  free only a few pixels, not the 14-16px a one-line version or OpenSSL header needs.
 - *Keeping the 1280px width budget with narrower columns.* Every narrow column is already
   about as wide as its own header label, "?" button and sort arrows, so the remaining
   50px would come out of the filename, which then wraps a typical platform wheel name
