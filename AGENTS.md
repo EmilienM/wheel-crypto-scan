@@ -50,9 +50,9 @@ These are design decisions, not accidents. Do not change one without saying so e
   `except Exception` handlers are deliberate; pylint is configured to allow them.
 - **No network, no LLM, no dataflow analysis at runtime.** Scoped to the scan and the
   render: the only network access either makes is an explicitly requested `--index-url`
-  download. Opening the HTML report is not the scan or the render: it fetches one
-  pinned, integrity-checked script from a CDN, and falls back to a native table when
-  that script cannot be reached or verified.
+  download. Opening the HTML report is not the scan or the render: it fetches
+  DataTables' pinned, integrity-checked script and stylesheet from a CDN, and falls
+  back to a native table when the script cannot be reached or verified.
 
 ## Where things live
 
@@ -156,10 +156,11 @@ uv run wheel-crypto-scan scan /path/to/wheels -o index.jsonl --jobs 8
 Tests marked `real` are deselected by default: they need a corpus of real wheels
 (`WCS_CORPUS_DIR`). Tests marked `network` are deselected by default too: they need a
 live connection to jsdelivr, to check the HTML report's own DataTables enhancement
-against the real, pinned script rather than a stub of it; CI sets `WCS_REQUIRE_NETWORK=1`,
-which turns an unreachable CDN's skip into a failure. Tests marked `hostbin` run by
-default and self-skip on a host without the system library they check; CI sets
-`WCS_REQUIRE_HOSTBIN=1`, which turns that skip into a failure. Line length is 100.
+against the real, pinned script and stylesheet rather than a stub of them; CI sets
+`WCS_REQUIRE_NETWORK=1`, which turns an unreachable CDN's skip into a failure. Tests
+marked `hostbin` run by default and self-skip on a host without the system library they
+check; CI sets `WCS_REQUIRE_HOSTBIN=1`, which turns that skip into a failure. Line length
+is 100.
 
 ## Releasing
 

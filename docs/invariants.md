@@ -72,8 +72,8 @@ is configured to allow them.
 
 Scoped to the scan and the render: the only network access either makes is an
 explicitly requested `--index-url` download. Opening the HTML report is not the scan or
-the render: it fetches one pinned, integrity-checked script from a CDN, and falls back
-to a native table when that script cannot be reached or verified.
+the render: it fetches DataTables' pinned, integrity-checked script and stylesheet from
+a CDN, and falls back to a native table when the script cannot be reached or verified.
 
 ---
 

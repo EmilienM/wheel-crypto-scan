@@ -280,12 +280,17 @@ it gets that from `binfmt.elf` directly.
 
 **Accepted.**
 
-`--format html` writes one page: no new Python dependency, and one external asset --
-one pinned, integrity-checked CDN script (DataTables 3.1.1), loaded `defer`, falling
-back to a native table when it cannot be reached or verified. Python renders a static
-shell and embeds the records as one JSON block; the page's own JavaScript builds the
-table and the drill-down views from that data at load time, then hands both tables to
-DataTables for sorting, searching and paging.
+`--format html` writes one page: no new Python dependency, and two external assets --
+DataTables 3.1.1's pinned, integrity-checked CDN script, loaded `defer`, and its default
+stylesheet, linked from the page's own script so it never blocks the first render --
+falling back to a native table when the script cannot be reached or verified. Python
+renders a static shell and embeds the records as one JSON block; the page's own
+JavaScript builds the table and the drill-down views from that data at load time, then
+hands both tables to DataTables for sorting, searching and paging, in DataTables'
+default look and chrome: search above the table, the info line below it with the page
+length beside the paging buttons, stripes, hover and sort arrows. The theme toggle sets the `dark` class
+DataTables' stylesheet keys its dark palette off, and the page's own `#search` moves into
+DataTables' search slot, so one search box is on screen either way.
 
 The embedded JSON is escaped so no wheel-controlled string — a filename, a matched
 string, a piece of evidence — can close the `<script>` element it sits in, and the JS
@@ -323,10 +328,8 @@ already has an exact filter of its own on the toolbar -- the Wheels table's `cla
 `review` and `openssl` -- gets no column filter, so every field keeps exactly one hash
 parameter. DataTables runs the sort, the global search and every column filter through
 these same predicates, never its own, so the enhanced page and its native fallback agree
-on which rows pass the filters and in what order. An always-visible class legend between
-the toolbar and the table lists every verdict class present in the current run, each a
-badge beside its own help text, laid out as a horizontal row that wraps at the
-viewport's edge rather than one class per line. The Wheels table carries an `openssl`
+on which rows pass the filters and in what order. A class's meaning is a tooltip on its
+toolbar chip and on every badge in the table. The Wheels table carries an `openssl`
 column showing `conditions.openssl_linkage` for the wheel as a whole, including `none`
 — evidence the Markdown table leaves out.
 

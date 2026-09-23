@@ -6230,13 +6230,16 @@ refuse, and `unknown` already has the meaning this case needs.
 record as one JSON block; the page's own JavaScript builds the table, the filters and
 the drill-down views from that data at load time. The page's own JS is complete by
 itself -- every filter, sort, drill-down and hash-routed link above works with no
-network at all. Its one external asset is DataTables core 3.1.1 from cdn.jsdelivr.net,
-pinned to that exact version, verified with a Subresource Integrity hash, loaded with
-`crossorigin="anonymous"` and `referrerpolicy="no-referrer"`, and `defer`red so it never
-blocks the page's own script from running first. The scan and the render make no network
-access of their own; opening the page fetches that one script, and the invariant that
-this tool makes no network access at runtime is scoped to the scan and the render, not
-to a page a human later opens in a browser that reaches the wider internet.
+network at all. Its external assets are DataTables 3.1.1's core script and its default
+stylesheet from cdn.jsdelivr.net, each pinned to that exact version, verified with a
+Subresource Integrity hash and fetched with `crossorigin="anonymous"` and
+`referrerpolicy="no-referrer"`. The script is `defer`red so it never blocks the page's
+own script from running first; the stylesheet is linked from the page's own script, so
+it never blocks the first render (see "DataTables' default styling and chrome" below).
+The scan and the render make no network access of their own; opening the page fetches
+those two files, and the invariant that this tool makes no network access at runtime is
+scoped to the scan and the render, not to a page a human later opens in a browser that
+reaches the wider internet.
 
 **The embedding is the security boundary.** Every filename, matched symbol, matched
 string and piece of evidence a wheel carries is untrusted, and a wheel author controls
@@ -6282,12 +6285,60 @@ and `searchable: false` on every column, which keeps its own per-cell search-tex
 `innerHTML` -- from ever running over a wheel-controlled string. Init replaces the
 table's own `<colgroup>`; the page re-adopts whatever it leaves in place immediately
 afterward, so the resize handles, `recomputeTableMinWidth` and Reset columns work against
-it the same way they work against the native one. No DataTables stylesheet is loaded: its
-default CSS both fights this page's own theming and blocks rendering while it loads,
-and every layout rule DataTables' init actually needs -- the header's wrapped title and
-order-indicator divs, the paging buttons, the empty-table row -- is small enough to
-carry inline, next to the rest of the page's own CSS, once instead of loading a second
-stylesheet just to override it.
+it the same way they work against the native one.
+
+**DataTables' default styling and chrome.** Enhanced, the tables look and behave like
+DataTables' own default styling: the `display` class (stripe, hover, row borders, a tint
+on the sorted column), the search box above the table, the "Showing 1 to 50 of 60
+wheels" info line below it with the page-length menu beside the paging buttons, and
+DataTables' own sort arrows in the header. Two concerns come with a third-party
+stylesheet, and each has its own answer. *Render blocking:* a `<link>` the parser meets
+in `<head>` holds the first render until the file arrives, so a CDN that hangs would
+blank a page that needs nothing from it; the page's own script creates the link element
+instead, which never blocks rendering. It also styles nothing before enhancement: its
+`:root` blocks set only `--dt-*` custom properties, which nothing on the native page
+reads, and every other selector in it matches only what DataTables' own init creates
+(`table.dataTable`, `div.dt-container` and what sits inside it). A stylesheet that never
+arrives or fails its integrity check leaves an enhanced table on the page's own CSS:
+plainer, still complete. It loses the stripes, the sorted-column tint and the side by
+side control rows, and keeps what a reader needs to use the table. The page's own arrow
+rules give every DataTables variable they read its default as a fallback, so the sort
+arrows and the sorted column still show; the stylesheet's load event sets
+`wcs-dt-styled` on `<html>`, and until it does, the page's own row hover and its marks
+for the current and disabled paging buttons stay in place. *Theme:*
+the stylesheet has no `prefers-color-scheme` rule; its dark palette hangs off a `dark`
+class on `<html>`, so the theme toggle sets that class from the same answer the page's
+own CSS reaches (the explicit choice, or under "system" the OS preference, followed live
+through a `matchMedia` change listener); a stored preference that is neither "light" nor
+"dark" reads as "system" for both. Its arrow colours also key on `:root[data-theme=dark]`,
+which the page's explicit "dark" sets directly. The link is inserted ahead of the page's own
+`<style>`, so the page's rules win every specificity tie, and the handful of DataTables
+custom properties that carry a colour of their own (input borders and background, the
+header and row rules) are set on `.dt-container` from the page's tokens, since
+DataTables sets its dark values under `:root.dark`, which a plain `:root` rule would not
+outrank but an ancestor's own value always does through inheritance.
+
+There is one search box on screen either way. Enhanced, the page's own `#search` moves
+into DataTables' `topEnd` layout slot, wrapped in the `div.dt-search` markup DataTables'
+built-in search draws, so it looks and sits like DataTables' box; it is the same element
+with the same listener, so `matchesQuery`, its exact rule-id mode and the `q=` hash mean
+the same thing online and offline. `#count` hides behind the info line, which says the
+same. The header keeps the page's own sort button, "?" button and resize handle inside
+DataTables' header layout; with `ordering.handler: false` DataTables binds nothing to
+the header cell itself, so the page binds its sort to the button and to the order
+indicator beside it, and draws the faint up/down pair on every sortable column from
+DataTables' own arrow variables. The horizontal scroll moves inward to DataTables' own
+table cell, so the controls above and below never scroll sideways with a wide table.
+Column widths are set for what each column holds, measured from a real render: the
+filename wide enough for a typical platform wheel name in two or three lines (breaking
+at "-" and at the dots of its platform tag, never inside the version or the ".whl"
+suffix), the class column for the widest badge, and each narrow column for its own
+label, "?" button and sort arrows. Together they need about 1310px: a 1366px-wide
+window, less the page's gutters, a classic 15px vertical scrollbar (there as soon as the
+table has more rows than the window) and, on the native table only, the scroll box's own
+border, shows the whole table, and a 1280px one scrolls it inside its own box. Both
+tables are measured that way, the native one offline and the enhanced one in a `network`
+test, each with enough rows to bring the vertical scrollbar up.
 
 **A tiebreak DataTables never computes.** `ext.order` hands DataTables one sort value
 per row, the same `sortValue`/`ruleSortValue` result the native path compares, with no
@@ -6312,11 +6363,13 @@ its primary value, the two no longer being separate comparisons once joined.
 
 **The cost, and the fallback.** Opening a report contacts cdn.jsdelivr.net, which
 sees the client's IP address, the time of the request and its user agent; `no-referrer`
-keeps the report's own address off that request, and the pin plus the integrity hash
-mean the script that runs is exactly the one this project tested against, never
-whatever jsdelivr serves next. A report served from behind a CSP has to allow that one
-origin for `script-src`. Offline, blocked or served with a body that fails the
-integrity check, the browser never executes the script at all -- `typeof window.DataTable`
+keeps the report's own address off that request, and the pins plus the integrity hashes
+mean the script and stylesheet that apply are exactly the ones this project tested
+against, never whatever jsdelivr serves next. A report served from behind a CSP has to
+allow that one origin, `https://cdn.jsdelivr.net`, for both `script-src` (the script)
+and `style-src` (the stylesheet); allowing only the first leaves the plainer table
+described above. Offline, blocked or served with a body that fails the integrity check,
+the browser never executes the script at all -- `typeof window.DataTable`
 stays `"undefined"` -- and the page falls back to the table it already rendered
 natively, filter-row inputs and all; a later exception during either table's own setup
 is caught the same way and that one table's native rendering restored. The test suite
@@ -6326,13 +6379,13 @@ the fallback stub `window.DataTable` or block DNS resolution in Chrome
 (`--host-resolver-rules=MAP * ~NOTFOUND`) and run unmarked, since neither needs a real
 network to prove the fallback works.
 
-**The `openssl` column and the class legend.** The Wheels table carries an `openssl`
+**The `openssl` column and what a class means.** The Wheels table carries an `openssl`
 column, after `libraries`, showing `conditions.openssl_linkage` -- the wheel's overall
-OpenSSL posture, including `none` -- which the Markdown table leaves out. An
-always-visible class legend sits between the toolbar and the table, listing every
-verdict class present in the current run with its own `CLASS_HELP` text, so a reader
-does not have to open the Help dialog to know what a badge on screen means; both the
-class-strip chips and the table's own class badges carry that same text as a tooltip.
+OpenSSL posture, including `none` -- which the Markdown table leaves out. A class's
+meaning is one hover away without opening the Help dialog: the toolbar's class chips
+and the table's own class badges both carry its `CLASS_HELP` text as a tooltip, and the
+Help dialog's Reference tab lists every class in full. A separate legend block between
+the toolbar and the table would repeat the chips directly above it.
 
 **Filtering.** The OpenSSL linkage toolbar filter is an exact-match dropdown over
 `conditions.openssl_linkage`; its unfiltered option reads `all`, which keeps it from
@@ -6448,27 +6501,42 @@ binaries for evidence that came from the wheel's SBOM.
   characters inside the string it is meant to protect, corrupting the data it carries.
   The `\u`-escape approach above has no literal `<` and avoids that.
 - *Vendoring DataTables into the template.* Every report this tool renders would carry
-  the library's ~120 KiB minified body inline, not the one `<script src>` tag a CDN
-  reference costs regardless of how many reports get written; the project would carry
-  third-party JS and its MIT licence notice as files of its own, the only vendored
-  dependency it ships anywhere; and a version bump would mean re-generating and pasting
-  in the whole minified blob rather than the two-line diff (the URL, the SRI hash) a
-  pinned CDN reference already costs. `tests/helpers/binfmt/` synthesises every other
-  test fixture this project ships rather than committing one; a minified library is not
-  a fixture, but the same reasoning against a committed binary applies to it.
-- *DataTables' own stylesheet.* Fights this page's own theming and blocks rendering while
-  it loads; the few layout rules its init actually needs are cheap enough to carry inline.
+  the library's ~120 KiB minified script and its stylesheet inline, not the two short
+  references (a `<script src>` tag, a stylesheet URL) a CDN costs regardless of how many
+  reports get written; the project would carry third-party JS and CSS and their MIT
+  licence notice as files of its own, the only vendored dependency it ships anywhere;
+  and a version bump would mean re-generating and pasting in both minified blobs rather
+  than the small diff (two URLs, two SRI hashes) the pinned CDN references already cost.
+  `tests/helpers/binfmt/` synthesises every other test fixture this project ships rather
+  than committing one; a minified library is not a fixture, but the same reasoning
+  against a committed binary applies to it.
+- *A static `<link>` for DataTables' stylesheet.* Blocks the first render until the file
+  arrives, so a hung CDN would hold up a page that renders completely without it.
+- *Only the layout rules DataTables' init needs, carried inline, with no stylesheet.*
+  Re-states by hand, for every reader, the stripes, hover, sort arrows and paging buttons
+  the pinned stylesheet already draws, where the page carries only the few it needs as a
+  fallback for a stylesheet that fails; and it still leaves the table looking like the
+  plain page rather than DataTables' default styling.
+- *Keeping the 1280px width budget with narrower columns.* Every narrow column is already
+  about as wide as its own header label, "?" button and sort arrows, so the remaining
+  50px would come out of the filename, which then wraps a typical platform wheel name
+  onto a fourth line, or out of the class column, which then wraps its widest badge. A
+  1280px window scrolling a readable table inside its own box costs less than every
+  window reading a cramped one.
 - *`data-search`/`data-order` attributes holding record text.* `filterData` decodes a `&`
   in that text through a detached element's `innerHTML` -- an XSS path a wheel-controlled
   filename or matched string would reach directly. It would also mean a second copy of
   `columnText`/`sortValue`'s own logic stored as DOM text, one more place the two could
   drift apart.
-- *DataTables' own string and "smart" search, and its own search box and column-search UI.*
-  The built-in search splits words, ANDs them, strips diacritics and matches every column;
-  none of that is `matchesQuery`'s exact-rule-id mode or its plain substring mode, so `#q=`
-  would mean two different things online and offline. Its own search box and per-column
-  UI would vanish in the offline fallback and double up what `#search` and the filter-row
-  inputs already are when DataTables is present, so neither is placed in `layout`.
+- *DataTables' own string and "smart" search, and its built-in search box and column-search
+  UI.* The built-in search splits words, ANDs them, strips diacritics and matches every
+  column; none of that is `matchesQuery`'s exact-rule-id mode or its plain substring mode,
+  so `#q=` would mean two different things online and offline. Its built-in search box
+  runs that search, so the page's own `#search` takes its place in `layout` instead; its
+  per-column UI would double up the filter-row inputs, so it is not placed at all.
+- *Hiding the toolbar's search box and wiring a second one in DataTables' slot to it.* Two
+  inputs to keep in step, on every keystroke and every hash change; moving the one input
+  keeps a single element, a single listener and a single value.
 - *Feeding DataTables only the rows that pass the toolbar filters.* `rows.add`/`rows.remove`
   on every filter change would break the row-index-equals-record-index mapping this design
   relies on, rebuild every row's DOM node, and force DataTables to recompute its own
