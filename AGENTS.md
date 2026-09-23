@@ -48,8 +48,11 @@ These are design decisions, not accidents. Do not change one without saying so e
   read the tuple to find out what to do about it.
 - **One bad wheel never aborts a run.** Failures become error records. The broad
   `except Exception` handlers are deliberate; pylint is configured to allow them.
-- **No network, no LLM, no dataflow analysis at runtime.** The only network access is an
-  explicitly requested `--index-url` download.
+- **No network, no LLM, no dataflow analysis at runtime.** Scoped to the scan and the
+  render: the only network access either makes is an explicitly requested `--index-url`
+  download. Opening the HTML report is not the scan or the render: it fetches one
+  pinned, integrity-checked script from a CDN, and falls back to a native table when
+  that script cannot be reached or verified.
 
 ## Where things live
 
@@ -68,7 +71,7 @@ These are design decisions, not accidents. Do not change one without saying so e
 | `record.py`, `verdict.py` | Output record shape and verdict assembly |
 | `evidence.py` | What extractors may say: the record dataclasses, and the `FORMAT_*`, `STAGE_*`, `BINDING_*` and `PARTIAL_REASONS` vocabularies |
 | `errors.py` | The `ScanError` kinds, which the ruleset can match on |
-| `report.py`, `data/report.html` | Human views of the records: the Markdown table and the self-contained HTML page |
+| `report.py`, `data/report.html` | Human views of the records: the Markdown table and the HTML page |
 | `progress.py` | The scan's progress on stderr: a live view on a terminal, plain lines elsewhere. Reads records, never writes them |
 | `docs/SCHEMA.md` | The output contract: every record field, versioned. `docs/output-schema.md` is its prose rendering on the site |
 | `docs/DESIGN.md` | The append-only design-decision ledger: what was accepted, what was rejected, and why. `docs/design-summaries/` summarises it by subsystem |
@@ -146,13 +149,17 @@ uvx --with tox-uv tox              # py311-py314, ruff lint and format, pylint, 
 uvx --with tox-uv tox -e lint      # ruff check --select=E,F,W,PLC0415, then ruff format --check
 uvx --with tox-uv tox -e format    # apply formatting
 uvx --with tox-uv tox -e real      # opt-in, needs real wheels in WCS_CORPUS_DIR
+uvx --with tox-uv tox -e network   # opt-in, needs a live network connection
 uv run wheel-crypto-scan scan /path/to/wheels -o index.jsonl --jobs 8
 ```
 
 Tests marked `real` are deselected by default: they need a corpus of real wheels
-(`WCS_CORPUS_DIR`). Tests marked `hostbin` run by default and self-skip on a host without
-the system library they check; CI sets `WCS_REQUIRE_HOSTBIN=1`, which turns that skip
-into a failure. Line length is 100.
+(`WCS_CORPUS_DIR`). Tests marked `network` are deselected by default too: they need a
+live connection to jsdelivr, to check the HTML report's own DataTables enhancement
+against the real, pinned script rather than a stub of it; CI sets `WCS_REQUIRE_NETWORK=1`,
+which turns an unreachable CDN's skip into a failure. Tests marked `hostbin` run by
+default and self-skip on a host without the system library they check; CI sets
+`WCS_REQUIRE_HOSTBIN=1`, which turns that skip into a failure. Line length is 100.
 
 ## Releasing
 

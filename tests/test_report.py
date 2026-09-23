@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
+import hashlib
 import html
 import inspect
 import json
+import os
 import re
 import shutil
 import socket
 import subprocess
+import urllib.error
+import urllib.request
 from importlib.resources import files
 from pathlib import Path
 
@@ -52,6 +57,7 @@ def _render_in_browser(
     extra_script: str = "",
     window_size: str = "",
     virtual_time_budget: int = 0,
+    allow_network: bool = False,
 ) -> str:
     """Render `page` in headless Chrome (or Chromium) and return the DOM it
     produces after load.
@@ -77,10 +83,26 @@ def _render_in_browser(
     browser, not only reasoned from the spec), so a test whose `extra_script`
     depends on that event having already run -- the intro dialog's storage
     write on close, or a chain of reopen/close cycles driven by it -- passes an
-    explicit budget instead."""
+    explicit budget instead.
+
+    `allow_network` defaults to False: `--host-resolver-rules=MAP * ~NOTFOUND` sends
+    every hostname Chrome tries to resolve, the report's pinned DataTables script
+    included, to an address nothing answers, immediately and without a real lookup,
+    the same view of the page a browser with no connection gets. Every test but the
+    ones marked `network` renders this way, so the report's own DataTables
+    enhancement -- which only ever runs once that script has loaded -- never runs
+    during the offline suite, and a test proving the native-table fallback needs no
+    real network outage to do it. A `network`-marked test passes True to reach the
+    real, pinned script instead. On that path, a missing browser fails rather than
+    skips when WCS_REQUIRE_NETWORK is set too: the flag exists to turn a `network`
+    test silently not running into a red CI job, and a host with the CDN reachable
+    but no browser at all would otherwise still report those tests as skipped."""
     binary = _chrome_binary()
     if binary is None:
-        pytest.skip("no headless-capable browser (google-chrome/chromium) on this host")
+        message = "no headless-capable browser (google-chrome/chromium) on this host"
+        if allow_network and os.environ.get("WCS_REQUIRE_NETWORK"):
+            pytest.fail(message + " and WCS_REQUIRE_NETWORK is set")
+        pytest.skip(message)
     if extra_script:
         page = page.replace("</body>", f"<script>{extra_script}</script></body>")
     path = tmp_path / "page.html"
@@ -88,6 +110,7 @@ def _render_in_browser(
     url = f"file://{path}#{fragment}" if fragment else f"file://{path}"
     size = [f"--window-size={window_size}"] if window_size else []
     budget = [f"--virtual-time-budget={virtual_time_budget}"] if virtual_time_budget else []
+    network = [] if allow_network else ["--host-resolver-rules=MAP * ~NOTFOUND"]
     result = subprocess.run(
         [
             binary,
@@ -96,6 +119,7 @@ def _render_in_browser(
             "--no-sandbox",
             *size,
             *budget,
+            *network,
             "--dump-dom",
             url,
         ],
@@ -657,12 +681,29 @@ def test_linkage_help_follows_the_output_schema_linkage_table() -> None:
         assert ("SBOM" in meaning) == ("SBOM" in LINKAGE_HELP[value]), value
 
 
-def test_html_is_self_contained() -> None:
+def test_html_loads_only_the_pinned_datatables_script() -> None:
+    """The page's one external asset is one pinned, integrity-checked CDN script for
+    DataTables: no stylesheet `<link`, no `@import`, and no other `src`/`href` names a
+    network URL at all."""
     ruleset = load_ruleset(None)
     page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
     assert "<link" not in page
     assert "@import" not in page
-    assert re.search(r'(?:src|href)\s*=\s*"https?://', page) is None
+
+    urls = re.findall(r'(?:src|href)\s*=\s*"(https?://[^"]*)"', page)
+    assert len(urls) == 1, urls
+    assert re.fullmatch(
+        r"https://cdn\.jsdelivr\.net/npm/datatables\.net@\d+\.\d+\.\d+/js/dataTables\.min\.js",
+        urls[0],
+    ), urls[0]
+
+    match = re.search(r'<script\b[^>]*\bsrc="' + re.escape(urls[0]) + r'"[^>]*>', page)
+    assert match is not None
+    tag = match.group(0)
+    assert re.search(r'integrity="sha384-[A-Za-z0-9+/]{64}"', tag), tag
+    assert 'crossorigin="anonymous"' in tag
+    assert 'referrerpolicy="no-referrer"' in tag
+    assert re.search(r"(?<!-)\bdefer\b", tag), tag
 
 
 def test_html_embeds_only_referenced_rules() -> None:
@@ -1262,6 +1303,24 @@ def _three_records() -> list[dict]:
     return [a, b, c]
 
 
+def _many_records(count: int) -> list[dict]:
+    """`count` distinct wheels, named `wheel-000`, `wheel-001`, ... so their sorted
+    order is their index, spread across a few classes and OpenSSL linkages: enough
+    rows to force the wheel table into a second page, for a test that checks paging
+    or DataTables' own enhancement against a table too big to read by eye."""
+    classes = ["CONDITIONAL", "OPAQUE", "FIPS_BREAKING", "NO_CRYPTO_DETECTED"]
+    linkages = ["bundled", "none", "static", "system"]
+    return [
+        record(
+            f"wheel-{i:03d}",
+            classes[i % len(classes)],
+            linkages[i % len(linkages)],
+            review=(i % 2 == 0),
+        )
+        for i in range(count)
+    ]
+
+
 def _finding(
     rule_id: str,
     subject: str | None,
@@ -1565,6 +1624,17 @@ def _parse_columns(page: str) -> list[dict]:
             }
         )
     return columns
+
+
+def _parse_rules_column_keys(page: str) -> list[str]:
+    """`RULES_COLUMNS`' own `key` fields, parsed the same way `_parse_columns`
+    parses `COLUMNS`: `extra_script` runs outside the page's own IIFE and cannot
+    read `RULES_COLUMNS` itself, so a test script that wants every column key
+    needs them handed in from here."""
+    script = _js(page)
+    match = re.search(r"var RULES_COLUMNS = \[(.*?)\];", script, re.DOTALL)
+    assert match is not None
+    return re.findall(r'key:\s*"(\w+)"', match.group(1))
 
 
 def test_html_wheel_table_layout_is_fixed_with_no_static_min_width() -> None:
@@ -2841,7 +2911,7 @@ def test_browser_class_legend_lists_present_classes_with_class_help(tmp_path: Pa
 
     script = (
         "var badges = document.querySelectorAll('#class-legend .badge');"
-        "var descriptions = document.querySelectorAll('#class-legend > div');"
+        "var descriptions = document.querySelectorAll('#class-legend .class-legend-text');"
         "document.title = JSON.stringify({"
         " classes: Array.prototype.map.call(badges, "
         "   function (b) { return b.getAttribute('data-class'); }),"
@@ -2960,3 +3030,1157 @@ def test_browser_linkage_filter_unfiltered_option_reads_all(tmp_path: Path) -> N
     script = "document.title = document.getElementById('linkage-filter').options[0].textContent;"
     dom = _render_in_browser(tmp_path, page, extra_script=script)
     assert _title(dom) == "all"
+
+
+# --- class legend layout ---------------------------------------------------------
+
+
+def test_browser_class_legend_lays_out_as_a_horizontal_row_on_desktop(tmp_path: Path) -> None:
+    """The always-visible class legend is a horizontal, wrapping row, not one class
+    per line: at a normal desktop width, the first two present classes' items sit
+    on the same line, sharing `offsetTop`."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var items = document.querySelectorAll('#class-legend .class-legend-item');"
+        "document.title = JSON.stringify({"
+        " first: items[0].offsetTop, second: items[1].offsetTop"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, window_size="1280,900", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["first"] == out["second"]
+
+
+def test_browser_class_legend_wraps_without_widening_the_page_on_a_phone(tmp_path: Path) -> None:
+    """At a phone width, the legend wraps inside its own box instead of forcing a
+    horizontal scrollbar on the page: `flex-wrap: wrap` keeps the row's own width
+    bounded the way a one-class-per-line layout would."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    script = (
+        "var legend = document.getElementById('class-legend');"
+        "var doc = document.documentElement;"
+        "document.title = JSON.stringify({"
+        " legendFits: legend.scrollWidth <= legend.clientWidth,"
+        " pageFits: doc.scrollWidth <= doc.clientWidth"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, window_size="375,800", extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["legendFits"] is True
+    assert out["pageFits"] is True
+
+
+def test_browser_help_dialog_legend_grid_stays_a_two_column_grid(
+    tmp_path: Path,
+) -> None:
+    """`.legend-grid` lays out the Help dialog's own Families/Classes/
+    Relations/OpenSSL-linkage/Columns grids as a two-column grid: the
+    always-visible class legend's own flex row (`.class-legend`) is a separate
+    class on a separate element, not a redefinition of this one."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        "document.getElementById('intro-tab-reference').click();"
+        "var grid = document.querySelector('#legend-body .legend-grid');"
+        "document.title = getComputedStyle(grid).display;"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    assert _title(dom) == "grid"
+
+
+# --- DataTables enhancement -------------------------------------------------------
+
+
+def _cdn_reachable(url: str) -> bool:
+    try:
+        urllib.request.urlopen(url, timeout=10)  # noqa: S310 -- the one deliberate network test
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _require_cdn(url: str) -> None:
+    """Skips a `network`-marked test when `url` is unreachable -- or fails it when
+    WCS_REQUIRE_NETWORK is set, which CI does so that a runner with no route to
+    jsdelivr turns these checks red instead of silently off, mirroring
+    `_host_libcrypto`'s own WCS_REQUIRE_HOSTBIN switch in test_binfmt_elf.py."""
+    if _cdn_reachable(url):
+        return
+    message = f"{url} is not reachable"
+    if os.environ.get("WCS_REQUIRE_NETWORK"):
+        pytest.fail(message + " and WCS_REQUIRE_NETWORK is set")
+    pytest.skip(message)
+
+
+def _datatables_url(page: str) -> str:
+    match = re.search(r'<script[^>]*\bsrc="(https://[^"]*dataTables\.min\.js)"', page)
+    assert match is not None, "no DataTables script tag found in the rendered page"
+    return match.group(1)
+
+
+def test_browser_uses_the_native_table_when_datatables_is_unreachable(tmp_path: Path) -> None:
+    """With no network at all (`_render_in_browser`'s own default), the pinned
+    DataTables script never loads, so `enhanceTables` returns before touching
+    anything: the page stays on the native table it already rendered, complete."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    script = (
+        "window.addEventListener('load', function () {"
+        "  document.title = JSON.stringify({"
+        "    dataTableUndefined: typeof window.DataTable === 'undefined',"
+        "    dtContainer: !!document.querySelector('.dt-container'),"
+        "    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced'),"
+        "    rows: document.querySelectorAll('#wheel-rows tr').length,"
+        "    count: document.getElementById('count').textContent"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["dataTableUndefined"] is True
+    assert out["dtContainer"] is False
+    assert out["enhanced"] is False
+    assert out["rows"] == 60
+    assert out["count"] == "60 of 60 wheels"
+
+
+# A hand-written stand-in for `window.DataTable`, not a Proxy over a single shared
+# target: every construction gets its own `record` (keyed by the table element's own
+# `id`) so the wheel table's and the Rules table's own options, `search.fixed` calls
+# and `order.listener` calls -- both tables carry nine columns -- are never confused
+# with each other. Every property access or call the page makes beyond the ones this
+# stub names explicitly (`search`, `search.fixed`, `order.listener`, `column().search`,
+# `rows.add`, `draw`, `page.len`) resolves to the same self-returning proxy, so an
+# unnamed chain this stub was not told about returns something chainable instead of
+# throwing `undefined is not a function`.
+_DT_STUB_PREAMBLE = """
+window.__dtLog = { constructions: [] };
+(function () {
+  function makeProxy(overrides) {
+    var proxy = new Proxy(function () {}, {
+      get: function (target, prop) {
+        if (overrides && Object.prototype.hasOwnProperty.call(overrides, prop)) {
+          return overrides[prop];
+        }
+        if (prop === "toArray") return function () { return []; };
+        if (prop === "count") return function () { return 0; };
+        if (prop === "len") return function () { return 50; };
+        return proxy;
+      },
+      apply: function () { return proxy; }
+    });
+    return proxy;
+  }
+  function StubDataTable(el, options) {
+    var record = {
+      el: el.id, options: options, searchFixedCalls: [], orderListenerCalls: []
+    };
+    window.__dtLog.constructions.push(record);
+    var instance;
+    var searchFn = function () { return instance; };
+    searchFn.fixed = function (name) {
+      record.searchFixedCalls.push(name);
+      return instance;
+    };
+    var order = { listener: function (node, index) {
+      record.orderListenerCalls.push(index);
+      return instance;
+    } };
+    instance = makeProxy({ search: searchFn, order: order });
+    return instance;
+  }
+  StubDataTable.ext = { order: {} };
+  window.DataTable = StubDataTable;
+})();
+"""
+
+
+def test_browser_datatables_init_receives_the_expected_wheel_table_options(
+    tmp_path: Path,
+) -> None:
+    """A stub `window.DataTable` records exactly what `enhanceWheelTable` hands it,
+    with no real DataTables machinery involved: the options that keep a
+    wheel-controlled string from ever being handed back to the DOM
+    (`searchable: false`, an explicit `type`, no `data`/`render`), the options that
+    keep the header click and its arrow this page's own (`ordering.handler`,
+    `titleRow`, `orderDescReverse`), `orderMulti: false` on both tables (native has
+    no multi-column sort), the toolbar's own fixed search, and one
+    `order.listener` call per wheel-table column."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    column_count = len(_parse_columns(page))
+    script = (
+        _DT_STUB_PREAMBLE + "document.addEventListener('DOMContentLoaded', function () {"
+        "  var wheelRecord = window.__dtLog.constructions.filter(function (c) {"
+        "    return c.el === 'wheel-table';"
+        "  })[0];"
+        "  var rulesRecord = window.__dtLog.constructions.filter(function (c) {"
+        "    return c.el === 'rules-table';"
+        "  })[0];"
+        "  var options = wheelRecord.options;"
+        "  var columns = options.columns;"
+        "  document.title = JSON.stringify({"
+        "    searching: options.searching,"
+        "    handler: options.ordering.handler,"
+        "    titleRow: options.titleRow,"
+        "    orderDescReverse: options.orderDescReverse,"
+        "    orderMulti: options.orderMulti,"
+        "    rulesOrderMulti: rulesRecord.options.orderMulti,"
+        "    autoWidth: options.autoWidth,"
+        "    columnCount: columns.length,"
+        "    columnsOk: columns.every(function (c) {"
+        "      return c.searchable === false && c.type === 'wcs' &&"
+        "        !('data' in c) && !('render' in c) && !('createdCell' in c) &&"
+        "        !('title' in c);"
+        "    }),"
+        "    wheelsOrder: typeof DataTable.ext.order['wcs-wheels'],"
+        "    rulesOrder: typeof DataTable.ext.order['wcs-rules'],"
+        "    searchFixedCalls: wheelRecord.searchFixedCalls,"
+        "    orderListenerCalls: wheelRecord.orderListenerCalls.length"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["searching"] is True
+    assert out["handler"] is False
+    assert out["titleRow"] == 0
+    assert out["orderDescReverse"] is False
+    assert out["orderMulti"] is False
+    assert out["rulesOrderMulti"] is False
+    assert out["autoWidth"] is False
+    assert out["columnCount"] == column_count
+    assert out["columnsOk"] is True
+    assert out["wheelsOrder"] == "function"
+    assert out["rulesOrder"] == "function"
+    assert out["searchFixedCalls"] == ["toolbar"]
+    assert out["orderListenerCalls"] == column_count
+
+
+def test_browser_datatables_constructor_exception_falls_back_to_the_native_table(
+    tmp_path: Path,
+) -> None:
+    """`enhanceTables`' own `try` around each table's setup catches a real
+    DataTables failure the same way: a stub whose constructor throws proves the
+    `catch` branch restores the native table, with every row rendered and the
+    arrow that marks the active sort still on the `filename` column's button."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(5), ruleset)
+    script = (
+        "window.DataTable = function () { throw new Error('boom'); };"
+        "window.DataTable.ext = { order: {} };"
+        "window.addEventListener('load', function () {"
+        "  document.title = JSON.stringify({"
+        "    rows: document.querySelectorAll('#wheel-rows tr').length,"
+        "    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced'),"
+        "    arrow: document.querySelectorAll('#header-row .sort-btn')[0].textContent"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["rows"] == 5
+    assert out["enhanced"] is False
+    assert "↑" in out["arrow"]
+
+
+def test_browser_datatables_constructor_exception_after_registration_still_destroys(
+    tmp_path: Path,
+) -> None:
+    """A `new DT(...)` call can register a table in DataTables' own internal
+    settings list, and remove the page's own `<colgroup>`, before throwing: the
+    pinned library does exactly that (`table.children('colgroup').remove()` then
+    `allSettings.push(settings)`, in that order, well before the constructor
+    returns), so `dt`/`rulesDt` here can still be null when `enhanceTables`' own
+    `catch` runs even though DataTables has already mutated the DOM.
+    `recoverDataTableInstance` finds and destroys that instance through
+    `DT.isDataTable`/`DT.Api` instead of this page's own (unset) `dt`/`rulesDt`; a
+    stub that registers a table id and then throws, with its own minimal
+    `isDataTable`/`Api`, proves it runs for both tables."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(5), ruleset)
+    script = (
+        "window.__recoverLog = { destroyed: [] };"
+        "(function () {"
+        "  var registered = {};"
+        "  function StubDataTable(el) {"
+        "    registered[el.id] = true;"
+        "    throw new Error('boom-mid-construction');"
+        "  }"
+        "  StubDataTable.ext = { order: {} };"
+        "  StubDataTable.isDataTable = function (table) { return !!registered[table.id]; };"
+        "  StubDataTable.Api = function (table) {"
+        "    return { destroy: function () { window.__recoverLog.destroyed.push(table.id); } };"
+        "  };"
+        "  window.DataTable = StubDataTable;"
+        "})();"
+        "window.addEventListener('load', function () {"
+        "  document.title = JSON.stringify({"
+        "    destroyed: window.__recoverLog.destroyed,"
+        "    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced'),"
+        "    rows: document.querySelectorAll('#wheel-rows tr').length"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert sorted(out["destroyed"]) == ["rules-table", "wheel-table"]
+    assert out["enhanced"] is False
+    assert out["rows"] == 5
+
+
+def test_browser_datatables_setup_strips_the_native_sort_arrow(tmp_path: Path) -> None:
+    """A sort clicked before the pinned script answers leaves a text arrow in that
+    header button's own label (`renderSortableHeader`'s native rendering); once a
+    (stubbed) DataTable owns the table, `enhanceWheelTable` strips that text so
+    only DataTables' own CSS draws the sort arrow from here on -- confirmed again
+    after a click on a different column's button, since the page's own click
+    handler no-ops (`sortState.enhanced`) rather than restoring one."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(5), ruleset)
+    script = (
+        "document.querySelectorAll('#header-row .sort-btn')[1].click();"
+        + _DT_STUB_PREAMBLE
+        + "window.addEventListener('load', function () {"
+        "  function labels(buttons) {"
+        "    return Array.prototype.map.call(buttons, function (b) { return b.textContent; });"
+        "  }"
+        "  var buttons = document.querySelectorAll('#header-row .sort-btn');"
+        "  var afterEnhance = labels(buttons);"
+        "  buttons[2].click();"
+        "  var afterClick = labels(buttons);"
+        "  document.title = JSON.stringify({ afterEnhance: afterEnhance, afterClick: afterClick });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert all("↑" not in t and "↓" not in t for t in out["afterEnhance"])
+    assert all("↑" not in t and "↓" not in t for t in out["afterClick"])
+
+
+def test_browser_datatables_errmode_is_set_to_throw(tmp_path: Path) -> None:
+    """`enhanceTables` sets `DataTable.ext.errMode = "throw"` before constructing
+    either table: the default, `"alert"`, would pop a dialog and swallow the
+    exception the page's own `try`/`catch` needs to see in order to fall back."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    script = (
+        _DT_STUB_PREAMBLE + "window.addEventListener('load', function () {"
+        "  document.title = JSON.stringify({ errMode: DataTable.ext.errMode });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script)
+    out = json.loads(_title(dom))
+    assert out["errMode"] == "throw"
+
+
+# --- network: the real, pinned DataTables script ----------------------------------
+
+
+@pytest.mark.network
+def test_network_datatables_sri_matches_the_cdn_file() -> None:
+    """The pinned `integrity` hash is exactly `sha384` of the file jsdelivr serves
+    at that URL, base64-encoded: an SRI mismatch means the browser never executes
+    the script at all, which every other `network` test would then read as an
+    unreachable CDN rather than a broken pin, so this one checks the pin directly."""
+    ruleset = load_ruleset(None)
+    page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
+    url = _datatables_url(page)
+    match = re.search(r'\bintegrity="sha384-([A-Za-z0-9+/]{64})"', page)
+    assert match is not None
+    expected = match.group(1)
+
+    _require_cdn(url)
+    body = urllib.request.urlopen(url, timeout=10).read()  # noqa: S310
+    actual = base64.b64encode(hashlib.sha384(body).digest()).decode("ascii")
+    assert actual == expected
+
+
+_PARITY_RULE_IDS = {
+    "CONDITIONAL": "BIN_BUNDLED_OPENSSL",
+    "OPAQUE": "WHEEL_UNREADABLE",
+    "FIPS_BREAKING": "PY_WEAK_HASH_CALL",
+    "NON_APPROVED_CRYPTO": "BIN_LIBSODIUM",
+    "CONTEXT_DEPENDENT": "PY_INSECURE_RNG",
+    "NO_CRYPTO_DETECTED": "BIN_BUNDLED_OPENSSL",
+}
+
+
+def _parity_records() -> list[dict]:
+    """Twelve wheels for the DataTables/native parity harness: two ties per class
+    (a class-sorted tie falls back to filename, the tiebreak both paths share),
+    mixed-case filenames (a case-sensitive sort catches a DataTables
+    auto-detected type the page's own explicit `type: "wcs"` is meant to
+    prevent), two versions that would invert under a numeric sort but not a
+    plain string one, several distinct classes and OpenSSL linkages, both review
+    states, and one wheel with four reasons so its fourth sits behind the reasons
+    cell's own "+1 more" chip. Every rule id is one the shipped ruleset actually
+    defines, since `render_html`'s `rules` payload only ever carries one of those."""
+    names = [
+        "Alpha",
+        "beta",
+        "Charlie",
+        "delta",
+        "Echo",
+        "foxtrot",
+        "Golf",
+        "hotel",
+        "India",
+        "juliet",
+        "Kilo",
+        "lima",
+    ]
+    classes = [
+        "CONDITIONAL",
+        "CONDITIONAL",
+        "OPAQUE",
+        "OPAQUE",
+        "FIPS_BREAKING",
+        "NON_APPROVED_CRYPTO",
+        "CONTEXT_DEPENDENT",
+        "NO_CRYPTO_DETECTED",
+        "CONDITIONAL",
+        "OPAQUE",
+        "NON_APPROVED_CRYPTO",
+        "CONTEXT_DEPENDENT",
+    ]
+    linkages = [
+        "bundled",
+        "none",
+        "static",
+        "system",
+        "unknown",
+        "mixed",
+        "bundled",
+        "none",
+        "static",
+        "system",
+        "unknown",
+        "mixed",
+    ]
+    versions = ["9.0", "10.0"] * 6
+    records = []
+    for i, (name, klass, linkage, version) in enumerate(
+        zip(names, classes, linkages, versions, strict=True)
+    ):
+        rec = html_record(
+            name, klass, linkage, review=(i % 2 == 0), rule_id=_PARITY_RULE_IDS[klass]
+        )
+        rec["wheel"]["version"] = version
+        records.append(rec)
+    records[0]["verdict"]["reasons"] = [
+        "BIN_BUNDLED_OPENSSL: a",
+        "BIN_LIBSODIUM: b",
+        "PY_INSECURE_RNG: c",
+        "RULE_FOUR: d",
+    ]
+    return records
+
+
+_WHEEL_PARITY_SCRIPT_TEMPLATE = """
+window.addEventListener('load', async function () {
+  var columnKeys = __COLUMN_KEYS__;
+  var transcript = [];
+  function snapshot(step) {
+    var cells = document.querySelectorAll('#wheel-rows .wheel-cell');
+    transcript.push({
+      step: step,
+      filenames: Array.prototype.map.call(cells, function (c) { return c.textContent; }),
+      count: document.getElementById('count').textContent
+    });
+  }
+  function fireInput(el, value) {
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  // DataTables' own header-click handler (bound through `order.listener`, never
+  // this page's own click handler, which steps aside once enhanced) redraws on a
+  // deferred task rather than inline with the click, unlike this page's own
+  // `renderTable`, which calls `dt.draw()` synchronously. Getting a fresh handle
+  // on the already-initialised table (`new DataTable` on a table DataTables
+  // already owns returns that same instance, never a second one) and awaiting its
+  // next `draw` event is what a real click waits for too; natively, `DataTable` is
+  // never defined at all, so every click is already synchronous with nothing to
+  // await.
+  function clickAndWaitDraw(button) {
+    return new Promise(function (resolve) {
+      if (typeof window.DataTable !== 'function') {
+        button.click();
+        resolve();
+        return;
+      }
+      new DataTable('#wheel-table').one('draw', resolve);
+      button.click();
+    });
+  }
+
+  snapshot('initial');
+
+  var headerButtons = document.querySelectorAll('#header-row .sort-btn');
+  for (var i = 0; i < columnKeys.length; i++) {
+    await clickAndWaitDraw(headerButtons[i]);
+    snapshot('sort-' + columnKeys[i] + '-asc');
+    await clickAndWaitDraw(headerButtons[i]);
+    snapshot('sort-' + columnKeys[i] + '-desc');
+  }
+
+  var filterInputs = document.querySelectorAll('#filter-row .col-filter');
+  Array.prototype.forEach.call(filterInputs, function (input) {
+    var key = input.getAttribute('data-key');
+    fireInput(input, 'a');
+    snapshot('colfilter-' + key);
+    fireInput(input, '');
+  });
+
+  fireInput(document.getElementById('search'), 'a');
+  snapshot('search');
+  fireInput(document.getElementById('search'), '');
+
+  document.getElementById('view-tab-rules').click();
+  var ruleButton = document.querySelector('#rules-rows .rule-link');
+  ruleButton.click();
+  snapshot('rule-click');
+  fireInput(document.getElementById('search'), '');
+
+  var chip = document.querySelector('.class-chip');
+  chip.click();
+  snapshot('class-untick');
+  chip.click();
+
+  var linkageSelect = document.getElementById('linkage-filter');
+  linkageSelect.value = linkageSelect.options[1].value;
+  linkageSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  snapshot('linkage');
+  linkageSelect.value = '';
+  linkageSelect.dispatchEvent(new Event('change', { bubbles: true }));
+
+  var reviewCheckbox = document.getElementById('review-only');
+  reviewCheckbox.checked = true;
+  reviewCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+  snapshot('review');
+
+  var reasonsFilter = document.querySelector('#filter-row .col-filter[data-key="reasons"]');
+  fireInput(reasonsFilter, 'RULE_FOUR');
+  snapshot('reasons-rule-four');
+  fireInput(reasonsFilter, '');
+
+  document.getElementById('clear-filters').click();
+  snapshot('clear');
+
+  document.title = JSON.stringify({
+    transcript: transcript,
+    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced')
+  });
+});
+"""
+
+
+def _wheel_parity_script(column_keys: list[str]) -> str:
+    """`extra_script` runs in the top-level scope, outside the page's own IIFE, so
+    it cannot read `COLUMNS` itself -- every key the scenario needs is handed in
+    from here instead, parsed out of this same rendered page by `_parse_columns`."""
+    return _WHEEL_PARITY_SCRIPT_TEMPLATE.replace("__COLUMN_KEYS__", json.dumps(column_keys))
+
+
+@pytest.mark.network
+def test_network_datatables_sort_and_search_match_the_native_table(tmp_path: Path) -> None:
+    """DataTables' own sort, global search and per-column filtering read back
+    exactly the same filenames and count the native path already computes, at
+    every step of a script that exercises every column's sort (twice, asc then
+    desc), every column filter, the global search, a Rules-tab rule click, a
+    class-chip untick, the linkage filter, the review checkbox, the `reasons`
+    column's own full-list match, and Clear filters -- rendered once with the
+    network blocked and once with it open, diffed step by step."""
+    ruleset = load_ruleset(None)
+    records = _parity_records()
+    page = render_html(records, ruleset)
+    payload = _extract_payload(page)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = _wheel_parity_script([column["key"] for column in _parse_columns(page)])
+    offline_dir = tmp_path / "offline"
+    offline_dir.mkdir()
+    online_dir = tmp_path / "online"
+    online_dir.mkdir()
+    offline = json.loads(
+        _title(_render_in_browser(offline_dir, page, extra_script=script, virtual_time_budget=5000))
+    )
+    online = json.loads(
+        _title(
+            _render_in_browser(
+                online_dir,
+                page,
+                extra_script=script,
+                allow_network=True,
+                virtual_time_budget=5000,
+            )
+        )
+    )
+
+    assert offline["enhanced"] is False
+    assert online["enhanced"] is True
+    assert online["transcript"] == offline["transcript"]
+
+    filename_to_class = {r["wheel"]["filename"]: r["verdict"]["class"] for r in records}
+    class_asc = next(s for s in online["transcript"] if s["step"] == "sort-class-asc")
+    ranks = [payload["classes"].index(filename_to_class[name]) for name in class_asc["filenames"]]
+    assert ranks == sorted(ranks)
+    assert payload["classes"] != sorted(payload["classes"])
+
+    reasons_step = next(s for s in online["transcript"] if s["step"] == "reasons-rule-four")
+    assert reasons_step["filenames"] == [records[0]["wheel"]["filename"]]
+    assert reasons_step["count"] == "1 of 12 wheels"
+
+
+_RULES_PARITY_SCRIPT_TEMPLATE = """
+window.addEventListener('load', async function () {
+  document.getElementById('view-tab-rules').click();
+  var columnKeys = __COLUMN_KEYS__;
+  var transcript = [];
+  function snapshot(step) {
+    var idCells = document.querySelectorAll('#rules-rows .rule-link');
+    transcript.push({
+      step: step,
+      ids: Array.prototype.map.call(idCells, function (c) { return c.textContent; })
+    });
+  }
+  function fireInput(el, value) {
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  // See `_wheel_parity_script`'s own comment: DataTables' own header-click
+  // handler redraws on a deferred task, so this waits for its next `draw` event
+  // the way a real click's own visible update would.
+  function clickAndWaitDraw(button) {
+    return new Promise(function (resolve) {
+      if (typeof window.DataTable !== 'function') {
+        button.click();
+        resolve();
+        return;
+      }
+      new DataTable('#rules-table').one('draw', resolve);
+      button.click();
+    });
+  }
+
+  snapshot('initial');
+
+  var headerButtons = document.querySelectorAll('#rules-header-row .sort-btn');
+  for (var i = 0; i < columnKeys.length; i++) {
+    await clickAndWaitDraw(headerButtons[i]);
+    snapshot('sort-' + columnKeys[i] + '-1');
+    await clickAndWaitDraw(headerButtons[i]);
+    snapshot('sort-' + columnKeys[i] + '-2');
+  }
+
+  var idFilter = document.querySelector('#rules-filter-row .col-filter[data-key="id"]');
+  fireInput(idFilter, 'BIN');
+  snapshot('id-filter');
+  fireInput(idFilter, '');
+
+  document.title = JSON.stringify({
+    transcript: transcript,
+    enhanced: document.getElementById('rules-table').hasAttribute('data-enhanced')
+  });
+});
+"""
+
+
+def _rules_parity_script(column_keys: list[str]) -> str:
+    return _RULES_PARITY_SCRIPT_TEMPLATE.replace("__COLUMN_KEYS__", json.dumps(column_keys))
+
+
+@pytest.mark.network
+def test_network_datatables_rules_table_sort_and_search_match_the_native_table(
+    tmp_path: Path,
+) -> None:
+    """The same parity harness over the Rules table: every column's sort, twice
+    each, then the `id` column's own filter, rendered once offline and once with
+    the real script, diffed step by step."""
+    ruleset = load_ruleset(None)
+    page = render_html(_parity_records(), ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = _rules_parity_script(_parse_rules_column_keys(page))
+    offline_dir = tmp_path / "offline"
+    offline_dir.mkdir()
+    online_dir = tmp_path / "online"
+    online_dir.mkdir()
+    offline = json.loads(
+        _title(_render_in_browser(offline_dir, page, extra_script=script, virtual_time_budget=5000))
+    )
+    online = json.loads(
+        _title(
+            _render_in_browser(
+                online_dir,
+                page,
+                extra_script=script,
+                allow_network=True,
+                virtual_time_budget=5000,
+            )
+        )
+    )
+
+    assert offline["enhanced"] is False
+    assert online["enhanced"] is True
+    assert online["transcript"] == offline["transcript"]
+
+
+@pytest.mark.network
+def test_network_datatables_renders_wheel_text_as_text(tmp_path: Path) -> None:
+    """The same XSS-shaped payload
+    `test_browser_openssl_cell_and_a_column_filter_never_execute_wheel_controlled_html`
+    proves against the native table, proved again against the real, enhanced one:
+    every cell stays the node `renderRow` already built, since DataTables is never
+    handed `data`, `render`, `title` or `createdCell` for a column to write into it
+    -- the reason sorting and filtering by every column with the payload live in
+    every field never executes it or corrupts the cell's own text. `searchable:
+    false` on every column is defence in depth: it also keeps DataTables from ever
+    building the per-cell search-text cache that would decode a `&` through a
+    detached element's `innerHTML`."""
+    ruleset = load_ruleset(None)
+    payload = "a&<img src=x onerror=\"document.title='pwned'\">"
+    rec = html_record(payload, "OPAQUE", payload, review=False)
+    rec["verdict"]["reasons"] = [f"BIN_BUNDLED_OPENSSL: {payload}"]
+    page = render_html([rec], ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "window.addEventListener('load', async function () {"
+        "  function clickAndWaitDraw(button) {"
+        "    return new Promise(function (resolve) {"
+        "      new DataTable('#wheel-table').one('draw', resolve);"
+        "      button.click();"
+        "    });"
+        "  }"
+        "  var headerButtons = document.querySelectorAll('#header-row .sort-btn');"
+        "  for (var i = 0; i < headerButtons.length; i++) {"
+        "    await clickAndWaitDraw(headerButtons[i]);"
+        "    await clickAndWaitDraw(headerButtons[i]);"
+        "  }"
+        "  var filter = document.querySelector('#filter-row .col-filter[data-key=\"filename\"]');"
+        "  filter.value = '&';"
+        "  filter.dispatchEvent(new Event('input', { bubbles: true }));"
+        "  var cell = document.querySelector('#wheel-rows .wheel-cell');"
+        "  document.title = JSON.stringify({"
+        "    imgInDocument: !!document.querySelector('img'),"
+        "    titlePwned: document.title === 'pwned',"
+        "    cellText: cell ? cell.textContent : null,"
+        "    enhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced')"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["enhanced"] is True
+    assert out["imgInDocument"] is False
+    assert out["titlePwned"] is False
+    assert out["cellText"] == rec["wheel"]["filename"]
+
+
+@pytest.mark.network
+def test_network_datatables_paging_detail_and_resize(tmp_path: Path) -> None:
+    """DataTables' own paging keeps working once it owns the wheel table, and so
+    does everything this page's own code layers on top of it: the detail panel's
+    Previous/Next (reading DataTables' applied search and order back through
+    `visibleRecords`), the colgroup the resize handles and `buildColgroup` still
+    read and write, and a keyboard-driven sort through the same `.sort-btn`
+    DataTables' own `order.listener` is bound to."""
+    ruleset = load_ruleset(None)
+    records = _many_records(60)
+    page = render_html(records, ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "window.addEventListener('load', async function () {"
+        "  var out = {};"
+        "  out.enhanced = document.getElementById('wheel-table').hasAttribute('data-enhanced');"
+        "  out.rowsOnFirstPage = document.querySelectorAll('#wheel-rows tr').length;"
+        "  out.count = document.getElementById('count').textContent;"
+        "  function pageButton(label) {"
+        "    return Array.prototype.filter.call("
+        "      document.querySelectorAll('.dt-paging-button'),"
+        "      function (b) { return b.textContent.trim() === label; }"
+        "    )[0];"
+        "  }"
+        # DataTables' own paging and header-click handling both redraw on a
+        # deferred task; getting a fresh handle on the table it already owns and
+        # awaiting its next `draw` event is what a real interaction waits for too.
+        "  function actAndWaitDraw(act) {"
+        "    return new Promise(function (resolve) {"
+        "      new DataTable('#wheel-table').one('draw', resolve);"
+        "      act();"
+        "    });"
+        "  }"
+        "  await actAndWaitDraw(function () { pageButton('2').click(); });"
+        "  out.rowsOnSecondPage = document.querySelectorAll('#wheel-rows tr').length;"
+        "  await actAndWaitDraw(function () { pageButton('1').click(); });"
+        "  document.querySelectorAll('#wheel-rows tr')[0].click();"
+        "  out.detailOpen = !document.getElementById('detail').hidden;"
+        "  out.position = document.getElementById('detail-position').textContent;"
+        "  document.getElementById('detail-next').click();"
+        "  out.positionAfterNext = document.getElementById('detail-position').textContent;"
+        "  document.getElementById('detail-close').click();"
+        "  var colgroup = document.getElementById('wheel-colgroup');"
+        "  out.colgroupInTable = document.getElementById('wheel-table').contains(colgroup);"
+        "  out.col0Before = colgroup.children[0].style.width;"
+        "  var handle = document.querySelectorAll('.col-resize-handle')[0];"
+        "  handle.focus();"
+        "  handle.dispatchEvent(new KeyboardEvent('keydown', {"
+        "    key: 'ArrowRight', bubbles: true, cancelable: true"
+        "  }));"
+        "  out.col0After = colgroup.children[0].style.width;"
+        "  var filenameTh = document.querySelectorAll('#header-row th')[0];"
+        "  out.filenameThBeforeEnter = filenameTh.className;"
+        "  var filenameButton = filenameTh.querySelector('.sort-btn');"
+        "  filenameButton.focus();"
+        # DataTables' own key listener reads the legacy `keyCode`/`which` fields
+        # on a `keypress` event, not `key` on a `keydown`.
+        "  await actAndWaitDraw(function () {"
+        "    filenameButton.dispatchEvent(new KeyboardEvent('keypress', {"
+        "      key: 'Enter', code: 'Enter', keyCode: 13, which: 13,"
+        "      bubbles: true, cancelable: true"
+        "    }));"
+        "  });"
+        "  out.filenameThAfterEnter = filenameTh.className;"
+        "  document.title = JSON.stringify(out);"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["enhanced"] is True
+    assert out["rowsOnFirstPage"] == 50
+    assert out["count"] == "60 of 60 wheels"
+    assert out["rowsOnSecondPage"] == 10
+    assert out["detailOpen"] is True
+    assert out["position"] != out["positionAfterNext"]
+    assert out["colgroupInTable"] is True
+    assert out["col0After"] != out["col0Before"]
+    assert "dt-ordering-asc" in out["filenameThBeforeEnter"]
+    assert "dt-ordering-desc" in out["filenameThAfterEnter"]
+
+
+@pytest.mark.network
+def test_network_datatables_throw_after_construction_falls_back_cleanly(tmp_path: Path) -> None:
+    """`enhanceWheelTable`'s own exception can land well after `new DT(...)` has
+    already succeeded -- DataTables has added its `.dt-container` wrapper, replaced
+    the `<colgroup>` and populated every row by the time `els.headerRow
+    .querySelectorAll(".sort-btn")` runs -- and `enhanceTables`'s own `catch` still
+    leaves the page clean: `dt.destroy()` removes what DataTables added,
+    `restoreNativeColgroup` re-inserts the exact `<colgroup id="wheel-colgroup">`
+    node the page shipped with (marked here before any of this runs, so the check
+    is by identity, not only by a matching id), and the native table renders every
+    row with its own working resize handles. The throw is forced by monkeypatching
+    `querySelectorAll` to fail the one call `enhanceWheelTable` makes after
+    `dt.rows.add`, `dt.search`/`search.fixed` and every column's own `.search()`
+    call have all already run against the real library."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "document.getElementById('wheel-colgroup').setAttribute('data-original', '1');"
+        "window.addEventListener('DOMContentLoaded', function () {"
+        "  var orig = Element.prototype.querySelectorAll;"
+        "  var fired = false;"
+        "  Element.prototype.querySelectorAll = function (sel) {"
+        "    if (!fired && this.id === 'header-row' && sel === '.sort-btn') {"
+        "      fired = true;"
+        "      throw new Error('boom');"
+        "    }"
+        "    return orig.call(this, sel);"
+        "  };"
+        "}, true);"
+        "window.addEventListener('load', function () {"
+        "  var colgroup = document.querySelector('#wheel-table colgroup');"
+        "  var col0Before = colgroup ? colgroup.children[0].style.width : null;"
+        "  var handle = document.querySelectorAll('.col-resize-handle')[0];"
+        "  handle.focus();"
+        "  handle.dispatchEvent(new KeyboardEvent('keydown', {"
+        "    key: 'ArrowRight', bubbles: true, cancelable: true"
+        "  }));"
+        "  document.title = JSON.stringify({"
+        "    wheelWrapped: !!document.getElementById('wheel-table').closest('.dt-container'),"
+        "    enhancedAttr: document.getElementById('wheel-table').hasAttribute('data-enhanced'),"
+        "    colgroupCount: document.querySelectorAll('#wheel-table > colgroup').length,"
+        "    colgroupIsOriginal: colgroup ? colgroup.hasAttribute('data-original') : false,"
+        "    colgroupId: colgroup ? colgroup.id : null,"
+        "    col0Before: col0Before,"
+        "    col0After: colgroup ? colgroup.children[0].style.width : null,"
+        "    rows: document.querySelectorAll('#wheel-rows tr').length"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["wheelWrapped"] is False
+    assert out["enhancedAttr"] is False
+    assert out["colgroupCount"] == 1
+    assert out["colgroupIsOriginal"] is True
+    assert out["colgroupId"] == "wheel-colgroup"
+    assert out["col0After"] != out["col0Before"]
+
+
+@pytest.mark.network
+def test_network_datatables_throw_after_colgroup_id_assigned_leaves_no_stray_colgroup(
+    tmp_path: Path,
+) -> None:
+    """The same fallback, forced to throw later than the test above: after
+    `enhanceWheelTable` has already given DataTables' own colgroup the id
+    `wheel-colgroup` (`colgroup.id = "wheel-colgroup"`, right before
+    `buildColgroup()`), so a check keyed on that id alone could find DataTables'
+    colgroup instead of the page's own original and stop there, leaving both in
+    the table. `restoreNativeColgroup` strips every colgroup that is not
+    `originalColgroup` by identity first, so only one -- the original -- is left
+    either way. The throw is forced by monkeypatching `setAttribute` to fail the
+    `data-enhanced` marker `enhanceWheelTable` sets right after that point."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "document.getElementById('wheel-colgroup').setAttribute('data-original', '1');"
+        "window.addEventListener('DOMContentLoaded', function () {"
+        "  var orig = Element.prototype.setAttribute;"
+        "  var fired = false;"
+        "  Element.prototype.setAttribute = function (name, value) {"
+        "    if (!fired && this.id === 'wheel-table' && name === 'data-enhanced') {"
+        "      fired = true;"
+        "      throw new Error('boom');"
+        "    }"
+        "    return orig.call(this, name, value);"
+        "  };"
+        "}, true);"
+        "window.addEventListener('load', function () {"
+        "  var colgroups = document.querySelectorAll('#wheel-table > colgroup');"
+        "  document.title = JSON.stringify({"
+        "    wheelWrapped: !!document.getElementById('wheel-table').closest('.dt-container'),"
+        "    enhancedAttr: document.getElementById('wheel-table').hasAttribute('data-enhanced'),"
+        "    colgroupCount: colgroups.length,"
+        "    colgroupIsOriginal: colgroups[0] ? colgroups[0].hasAttribute('data-original') : false,"
+        "    rows: document.querySelectorAll('#wheel-rows tr').length"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["wheelWrapped"] is False
+    assert out["enhancedAttr"] is False
+    assert out["colgroupCount"] == 1
+    assert out["colgroupIsOriginal"] is True
+    assert out["rows"] == 60
+
+
+@pytest.mark.network
+def test_network_datatables_rules_table_throw_after_construction_falls_back_cleanly(
+    tmp_path: Path,
+) -> None:
+    """The Rules table's own `catch` in `enhanceTables` runs the same cleanup the
+    wheel table's does, over `rulesDt`: forcing a throw after `enhanceRulesTable`'s
+    own construction has already succeeded (the same shape the wheel table's own
+    `test_network_datatables_throw_after_construction_falls_back_cleanly` forces)
+    proves `rulesDt.destroy()` runs, not only that the wheel table's own recovery
+    does."""
+    ruleset = load_ruleset(None)
+    page = render_html(_parity_records(), ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "window.addEventListener('DOMContentLoaded', function () {"
+        "  var orig = Element.prototype.querySelectorAll;"
+        "  var fired = false;"
+        "  Element.prototype.querySelectorAll = function (sel) {"
+        "    if (!fired && this.id === 'rules-header-row' && sel === '.sort-btn') {"
+        "      fired = true;"
+        "      throw new Error('boom');"
+        "    }"
+        "    return orig.call(this, sel);"
+        "  };"
+        "}, true);"
+        "window.addEventListener('load', function () {"
+        "  document.getElementById('view-tab-rules').click();"
+        "  document.title = JSON.stringify({"
+        "    rulesWrapped: !!document.getElementById('rules-table').closest('.dt-container'),"
+        "    enhancedAttr: document.getElementById('rules-table').hasAttribute('data-enhanced'),"
+        "    wheelEnhanced: document.getElementById('wheel-table').hasAttribute('data-enhanced'),"
+        "    rows: document.querySelectorAll('#rules-rows tr').length"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["rulesWrapped"] is False
+    assert out["enhancedAttr"] is False
+    assert out["wheelEnhanced"] is True
+    assert out["rows"] > 0
+
+
+@pytest.mark.network
+def test_network_datatables_next_from_last_row_of_a_page_turns_the_page(tmp_path: Path) -> None:
+    """Stepping past the last row shown on page 1 (`detail-next`, from the 50th of
+    60 wheels at the default `pageLength` of 50) turns DataTables to page 2, the
+    page the next row is actually on: `showDetail`'s own `turnDtToRecord`, which
+    every path that opens a record's detail runs through."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "window.addEventListener('load', function () {"
+        "  var rows = document.querySelectorAll('#wheel-rows tr');"
+        "  rows[rows.length - 1].click();"
+        "  document.getElementById('detail-next').click();"
+        "  var current = Array.prototype.filter.call("
+        "    document.querySelectorAll('.dt-paging-button'),"
+        "    function (b) { return b.className.indexOf('current') !== -1; }"
+        "  )[0];"
+        "  document.title = JSON.stringify({"
+        "    currentPage: current ? current.textContent.trim() : null,"
+        "    position: document.getElementById('detail-position').textContent"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(tmp_path, page, extra_script=script, allow_network=True)
+    out = json.loads(_title(dom))
+    assert out["currentPage"] == "2"
+    assert out["position"] == "51 of 60"
+
+
+@pytest.mark.network
+def test_network_datatables_sort_while_detail_open_refreshes_the_nav(tmp_path: Path) -> None:
+    """Sorting the table (a DataTables-driven header click) while the detail panel
+    is open still updates Previous/Next: `drawCallback` -- which every DataTables
+    redraw runs, a sort included -- calls `updateDetailNav` again, over the newly
+    sorted `visibleRecords()`. Reversing the already-ascending `filename` sort
+    moves the open row ("a", the alphabetically first of three) from first to
+    last."""
+    ruleset = load_ruleset(None)
+    page = render_html(_three_records(), ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "window.addEventListener('load', async function () {"
+        "  document.querySelectorAll('#wheel-rows tr')[0].click();"
+        "  var before = document.getElementById('detail-position').textContent;"
+        "  var filenameButton = document.querySelectorAll('#header-row .sort-btn')[0];"
+        "  await new Promise(function (resolve) {"
+        "    new DataTable('#wheel-table').one('draw', resolve);"
+        "    filenameButton.click();"
+        "  });"
+        "  document.title = JSON.stringify({"
+        "    before: before,"
+        "    after: document.getElementById('detail-position').textContent"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["before"] == "1 of 3"
+    assert out["after"] == "3 of 3"
+
+
+@pytest.mark.network
+def test_network_datatables_sort_while_detail_open_on_a_paginated_table_turns_the_page(
+    tmp_path: Path,
+) -> None:
+    """The same sort-while-open case as the test above, but over enough rows
+    (`_many_records(60)`, `pageLength` 50) that the open row's new position lands
+    on a different page than the one on screen: the wheel table's own
+    `drawCallback` calls `turnDtToRecord`, not only `updateDetailNav`, so the page
+    turns along with the nav rather than leaving the open row's own page hidden
+    behind whichever page the sort happened to leave on screen."""
+    ruleset = load_ruleset(None)
+    page = render_html(_many_records(60), ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "window.addEventListener('load', async function () {"
+        "  document.querySelectorAll('#wheel-rows tr')[0].click();"
+        "  var filenameButton = document.querySelectorAll('#header-row .sort-btn')[0];"
+        "  await new Promise(function (resolve) {"
+        "    new DataTable('#wheel-table').one('draw', resolve);"
+        "    filenameButton.click();"
+        "  });"
+        "  var current = Array.prototype.filter.call("
+        "    document.querySelectorAll('.dt-paging-button'),"
+        "    function (b) { return b.className.indexOf('current') !== -1; }"
+        "  )[0];"
+        "  document.title = JSON.stringify({"
+        "    currentPage: current ? current.textContent.trim() : null,"
+        "    position: document.getElementById('detail-position').textContent"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path, page, extra_script=script, allow_network=True, virtual_time_budget=5000
+    )
+    out = json.loads(_title(dom))
+    assert out["position"] == "60 of 60"
+    assert out["currentPage"] == "2"
+
+
+@pytest.mark.network
+def test_network_datatables_wheel_hash_on_a_later_page_turns_dataTables_to_it(
+    tmp_path: Path,
+) -> None:
+    """A `#wheel=N` link naming a row DataTables' own paging would put on a later
+    page turns DataTables to that page as the table is handed to it: the same
+    page-turn `showDetail`'s own `turnDtToRecord` runs for Previous/Next, called
+    again by `enhanceWheelTable` once its own `dt.draw()` has made
+    `visibleRecords()`'s DataTables branch authoritative, so the detail panel and
+    the row it names are never left on different pages on first load."""
+    ruleset = load_ruleset(None)
+    records = _many_records(60)
+    page = render_html(records, ruleset)
+    url = _datatables_url(page)
+    _require_cdn(url)
+
+    script = (
+        "window.addEventListener('load', function () {"
+        "  var current = Array.prototype.filter.call("
+        "    document.querySelectorAll('.dt-paging-button'),"
+        "    function (b) { return b.className.indexOf('current') !== -1; }"
+        "  )[0];"
+        "  document.title = JSON.stringify({"
+        "    currentPage: current ? current.textContent.trim() : null,"
+        "    detailOpen: !document.getElementById('detail').hidden,"
+        "    title: document.getElementById('detail-title').textContent"
+        "  });"
+        "});"
+    )
+    dom = _render_in_browser(
+        tmp_path,
+        page,
+        fragment="wheel=55",
+        extra_script=script,
+        allow_network=True,
+        virtual_time_budget=5000,
+    )
+    out = json.loads(_title(dom))
+    assert out["detailOpen"] is True
+    assert out["title"] == "wheel-055-1.0-py3-none-any.whl"
+    assert out["currentPage"] == "2"

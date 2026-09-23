@@ -4,8 +4,9 @@ Markdown is for reading over someone's shoulder: the summary table leads with th
 crypto inventory -- families, libraries and their linkage, the relations that follow
 from it -- because a wheel's evidence is what a reader needs first, and the class badge
 comes after it as the FIPS compatibility lens's own summary, not the wheel's headline
-identity. HTML is for browsing and drill-down: one self-contained page with the same
-columns, sortable and filterable, with a detail view per wheel that repeats the same
+identity. HTML is for browsing and drill-down: one page that embeds every record and,
+when its one pinned CDN script loads, hands its tables to DataTables for sorting,
+searching and paging, with a detail view per wheel that repeats the same
 inventory-first split: "Cryptography in this wheel", then "FIPS compatibility". Both
 are views; the JSONL is the contract.
 """
@@ -391,7 +392,9 @@ _DATA_TOKEN = "/*WCS_DATA*/"
 
 
 def render_html(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> str:
-    """A self-contained HTML page: one row per wheel, with a drill-down detail view.
+    """An HTML page: one row per wheel, with a drill-down detail view. It embeds every
+    record as one JSON block, and its one pinned, integrity-checked CDN script -- when
+    it loads -- hands both tables to DataTables for sorting, searching and paging.
 
     The page is a pure function of `records`, `ruleset` and the shipped template: no
     timestamp, host path or hostname, so the same input renders byte-identical output.
@@ -416,7 +419,17 @@ def render_html(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> str:
 
 def _html_sort_key(record: dict[str, Any]) -> tuple[str, str]:
     """Sort by filename; the canonical JSON line is the tiebreak so two records that
-    happen to share a filename still land in a stable, deterministic order."""
+    happen to share a filename still land in a stable, deterministic order.
+
+    The report's own `DT.ext.order["wcs-wheels"]` (in report.html's own script)
+    depends on this staying filename-primary: it hands DataTables one value per
+    row with no tiebreak of its own, so two rows whose primary sort value ties
+    fall back to `DATA.records`' own array order -- this function's -- to land in
+    the same filename-ascending order `visibleRecords`'s native tiebreak already
+    gives them. Changing this to sort by anything else first moves that fallback
+    order out from under the enhanced table without moving it under the native
+    one, so the two would then disagree on where a tie lands.
+    """
     filename = str(record.get("wheel", {}).get("filename") or "")
     canonical = json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     return (filename, canonical)
