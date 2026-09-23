@@ -41,6 +41,23 @@ jobs:
       - name: Run tests
         run: uvx --with tox-uv tox -e py$(echo '${{ matrix.python-version }}' | tr -d .)
 
+  network:
+    name: network (DataTables against the pinned CDN script)
+    runs-on: ubuntu-latest
+    env:
+      WCS_REQUIRE_NETWORK: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+      - name: Run network tests
+        run: uvx --with tox-uv tox -e network
+
   lint:
     name: ruff
     runs-on: ubuntu-latest

@@ -6270,25 +6270,47 @@ built. A DataTables row index equals a record's position in `DATA.records` (a ru
 position in the array `ruleRows()` returns, for the Rules table): rows are added once,
 in that order, and never cleared or re-added, so the index one predicate reads back a
 record by is the same index the other table-building path already uses. A page opened
-with the script reachable and one opened without it therefore cannot disagree about
-what belongs on screen by design -- only by a bug -- and a `network`-marked test drives
-both through the same script of clicks and keystrokes and diffs the two transcripts.
-The hash grammar is unchanged: sort, page and page length stay out of it exactly as they
-already did natively. DataTables never writes a cell: no `render`, `data`, `createdCell`
-or `title` option, no `row().data()`/`cell().data()`/`invalidate()` call, an explicit
-`type` on every column, and `searchable: false` on every column, which keeps its own
-per-cell search-text cache -- the one place 3.1.1 decodes a `&` in cell text through a
-detached element's `innerHTML` -- from ever running over a wheel-controlled string.
-Init replaces the table's own `<colgroup>`; the page re-adopts whatever it leaves in
-place immediately afterward, so the resize handles, `recomputeTableMinWidth` and Reset
-columns keep working exactly as before. No DataTables stylesheet is loaded: its
+with the script reachable and one opened without it therefore agree on which rows pass
+the filters and in what order by design -- only by a bug -- and a `network`-marked test
+drives both through the same script of clicks and keystrokes and diffs the two
+transcripts. The hash grammar carries no sort, page or page length: none of the three is
+part of it, whether the table is native or DataTables-enhanced. DataTables never writes a
+cell: no `render`, `data`, `createdCell` or `title` option, no
+`row().data()`/`cell().data()`/`invalidate()` call, an explicit `type` on every column,
+and `searchable: false` on every column, which keeps its own per-cell search-text cache
+-- the one place 3.1.1 decodes a `&` in cell text through a detached element's
+`innerHTML` -- from ever running over a wheel-controlled string. Init replaces the
+table's own `<colgroup>`; the page re-adopts whatever it leaves in place immediately
+afterward, so the resize handles, `recomputeTableMinWidth` and Reset columns work against
+it the same way they work against the native one. No DataTables stylesheet is loaded: its
 default CSS both fights this page's own theming and blocks rendering while it loads,
 and every layout rule DataTables' init actually needs -- the header's wrapped title and
 order-indicator divs, the paging buttons, the empty-table row -- is small enough to
 carry inline, next to the rest of the page's own CSS, once instead of loading a second
 stylesheet just to override it.
 
-**The cost, and the fallback.** Opening a report now contacts cdn.jsdelivr.net, which
+**A tiebreak DataTables never computes.** `ext.order` hands DataTables one sort value
+per row, the same `sortValue`/`ruleSortValue` result the native path compares, with no
+tiebreak of its own: DataTables' own sort, like the native one, is stable, so a tie's
+relative order falls out of `DATA.records`'/`ruleRows()`'s own array order rather than a
+second comparison either path runs. That array order is a Python-side fact, not a JS
+one: `DATA.records` is filename-ascending because `_html_sort_key` in report.py sorts it
+that way before embedding, and `ruleRows()` reads rule ids id-ascending because
+`_embed_json` writes the `rules` object with `sort_keys=True`, which a JSON object's own
+key order (and so `Object.keys(DATA.rules)`) preserves for a string key -- an integer-like
+key would enumerate first, in numeric order, ahead of every string key regardless of where
+`sort_keys=True` put it, which never applies here since every rule id in `ruleset.toml` is
+a name, never a bare number. Both match the tiebreak
+`visibleRecords`'/`sortedRuleRows`' own native sort already computes explicitly
+(filename, then rule id), so a tie lands the same place whichever path is showing it.
+Folding the tiebreak into the value itself instead -- `[value, tiebreak]`, compared as
+one string, to drop the dependency on that array order -- compares wrong on a descending
+sort: `orderDescReverse: false` (needed so DataTables reverses a descending sort's
+comparator rather than the whole sorted array, the same requirement the plain,
+non-composite value already has) reverses a composite string's tiebreak right along with
+its primary value, the two no longer being separate comparisons once joined.
+
+**The cost, and the fallback.** Opening a report contacts cdn.jsdelivr.net, which
 sees the client's IP address, the time of the request and its user agent; `no-referrer`
 keeps the report's own address off that request, and the pin plus the integrity hash
 mean the script that runs is exactly the one this project tested against, never
@@ -6425,12 +6447,15 @@ binaries for evidence that came from the wheel's SBOM.
 - *HTML-entity escaping for the embedded JSON.* Survives `.textContent` as extra literal
   characters inside the string it is meant to protect, corrupting the data it carries.
   The `\u`-escape approach above has no literal `<` and avoids that.
-- *Vendoring DataTables into the template.* Copies third-party JS into a project that
-  carries none anywhere else, and a vendored copy drifts from the pin silently -- nothing
-  would catch a hand-edit or a stale copy the way the SRI hash on a CDN reference already
-  does. `tests/helpers/binfmt/` synthesises every other test fixture this project ships
-  rather than committing one; a minified library is not a fixture, but the same reasoning
-  against a committed binary applies to it.
+- *Vendoring DataTables into the template.* Every report this tool renders would carry
+  the library's ~120 KiB minified body inline, not the one `<script src>` tag a CDN
+  reference costs regardless of how many reports get written; the project would carry
+  third-party JS and its MIT licence notice as files of its own, the only vendored
+  dependency it ships anywhere; and a version bump would mean re-generating and pasting
+  in the whole minified blob rather than the two-line diff (the URL, the SRI hash) a
+  pinned CDN reference already costs. `tests/helpers/binfmt/` synthesises every other
+  test fixture this project ships rather than committing one; a minified library is not
+  a fixture, but the same reasoning against a committed binary applies to it.
 - *DataTables' own stylesheet.* Fights this page's own theming and blocks rendering while
   it loads; the few layout rules its init actually needs are cheap enough to carry inline.
 - *`data-search`/`data-order` attributes holding record text.* `filterData` decodes a `&`

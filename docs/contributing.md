@@ -23,10 +23,12 @@ Line length is 100.
 Tests marked `real` are deselected by default: they need downloaded wheels, given through
 `WCS_CORPUS_DIR`. Tests marked `network` are deselected by default too: they check the
 HTML report's own DataTables enhancement against the real, pinned script from
-cdn.jsdelivr.net, given a live connection -- `tox -e network` runs them. Tests marked
-`hostbin` run by default: they look for `libcrypto.so.3` in the usual Fedora and
-Debian/Ubuntu library directories and skip without it, unless `WCS_REQUIRE_HOSTBIN` is
-set to any non-empty value, as CI does. `tox -e real` runs both `real` and `hostbin`.
+cdn.jsdelivr.net, given a live connection -- `tox -e network` runs them, skipping
+without one unless `WCS_REQUIRE_NETWORK` is set to any non-empty value, as CI does, which
+turns that skip into a failure. Tests marked `hostbin` run by default: they look for
+`libcrypto.so.3` in the usual Fedora and Debian/Ubuntu library directories and skip
+without it, unless `WCS_REQUIRE_HOSTBIN` is set to any non-empty value, as CI does.
+`tox -e real` runs both `real` and `hostbin`.
 
 **Test fixtures are synthesised, including the object files.** `tests/helpers/binfmt/`
 writes ELF, Mach-O and PE byte for byte with `struct`. The suite needs no compiler, no

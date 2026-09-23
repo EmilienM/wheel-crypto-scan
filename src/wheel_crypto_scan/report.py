@@ -419,7 +419,17 @@ def render_html(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> str:
 
 def _html_sort_key(record: dict[str, Any]) -> tuple[str, str]:
     """Sort by filename; the canonical JSON line is the tiebreak so two records that
-    happen to share a filename still land in a stable, deterministic order."""
+    happen to share a filename still land in a stable, deterministic order.
+
+    The report's own `DT.ext.order["wcs-wheels"]` (in report.html's own script)
+    depends on this staying filename-primary: it hands DataTables one value per
+    row with no tiebreak of its own, so two rows whose primary sort value ties
+    fall back to `DATA.records`' own array order -- this function's -- to land in
+    the same filename-ascending order `visibleRecords`'s native tiebreak already
+    gives them. Changing this to sort by anything else first moves that fallback
+    order out from under the enhanced table without moving it under the native
+    one, so the two would then disagree on where a tie lands.
+    """
     filename = str(record.get("wheel", {}).get("filename") or "")
     canonical = json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     return (filename, canonical)

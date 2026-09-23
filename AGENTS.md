@@ -156,7 +156,8 @@ uv run wheel-crypto-scan scan /path/to/wheels -o index.jsonl --jobs 8
 Tests marked `real` are deselected by default: they need a corpus of real wheels
 (`WCS_CORPUS_DIR`). Tests marked `network` are deselected by default too: they need a
 live connection to jsdelivr, to check the HTML report's own DataTables enhancement
-against the real, pinned script rather than a stub of it. Tests marked `hostbin` run by
+against the real, pinned script rather than a stub of it; CI sets `WCS_REQUIRE_NETWORK=1`,
+which turns an unreachable CDN's skip into a failure. Tests marked `hostbin` run by
 default and self-skip on a host without the system library they check; CI sets
 `WCS_REQUIRE_HOSTBIN=1`, which turns that skip into a failure. Line length is 100.
 

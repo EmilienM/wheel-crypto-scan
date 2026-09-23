@@ -280,7 +280,7 @@ it gets that from `binfmt.elf` directly.
 
 **Accepted.**
 
-`--format html` writes one page: no new runtime dependency, and one external asset --
+`--format html` writes one page: no new Python dependency, and one external asset --
 one pinned, integrity-checked CDN script (DataTables 3.1.1), loaded `defer`, falling
 back to a native table when it cannot be reached or verified. Python renders a static
 shell and embeds the records as one JSON block; the page's own JavaScript builds the
@@ -322,8 +322,8 @@ chips a cell displays, so a reason hidden behind "+N more" still matches. A colu
 already has an exact filter of its own on the toolbar -- the Wheels table's `class`,
 `review` and `openssl` -- gets no column filter, so every field keeps exactly one hash
 parameter. DataTables runs the sort, the global search and every column filter through
-these same predicates, never its own, so the enhanced page and its native fallback
-cannot disagree about what belongs on screen. An always-visible class legend between
+these same predicates, never its own, so the enhanced page and its native fallback agree
+on which rows pass the filters and in what order. An always-visible class legend between
 the toolbar and the table lists every verdict class present in the current run, each a
 badge beside its own help text, laid out as a horizontal row that wraps at the
 viewport's edge rather than one class per line. The Wheels table carries an `openssl`
