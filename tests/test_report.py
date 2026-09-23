@@ -3363,11 +3363,11 @@ def test_browser_datatables_init_receives_the_expected_wheel_table_options(
     # box: moved out of the toolbar into the `topEnd` slot, `dt-search` markup
     # around it, and `#count` hidden behind the info line that says the same.
     assert out["info"] is True
-    assert out["topStart"] == "pageLength"
+    assert out["topStart"] is None
     assert out["topEndClass"] == "dt-search"
     assert out["topEndHoldsSearch"] is True
     assert out["bottomStart"] == "info"
-    assert out["bottomEnd"] == "paging"
+    assert out["bottomEnd"] == ["pageLength", "paging"]
     assert out["toolbarSearch"] is False
     assert out["countHidden"] is True
     assert out["wheelDisplay"] is True
@@ -3971,8 +3971,8 @@ def test_network_datatables_renders_wheel_text_as_text(tmp_path: Path) -> None:
 @pytest.mark.network
 def test_network_datatables_default_chrome_with_one_search_box(tmp_path: Path) -> None:
     """Once the real script and stylesheet load, the wheel table carries
-    DataTables' default chrome and look: the length menu and the search box
-    above it, the info line and paging below it, the `display` class's stripes
+    DataTables' default chrome and look: the search box above it, the info line
+    below it with the length menu beside the paging buttons, the `display` class's stripes
     drawn by the pinned stylesheet (which only an intact, integrity-checked
     stylesheet can do). Exactly one search box is on screen, the page's own
     `#search` in DataTables' slot, and it drives DataTables' info line through
@@ -3995,7 +3995,12 @@ def test_network_datatables_default_chrome_with_one_search_box(tmp_path: Path) -
         "  );"
         "  out.searchBoxes = boxes.map(function (b) { return b.id; });"
         "  out.searchInSlot = !!document.querySelector('.dt-layout-row .dt-search #search');"
-        "  out.lengthMenu = !!document.querySelector('.dt-layout-row .dt-length select');"
+        "  var lengthRow = document.querySelector('.dt-length select');"
+        "  var pagingRow = document.querySelector('.dt-paging');"
+        "  out.lengthMenu = !!lengthRow && !!pagingRow &&"
+        "    lengthRow.closest('.dt-layout-cell') === pagingRow.closest('.dt-layout-cell') &&"
+        "    lengthRow.getBoundingClientRect().top > document.getElementById('wheel-table')"
+        "      .getBoundingClientRect().bottom - 1;"
         "  out.countVisible = visible(document.getElementById('count'));"
         "  var info = document.querySelector('.dt-info');"
         "  out.infoInitial = info.textContent;"

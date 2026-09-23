@@ -287,8 +287,8 @@ falling back to a native table when the script cannot be reached or verified. Py
 renders a static shell and embeds the records as one JSON block; the page's own
 JavaScript builds the table and the drill-down views from that data at load time, then
 hands both tables to DataTables for sorting, searching and paging, in DataTables'
-default look and chrome: page length and search above the table, the info line and
-paging below it, stripes, hover and sort arrows. The theme toggle sets the `dark` class
+default look and chrome: search above the table, the info line below it with the page
+length beside the paging buttons, stripes, hover and sort arrows. The theme toggle sets the `dark` class
 DataTables' stylesheet keys its dark palette off, and the page's own `#search` moves into
 DataTables' search slot, so one search box is on screen either way.
 

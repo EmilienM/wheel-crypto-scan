@@ -3442,9 +3442,14 @@ td.dt-empty { cursor: default; color: var(--fg-muted); }
       paging: true,
       pageLength: 50,
       lengthMenu: [25, 50, 100, { label: "All", value: -1 }],
-      // DataTables' usual arrangement: page length and search above the table,
-      // the info line and paging below it.
-      layout: { topStart: "pageLength", topEnd: searchSlot(), bottomStart: "info", bottomEnd: "paging" },
+      // The search box above the table; below it, the info line on the left and
+      // the page-length menu beside the paging buttons on the right.
+      layout: {
+        topStart: null,
+        topEnd: searchSlot(),
+        bottomStart: "info",
+        bottomEnd: ["pageLength", "paging"]
+      },
       columns: COLUMNS.map(function (column) {
         return orderColumnOptions("wcs-wheels", orderSequenceFor(column), column.label);
       }),

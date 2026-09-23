@@ -6289,8 +6289,8 @@ it the same way they work against the native one.
 
 **DataTables' default styling and chrome.** Enhanced, the tables look and behave like
 DataTables' own default styling: the `display` class (stripe, hover, row borders, a tint
-on the sorted column), the page-length menu and the search box above the table, the
-"Showing 1 to 50 of 60 wheels" info line and the paging buttons below it, and
+on the sorted column), the search box above the table, the "Showing 1 to 50 of 60
+wheels" info line below it with the page-length menu beside the paging buttons, and
 DataTables' own sort arrows in the header. Two concerns come with a third-party
 stylesheet, and each has its own answer. *Render blocking:* a `<link>` the parser meets
 in `<head>` holds the first render until the file arrives, so a CDN that hangs would
