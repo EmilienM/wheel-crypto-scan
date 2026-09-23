@@ -1817,11 +1817,13 @@ def test_browser_wheel_table_fits_a_1366px_wide_window_with_no_horizontal_scroll
 # right edge of the cell's content box. The indicator's arrows are absolutely
 # positioned pseudo-elements that keep their width however far the indicator itself
 # is squeezed, so its edge is the wider of the two. The resize handle straddles the
-# column boundary on purpose and is not measured. At the default widths it also
-# lists every cell whose "?" button wrapped under its label, and every order
-# indicator that does not sit to the right of the "?" button. `__MINS__` is null, or the wheel
+# column boundary on purpose and is not measured. It also lists every order
+# indicator not to the right of its "?" button (at the default widths) or of its
+# label (at `min`, where the "?" button wraps under the label), and, at the default
+# widths, every cell whose "?" button wrapped. `__MINS__` is null, or the wheel
 # table's per-column `min` (null for the flex column) to narrow every `<col>` to
-# first. The Rules view is unhidden so its table lays out beside the Wheels one.
+# first. The Rules view is unhidden so its table lays out beside the Wheels one; it
+# has no `min`, so it is measured at its own widths either way.
 _HEADER_FIT_SCRIPT = """
 window.addEventListener('load', function () {
   var mins = __MINS__;
@@ -1866,7 +1868,8 @@ window.addEventListener('load', function () {
       if (!mins && help.top >= th.querySelector('.sort-btn').getBoundingClientRect().bottom) {
         out.wrapped.push(label);
       }
-      if (order && !mins && order.getBoundingClientRect().left < help.right) {
+      var before = mins ? th.querySelector('.sort-btn').getBoundingClientRect() : help;
+      if (order && order.getBoundingClientRect().left < before.right) {
         out.misplaced.push(label);
       }
     });
@@ -1886,19 +1889,17 @@ def _header_fit_script(page: str, *, at_min: bool) -> str:
 def _header_cell_count(page: str) -> int:
     """How many label-row header cells the two tables carry: one per COLUMNS entry
     and one per RULES_COLUMNS entry, read from the page's own script."""
-    match = re.search(r"var RULES_COLUMNS = \[(.*?)\];", _js(page), re.DOTALL)
-    assert match is not None
-    return len(_parse_columns(page)) + len(re.findall(r"\bkey:", match.group(1)))
+    return len(_parse_columns(page)) + len(_parse_rules_column_keys(page))
 
 
 @pytest.mark.parametrize("at_min", [False, True], ids=["default", "min"])
 def test_browser_every_header_fits_its_cell(tmp_path: Path, at_min: bool) -> None:
-    """Every header cell of both tables holds its label, "?" button and native sort
-    arrow inside its own content box, at the wheel table's default column widths and
-    at every column's `min`, its resize floor: a narrow wheel-table header wraps the
-    "?" button under the label rather than running into the next column. At the
-    default widths nothing wraps: each column is wide enough for its header on one
-    line. The enhanced twin is
+    """Every header cell of both tables holds its label, "?" button and, on the sorted
+    column, its native sort arrow inside its own content box, at the wheel table's
+    default column widths and at every column's `min`, its resize floor: a narrow
+    wheel-table header wraps the "?" button under the label rather than running into
+    the next column. At the default widths nothing wraps: each column is wide enough
+    for its header on one line. The enhanced twin is
     `test_network_datatables_every_header_fits_its_cell_styled_or_not`."""
     ruleset = load_ruleset(None)
     page = render_html(_many_records(60), ruleset)
@@ -1944,7 +1945,7 @@ def test_browser_column_resize_via_pointer_updates_the_col_width(tmp_path: Path)
     )
     dom = _render_in_browser(tmp_path, page, fragment="wheel=0", extra_script=script)
     out = json.loads(_title(dom))
-    assert out["mid"] == "400px"
+    assert out["mid"] == f"{_parse_columns(page)[0]['width'] + 120}px"
     assert out["resetHidden"] is False
 
 
@@ -2044,7 +2045,7 @@ def test_browser_column_widths_garbage_storage_does_not_throw(tmp_path: Path) ->
     page = render_html([html_record("a", "OPAQUE", "none")], ruleset)
     rigged = _seed_script(page, "window.localStorage.setItem('wcs-column-widths', 'not json{{');")
     dom = _render_in_browser(tmp_path, rigged, extra_script=_FILENAME_COL_WIDTH_SCRIPT)
-    assert _title(dom) == "280px"
+    assert _title(dom) == f"{_parse_columns(page)[0]['width']}px"
 
 
 def test_browser_reset_columns_restores_defaults_and_hides_itself(tmp_path: Path) -> None:
@@ -2067,7 +2068,7 @@ def test_browser_reset_columns_restores_defaults_and_hides_itself(tmp_path: Path
     out = json.loads(_title(dom))
     assert out["widthBefore"] == "400px"
     assert out["resetHiddenBefore"] is False
-    assert out["widthAfter"] == "280px"
+    assert out["widthAfter"] == f"{_parse_columns(page)[0]['width']}px"
     assert out["resetHiddenAfter"] is True
     assert out["storedAfter"] is None
 
@@ -2583,8 +2584,9 @@ def test_browser_arrow_key_on_a_focused_resize_handle_does_not_also_step_the_whe
     out = json.loads(_title(dom))
     assert out["positionBefore"] == "1 of 3"
     assert out["positionAfter"] == "1 of 3"
-    assert out["widthBefore"] == "280px"
-    assert out["widthAfter"] == "296px"
+    default = _parse_columns(page)[0]["width"]
+    assert out["widthBefore"] == f"{default}px"
+    assert out["widthAfter"] == f"{default + 16}px"
 
 
 def test_browser_pointercancel_mid_drag_persists_the_width_and_shows_reset(
@@ -2617,8 +2619,9 @@ def test_browser_pointercancel_mid_drag_persists_the_width_and_shows_reset(
     )
     dom = _render_in_browser(tmp_path, page, extra_script=script)
     out = json.loads(_title(dom))
-    assert out["width"] == "360px"
-    assert json.loads(out["stored"]) == {"filename": 360}
+    dragged = _parse_columns(page)[0]["width"] + 80
+    assert out["width"] == f"{dragged}px"
+    assert json.loads(out["stored"]) == {"filename": dragged}
     assert out["resetHidden"] is False
 
 
