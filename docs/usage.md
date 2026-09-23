@@ -45,7 +45,7 @@ wheel-crypto-scan scan [INPUTS...] [options]
 | Flag | Meaning |
 |---|---|
 | `-o`, `--output PATH` | Write here instead of stdout. A regular file is written to a `.partial` sibling and renamed into place, so an interrupted run never leaves a half-written record file. |
-| `--format {jsonl,md,html}` | `jsonl` (default) streams one record per line; `md` renders a Markdown summary and needs every record in memory at once. `html` writes one page that fetches one pinned, integrity-checked script (DataTables, from cdn.jsdelivr.net) when opened, and works fully without it; byte-stable for the same records and ruleset, and also holds every record in memory. |
+| `--format {jsonl,md,html}` | `jsonl` (default) streams one record per line; `md` renders a Markdown summary and needs every record in memory at once. `html` writes one page that fetches DataTables' pinned, integrity-checked script and stylesheet from cdn.jsdelivr.net when opened, and works fully without them; byte-stable for the same records and ruleset, and also holds every record in memory. |
 | `--jobs N` | Worker processes, default 1. Each worker loads the ruleset once in its initializer rather than receiving it over a pickle. |
 | `--ruleset PATH` | Use this ruleset instead of the shipped one. |
 | `--evidence-level {minimal,standard}` | At `minimal`, `binaries[].matched_symbols`, `matched_strings` and `rust_crates` are **not recorded**, so an empty array there means "not recorded", not "none found". |

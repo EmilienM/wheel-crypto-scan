@@ -5,8 +5,8 @@ crypto inventory -- families, libraries and their linkage, the relations that fo
 from it -- because a wheel's evidence is what a reader needs first, and the class badge
 comes after it as the FIPS compatibility lens's own summary, not the wheel's headline
 identity. HTML is for browsing and drill-down: one page that embeds every record and,
-when its one pinned CDN script loads, hands its tables to DataTables for sorting,
-searching and paging, with a detail view per wheel that repeats the same
+when its pinned CDN script loads, hands its tables to DataTables for sorting,
+searching, paging and its default styling, with a detail view per wheel that repeats the same
 inventory-first split: "Cryptography in this wheel", then "FIPS compatibility". Both
 are views; the JSONL is the contract.
 """
@@ -393,8 +393,9 @@ _DATA_TOKEN = "/*WCS_DATA*/"
 
 def render_html(records: Sequence[dict[str, Any]], ruleset: Ruleset) -> str:
     """An HTML page: one row per wheel, with a drill-down detail view. It embeds every
-    record as one JSON block, and its one pinned, integrity-checked CDN script -- when
-    it loads -- hands both tables to DataTables for sorting, searching and paging.
+    record as one JSON block, and DataTables' pinned, integrity-checked CDN script --
+    when it loads -- takes both tables over for sorting, searching and paging, styled
+    by its pinned default stylesheet.
 
     The page is a pure function of `records`, `ruleset` and the shipped template: no
     timestamp, host path or hostname, so the same input renders byte-identical output.
