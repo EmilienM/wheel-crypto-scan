@@ -28,7 +28,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       - name: Install interpreters
         run: uv python install 3.11 3.12 3.13 3.14
       # A tag can point at any commit, and CI does not run on tags, so the release
@@ -56,7 +56,7 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
       - name: Build sdist and wheel
         run: uv build
       - name: Check metadata
